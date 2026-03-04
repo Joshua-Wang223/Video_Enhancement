@@ -1,6 +1,6 @@
 # Video Enhancement — 视频增强处理系统
 
-> **当前版本**: v5（单卡优化版）  
+> **当前版本**: v5（单卡优化版）｜IFRNet 后端 v5 / Real-ESRGAN 后端 v6  
 > **最后更新**: 2026-03-04
 
 一套完整的 AI 视频增强解决方案，整合了**视频插帧（IFRNet）**与**视频超分辨率（Real-ESRGAN）**两大模块，并针对单 GPU 环境进行了深度优化。
@@ -21,6 +21,7 @@
 | 🛡️ **OOM 自动降级** | 显存不足时自动减小批量大小，无需手动干预 |
 | 🔗 **分段直连流水线** | 插帧→超分分段直接对接，省去中间合并步骤，减少 30–50% I/O |
 | 💾 **断点续传** | 分段级别断点保存，处理中断后从断点继续 |
+| 👤 **人脸增强（GFPGAN）** | 批量推理 + 原始帧检测 + CPU-GPU 流水线，face_enhance 速度显著提升（v6） |
 | 🎵 **智能音频处理** | 自动检测音频编码，无损时直接 copy，否则转码 AAC |
 | 📦 **批量处理** | 支持目录批量处理，失败自动跳过继续 |
 | 🧹 **灵活清理** | 处理完成后询问或自动清理临时文件 |
@@ -51,10 +52,10 @@ Video_Enhancement/
 │   ├── main.py                     # 历史版本 v1
 │   │
 │   ├── processors/
-│   │   ├── ifrnet_processor_v5_single.py           # ★ IFRNet 处理器 v5
-│   │   ├── realesrgan_processor_video_v5_single.py # ★ Real-ESRGAN 处理器 v5
+│   │   ├── ifrnet_processor_v5_single.py           # ★ IFRNet 处理器 v5（对接 IFRNet v5 后端）
+│   │   ├── realesrgan_processor_video_v5_single.py # ★ Real-ESRGAN 处理器 v5（对接 ESRGAN v6 后端）
 │   │   └── ...                                     # 历史版本处理器
-│   │
+│
 │   └── utils/
 │       ├── config_manager.py       # 配置管理
 │       ├── video_utils.py          # 视频工具（分割、合并、音频、编解码）
@@ -66,7 +67,8 @@ Video_Enhancement/
 │   │   ├── process_video_v5_single.py  # ★ IFRNet v5 后端核心
 │   │   └── models/                     # IFRNet 模型定义
 │   └── Real-ESRGAN/
-│       ├── inference_realesrgan_video_v5_single.py  # ★ ESRGAN v5 后端核心
+│       ├── inference_realesrgan_video_v6_single.py  # ★ ESRGAN v6 后端核心（当前）
+│       ├── inference_realesrgan_video_v5_single.py  # ⚠️  ESRGAN v5++ 后端（历史，非face_enhance场景可用）
 │       └── realesrgan/                              # Real-ESRGAN 库
 │
 ├── models_IFRNet/
@@ -226,13 +228,21 @@ v5 直连流水线相比 v1 节省约 30% 总时间和 38% 磁盘 I/O。
     },
     "realesrgan": {
       "tile_size": 0,
-      "batch_size": 4,
-      "use_compile": true,
-      "use_hwaccel": true
+      "batch_size": 8,
+      "prefetch_factor": 16,
+      "use_compile": false,
+      "use_hwaccel": true,
+      "face_enhance": false,
+      "gfpgan_model": "1.4",
+      "gfpgan_weight": 0.5,
+      "gfpgan_batch_size": 8
     }
   }
 }
 ```
+
+> `batch_size` 默认值 v6 起调整为 8（原 v5 为 4），可充分利用 T4/RTX 3080 等 15 GB+ 显存。  
+> `gfpgan_*` 参数仅在 `face_enhance: true` 时生效，`gfpgan_batch_size` 可防止人脸密集场景 OOM。
 
 完整配置说明见 [GUIDE.md](GUIDE.md)。
 
