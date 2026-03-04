@@ -1,26 +1,80 @@
 """
 IFRNet 视频插帧处理脚本 —— 终极优化版 v5（单卡版）
 ==========================================================
+基于 IFRNet（Intermediate Flow-based Recursive Network）的视频帧插值脚本，
+面向单 GPU 生产环境的高性能实现。
+
+【最终功能特性】
+  推理加速：
+    · FP16 半精度推理（use_fp16，默认开启）
+    · torch.compile 内核融合（mode=default, dynamic=True；首次编译约 1~3 分钟）
+    · CUDA Graph 捕获（use_cuda_graph；与 torch.compile 互斥，compile 优先）
+    · TensorRT 可选加速（use_tensorrt；导出 ONNX → 构建 FP16 静态 Engine）
+    · OOM 自动降级：batch_size 减半 → 深度清理 → 按空闲显存估算恢复
+
+  I/O 加速：
+    · NVDEC 硬件解码（use_hwaccel；自动探测，失败回退 CPU）
+    · NVENC 硬件编码（有 h264_nvenc/hevc_nvenc 时自动升级）
+    · 异步帧预取（FFmpegFrameReader 后台线程 + PinnedBufferPool）
+    · 批量写帧（FFmpegWriter 攒 8 帧一次 write，减少 pipe syscall）
+
+  稳定性与可观测性：
+    · torch.compile 小形状（32×32）预热，避免大分辨率首帧编译卡顿
+    · OOM 级联保护：首次 OOM 永久降低 max_batch_size，级联 OOM 不再修改上限
+    · CUDA Graph 按 shape 缓存，batch_size 动态变化时安全捕获
+    · JSON 性能报告（report_json；含 infer_latency_ms p95/mean/max、nvdec、nvenc）
+
+【命令行使用示例】
+  # 基础用法（FP16 + torch.compile + NVDEC/NVENC 自动启用）
+  python process_video_v5_single.py \\
+      --input input.mp4 --output output_2x.mp4 --scale 2
+
+  # 4× 插帧，关闭 compile（跳过预热，启动更快，适合短视频）
+  python process_video_v5_single.py \\
+      --input input.mp4 --output output_4x.mp4 --scale 4 --no_compile
+
+  # TensorRT 加速（首次构建 Engine，后续秒启动）
+  python process_video_v5_single.py \\
+      --input input.mp4 --output output.mp4 --scale 2 --use_tensorrt
+
+  # 禁用所有加速（调试/CPU 环境）
+  python process_video_v5_single.py \\
+      --input input.mp4 --output output.mp4 --scale 2 \\
+      --no_fp16 --no_compile --no_cuda_graph --no_hwaccel --device cpu
+
+  # 输出性能报告
+  python process_video_v5_single.py \\
+      --input input.mp4 --output output.mp4 --scale 2 --report report.json
+
+【关键参数说明】
+  --scale        插帧倍数，≥2 整数（2=2×, 4=4×, 8=8×）
+  --model        IFRNet_S_Vimeo90K（默认轻量）或 IFRNet_L_Vimeo90K（高质量）
+  --batch_size   每批帧对数，默认 4；显存充裕时自动爬升
+  --no_fp16      关闭 FP16（默认开启）
+  --no_compile   关闭 torch.compile（默认开启）
+  --no_cuda_graph  关闭手动 CUDA Graph（compile 激活时已自动接管）
+  --use_tensorrt  启用 TRT Engine（首次构建耗时较长）
+  --no_hwaccel   强制 CPU 解码（NVDEC 可用时默认启用硬解）
+  --crf          编码质量，默认 23（18~28 常用范围）
+  --report       JSON 报告路径（可选，记录推理延迟、硬件状态）
+
+【注意事项】
+  · 首次 torch.compile 约需 1~3 分钟，编译缓存默认存于 .torch_compile_cache/
+  · TRT Engine 缓存于 .trt_cache/<tag>.trt，TRT 版本升级后需手动删除重建
+  · --scale 对 Fraction(scale) 取整，非整数倍数会自动取近似整数
+  · 模型路径由脚本顶部 base_dir / models_ifrnet 常量决定，部署前请修改
+
 从多卡版精简为单 GPU 版本，移除 _ifrnet_segment_worker、
 _process_multi_gpu、_process_single_fallback 及所有多进程
 分段调度逻辑，保留全部单卡优化不变。
 
-[保留全部优化]
-
-  M2. [FFmpeg Pipe 替换 cv2.VideoCapture]
-      - 解码负载卸载至 GPU 专用媒体引擎（NVDEC）
-      - 主 CUDA 核心 100% 专注 IFRNet 推理
-      - 支持 fallback CPU 解码（自动探测）
-
-  M3. [NVENC 硬件编码输出]
-      输出阶段使用 h264_nvenc / hevc_nvenc，自动探测，不可用时回退 libx264。
-
-  M4. [TensorRT 可选加速]
-      --use_tensorrt：导出 ONNX → 构建 TRT Engine（FP16 静态形状）。
-
-  X1-X6 (批量写入/ThroughputMeter/PinnedBufferPool/异常传播/error flag/Event驱动)
-  B1-B5 (CUDA Graph/FP16/torch.compile/OOM降级/流水线双流)
-  N1-N13 (expand代replace/pad对齐/pinned内存/推理计时/...)
+【保留全部优化标记（供代码内部定位）】
+  M2. FFmpeg Pipe 替换 cv2.VideoCapture（NVDEC 解码）
+  M3. NVENC 硬件编码输出
+  M4. TensorRT 可选加速
+  X1-X6: 批量写入/ThroughputMeter/PinnedBufferPool/异常传播/error flag/Event驱动
+  B1-B5: CUDA Graph/FP16/torch.compile/OOM降级/流水线双流
+  N1-N13: expand代replace/pad对齐/pinned内存/推理计时/...
 """
 
 from __future__ import annotations

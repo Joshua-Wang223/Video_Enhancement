@@ -1,12 +1,14 @@
 """
 视频处理主程序 v5（单卡版）
 =====================================
-整合插帧（IFRNet v5）和超分（Real-ESRGAN v5）处理流程。
+整合插帧（IFRNet v5）和超分（Real-ESRGAN v6）处理流程。
 采用分段直接对接，避免中间合并，支持断点恢复。
 
 对接模块：
   - ifrnet_processor_v5_single.IFRNetProcessor
+    → 底层: external/IFRNet/process_video_v5_single.py
   - realesrgan_processor_video_v5_single.RealESRGANVideoProcessor
+    → 底层: external/Real-ESRGAN/inference_realesrgan_video_v6_single.py
 """
 
 import os
@@ -463,12 +465,13 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
     特性（v5 单卡版）:
-      - 对接 IFRNet v5 / Real-ESRGAN v5 单卡优化版
+      - 对接 IFRNet v5 / Real-ESRGAN v6 单卡优化版
       - NVDEC 硬件解码 / NVENC 硬件编码自动探测
       - FP16 / torch.compile / CUDA Graph / TensorRT 可选加速
       - OOM 自动降级与恢复
       - 分段直接对接，避免中间合并
       - 断点恢复支持
+      - face_enhance：批量GFPGAN + 原始帧检测 + CPU-GPU流水线（v6）
 
     示例:
       python main_video_v5_single.py -c config.json -i video.mp4

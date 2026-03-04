@@ -2,11 +2,13 @@
 IFRNet 视频插帧处理器 v5（单卡版）
 =====================================
 对接 process_video_v5_single.py（IFRNetVideoProcessor），
-保留分段直接对接与断点恢复逻辑，新增 v5 全部硬件加速参数支持：
-  - FP16 / torch.compile / CUDA Graph
-  - TensorRT 可选加速
-  - NVDEC 硬件解码 / NVENC 硬件编码
-  - OOM 自动降级
+保留分段直接对接与断点恢复逻辑，支持 v5 全部硬件加速参数：
+  - FP16 / torch.compile / CUDA Graph（compile 激活时自动接管 Graph）
+  - TensorRT 可选加速（首次构建需缓存 .trt Engine）
+  - NVDEC 硬件解码 / NVENC 硬件编码（自动探测，失败时回退软解/软编）
+  - OOM 自动降级：batch_size 减半 → 深度清理 → 显存估算恢复
+  - torch.compile 预热：小形状（32×32）触发编译，避免大分辨率首次卡顿
+  - JSON 性能报告（可选，含 infer_latency_ms / nvdec / nvenc 等字段）
 """
 
 import os

@@ -1,13 +1,15 @@
 """
 Real-ESRGAN 视频超分处理器 v5（单卡版）
 ==========================================
-对接 inference_realesrgan_video_v5_single.py（inference_video_single），
-保留分段直接对接与断点恢复逻辑，新增 v5 全部硬件加速参数支持：
+对接 inference_realesrgan_video_v6_single.py（inference_video_single），
+保留分段直接对接与断点恢复逻辑，支持 v5/v6 全部硬件加速参数：
   - FP16 / torch.compile
-  - TensorRT 可选加速
+  - TensorRT 可选加速（TRT 8.x / 10.x 双 API 兼容）
   - NVDEC 硬件解码 / NVENC 硬件编码
   - OOM 自动降级
-  - 批量推理 / JSON 性能报告
+  - 批量推理（batch_size 默认 8）/ JSON 性能报告
+  - face_enhance：批量 GFPGAN 推理 + 原始帧检测 + 无脸跳过（v6 新增）
+  - CPU-GPU 流水线并行：detect/paste 异步，SR 推理不停顿（v6 新增）
 """
 
 import os
@@ -58,11 +60,16 @@ class RealESRGANVideoProcessor:
         self.fp32             = config.get("models", "realesrgan", "fp32",             default=False)
         self.face_enhance     = config.get("models", "realesrgan", "face_enhance",     default=False)
 
-        # v5 新增：推理优化参数
-        self.batch_size       = config.get("models", "realesrgan", "batch_size",       default=4)
-        self.prefetch_factor  = config.get("models", "realesrgan", "prefetch_factor",  default=8)
+        # v5 新增：推理优化参数（batch_size/prefetch_factor 对齐 v6 默认值）
+        self.batch_size       = config.get("models", "realesrgan", "batch_size",       default=8)
+        self.prefetch_factor  = config.get("models", "realesrgan", "prefetch_factor",  default=16)
         self.use_compile      = config.get("models", "realesrgan", "use_compile",      default=False)
         self.use_tensorrt     = config.get("models", "realesrgan", "use_tensorrt",     default=False)
+
+        # v6 新增：face_enhance 精细控制参数
+        self.gfpgan_model       = config.get("models", "realesrgan", "gfpgan_model",       default="1.4")
+        self.gfpgan_weight      = config.get("models", "realesrgan", "gfpgan_weight",      default=0.5)
+        self.gfpgan_batch_size  = config.get("models", "realesrgan", "gfpgan_batch_size",  default=8)
 
         # v5 新增：硬件解/编码参数
         self.use_hwaccel = config.get("models", "realesrgan", "use_hwaccel", default=True)
@@ -290,7 +297,7 @@ class RealESRGANVideoProcessor:
     def _process_segment(self, input_path: str, output_path: str,
                          segment_idx: int) -> bool:
         """
-        处理单个视频片段（调用 inference_realesrgan_video_v5_single）。
+        处理单个视频片段（调用 inference_realesrgan_video_v6_single）。
 
         Args:
             input_path:   输入片段路径
@@ -327,13 +334,17 @@ class RealESRGANVideoProcessor:
     def _run_esrgan_video(self, input_path: str, output_path: str,
                           segment_idx: int) -> bool:
         """
-        构建参数命名空间并调用 inference_realesrgan_video_v5_single.run()。
+        构建参数命名空间并调用 inference_realesrgan_video_v6_single.run()。
 
         v5 变更：
           - 新增 batch_size / prefetch_factor / use_compile
           - 新增 use_tensorrt / use_hwaccel / no_hwaccel
           - 新增 video_codec / crf / report
           - 移除 extract_frame_first / num_process_per_gpu
+        v6 变更（新增 face_enhance 精细控制参数）：
+          - 新增 gfpgan_model（1.3 / 1.4 / RestoreFormer）
+          - 新增 gfpgan_weight（融合权重，0.0~1.0）
+          - 新增 gfpgan_batch_size（单次 GFPGAN 前向最多处理的人脸数，防 OOM）
 
         Args:
             input_path:   输入视频路径
@@ -379,6 +390,11 @@ class RealESRGANVideoProcessor:
             # v5 新增：性能报告
             args.report = self.report_json
 
+            # v6 新增：face_enhance 精细控制参数
+            args.gfpgan_model      = self.gfpgan_model
+            args.gfpgan_weight     = self.gfpgan_weight
+            args.gfpgan_batch_size = self.gfpgan_batch_size
+
             # 其他 inference_realesrgan_video_v5_single 所需参数
             args.alpha_upsampler = "realesrgan"
             args.ext             = "auto"
@@ -389,8 +405,8 @@ class RealESRGANVideoProcessor:
 
             os.makedirs(args.output, exist_ok=True)
 
-            # 动态导入并运行 v5 单卡版
-            from inference_realesrgan_video_v5_single import run
+            # 动态导入并运行 v6 单卡版
+            from inference_realesrgan_video_v6_single import run
 
             print(f"   🔧 加载模型: {self.model_name}")
             print(f"   🖥️  设备: {self.device} | "
@@ -415,7 +431,7 @@ class RealESRGANVideoProcessor:
                 return False
 
         except ImportError as e:
-            print(f"   ❌ 无法导入 inference_realesrgan_video_v5_single: {e}")
+            print(f"   ❌ 无法导入 inference_realesrgan_video_v6_single: {e}")
             return False
         except Exception as e:
             print(f"   ❌ 调用 Real-ESRGAN 失败: {e}")
@@ -438,5 +454,5 @@ class RealESRGANVideoProcessor:
 
 
 if __name__ == "__main__":
-    print("Real-ESRGAN 视频超分处理器模块 v5（单卡版）")
+    print("Real-ESRGAN 视频超分处理器模块 v5（单卡版，对接 v6 底层）")
     print("✅ 模块加载成功，请在主程序中调用。")
