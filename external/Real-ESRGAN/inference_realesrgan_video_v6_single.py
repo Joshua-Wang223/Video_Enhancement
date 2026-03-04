@@ -1161,7 +1161,7 @@ def _process_batch(
     face_enhancer=None,
     face_fp16: bool = False,      # [FIX-8] 控制 GFPGAN 是否走 FP16 autocast
     gfpgan_weight: float = 0.5,   # [ADD] GFPGAN 人脸增强融合权重，与 GFPGANer.enhance() 保持一致
-    gfpgan_batch_size: int = 8,   # [OOM-FIX] GFPGAN 推理子批量上限，防止人脸密集场景 OOM
+    gfpgan_batch_size: int = 12,   # [OOM-FIX] GFPGAN 推理子批量上限，防止人脸密集场景 OOM
 ) -> Tuple[List[np.ndarray], int]:
     """
     将一批帧推理为超分结果。
@@ -1480,7 +1480,7 @@ def flush_batch_safe(
     face_enhancer=None,          # [FIX-6] 新增
     face_fp16: bool = False,     # [FIX-8] 新增，透传给 _process_batch
     gfpgan_weight: float = 0.5,  # [ADD] GFPGAN 融合权重透传
-    gfpgan_batch_size: int = 8,  # [v5++-ADAPT] GFPGAN 子批量上限，由返回值跨批次更新
+    gfpgan_batch_size: int = 12,  # [v5++-ADAPT] GFPGAN 子批量上限，由返回值跨批次更新
 ) -> Tuple[int, int]:            # 返回 (新SR批次大小, 新GFPGAN子批量大小)
     bs = min(init_bs, len(frames))
     i  = 0
@@ -1643,7 +1643,7 @@ def inference_video_single(args, video_save_path: str, device=None):
     # [v5++-ADAPT] gfpgan_bs 作为普通 int 在主循环中更新：
     # flush_batch_safe 返回实际使用的子批量大小，下一次调用直接传入，
     # 实现 OOM 降级值跨批次持久化，无需 list 容器副作用。
-    gfpgan_bs: int = getattr(args, 'gfpgan_batch_size', 8)
+    gfpgan_bs: int = getattr(args, 'gfpgan_batch_size', 12)
 
     use_batch = args.batch_size > 1 and args.tile == 0
 
@@ -1999,7 +1999,7 @@ def main():
                              '不存在时自动下载。Default: 1.4')
     parser.add_argument('--gfpgan_weight',            type=float, default=0.5,
                         help='GFPGAN 增强融合权重，0.0=不增强，1.0=完全替换，Default: 0.5')
-    parser.add_argument('--gfpgan_batch_size',        type=int, default=8,
+    parser.add_argument('--gfpgan_batch_size',        type=int, default=12,
                         help='[OOM-FIX] 单次 GFPGAN 前向最多处理的人脸数。'
                              '人脸密集视频（群像/演唱会）可能每批超过 30 张脸，'
                              '全部堆叠为一次 StyleGAN2 前向会触发 OOM；'
@@ -2071,7 +2071,7 @@ def main():
     print(f'  face_enhance: {args.face_enhance} '
           f'(model={getattr(args, "gfpgan_model", "1.4")} | '
           f'weight={getattr(args, "gfpgan_weight", 0.5)} | '
-          f'GFPGAN-batch={getattr(args, "gfpgan_batch_size", 8)} | '
+          f'GFPGAN-batch={getattr(args, "gfpgan_batch_size", 12)} | '
           f'v5++: 批量GFPGAN+原始帧检测+无脸跳过)')
     print(f'  [v5++ 优化] cudnn.benchmark | 异步D2H | TRT专用Stream | 批量GFPGAN | 原始帧检测')
     print()
