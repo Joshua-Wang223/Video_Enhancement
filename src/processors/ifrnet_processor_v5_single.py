@@ -286,6 +286,235 @@ class IFRNetProcessor:
             traceback.print_exc()
             return False
 
+    # -------------------------------------------------------------------------
+    # 完整流程：分段 → 插帧 → 合并（含音频），供独立调用使用
+    # -------------------------------------------------------------------------
+
+    def process_video(self, input_video: str, output_video: str) -> bool:
+        """
+        完整处理视频（分段插帧 → 合并），支持断点恢复。
+        与 RealESRGANVideoProcessor.process_video() 对称，供独立调用或测试。
+
+        Args:
+            input_video:  输入视频路径
+            output_video: 最终输出视频路径
+
+        Returns:
+            是否成功
+        """
+        from video_utils import (
+            VideoInfo, smart_extract_audio, merge_videos_by_codec, format_time
+        )
+        import time
+
+        print("\n" + "=" * 60)
+        print("🎬 IFRNet 视频插帧处理（完整流程）")
+        print(f"📹 输入  : {input_video}")
+        print(f"📤 输出  : {output_video}")
+        print(f"⚡ 插帧倍数: {self.interpolation_factor}x")
+        print(f"🖥️  设备  : {self.device}")
+        print(f"🧩 分段时长: {self.segment_duration}秒")
+        print("=" * 60 + "\n")
+
+        total_start = time.time()
+
+        # 提取音频
+        audio_path = None
+        try:
+            info = VideoInfo(input_video)
+            if info.has_audio:
+                print("🎵 提取音频...")
+                audio_path = smart_extract_audio(
+                    input_video,
+                    str(self.config.get_temp_dir("ifrnet_audio"))
+                )
+                if audio_path:
+                    print(f"✅ 音频已保存: {audio_path}")
+                else:
+                    print("⚠️  音频提取失败，输出将无音频")
+        except Exception as e:
+            print(f"⚠️  获取视频信息或提取音频失败: {e}")
+
+        # 插帧（分段）
+        processed_segments = self.process_video_segments(input_video)
+        if not processed_segments:
+            print("❌ 未成功处理任何分段")
+            return False
+
+        # 合并
+        print(f"\n🔗 合并 {len(processed_segments)} 个插帧分段...")
+        output_config = self.config.get_section("output", {})
+        success = merge_videos_by_codec(
+            processed_segments, output_video,
+            audio_path=audio_path,
+            config=output_config,
+        )
+
+        if success:
+            total_time = time.time() - total_start
+            print(f"\n✅ 插帧处理完成！总用时: {format_time(total_time)}")
+            print(f"📤 输出: {output_video}")
+            if self.config.get("processing", "auto_cleanup_temp", default=False):
+                self._cleanup_temp_files()
+        else:
+            print("❌ 视频合并失败")
+
+        return success
+
+    def _cleanup_temp_files(self):
+        """清理临时目录（分段和中间处理文件）。"""
+        import shutil as _shutil
+        print("\n🧹 清理临时文件...")
+        try:
+            if self.segment_dir and self.segment_dir.exists():
+                _shutil.rmtree(self.segment_dir)
+                print("✅ 已删除分段文件")
+            if self.processed_dir and self.processed_dir.exists():
+                _shutil.rmtree(self.processed_dir)
+                print("✅ 已删除处理文件")
+        except Exception as e:
+            print(f"⚠️  清理失败: {e}")
+
+
+# =============================================================================
+# 独立命令行入口
+# =============================================================================
+
+def main():
+    """
+    独立调用入口：直接驱动 IFRNetProcessor，
+    底层对接 process_video_v5_single.IFRNetVideoProcessor。
+
+    示例：
+      # 使用默认配置，直接插帧
+      python ifrnet_processor_v5_single.py -i input.mp4 -o output_2x.mp4
+
+      # 指定配置文件 + 覆盖插帧倍数
+      python ifrnet_processor_v5_single.py -c config.json \\
+             -i input.mp4 -o output_4x.mp4 --interpolation-factor 4
+
+      # 关闭 compile（短视频跳过预热，启动更快）
+      python ifrnet_processor_v5_single.py -i input.mp4 -o output.mp4 \\
+             --no-compile --no-cuda-graph
+    """
+    import argparse
+    import sys
+
+    _script_dir  = Path(os.path.abspath(__file__)).parent        # src/processors
+    _base_dir    = _script_dir.parent.parent                     # project root
+    _default_cfg = str(_base_dir / "config" / "default_config.json")
+
+    sys.path.insert(0, str(_base_dir / "src" / "utils"))
+    from config_manager import Config
+
+    parser = argparse.ArgumentParser(
+        description="IFRNet 视频插帧处理器（单卡版）—— 独立入口",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+底层脚本：external/IFRNet/process_video_v5_single.py
+
+特性：
+  · 分段处理 + 断点恢复
+  · FP16 / CUDA Graph / torch.compile / TensorRT 可选
+  · NVDEC 硬件解码 / NVENC 硬件编码自动探测
+  · OOM 自动降级（batch_size 减半 → 深度清理 → 显存估算恢复）
+""",
+    )
+
+    # 基础参数
+    parser.add_argument("--config", "-c", default=_default_cfg,
+                        help=f"配置文件路径（默认: {_default_cfg}）")
+    parser.add_argument("--input",  "-i", required=True,
+                        help="输入视频路径")
+    parser.add_argument("--output", "-o", required=True,
+                        help="输出视频路径（含文件名）")
+
+    # 覆盖配置
+    parser.add_argument("--interpolation-factor", type=int, choices=[2, 4, 8, 16],
+                        help="插帧倍数（覆盖配置）")
+    parser.add_argument("--segment-duration", type=int,
+                        help="分段时长（秒，覆盖配置）")
+    parser.add_argument("--batch-size", type=int,
+                        help="推理批处理大小（覆盖配置）")
+    parser.add_argument("--max-batch-size", type=int,
+                        help="批大小上限（覆盖配置）")
+
+    # 推理优化开关
+    parser.add_argument("--no-fp16",       action="store_true", help="禁用 FP16")
+    parser.add_argument("--no-compile",    action="store_true", help="禁用 torch.compile")
+    parser.add_argument("--no-cuda-graph", action="store_true", help="禁用 CUDA Graph")
+    parser.add_argument("--use-tensorrt",  action="store_true", help="启用 TensorRT 加速")
+    parser.add_argument("--no-hwaccel",    action="store_true", help="禁用 NVDEC 硬件解码")
+    parser.add_argument("--no-audio",      action="store_true", help="不提取/保留音频")
+    parser.add_argument("--crf", type=int, help="分段输出视频质量 CRF（覆盖配置）")
+    parser.add_argument("--report", metavar="PATH", help="输出 JSON 性能报告路径")
+    parser.add_argument("--auto-cleanup",  action="store_true",
+                        help="处理完成后自动清理临时文件")
+
+    args = parser.parse_args()
+
+    # ── 加载配置 ──────────────────────────────────────────────────────────────
+    try:
+        config = Config(args.config)
+        print(f"⚙️  配置文件: {args.config}")
+    except Exception as e:
+        print(f"❌ 加载配置失败: {e}")
+        return 1
+
+    # ── 命令行参数覆盖配置 ────────────────────────────────────────────────────
+    config.set("paths", "input_video", value=args.input)
+    config.set("paths", "output_dir",  value=str(Path(args.output).parent))
+    config.set("processing", "batch_mode", value=False)
+
+    if args.interpolation_factor:
+        config.set("processing", "interpolation_factor", value=args.interpolation_factor)
+    if args.segment_duration:
+        config.set("processing", "segment_duration", value=args.segment_duration)
+    if args.batch_size:
+        config.set("models", "ifrnet", "batch_size", value=args.batch_size)
+    if args.max_batch_size:
+        config.set("models", "ifrnet", "max_batch_size", value=args.max_batch_size)
+
+    # 推理优化
+    if args.no_fp16:
+        config.set("models", "ifrnet", "use_fp16", value=False)
+    if args.no_compile:
+        config.set("models", "ifrnet", "use_compile", value=False)
+    if args.no_cuda_graph:
+        config.set("models", "ifrnet", "use_cuda_graph", value=False)
+    if args.use_tensorrt:
+        config.set("models", "ifrnet", "use_tensorrt", value=True)
+    if args.no_hwaccel:
+        config.set("models", "ifrnet", "use_hwaccel", value=False)
+    if args.no_audio:
+        config.set("models", "ifrnet", "keep_audio", value=False)
+    if args.crf is not None:
+        config.set("models", "ifrnet", "crf", value=args.crf)
+    if args.report:
+        config.set("models", "ifrnet", "report_json", value=args.report)
+    if args.auto_cleanup:
+        config.set("processing", "auto_cleanup_temp", value=True)
+
+    # ── 创建处理器并执行 ──────────────────────────────────────────────────────
+    try:
+        processor = IFRNetProcessor(config)
+    except Exception as e:
+        print(f"❌ 初始化处理器失败: {e}")
+        return 1
+
+    print(f"\n🎬 IFRNet 独立插帧")
+    print(f"   输入  : {args.input}")
+    print(f"   输出  : {args.output}")
+    print(f"   倍数  : {processor.interpolation_factor}x")
+    print(f"   设备  : {processor.device}")
+    print(f"   FP16  : {processor.use_fp16} | compile: {processor.use_compile}"
+          f" | CUDAGraph: {processor.use_cuda_graph} | TRT: {processor.use_tensorrt}")
+
+    success = processor.process_video(args.input, args.output)
+    return 0 if success else 1
+
 
 if __name__ == "__main__":
-    print("IFRNet 插帧处理器模块 v5（单卡版）")
+    import sys
+    sys.exit(main())
+

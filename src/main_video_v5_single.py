@@ -359,7 +359,8 @@ class VideoProcessor:
 
         print(f"\n🎵 提取音频...")
         output_config = self.config.get_section("output", {})
-        audio_format  = output_config.get("audio_format", "aac")
+        # "smart" = 保留原始编码（推荐）；其他值视为目标格式扩展名
+        audio_format  = output_config.get("audio_format", "smart")
 
         if audio_format == "smart":
             audio_path = smart_extract_audio(

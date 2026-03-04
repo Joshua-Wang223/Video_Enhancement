@@ -13,63 +13,98 @@ import copy
 class Config:
     """配置管理类"""
     
-    # 默认配置
+    # 默认配置 —— 与 config/default_config.json 保持完全一致
+    # （JSON 优先；此处作为纯代码环境的兜底，字段齐全则避免 KeyError）
     DEFAULT_CONFIG = {
         "processing": {
-            "mode": "interpolate_then_upscale",  # 处理顺序: interpolate_then_upscale 或 upscale_then_interpolate
-            "interpolation_factor": 2,  # 插帧倍数 (2, 4, 8等)
-            "upscale_factor": 2,  # 超分倍数 (2, 4等)
-            "segment_duration": 30,  # 分段时长(秒)
-            "auto_fix_corrupted": True,  # 是否自动修复损坏的视频
-            "auto_cleanup_temp": False,  # 是否自动清理临时文件
-            "batch_mode": False,  # 是否批量处理
+            "mode":                 "interpolate_then_upscale",
+            "interpolation_factor": 2,
+            "upscale_factor":       2,
+            "segment_duration":     30,
+            "auto_fix_corrupted":   False,
+            "auto_cleanup_temp":    True,
+            "batch_mode":           False,
         },
         "paths": {
-            "base_dir": "",
-            "input_video": "",  # 单个视频路径
-            "input_dir": "",  # 批量处理时的输入目录
-            "output_dir": "",
-            "temp_dir": "",
-            "log_dir": "",
+            "base_dir":    "",
+            "input_video": "",
+            "input_dir":   "",
+            "output_dir":  "",
+            "temp_dir":    "",
+            "log_dir":     "",
         },
         "models": {
             "ifrnet": {
-                "model_path": "",
-                "model_size": "L",  # L (Large) 或 S (Small)
-                "use_gpu": True,
-                "batch_size": 1,
+                "model_path":     "",
+                "use_gpu":        True,
+                # 批处理
+                "batch_size":     4,
+                "max_batch_size": 8,
+                # v5 推理优化
+                "use_fp16":       True,
+                "use_compile":    True,
+                "use_cuda_graph": True,
+                "use_tensorrt":   False,
+                # v5 硬件解/编码
+                "use_hwaccel":    True,
+                "codec":          "libx264",
+                "crf":            18,
+                "keep_audio":     True,
+                "ffmpeg_bin":     "ffmpeg",
+                # 性能报告
+                "report_json":    None,
             },
             "realesrgan": {
-                "model_name": "RealESRGAN_x2plus",
-                "model_path": "",
-                "denoise_strength": 0.5,  # 0-1
-                "tile_size": 0,  # 0为自动, 或指定如400, 512等
-                "tile_pad": 10,
-                "pre_pad": 0,
-                "use_gpu": True,
-                "fp32": False,  # 使用FP32精度(更慢但更精确)
-            }
+                "model_name":       "realesr-general-x4v3",
+                "model_path":       "",
+                "use_gpu":          True,
+                # 基础推理
+                "denoise_strength": 0.5,
+                "tile_size":        0,
+                "tile_pad":         10,
+                "pre_pad":          0,
+                "fp32":             False,
+                "face_enhance":     False,
+                # v5 推理优化
+                "batch_size":       8,
+                "prefetch_factor":  16,
+                "use_compile":      False,
+                "use_tensorrt":     False,
+                # v6 face_enhance 精细控制
+                "gfpgan_model":      "1.4",
+                "gfpgan_weight":     0.5,
+                "gfpgan_batch_size": 8,
+                # v5 硬件解/编码
+                "use_hwaccel":    True,
+                "video_codec":    "libx264",
+                "crf":            18,
+                "ffmpeg_bin":     "ffmpeg",
+                # 性能报告
+                "report_json":    None,
+            },
         },
         "output": {
-            "format": "mp4",
-            "codec": "libx265",
-            "preset": "medium",  # ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow
-            "crf": 18,  # 0-51, 越小质量越好
-            "pix_fmt": "yuv420p",
-            "audio_codec": "aac",
+            "format":        "mp4",
+            "codec":         "libx264",
+            "preset":        "medium",
+            "crf":           18,
+            "pix_fmt":       "yuv420p",
+            "audio_format":  "smart",
+            "audio_codec":   "copy",
             "audio_bitrate": "192k",
-            "copy_audio": True,  # 是否复制原音频
+            # extract_audio() 内部读取 config.get('bitrate')，与 audio_bitrate 保持一致
+            "bitrate":       "192k",
         },
         "temp_files": {
-            "segment_prefix": "segment_",
-            "processed_prefix": "processed_",
+            "segment_prefix":    "segment_",
+            "processed_prefix":  "processed_",
             "temp_video_suffix": "_temp.mp4",
         },
         "logging": {
-            "level": "INFO",  # DEBUG, INFO, WARNING, ERROR
-            "log_to_file": True,
+            "level":          "INFO",
+            "log_to_file":    True,
             "log_to_console": True,
-        }
+        },
     }
     
     def __init__(self, config_path: Optional[str] = None):
@@ -104,8 +139,10 @@ class Config:
         print(f"✅ 已加载配置文件: {config_path}")
     
     def _merge_config(self, base: Dict, override: Dict):
-        """递归合并配置字典"""
+        """递归合并配置字典；以 '//' 开头的注释键自动跳过"""
         for key, value in override.items():
+            if str(key).startswith("//"):
+                continue
             if key in base and isinstance(base[key], dict) and isinstance(value, dict):
                 self._merge_config(base[key], value)
             else:

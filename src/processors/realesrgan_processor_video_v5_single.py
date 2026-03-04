@@ -453,6 +453,177 @@ class RealESRGANVideoProcessor:
             print(f"⚠️  清理失败: {e}")
 
 
+# =============================================================================
+# 独立命令行入口
+# =============================================================================
+
+def main():
+    """
+    独立调用入口：直接驱动 RealESRGANVideoProcessor，
+    底层对接 inference_realesrgan_video_v6_single.run()。
+
+    示例：
+      # 使用默认配置，直接超分
+      python realesrgan_processor_video_v5_single.py -i input.mp4 -o output.mp4
+
+      # 指定配置文件 + 开启人脸增强
+      python realesrgan_processor_video_v5_single.py -c config.json \\
+             -i input.mp4 -o output.mp4 --face-enhance
+
+      # 覆盖超分倍数、模型、GFPGAN 精细控制
+      python realesrgan_processor_video_v5_single.py -i input.mp4 -o output.mp4 \\
+             --upscale-factor 4 --model realesr-animevideov3 \\
+             --face-enhance --gfpgan-model 1.4 --gfpgan-weight 0.5 \\
+             --gfpgan-batch-size 8
+    """
+    import argparse
+
+    # 自动定位默认配置文件（假设脚本在 src/processors/，config 在项目根/config/）
+    _script_dir  = Path(os.path.abspath(__file__)).parent          # src/processors
+    _base_dir    = _script_dir.parent.parent                       # project root
+    _default_cfg = str(_base_dir / "config" / "default_config.json")
+
+    parser = argparse.ArgumentParser(
+        description="Real-ESRGAN 视频超分处理器（单卡版）—— 独立入口",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+底层脚本：external/Real-ESRGAN/inference_realesrgan_video_v6_single.py
+
+特性：
+  · 分段处理 + 断点恢复
+  · FP16 / NVDEC / NVENC / torch.compile / TensorRT 可选
+  · face_enhance：批量GFPGAN + 原始帧检测 + CPU-GPU流水线
+  · OOM 自动降级（SR batch 与 GFPGAN sub-batch 独立降级）
+""",
+    )
+
+    # 基础参数
+    parser.add_argument("--config", "-c", default=_default_cfg,
+                        help=f"配置文件路径（默认: {_default_cfg}）")
+    parser.add_argument("--input",  "-i", required=True,
+                        help="输入视频路径")
+    parser.add_argument("--output", "-o", required=True,
+                        help="输出视频路径（含文件名）")
+
+    # 覆盖配置的常用参数
+    parser.add_argument("--upscale-factor", type=int, choices=[2, 4],
+                        help="超分倍数（覆盖配置文件）")
+    parser.add_argument("--model",
+                        help="模型名称，如 realesr-general-x4v3 / RealESRGAN_x4plus（覆盖配置）")
+    parser.add_argument("--segment-duration", type=int,
+                        help="分段时长（秒，覆盖配置）")
+    parser.add_argument("--batch-size", type=int,
+                        help="SR 批处理大小（覆盖配置）")
+    parser.add_argument("--tile-size", type=int,
+                        help="tile 切块大小（0=不切块，覆盖配置）")
+
+    # face_enhance 精细控制
+    _fe = parser.add_mutually_exclusive_group()
+    _fe.add_argument("--face-enhance",    dest="face_enhance", action="store_true",
+                     default=None, help="开启人脸增强（GFPGAN）")
+    _fe.add_argument("--no-face-enhance", dest="face_enhance", action="store_false",
+                     help="关闭人脸增强")
+    parser.add_argument("--gfpgan-model", choices=["1.3", "1.4", "RestoreFormer"],
+                        help="GFPGAN 版本（覆盖配置，--face-enhance 时生效）")
+    parser.add_argument("--gfpgan-weight", type=float,
+                        help="GFPGAN 融合权重 0.0~1.0（覆盖配置）")
+    parser.add_argument("--gfpgan-batch-size", type=int,
+                        help="单次 GFPGAN 前向最多处理的人脸数（覆盖配置）")
+
+    # 推理/编码开关
+    parser.add_argument("--no-hwaccel", action="store_true",
+                        help="禁用 NVDEC 硬件解码")
+    parser.add_argument("--use-compile", action="store_true",
+                        help="启用 torch.compile 加速")
+    parser.add_argument("--use-tensorrt", action="store_true",
+                        help="启用 TensorRT 加速")
+    parser.add_argument("--fp32", action="store_true",
+                        help="使用 FP32 精度（默认 FP16）")
+    parser.add_argument("--crf", type=int,
+                        help="分段输出视频质量 CRF（覆盖配置）")
+    parser.add_argument("--report", metavar="PATH",
+                        help="输出 JSON 性能报告路径")
+    parser.add_argument("--auto-cleanup", action="store_true",
+                        help="处理完成后自动清理临时文件")
+
+    args = parser.parse_args()
+
+    # ── 加载配置 ──────────────────────────────────────────────────────────────
+    # 需要将 config_manager 所在目录加入路径
+    sys.path.insert(0, str(_base_dir / "src" / "utils"))
+    from config_manager import Config
+
+    try:
+        config = Config(args.config)
+        print(f"⚙️  配置文件: {args.config}")
+    except Exception as e:
+        print(f"❌ 加载配置失败: {e}")
+        return 1
+
+    # ── 命令行参数覆盖配置 ────────────────────────────────────────────────────
+    config.set("paths", "input_video",  value=args.input)
+    config.set("paths", "output_dir",   value=str(Path(args.output).parent))
+    config.set("processing", "batch_mode", value=False)
+
+    if args.upscale_factor:
+        config.set("processing", "upscale_factor", value=args.upscale_factor)
+    if args.model:
+        config.set("models", "realesrgan", "model_name", value=args.model)
+    if args.segment_duration:
+        config.set("processing", "segment_duration", value=args.segment_duration)
+    if args.batch_size:
+        config.set("models", "realesrgan", "batch_size", value=args.batch_size)
+    if args.tile_size is not None:
+        config.set("models", "realesrgan", "tile_size", value=args.tile_size)
+
+    # face_enhance 精细控制
+    if args.face_enhance is not None:
+        config.set("models", "realesrgan", "face_enhance", value=args.face_enhance)
+    if args.gfpgan_model:
+        config.set("models", "realesrgan", "gfpgan_model", value=args.gfpgan_model)
+    if args.gfpgan_weight is not None:
+        config.set("models", "realesrgan", "gfpgan_weight", value=args.gfpgan_weight)
+    if args.gfpgan_batch_size:
+        config.set("models", "realesrgan", "gfpgan_batch_size", value=args.gfpgan_batch_size)
+
+    # 推理/编码开关
+    if args.no_hwaccel:
+        config.set("models", "realesrgan", "use_hwaccel", value=False)
+    if args.use_compile:
+        config.set("models", "realesrgan", "use_compile", value=True)
+    if args.use_tensorrt:
+        config.set("models", "realesrgan", "use_tensorrt", value=True)
+    if args.fp32:
+        config.set("models", "realesrgan", "fp32", value=True)
+    if args.crf is not None:
+        config.set("models", "realesrgan", "crf", value=args.crf)
+    if args.report:
+        config.set("models", "realesrgan", "report_json", value=args.report)
+    if args.auto_cleanup:
+        config.set("processing", "auto_cleanup_temp", value=True)
+
+    # ── 创建处理器并执行 ──────────────────────────────────────────────────────
+    try:
+        processor = RealESRGANVideoProcessor(config)
+    except Exception as e:
+        print(f"❌ 初始化处理器失败: {e}")
+        return 1
+
+    face_on = config.get("models", "realesrgan", "face_enhance", default=False)
+    print(f"\n🎨 Real-ESRGAN 独立超分")
+    print(f"   输入  : {args.input}")
+    print(f"   输出  : {args.output}")
+    print(f"   模型  : {processor.model_name}")
+    print(f"   倍数  : {processor.upscale_factor}x")
+    print(f"   设备  : {processor.device}")
+    print(f"   face_enhance: {face_on}" +
+          (f" (model={processor.gfpgan_model}, weight={processor.gfpgan_weight},"
+           f" batch={processor.gfpgan_batch_size})" if face_on else ""))
+
+    success = processor.process_video(args.input, args.output)
+    return 0 if success else 1
+
+
 if __name__ == "__main__":
-    print("Real-ESRGAN 视频超分处理器模块 v5（单卡版，对接 v6 底层）")
-    print("✅ 模块加载成功，请在主程序中调用。")
+    sys.exit(main())
+
