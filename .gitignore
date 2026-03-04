@@ -1,0 +1,16 @@
+*.core
+*.tar.gz
+core.*
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.vscode/
+.idea/
+_bak*
+*.bak*
+*_bak*
+logs/
+models/
+models_*/
+output/
+temp/

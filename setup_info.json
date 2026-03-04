@@ -1,0 +1,55 @@
+{
+    "setup_date": "Thu Feb  5 08:25:10 AM UTC 2026",
+    "python_version": "3.11.1 (main, Feb  2 2026, 19:30:54) [GCC 13.3.0]",
+    "base_dir": "/workspace/VideoProcessor",
+    "config": {
+        "base_dir": "/workspace/VideoProcessor",
+        "directories": {
+            "models": "models",
+            "temp": "temp",
+            "output": "output",
+            "logs": "logs",
+            "src": "src",
+            "config": "config",
+            "utils": "src/utils",
+            "processors": "src/processors",
+            "scripts": "scripts"
+        },
+        "repositories": {
+            "IFRNet": {
+                "url": "https://github.com/ltkong218/IFRNet.git",
+                "path": "external/IFRNet"
+            },
+            "Real-ESRGAN": {
+                "url": "https://github.com/xinntao/Real-ESRGAN.git",
+                "path": "external/Real-ESRGAN"
+            }
+        },
+        "models_to_download": {
+            "IFRNet": [
+                {
+                    "name": "IFRNet_L.pth",
+                    "url": "https://github.com/ltkong218/IFRNet/releases/download/v1.0/IFRNet_L.pth",
+                    "dir": "models/IFRNet"
+                },
+                {
+                    "name": "IFRNet_S.pth",
+                    "url": "https://github.com/ltkong218/IFRNet/releases/download/v1.0/IFRNet_S.pth",
+                    "dir": "models/IFRNet"
+                }
+            ],
+            "RealESRGAN": [
+                {
+                    "name": "RealESRGAN_x4plus.pth",
+                    "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
+                    "dir": "models/RealESRGAN"
+                },
+                {
+                    "name": "RealESRGAN_x2plus.pth",
+                    "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth",
+                    "dir": "models/RealESRGAN"
+                }
+            ]
+        }
+    }
+}

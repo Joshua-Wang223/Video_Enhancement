@@ -1,0 +1,92 @@
+{
+  "processing": {
+    "// mode": "interpolate_then_upscale",
+    "// mode_alt": "upscale_then_interpolate",
+    "mode": "interpolate_then_upscale",
+    "interpolation_factor": 2,
+    "upscale_factor": 2,
+    "segment_duration": 30,
+    "auto_fix_corrupted": false,
+    "auto_cleanup_temp": true
+  },
+  "paths": {
+    "base_dir": "/workspace/Video_Enhancement",
+    "input_video": "",
+    "output_dir": "/workspace/Video_Enhancement/output",
+    "temp_dir": "/workspace/Video_Enhancement/temp",
+    "log_dir": "/workspace/Video_Enhancement/logs"
+  },
+  "models": {
+    "ifrnet": {
+      "model_path": "/workspace/Video_Enhancement/models_IFRNet/checkpoints/IFRNet_S_Vimeo90K.pth",
+      "use_gpu": true,
+      "batch_size": 8,
+      "max_batch_size": 16,
+
+      "// ---- v5 推理优化参数 ----": "",
+      "use_fp16": true,
+      "use_compile": true,
+      "use_cuda_graph": true,
+      "use_tensorrt": false,
+
+      "// ---- v5 硬件解/编码参数 ----": "",
+      "use_hwaccel": true,
+      "codec": "libx264",
+      "// codec_alt": "libx265",
+      "crf": 18,
+      "keep_audio": true,
+      "ffmpeg_bin": "ffmpeg",
+
+      "// ---- v5 性能报告（null 表示不输出）----": "",
+      "report_json": null
+    },
+    "realesrgan": {
+      "// model_name": "RealESRGANv2-animevideo-xsx2",
+      "model_name": "realesr-general-x4v3.pth",
+      "// model_path": "/workspace/Video_Enhancement/models_RealESRGAN/RealESRGANv2-animevideo-xsx2.pth",
+      "model_path": "/workspace/Video_Enhancement/models_RealESRGAN/realesr-general-x4v3.pth",
+      "use_gpu": true,
+      "denoise_strength": 0.5,
+      "tile_size": 0,
+      "tile_pad": 10,
+      "pre_pad": 0,
+      "fp32": false,
+      "face_enhance": false,
+
+      "// ---- v5 推理优化参数 ----": "",
+      "batch_size": 8,
+      "prefetch_factor": 16,
+      "use_compile": true,
+      "use_tensorrt": false,
+
+      "// ---- v5 硬件解/编码参数 ----": "",
+      "use_hwaccel": true,
+      "video_codec": "libx264",
+      "// video_codec_alt": "libx265",
+      "crf": 18,
+      "ffmpeg_bin": "ffmpeg",
+
+      "// ---- v5 性能报告（null 表示不输出）----": "",
+      "report_json": null
+    }
+  },
+  "output": {
+    "format": "mp4",
+    "codec": "libx264",
+    "// codec_alt": "libsvtav1",
+    "preset": "medium",
+    "// preset_alt": "8",
+    "crf": 23,
+    "// crf_alt": 30,
+    "pix_fmt": "yuv420p",
+    "// pix_fmt_alt": "yuv420p10le",
+    "audio_format": "smart",
+    "audio_codec": "copy",
+    "audio_bitrate": "192k"
+  },
+  "temp_files": {
+    "segment_prefix": "segment_",
+    "processed_prefix": "processed_",
+    "temp_video_suffix": "_temp.mp4"
+  }
+}
