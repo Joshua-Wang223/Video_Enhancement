@@ -144,8 +144,10 @@ except ImportError:
 # 路径配置
 # ─────────────────────────────────────────────────────────────────────────────
 
-base_dir = '/workspace/Video_Enhancement'
-models_RealESRGAN = f'{base_dir}/models_RealESRGAN'
+# 以本脚本所在目录（external/Real-ESRGAN/）为基准，向上两级到项目根
+# 目录结构假设：<project_root>/external/Real-ESRGAN/inference_realesrgan_video_v5_single.py
+base_dir = osp.dirname(osp.dirname(osp.dirname(osp.abspath(__file__))))
+models_RealESRGAN = osp.join(base_dir, 'models_RealESRGAN')
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 模型配置常量

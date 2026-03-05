@@ -19,8 +19,17 @@ import shutil
 from pathlib import Path
 from typing import Optional, Tuple, List
 
+# 动态定位项目根目录（本文件在 src/，根目录在上一层）
+_SRC_DIR  = Path(os.path.abspath(__file__)).parent        # …/src
+_BASE_DIR = _SRC_DIR.parent                               # …/Video_Enhancement
+
 # 导入自定义工具
-sys.path.insert(0, "/workspace/Video_Enhancement/src/utils")
+_utils_path      = str(_BASE_DIR / "src" / "utils")
+_processors_path = str(_BASE_DIR / "src" / "processors")
+for _p in (_utils_path, _processors_path):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 from config_manager import Config
 from video_utils import (
     VideoInfo, get_video_duration, format_time,
@@ -29,7 +38,6 @@ from video_utils import (
 )
 
 # 导入 v5 单卡版处理器
-sys.path.insert(0, "/workspace/Video_Enhancement/src/processors")
 from ifrnet_processor_v5_single import IFRNetProcessor
 from realesrgan_processor_video_v5_single import RealESRGANVideoProcessor
 
@@ -457,56 +465,142 @@ class VideoProcessor:
 # =============================================================================
 
 def main():
-    """主函数"""
-    base_dir       = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    default_config = os.path.join(base_dir, "config", "default_config.json")
+    """
+    主函数 —— 完整流程入口（v5 单卡版）
+
+    调用链：
+      main_video_v5_single.py
+        ├── IFRNetProcessor          (src/processors/ifrnet_processor_v5_single.py)
+        │     └── IFRNetVideoProcessor  (external/IFRNet/process_video_v5_single.py)
+        └── RealESRGANVideoProcessor  (src/processors/realesrgan_processor_video_v5_single.py)
+              └── run()               (external/Real-ESRGAN/inference_realesrgan_video_v6_single.py)
+    """
+    default_config = str(_BASE_DIR / "config" / "default_config.json")
 
     parser = argparse.ArgumentParser(
         description="视频处理程序 v5（单卡版）——分段直接对接，避免中间合并",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-    特性（v5 单卡版）:
-      - 对接 IFRNet v5 / Real-ESRGAN v6 单卡优化版
-      - NVDEC 硬件解码 / NVENC 硬件编码自动探测
-      - FP16 / torch.compile / CUDA Graph / TensorRT 可选加速
-      - OOM 自动降级与恢复
-      - 分段直接对接，避免中间合并
-      - 断点恢复支持
-      - face_enhance：批量GFPGAN + 原始帧检测 + CPU-GPU流水线（v6）
+特性（v5 单卡版）:
+  · IFRNet v5 插帧 / Real-ESRGAN v6 超分，分段直接对接，省去中间合并
+  · NVDEC/NVENC 硬件编解码自动探测
+  · FP16 / torch.compile / CUDA Graph / TensorRT 可选加速
+  · OOM 自动降级（batch_size 减半持久化）
+  · 断点续传（segment 级别 checkpoint.json）
+  · face_enhance：批量 GFPGAN 推理 + 原始帧检测 + CPU-GPU 流水线（v6 新增）
 
-    示例:
-      python main_video_v5_single.py -c config.json -i video.mp4
-      python main_video_v5_single.py -c config.json --input-dir ./videos --batch
-      python main_video_v5_single.py -i video.mp4 --mode upscale_then_interpolate \\
-             --interpolation-factor 4 --upscale-factor 4
-    """,
+示例:
+  # 单视频，默认配置
+  python main_video_v5_single.py -i video.mp4
+
+  # 先超分再插帧，4x+4x
+  python main_video_v5_single.py -i video.mp4 -m upscale_then_interpolate \\
+         --interpolation-factor 4 --upscale-factor 4
+
+  # 指定 IFRNet 模型名称（L 版质量更高）
+  python main_video_v5_single.py -i video.mp4 --ifrnet-model IFRNet_L_Vimeo90K
+
+  # 直接指定 IFRNet .pth 路径（覆盖自动拼接）
+  python main_video_v5_single.py -i video.mp4 \\
+         --ifrnet-model-path /workspace/models/IFRNet_S_Vimeo90K.pth
+
+  # 同时调整 IFRNet 和 ESRGAN 批大小（根据显存调优）
+  python main_video_v5_single.py -i video.mp4 \\
+         --ifrnet-batch-size 8 --esrgan-batch-size 16
+
+  # 开启人脸增强（使用 GFPGAN 1.4，融合权重 0.5）
+  python main_video_v5_single.py -i video.mp4 --face-enhance
+
+  # 人脸增强精细控制
+  python main_video_v5_single.py -i video.mp4 --face-enhance \\
+         --gfpgan-model 1.4 --gfpgan-weight 0.7 --gfpgan-batch-size 4
+
+  # 批量处理目录
+  python main_video_v5_single.py --input-dir ./videos --batch
+
+  # 指定配置文件 + 自定义输出目录
+  python main_video_v5_single.py -c my_config.json -i video.mp4 -o /data/output
+""",
     )
 
+    # ── 基础参数 ──────────────────────────────────────────────────────────────
     parser.add_argument("--config", "-c", type=str, default=default_config,
                         help=f"配置文件路径（默认: {default_config}）")
-    parser.add_argument("--input",  "-i", type=str,
-                        help="输入视频文件路径")
-    parser.add_argument("--input-dir",    type=str,
-                        help="输入视频目录（批量处理）")
+    parser.add_argument("--input", "-i", type=str,
+                        help="输入视频文件路径（单视频模式）")
+    parser.add_argument("--input-dir", type=str,
+                        help="输入视频目录（批量处理，自动启用 --batch）")
     parser.add_argument("--output-dir", "-o", type=str,
-                        help="输出目录（覆盖配置文件中的设置）")
+                        help="输出目录（覆盖配置文件）")
     parser.add_argument("--mode", "-m", type=str,
                         choices=["interpolate_then_upscale", "upscale_then_interpolate"],
-                        help="处理模式（覆盖配置文件中的设置）")
+                        help="处理模式（覆盖配置文件）")
     parser.add_argument("--batch", "-b", action="store_true",
-                        help="批量处理模式")
-    parser.add_argument("--interpolation-factor", type=int,
-                        choices=[2, 4, 8, 16],
-                        help="插帧倍数")
-    parser.add_argument("--upscale-factor", type=int,
-                        choices=[2, 4],
-                        help="超分倍数")
+                        help="批量处理模式（处理 --input-dir 下所有视频）")
+
+    # ── 倍数参数 ──────────────────────────────────────────────────────────────
+    parser.add_argument("--interpolation-factor", type=int, choices=[2, 4, 8, 16],
+                        help="插帧倍数，覆盖配置（默认 2）")
+    parser.add_argument("--upscale-factor", type=int, choices=[2, 4],
+                        help="超分倍数，覆盖配置（默认 2）")
+    parser.add_argument("--segment-duration", type=int,
+                        help="视频分段时长（秒），覆盖配置（默认 30）")
+
+    # ── Real-ESRGAN 模型参数 ───────────────────────────────────────────────────
+    parser.add_argument("--esrgan-model", type=str,
+                        metavar="MODEL_NAME",
+                        help="Real-ESRGAN 模型名称，如 realesr-general-x4v3 / "
+                             "RealESRGAN_x4plus / realesr-animevideov3（覆盖配置）")
+    parser.add_argument("--tile-size", type=int,
+                        help="Real-ESRGAN tile 切块大小（0=不切块，显存不足时设 512，覆盖配置）")
+    parser.add_argument("--esrgan-batch-size", type=int, metavar="N",
+                        help="Real-ESRGAN 超分推理批大小（覆盖配置，T4/16G 建议 8~12）")
+
+    # ── IFRNet 模型参数 ────────────────────────────────────────────────────────
+    parser.add_argument("--ifrnet-model", metavar="MODEL_NAME",
+                        choices=["IFRNet_Vimeo90K", "IFRNet_S_Vimeo90K", "IFRNet_L_Vimeo90K"],
+                        help="IFRNet 模型名称（覆盖配置；processor 自动在 "
+                             "models_IFRNet/checkpoints/ 下查找对应 .pth）：\n"
+                             "  IFRNet_S_Vimeo90K（默认，轻量快速）\n"
+                             "  IFRNet_L_Vimeo90K（高质量，速度更慢）")
+    parser.add_argument("--ifrnet-model-path", metavar="PATH",
+                        help="IFRNet .pth 权重文件绝对路径（优先级高于 --ifrnet-model，覆盖配置）")
+    parser.add_argument("--ifrnet-batch-size", type=int, metavar="N",
+                        help="IFRNet 插帧推理批大小（覆盖配置，默认 4）")
+
+    # ── face_enhance 人脸增强参数 ─────────────────────────────────────────────
+    _fe = parser.add_mutually_exclusive_group()
+    _fe.add_argument("--face-enhance", dest="face_enhance", action="store_true",
+                     default=None,
+                     help="开启 GFPGAN 人脸增强（anime 系模型自动禁用）")
+    _fe.add_argument("--no-face-enhance", dest="face_enhance", action="store_false",
+                     help="关闭人脸增强（覆盖配置中 face_enhance=true）")
+    parser.add_argument("--gfpgan-model", choices=["1.3", "1.4", "RestoreFormer"],
+                        help="GFPGAN 版本（默认 1.4）；--face-enhance 时生效")
+    parser.add_argument("--gfpgan-weight", type=float, metavar="W",
+                        help="GFPGAN 融合权重 0.0~1.0（0=不增强，1=完全替换，默认 0.5）")
+    parser.add_argument("--gfpgan-batch-size", type=int, metavar="N",
+                        help="单次 GFPGAN 前向最多处理的人脸数，防 OOM（默认 8）")
+
+    # ── 硬件加速 / 精度开关 ────────────────────────────────────────────────────
+    parser.add_argument("--no-hwaccel", action="store_true",
+                        help="禁用 NVDEC 硬件解码（IFRNet + ESRGAN 同时生效）")
+    parser.add_argument("--no-fp16", action="store_true",
+                        help="禁用 FP16 半精度推理（IFRNet），改用 FP32")
+    parser.add_argument("--no-compile", action="store_true",
+                        help="禁用 torch.compile（IFRNet），适合短视频跳过预热")
+    parser.add_argument("--no-cuda-graph", action="store_true",
+                        help="禁用 CUDA Graph（IFRNet）")
+
+    # ── 其他行为参数 ──────────────────────────────────────────────────────────
+    parser.add_argument("--auto-cleanup", action="store_true",
+                        help="处理完成后自动清理临时文件，不再询问")
 
     args = parser.parse_args()
 
     print(f"⚙️  使用配置文件: {args.config}")
 
-    # 加载配置
+    # ── 加载配置 ──────────────────────────────────────────────────────────────
     try:
         config = Config(args.config)
         print(f"✅ 配置文件已加载: {args.config}")
@@ -515,46 +609,114 @@ def main():
         print(f"💡 请确保配置文件存在: {args.config}")
         return 1
 
-    # 命令行参数覆盖配置
+    # ── 命令行参数覆盖配置 ────────────────────────────────────────────────────
+
+    # 输入 / 输出 / 模式
     if args.input:
         config.set("paths", "input_video", value=args.input)
         config.set("processing", "batch_mode", value=False)
-
     if args.input_dir:
         config.set("paths", "input_dir", value=args.input_dir)
         config.set("processing", "batch_mode", value=True)
-
     if args.batch:
         config.set("processing", "batch_mode", value=True)
-
     if args.output_dir:
         config.set("paths", "output_dir", value=args.output_dir)
-
     if args.mode:
         config.set("processing", "mode", value=args.mode)
 
+    # 倍数 / 分段
     if args.interpolation_factor:
-        config.set("processing", "interpolation_factor",
-                   value=args.interpolation_factor)
-
+        config.set("processing", "interpolation_factor", value=args.interpolation_factor)
     if args.upscale_factor:
         config.set("processing", "upscale_factor", value=args.upscale_factor)
+    if args.segment_duration:
+        config.set("processing", "segment_duration", value=args.segment_duration)
 
-    # 创建处理器
+    # Real-ESRGAN 模型
+    if args.esrgan_model:
+        config.set("models", "realesrgan", "model_name", value=args.esrgan_model)
+    if args.tile_size is not None:
+        config.set("models", "realesrgan", "tile_size", value=args.tile_size)
+    if args.esrgan_batch_size:
+        config.set("models", "realesrgan", "batch_size", value=args.esrgan_batch_size)
+
+    # IFRNet 模型（model_path 优先级高于 model_name）
+    if args.ifrnet_model_path:
+        config.set("models", "ifrnet", "model_path", value=args.ifrnet_model_path)
+        config.set("models", "ifrnet", "model_name", value="")  # 禁用 name 拼接
+    elif args.ifrnet_model:
+        config.set("models", "ifrnet", "model_name", value=args.ifrnet_model)
+        config.set("models", "ifrnet", "model_path", value="")  # 让 processor 按 name 拼接
+    if args.ifrnet_batch_size:
+        config.set("models", "ifrnet", "batch_size", value=args.ifrnet_batch_size)
+
+    # face_enhance 精细控制
+    if args.face_enhance is not None:
+        config.set("models", "realesrgan", "face_enhance", value=args.face_enhance)
+    if args.gfpgan_model:
+        config.set("models", "realesrgan", "gfpgan_model", value=args.gfpgan_model)
+    if args.gfpgan_weight is not None:
+        config.set("models", "realesrgan", "gfpgan_weight", value=args.gfpgan_weight)
+    if args.gfpgan_batch_size:
+        config.set("models", "realesrgan", "gfpgan_batch_size", value=args.gfpgan_batch_size)
+
+    # 硬件加速 / 精度
+    if args.no_hwaccel:
+        config.set("models", "ifrnet",     "use_hwaccel", value=False)
+        config.set("models", "realesrgan", "use_hwaccel", value=False)
+    if args.no_fp16:
+        config.set("models", "ifrnet", "use_fp16", value=False)
+    if args.no_compile:
+        config.set("models", "ifrnet", "use_compile", value=False)
+    if args.no_cuda_graph:
+        config.set("models", "ifrnet", "use_cuda_graph", value=False)
+
+    # 其他行为
+    if args.auto_cleanup:
+        config.set("processing", "auto_cleanup_temp", value=True)
+
+    # ── 打印当前关键参数摘要 ───────────────────────────────────────────────────
+    face_on = config.get("models", "realesrgan", "face_enhance", default=False)
+    print(f"\n📋 处理参数摘要:")
+    print(f"   模式          : {config.get('processing', 'mode')}")
+    print(f"   插帧倍数      : {config.get('processing', 'interpolation_factor')}x")
+    print(f"   超分倍数      : {config.get('processing', 'upscale_factor')}x")
+    # IFRNet 模型信息
+    _ifrnet_path = config.get("models", "ifrnet", "model_path", default="")
+    _ifrnet_name = config.get("models", "ifrnet", "model_name", default="IFRNet_S_Vimeo90K")
+    if _ifrnet_path:
+        print(f"   IFRNet 模型   : (显式路径) {_ifrnet_path}")
+    else:
+        print(f"   IFRNet 模型   : {_ifrnet_name}")
+    print(f"   IFRNet batch  : {config.get('models', 'ifrnet', 'batch_size', default=4)}")
+    print(f"   ESRGAN 模型   : {config.get('models', 'realesrgan', 'model_name')}")
+    print(f"   ESRGAN batch  : {config.get('models', 'realesrgan', 'batch_size', default=8)}")
+    print(f"   face_enhance  : {face_on}", end="")
+    if face_on:
+        print(f" (GFPGAN {config.get('models','realesrgan','gfpgan_model')},"
+              f" weight={config.get('models','realesrgan','gfpgan_weight')},"
+              f" batch={config.get('models','realesrgan','gfpgan_batch_size')})")
+    else:
+        print()
+    print(f"   批量模式      : {config.get('processing', 'batch_mode')}")
+    print()
+
+    # ── 创建处理器 ────────────────────────────────────────────────────────────
     try:
         processor = VideoProcessor(config)
     except Exception as e:
         print(f"❌ 创建处理器失败: {e}")
         return 1
 
-    # 执行处理
+    # ── 执行处理 ──────────────────────────────────────────────────────────────
     try:
         if config.get("processing", "batch_mode"):
             success = processor.process_batch()
         else:
             videos = config.get_input_videos()
             if not videos:
-                print("❌ 未指定输入视频")
+                print("❌ 未指定输入视频，请使用 -i <video> 或 --input-dir <dir> --batch")
                 return 1
             success = processor.process_single_video(videos[0])
 

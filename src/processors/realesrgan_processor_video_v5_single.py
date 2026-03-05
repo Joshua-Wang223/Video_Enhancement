@@ -23,6 +23,14 @@ from typing import List, Optional
 
 import torch
 
+# ----- Add the utils directory so that video_utils and config_manager can be found -----
+script_dir = Path(__file__).resolve().parent          # src/processors
+project_root = script_dir.parent.parent                # Video_Enhancement/
+utils_path = str(project_root / "src" / "utils")
+if utils_path not in sys.path:
+    sys.path.insert(0, utils_path)
+# ----------------------------------------------------------------------------------------
+
 from video_utils import (
     get_video_duration, format_time, verify_video_integrity,
     split_video_by_time, merge_videos_by_codec

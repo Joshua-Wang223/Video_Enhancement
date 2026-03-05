@@ -18,6 +18,14 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
+# ----- Add the utils directory so that video_utils and config_manager can be found -----
+script_dir = Path(__file__).resolve().parent          # src/processors
+project_root = script_dir.parent.parent                # Video_Enhancement/
+utils_path = str(project_root / "src" / "utils")
+if utils_path not in sys.path:
+    sys.path.insert(0, utils_path)
+# ----------------------------------------------------------------------------------------
+
 from video_utils import (
     get_video_duration, format_time, verify_video_integrity,
     split_video_by_time
@@ -26,6 +34,13 @@ from video_utils import (
 
 class IFRNetProcessor:
     """IFRNet 插帧处理器 v5（单卡版）"""
+
+    # 支持的模型名称 → 文件名映射（与 process_video_v5_single.py 保持一致）
+    MODEL_NAME_MAP = {
+        "IFRNet_Vimeo90K":   "IFRNet_Vimeo90K.pth",
+        "IFRNet_S_Vimeo90K": "IFRNet_S_Vimeo90K.pth",
+        "IFRNet_L_Vimeo90K": "IFRNet_L_Vimeo90K.pth",
+    }
 
     def __init__(self, config):
         """
@@ -36,7 +51,34 @@ class IFRNetProcessor:
         """
         self.config = config
         self.ifrnet_dir = Path(config.get("paths", "base_dir")) / "external" / "IFRNet"
-        self.model_path = config.get("models", "ifrnet", "model_path")
+
+        # ── 模型路径解析（优先级: model_path 显式路径 > model_name 自动拼接 > 默认名称）
+        # model_name: 用于从约定目录自动拼接路径
+        self.model_name = config.get("models", "ifrnet", "model_name",
+                                     default="IFRNet_S_Vimeo90K")
+        # model_path: 显式指定时直接使用，为空则按 model_name 拼接
+        _model_path = config.get("models", "ifrnet", "model_path", default="")
+        if _model_path:
+            # 用户显式指定了路径，直接使用
+            self.model_path = _model_path
+        else:
+            # 按 model_name 在约定目录下拼接绝对路径
+            base_dir       = Path(config.get("paths", "base_dir"))
+            checkpoints_dir = base_dir / "models_IFRNet" / "checkpoints"
+            pth_filename   = self.MODEL_NAME_MAP.get(
+                self.model_name, f"{self.model_name}.pth"
+            )
+            self.model_path = str(checkpoints_dir / pth_filename)
+
+        # 提前校验模型文件是否存在，给出清晰的错误提示
+        if not os.path.exists(self.model_path):
+            raise FileNotFoundError(
+                f"IFRNet 模型文件不存在: {self.model_path}\n"
+                f"  · 请将 .pth 权重文件放置到上述路径，或\n"
+                f"  · 使用 --ifrnet-model-path /绝对/路径/model.pth 直接指定，或\n"
+                f"  · 使用 --ifrnet-model IFRNet_S_Vimeo90K 指定模型名称（需存在对应 .pth）。\n"
+                f"  · 可选模型名: {', '.join(self.MODEL_NAME_MAP.keys())}"
+            )
 
         # 推理设备与基础参数
         use_gpu = config.get("models", "ifrnet", "use_gpu", default=True)
@@ -418,6 +460,11 @@ def main():
   · FP16 / CUDA Graph / torch.compile / TensorRT 可选
   · NVDEC 硬件解码 / NVENC 硬件编码自动探测
   · OOM 自动降级（batch_size 减半 → 深度清理 → 显存估算恢复）
+
+模型选项（二选一，model-path 优先）：
+  --ifrnet-model IFRNet_S_Vimeo90K   轻量默认（推荐）
+  --ifrnet-model IFRNet_L_Vimeo90K   高质量，速度更慢
+  --ifrnet-model-path /path/to/x.pth 直接指定 .pth 路径
 """,
     )
 
@@ -428,6 +475,15 @@ def main():
                         help="输入视频路径")
     parser.add_argument("--output", "-o", required=True,
                         help="输出视频路径（含文件名）")
+
+    # ── IFRNet 模型参数 ──────────────────────────────────────────────────────
+    parser.add_argument("--ifrnet-model", metavar="MODEL_NAME",
+                        choices=["IFRNet_Vimeo90K", "IFRNet_S_Vimeo90K", "IFRNet_L_Vimeo90K"],
+                        help="IFRNet 模型名称（processor 自动在 models_IFRNet/checkpoints/ 下查找对应 .pth）；"
+                             "覆盖配置中 models.ifrnet.model_name")
+    parser.add_argument("--ifrnet-model-path", metavar="PATH",
+                        help="IFRNet .pth 权重文件绝对路径（优先级高于 --ifrnet-model）；"
+                             "覆盖配置中 models.ifrnet.model_path")
 
     # 覆盖配置
     parser.add_argument("--interpolation-factor", type=int, choices=[2, 4, 8, 16],
@@ -465,6 +521,15 @@ def main():
     config.set("paths", "input_video", value=args.input)
     config.set("paths", "output_dir",  value=str(Path(args.output).parent))
     config.set("processing", "batch_mode", value=False)
+
+    # IFRNet 模型参数（model_path 优先级高于 model_name）
+    if args.ifrnet_model_path:
+        config.set("models", "ifrnet", "model_path", value=args.ifrnet_model_path)
+        # 同时清空 model_name，避免 processor 按 name 拼路径覆盖显式路径
+        config.set("models", "ifrnet", "model_name", value="")
+    elif args.ifrnet_model:
+        config.set("models", "ifrnet", "model_name", value=args.ifrnet_model)
+        config.set("models", "ifrnet", "model_path", value="")  # 让 processor 按 name 拼接
 
     if args.interpolation_factor:
         config.set("processing", "interpolation_factor", value=args.interpolation_factor)
@@ -505,8 +570,10 @@ def main():
     print(f"\n🎬 IFRNet 独立插帧")
     print(f"   输入  : {args.input}")
     print(f"   输出  : {args.output}")
+    print(f"   模型  : {processor.model_name or '(直接路径)'} → {processor.model_path}")
     print(f"   倍数  : {processor.interpolation_factor}x")
     print(f"   设备  : {processor.device}")
+    print(f"   批大小: {processor.batch_size} (上限 {processor.max_batch_size})")
     print(f"   FP16  : {processor.use_fp16} | compile: {processor.use_compile}"
           f" | CUDAGraph: {processor.use_cuda_graph} | TRT: {processor.use_tensorrt}")
 

@@ -35,7 +35,8 @@ class Config:
         },
         "models": {
             "ifrnet": {
-                "model_path":     "",
+                "model_name":     "IFRNet_S_Vimeo90K",  # 模型名称，processor 自动拼路径
+                "model_path":     "",                    # 显式路径（优先级 > model_name）
                 "use_gpu":        True,
                 # 批处理
                 "batch_size":     4,
@@ -170,24 +171,57 @@ class Config:
     def _setup_paths(self):
         """设置和创建必要的路径"""
         paths = self.config["paths"]
-        
-        # 如果没有设置base_dir，使用当前目录
+
+        # base_dir：空时优先从 config 文件位置向上推算项目根，其次用 cwd
+        # 推算逻辑：config 文件通常在 <project_root>/config/default_config.json
         if not paths["base_dir"]:
-            paths["base_dir"] = str(Path.cwd())
-        
+            if self.config_path:
+                paths["base_dir"] = str(Path(self.config_path).parent.parent.resolve())
+            else:
+                paths["base_dir"] = str(Path.cwd())
+
         base_dir = Path(paths["base_dir"])
-        
-        # 设置默认路径
+
+        # 输出 / 临时 / 日志目录：空时从 base_dir 派生
         if not paths["output_dir"]:
             paths["output_dir"] = str(base_dir / "output")
         if not paths["temp_dir"]:
             paths["temp_dir"] = str(base_dir / "temp")
         if not paths["log_dir"]:
             paths["log_dir"] = str(base_dir / "logs")
-        
-        # 创建必要的目录
+
         for key in ["output_dir", "temp_dir", "log_dir"]:
             Path(paths[key]).mkdir(parents=True, exist_ok=True)
+
+        # ------------------------------------------------------------------
+        # 模型路径自动派生：model_path 为空时按项目约定目录自动填充
+        # ------------------------------------------------------------------
+        # 注意：使用 "not value" 判断时，空字符串会被误判为有效值
+        # 所以这里用显式检查：确保 model_path 是有效字符串
+        # ------------------------------------------------------------------
+        ifrnet_cfg = self.config["models"]["ifrnet"]
+        esrgan_cfg = self.config["models"]["realesrgan"]
+
+        # 检查 IFRNet 模型路径 - 必须是有效非空字符串
+        ifrnet_model_path = ifrnet_cfg.get("model_path")
+        if not ifrnet_model_path or not isinstance(ifrnet_model_path, str) or ifrnet_model_path.strip() == "":
+            # model_path 是必须字段：IFRNetVideoProcessor 直接调用 torch.load(model_path)
+            # 空值无前置校验，会在模型加载阶段抛出 FileNotFoundError
+            ifrnet_cfg["model_path"] = str(
+                base_dir / "models_IFRNet" / "checkpoints" / "IFRNet_S_Vimeo90K.pth"
+            )
+            print(f"   ℹ️  IFRNet 模型路径已自动派生: {ifrnet_cfg['model_path']}")
+
+        # 检查 RealESRGAN 模型路径 - 必须是有效非空字符串
+        esrgan_model_path = esrgan_cfg.get("model_path")
+        if not esrgan_model_path or not isinstance(esrgan_model_path, str) or esrgan_model_path.strip() == "":
+            # v6 底层脚本通过 model_name 自动拼路径，model_path 不实际生效
+            # 此处仅填充供日志打印及未来可能的校验逻辑使用
+            esrgan_cfg["model_path"] = str(
+                base_dir / "models_RealESRGAN"
+                / (esrgan_cfg.get("model_name", "realesr-general-x4v3") + ".pth")
+            )
+            print(f"   ℹ️  RealESRGAN 模型路径已自动派生: {esrgan_cfg['model_path']}")
     
     def get(self, *keys, default=None):
         """
