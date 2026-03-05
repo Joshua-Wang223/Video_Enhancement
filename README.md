@@ -281,6 +281,7 @@ test1.mp4 (1280×720, 30fps)
 - `--gfpgan-weight 0.7`：融合权重偏向 GFPGAN 输出，人脸修复效果更明显，同时保留约 30% 原始纹理。
 - `--gfpgan-batch-size 12`：单次前向处理 12 张人脸，T4/16G 显存可承受；OOM 时自动降级并持久化。
 - `--segment-duration 10`：较短分段，减少单段显存峰值，适合高分辨率或人脸密集场景。
+- `--esrgan-model`：realesr-general-x4v3.pth 适合通用处理，是最快的通用超分模型。
 
 ---
 
@@ -294,6 +295,7 @@ python src/main_video_v5_single.py \
     -c /workspace/Video_Enhancement/config/default_config.json \
     -i /workspace/input_videos/word_world_2.mp4 \
     -m interpolate_then_upscale \
+    --esrgan-model realesr-animevideov3.pth \
     --interpolation-factor 2 \
     --upscale-factor 2
 ```
@@ -310,9 +312,8 @@ word_world_2.mp4 (原始分辨率, 低帧率)
 
 **关键参数说明**：
 - 未指定 `--ifrnet-model`，使用配置文件中 `model_name: IFRNet_S_Vimeo90K`（轻量快速）。
-- 未指定 `--esrgan-model`，使用配置文件中 `model_name: realesr-general-x4v3`（通用超分）。
 - 未指定 `--segment-duration`，使用默认 30 秒，I/O 次数更少，适合普通场景。
-- 两个批大小均沿用配置文件默认值，无需手动调整。
+- 超分模型 `--esrgan-model`，使用 realesr-animevideov3.pth 适合动画处理，是最快的模型。
 
 ---
 
