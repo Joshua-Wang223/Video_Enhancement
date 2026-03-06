@@ -1456,7 +1456,10 @@ def flush_batch_safe(
             if oom_cooldown[0] > 0:
                 oom_cooldown[0] -= 1
             elif bs < max_bs[0]:
-                bs = min(bs + 1, max_bs[0])
+                new_bs = min(bs + 1, max_bs[0])
+                print(f'\n[恢复] 显存充裕,batch_size {bs} → {new_bs}')
+                bs = new_bs
+                
         except RuntimeError as e:
             if 'out of memory' in str(e).lower() and bs > 1:
                 bs = max(1, bs // 2)
