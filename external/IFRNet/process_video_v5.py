@@ -1,45 +1,101 @@
 """
-IFRNet 视频插帧处理脚本 —— 终极优化版 v5
+IFRNet 视频插帧处理脚本 —— 终极优化版 v5（多卡版）
 ==========================================================
-在 v4 基础上，彻底解决多卡算力浪费与 CPU 解码瓶颈。
+基于 IFRNet（Intermediate Flow-based Recursive Network）的视频帧插值脚本，
+面向多 GPU 生产环境的高性能实现。
 
-[V5 核心架构重构]
+【V5 核心架构（多卡）】
 
   M1. [多 GPU 帧范围分割调度]
-      抛弃单卡锁死的设计，引入基于帧计数的多 GPU 分段策略：
-      - 按帧数（而非时间）均分任务：GPU_i 处理帧 [S_i, S_i+1+overlap]
-      - 使用 FFmpeg select filter 精确提取帧范围（非时间切片，无关键帧对齐问题）
-      - 每段使用无损中间格式（libx264 -qp 0 -preset ultrafast）独立编码
-      - 边界帧重叠（overlap=1）确保插帧连续性
-      - 最终使用 ffmpeg concat demuxer 极速无损合并
-      - 首帧去重：非首段输出跳过第一帧（overlap 帧），防止重复
+      按帧计数均分任务，每 GPU 独立处理一段，最终 ffmpeg concat 无损合并。
+      - GPU_i 处理帧 [S_i, S_i+1+overlap]，边界帧重叠 1 帧确保插帧连续
+      - 每段用无损中间格式（h264_nvenc -qp 0 或 libx264 -qp 0 ultrafast）独立编码
+      - 非首段 skip_first_output=True 防止重复帧
+      - ffmpeg concat demuxer 极速合并，无重编码
 
   M2. [FFmpeg Pipe 替换 cv2.VideoCapture]
-      cv2.VideoCapture 使用 CPU 软解码，单线程，无法 offload。
-      v5 改用 FFmpeg Pipe（支持 -hwaccel cuda / NVDEC）：
-      - 解码负载卸载至 GPU 专用媒体引擎（NVDEC）
+      - NVDEC 硬件解码，解码负载卸载至 GPU 专用媒体引擎
       - 主 CUDA 核心 100% 专注 IFRNet 推理
-      - 支持 fallback CPU 解码（自动探测）
+      - 自动探测，失败回退 CPU 解码
 
   M3. [NVENC 硬件编码输出]
-      输出阶段使用 h264_nvenc / hevc_nvenc：
-      - 编码负载卸载至 GPU 专用媒体引擎
-      - 无损中间段也可使用 nvenc -qp 0（若 nvenc 支持无损模式）
-      - 自动探测，不可用时回退 libx264
+      输出阶段自动升级 h264_nvenc / hevc_nvenc，不可用时回退 libx264。
 
   M4. [TensorRT 可选加速]
       --use_tensorrt：导出 ONNX → 构建 TRT Engine（FP16 静态形状）
-      分辨率固定时比 torch.compile 额外提升 1.5–2x
-      要求：pip install tensorrt pycuda onnx
 
   M5. [跨进程异常完整传播]
-      所有 Worker 进程异常通过 mp.Queue 传回主进程，
-      主进程立即清理并抛出，避免静默挂起。
+      Worker 进程异常通过 mp.Queue 传回主进程，避免静默挂起。
 
-[保留 v4 全部优化]
-  X1-X6 (批量写入/ThroughputMeter/PinnedBufferPool/异常传播/error flag/Event驱动)
-  B1-B5 (CUDA Graph/FP16/torch.compile/OOM降级/流水线双流)
-  N1-N13 (expand代replace/pad对齐/pinned内存/推理计时/...)
+【新增升级（来自单卡 v5 演进）】
+
+  U1. [VRAM 碎片优化]
+      os.environ.setdefault('PYTORCH_ALLOC_CONF', 'expandable_segments:True')
+      允许 PyTorch 用不连续 VRAM 满足大分配请求，减少因内存碎片引发的伪 OOM。
+
+  U2. [Inductor/Dynamo 噪音日志抑制]
+      屏蔽 "Not enough SMs" / "pow_by_natural" 等无害符号求解器警告。
+
+  U3. [torch.compile 编译缓存持久化]
+      TORCHINDUCTOR_CACHE_DIR 指向模型目录下 .torch_compile_cache/，
+      首次约 1~3 分钟，后续运行秒启动。
+
+  U4. [小形状（32×32）预热替代真实分辨率预热]
+      dynamic=True 编译产物对任意 shape 均有效；
+      用 32×32 预热避免超大分辨率首编译触发 SIGABRT / double free 崩溃。
+      预热后显式 del + empty_cache + synchronize，防止析构顺序引发堆损坏。
+      预热失败自动回退 eager 模式（_orig_mod 或 dynamo.reset）。
+
+  U5. [分辨率自适应 batch_size 上限]
+      segment 开始时依据当前空闲 VRAM 和单帧字节数估算最大安全 batch_size，
+      防止大分辨率（4K/8K）下 OOM 爆批。
+
+  U6. [OOM 级联保护与深度清理]
+      - 首次 OOM：永久更新 max_batch_size 天花板（避免同一 batch 反复触发）
+      - 级联 OOM（连续多次）：不再修改天花板，避免双重惩罚
+      - batch_size=1 仍 OOM：synchronize + empty_cache + dynamo.reset +
+        二次 empty_cache，再依据实测空闲显存估算恢复 batch_size
+      - _estimate_safe_batch_size() 新方法：按 70% 空闲显存估算安全批大小
+
+  U7. [动态路径配置]
+      base_dir 改为相对脚本文件位置自动推断，兼容不同部署环境。
+
+【保留 v4 全部优化标记（供代码内部定位）】
+  X1-X6: 批量写入/ThroughputMeter/PinnedBufferPool/异常传播/error flag/Event驱动
+  B1-B5: CUDA Graph/FP16/torch.compile/OOM降级/流水线双流
+  N1-N13: expand代replace/pad对齐/pinned内存/推理计时/...
+
+【命令行使用示例】
+  # 双 GPU，每 GPU 1 Worker（自动检测）
+  python process_video_v5.py \\
+      --input input.mp4 --output output_2x.mp4 --scale 2
+
+  # 强制 4× 插帧 + NVENC 输出
+  python process_video_v5.py \\
+      --input input.mp4 --output output_4x.mp4 --scale 4 --codec libx265
+
+  # 每 GPU 2 Worker（适合 24GB+ 显存）
+  python process_video_v5.py \\
+      --input input.mp4 --output output.mp4 --scale 2 --num_process_per_gpu 2
+
+  # TensorRT 加速（首次构建 Engine，后续秒启动）
+  python process_video_v5.py \\
+      --input input.mp4 --output output.mp4 --scale 2 --use_tensorrt
+
+  # 禁用所有加速（调试模式）
+  python process_video_v5.py \\
+      --input input.mp4 --output output.mp4 --scale 2 \\
+      --no_fp16 --no_compile --no_cuda_graph --no_hwaccel --device cpu
+
+  # 输出性能报告
+  python process_video_v5.py \\
+      --input input.mp4 --output output.mp4 --scale 2 --report report.json
+
+【注意事项】
+  · 首次 torch.compile 约需 1~3 分钟，编译缓存默认存于 .torch_compile_cache/
+  · 多卡 Worker 采用 spawn 隔离，每个 Worker 独立编译并共享磁盘缓存
+  · TRT Engine 缓存于 .trt_cache/<tag>.trt，TRT 版本升级后需手动删除重建
+  · --scale 对 Fraction(scale) 取整，非整数倍数会自动取近似整数
 """
 
 from __future__ import annotations
@@ -65,16 +121,33 @@ import torch
 
 warnings.filterwarnings('ignore')
 
+# ── U1: VRAM 碎片优化：expandable_segments 允许 PyTorch 用不连续 VRAM 满足大分配请求
+# 必须在任何 CUDA 分配之前设置（setdefault 不覆盖用户已设置的值）
+os.environ.setdefault('PYTORCH_ALLOC_CONF', 'expandable_segments:True')
+
+# ── U2: 抑制 torch.inductor / dynamo 的噪音警告 ─────────────────────────────
+import logging as _logging
+# "Not enough SMs to use max_autotune_gemm mode"
+_logging.getLogger('torch._inductor.utils').setLevel(_logging.ERROR)
+# "failed while executing pow_by_natural" —— 符号形状求解器边界问题，有 fallback，无害
+# 当 dynamic=True + 跨 shape 推理时，inductor 符号范围偶尔命中负指数，自动回退正确路径
+_logging.getLogger('torch.utils._sympy.interp').setLevel(_logging.ERROR)
+# 同类符号求解警告（其他 sympy 子模块）
+_logging.getLogger('torch.utils._sympy').setLevel(_logging.ERROR)
+
 try:
     from tqdm import tqdm
     HAS_TQDM = True
 except ImportError:
     HAS_TQDM = False
 
-# ── 路径配置 ─────────────────────────────────────────────────────────────────
-base_dir       = '/workspace/video_enhancement'
-models_ifrnet  = f'{base_dir}/models_ifrnet/checkpoints'
-sys.path.insert(0, f'{base_dir}/IFRNet')
+# ── U7: 动态路径配置 ──────────────────────────────────────────────────────────
+# 目录结构假设：<project_root>/external/IFRNet/process_video_v5.py
+# 如与实际部署结构不符，请直接修改 base_dir / models_ifrnet 两个变量
+_SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
+base_dir      = str(os.path.dirname(os.path.dirname(_SCRIPT_DIR)))
+models_ifrnet = os.path.join(base_dir, 'models_IFRNet', 'checkpoints')
+sys.path.insert(0, os.path.join(base_dir, 'external', 'IFRNet'))
 sys.path.insert(0, models_ifrnet)
 
 from models.IFRNet_S import Model  # noqa: E402
@@ -93,7 +166,7 @@ MODEL_NAME_MAP: Dict[str, str] = {
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# M2/M3: 硬件能力探测（复用 RealESRGAN v5 的设计）
+# M2/M3: 硬件能力探测
 # ─────────────────────────────────────────────────────────────────────────────
 
 class HardwareCapability:
@@ -149,11 +222,9 @@ class HardwareCapability:
     def lossless_encoder(cls) -> Tuple[str, List[str]]:
         """
         返回 (codec, extra_args) 用于无损中间段编码。
-        优先 nvenc lossless，否则 libx264 lossless。
+        优先 nvenc lossless（-rc constqp -qp 0），否则 libx264 lossless。
         """
-        # NVENC 无损模式：-rc constqp -qp 0（部分显卡支持）
         if cls.has_nvenc('h264_nvenc'):
-            # 尝试探测 NVENC 无损支持
             try:
                 cmd = [
                     'ffmpeg',
@@ -302,7 +373,6 @@ class FFmpegFrameReader:
         use_hwaccel:     bool = True,
         ffmpeg_bin:      str = 'ffmpeg',
     ):
-        # 探测视频元信息
         meta = _probe_video(video_path)
         self.width     = meta['width']  if width  < 0 else width
         self.height    = meta['height'] if height < 0 else height
@@ -314,16 +384,13 @@ class FFmpegFrameReader:
         self._segment_frames = actual_end - frame_start + 1
         self._frame_bytes    = self.width * self.height * 3
 
-        # 构建 FFmpeg 命令
         hw_args: List[str] = []
         if use_hwaccel and HardwareCapability.has_nvdec():
             hw_args = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'bgr24']
 
-        # 帧范围 select filter
         if frame_start == 0 and frame_end < 0:
             vf_args: List[str] = []
         else:
-            # between(n, start, end) 选取 [start, end] 闭区间帧（0-indexed）
             vf_args = [
                 '-vf',
                 f"select='between(n\\,{frame_start}\\,{actual_end})',setpts=N/FR/TB",
@@ -393,14 +460,12 @@ def _probe_video(video_path: str) -> dict:
     data = _json.loads(result.stdout)
     vs   = data['streams'][0]
 
-    # 帧率解析
     fps_str = vs.get('r_frame_rate', '24/1')
     try:
         fps = float(Fraction(fps_str))
     except (ValueError, ZeroDivisionError):
         fps = 24.0
 
-    # 帧数
     if 'nb_frames' in vs and vs['nb_frames'] not in ('N/A', ''):
         nb = int(vs['nb_frames'])
     elif 'duration' in vs:
@@ -408,7 +473,6 @@ def _probe_video(video_path: str) -> dict:
     else:
         nb = 0
 
-    # 是否有音频：重新探测 audio 流
     cmd_audio = [
         'ffprobe', '-v', 'error',
         '-select_streams', 'a:0',
@@ -428,7 +492,7 @@ def _probe_video(video_path: str) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# NVENC Writer（v5: 支持 NVENC + 批量写入 + error flag）
+# NVENC Writer（v5: NVENC + 批量写入 + error flag）
 # ─────────────────────────────────────────────────────────────────────────────
 
 class FFmpegWriter:
@@ -448,7 +512,7 @@ class FFmpegWriter:
         fps:    float,
         codec:  str = 'libx264',
         extra_codec_args: Optional[List[str]] = None,
-        crf:    int = 18,
+        crf:    int = 23,   # U6: 默认 23（原 18）
         audio_src: Optional[str] = None,
         ffmpeg_bin: str = 'ffmpeg',
     ):
@@ -457,7 +521,6 @@ class FFmpegWriter:
 
         pix_fmt = 'yuv420p'
         if 'nvenc' in codec:
-            # NVENC CQ 模式
             quality_args = ['-rc:v', 'vbr', '-cq:v', str(crf), '-b:v', '0']
         else:
             quality_args = ['-crf', str(crf)]
@@ -537,7 +600,6 @@ class FFmpegWriter:
             self._proc.wait()
         rc = self._proc.returncode
         if rc is not None and rc != 0:
-            # Drain any remaining stderr for diagnostics
             try:
                 stderr_out = self._proc.stderr.read()
                 print(f'\n[Warning] FFmpeg 退出码={rc}, '
@@ -549,15 +611,22 @@ class FFmpegWriter:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 核心推理类（保留 v4 全部优化，v5 新增多 GPU 支持入口）
+# 核心推理类（多 GPU 版本，携带全部单卡优化）
 # ─────────────────────────────────────────────────────────────────────────────
 
 class IFRNetVideoProcessor:
     """
-    IFRNet 插帧处理器（v5 终极版）。
+    IFRNet 插帧处理器（v5 终极多卡版）。
 
-    单 GPU 模式：直接处理完整视频（保留 v4 全部优化）。
+    单 GPU 模式：直接处理完整视频（保留所有单卡优化）。
     多 GPU 模式：M1 帧范围分割 + 无损中间段 + ffmpeg concat。
+
+    包含全部单卡 v5 演进升级：
+      - VRAM 碎片优化（expandable_segments）
+      - torch.compile 编译缓存持久化
+      - 小形状（32×32）预热，避免大分辨率首编译崩溃
+      - 分辨率自适应 batch_size 上限
+      - OOM 级联保护与深度清理 + 按实测显存估算恢复
     """
 
     def __init__(
@@ -572,7 +641,7 @@ class IFRNetVideoProcessor:
         use_tensorrt:     bool = False,
         use_hwaccel:      bool = True,
         codec:            str = 'libx264',
-        crf:              int = 18,
+        crf:              int = 23,   # U6: 默认 23
         keep_audio:       bool = True,
         ffmpeg_bin:       str = 'ffmpeg',
         report_json:      Optional[str] = None,
@@ -600,7 +669,6 @@ class IFRNetVideoProcessor:
         self._graph_inputs: dict = {}
         self._timing:       List[float] = []
 
-        # 加载模型（单 GPU 模式用；多 GPU 模式在子进程中重载）
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
         self._load_model(self.device, use_compile)
 
@@ -633,14 +701,15 @@ class IFRNetVideoProcessor:
                 # of the speedup) but does NOT manage CUDA graphs internally, so dynamic
                 # batch sizes and OOM recovery are fully safe.
                 torch._inductor.config.triton.cudagraph_skip_dynamic_graphs = True
-                # Persist compiled kernels to disk so subsequent runs skip recompilation.
-                # First run: ~2-3 min compile. Subsequent runs: near-instant startup.
+
+                # U3: 持久化编译缓存，首次约 2~3 分钟，后续运行秒启动
                 cache_dir = os.path.join(
                     os.path.dirname(os.path.abspath(self.model_path)),
                     '.torch_compile_cache',
                 )
                 os.makedirs(cache_dir, exist_ok=True)
                 os.environ.setdefault('TORCHINDUCTOR_CACHE_DIR', cache_dir)
+
                 model = torch.compile(model, mode='default', dynamic=True)
                 print(f'  torch.compile 加速已启用 (mode=default, dynamic=True)')
                 print(f'  编译缓存目录: {cache_dir}')
@@ -681,7 +750,6 @@ class IFRNetVideoProcessor:
         else:
             print(f'[TensorRT] 构建 Engine (shape={input_shape}) ...')
             onnx_path = os.path.join(cache_dir, f'{tag}.onnx')
-            # IFRNet 有 4 个输入：img0, img1, embt, imgt_approx
             dummy0 = torch.randn(*input_shape, device=self.device)
             dummy1 = torch.randn(*input_shape, device=self.device)
             embt   = torch.tensor([0.5], dtype=torch.float32, device=self.device).view(B, 1, 1, 1).expand(B, 1, 1, 1)
@@ -702,7 +770,6 @@ class IFRNetVideoProcessor:
                 )
             print(f'[TensorRT] ONNX 已导出: {onnx_path}')
 
-            # 构建 Engine
             logger  = trt.Logger(trt.Logger.WARNING)
             builder = trt.Builder(logger)
             network = builder.create_network(
@@ -731,7 +798,6 @@ class IFRNetVideoProcessor:
                 f.write(serialized)
             print(f'[TensorRT] Engine 已缓存: {trt_path}')
 
-        # 加载 Engine
         try:
             logger  = trt.Logger(trt.Logger.WARNING)
             runtime = trt.Runtime(logger)
@@ -844,13 +910,36 @@ class IFRNetVideoProcessor:
         return result
 
     # ──────────────────────────────────────────────────────────────────────────
-    # OOM 自动降级 + 恢复（v4 完整保留）
+    # U6: 按实测空闲显存估算安全 batch_size
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _estimate_safe_batch_size(self, H: int, W: int) -> int:
+        """根据当前实测空闲显存估算安全的 batch_size。"""
+        if not torch.cuda.is_available():
+            return 1
+        try:
+            free_bytes, _ = torch.cuda.mem_get_info(self.device)
+            # 单帧 FP16 字节数 × 6 倍激活系数（经验值）
+            bytes_per_frame = H * W * 3 * 2 * 6
+            # 只使用空闲显存的 70%，留 30% 给中间缓冲
+            estimated = max(1, int(free_bytes * 0.7 / bytes_per_frame))
+            return min(estimated, self._max_batch_size)
+        except Exception:
+            return 1
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # U6: OOM 级联保护 + 深度清理 + 按实测显存恢复
     # ──────────────────────────────────────────────────────────────────────────
 
     def _safe_infer(self, img0_list, img1_list, timesteps, orig_H, orig_W):
+        # in_oom_cascade: True 表示当前处于同一次 OOM 的连锁降级中，
+        # 此时不再更新 max_batch_size（避免级联惩罚）
+        in_oom_cascade = False
+
         while True:
             try:
                 result = self._infer_batch(img0_list, img1_list, timesteps, orig_H, orig_W)
+                in_oom_cascade = False  # 推理成功，退出级联状态
                 if self._oom_cooldown > 0:
                     self._oom_cooldown -= 1
                 elif self.batch_size < self._max_batch_size:
@@ -858,12 +947,47 @@ class IFRNetVideoProcessor:
                     print(f'[恢复] 显存充裕，batch_size {self.batch_size} → {new_bs}')
                     self.batch_size = new_bs
                 return result
+
             except torch.cuda.OutOfMemoryError:
                 torch.cuda.empty_cache()
                 self._pool.clear()
                 self._graph.clear()
+
+                if not in_oom_cascade:
+                    # ── 首次 OOM：永久更新天花板，此 batch_size 已证明不可用 ──
+                    safe_ceiling = max(1, self.batch_size - 1)
+                    if self._max_batch_size > safe_ceiling:
+                        print(f'[OOM] 永久降低 max_batch_size: {self._max_batch_size} → {safe_ceiling}')
+                        self._max_batch_size = safe_ceiling
+                    in_oom_cascade = True  # 进入级联状态，后续降级不再修改上限
+                else:
+                    # ── 级联 OOM：内存仍脏，不修改 max_batch_size ──
+                    pass
+
                 if self.batch_size <= 1:
-                    raise
+                    # 深度清理：同步 + 清空 + 重置 inductor
+                    print(f'\n[OOM] batch_size=1 仍 OOM，深度清理后按剩余显存估算恢复...')
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                        torch.cuda.empty_cache()
+                        try:
+                            torch._dynamo.reset()
+                        except Exception:
+                            pass
+                        torch.cuda.empty_cache()  # 二次清理，inductor reset 后可能释放更多
+
+                    # 深度清理后用实测空闲显存重新估算 batch_size
+                    recovered_bs = self._estimate_safe_batch_size(orig_H, orig_W)
+                    if recovered_bs < self._max_batch_size:
+                        print(f'[OOM] 深度清理后估算安全 batch_size={recovered_bs}，'
+                              f'更新 max_batch_size: {self._max_batch_size} → {recovered_bs}')
+                        self._max_batch_size = recovered_bs
+                    self.batch_size = recovered_bs
+                    self._oom_cooldown = 20  # 稳定一段时间再尝试爬升
+                    in_oom_cascade = False   # 深度清理后重置级联标志
+                    print(f'[OOM] 恢复 batch_size={self.batch_size}，继续处理...')
+                    continue
+
                 self.batch_size = max(1, self.batch_size // 2)
                 self._oom_cooldown = 10
                 print(f'\n[OOM] 自动降低 batch_size → {self.batch_size}')
@@ -903,6 +1027,20 @@ class IFRNetVideoProcessor:
         fps       = reader.fps
         n_seg_est = reader._segment_frames   # 估计值
 
+        # ── U5: 根据分辨率限制最大 batch_size，防止大分辨率下 VRAM 溢出 ──────
+        # 估算单帧 FP16 字节数（×6 为模型中间激活的经验系数）
+        bytes_per_frame = W * H * 3 * 2 * 6  # 3 channels, fp16=2B, ~6x activations
+        free_bytes = 0
+        if torch.cuda.is_available():
+            free_bytes = torch.cuda.mem_get_info(self.device)[0]
+        if free_bytes > 0:
+            res_max_bs = max(1, int(free_bytes * 0.6 / bytes_per_frame))
+            if self.batch_size > res_max_bs:
+                print(f'[{worker_label}][分辨率限制] {W}×{H} 下 batch_size {self.batch_size} → {res_max_bs}')
+                self.batch_size = res_max_bs
+            if self._max_batch_size > res_max_bs:
+                self._max_batch_size = max(self.batch_size, res_max_bs)
+
         _, pad_h, pad_w = pad_to_stride(np.zeros((H, W, 3), dtype=np.uint8))
         need_pad = pad_h > 0 or pad_w > 0
 
@@ -923,44 +1061,48 @@ class IFRNetVideoProcessor:
         if 'nvenc' in use_codec:
             print(f'[{worker_label}] NVENC 编码: {use_codec}')
 
-        # ── torch.compile 预热 ────────────────────────────────────────────────
+        # ── U4: torch.compile 小形状预热 ──────────────────────────────────────
         # torch.compile 的实际编译发生在第一次 forward 时，会阻塞数分钟。
         # 在开启 writer 和进度条之前做预热，让用户看到明确的"编译中"提示，
         # 而不是进度条卡在 4 帧假死。
-        if hasattr(self.model, '_is_compiled') or (
-            hasattr(self.model, '_orig_mod')  # torch.compile wraps with _orig_mod
-        ):
-            _need_warmup = True
-        else:
-            # check via dynamo
-            try:
-                _need_warmup = hasattr(self.model, '_dynamo_ctx')
-            except Exception:
-                _need_warmup = False
-        # Simpler reliable check: always warmup once per segment if compile is active
         if not getattr(self, '_warmup_done', False):
-            pH = H + pad_h
-            pW = W + pad_w
-            _bs_warm = self.batch_size
-            print(f'  [预热] torch.compile 首次编译中 (shape={_bs_warm}×3×{pH}×{pW})，请稍候...',
-                  flush=True)
+            # 使用固定小形状 (1×3×32×32) 而非真实分辨率做编译预热。
+            # 原因：Triton 在超大 shape（如 1440×2560）首次编译时会生成巨大的 .so
+            # 文件，某些 CUDA/Triton 版本组合下会触发 C 级堆损坏 → SIGABRT →
+            # double free or corruption。
+            # dynamic=True 模式下，Triton 编译出符号化 kernel，对任意后续 shape
+            # 均有效，无需用真实分辨率触发编译。
+            _WARM_H, _WARM_W = 32, 32  # 最小对齐单位，编译快速且稳定
+            _bs_warm = 1
+            print(f'  [{worker_label}][预热] torch.compile 编译中 '
+                  f'(小形状预热 {_bs_warm}×3×{_WARM_H}×{_WARM_W})...', flush=True)
             _t_warm = time.perf_counter()
             try:
                 with torch.no_grad():
-                    _dummy0 = torch.zeros(_bs_warm, 3, pH, pW,
-                                          dtype=self.dtype, device=self.device)
-                    _dummy1 = torch.zeros_like(_dummy0)
-                    _embt   = torch.tensor([0.5] * _bs_warm,
-                                           dtype=self.dtype, device=self.device).view(-1,1,1,1)
-                    _imgt   = (_dummy0 + _dummy1) * 0.5
-                    _ = self.model(_dummy0, _dummy1, _embt, _imgt)
-                    if self.device.type == 'cuda':
-                        torch.cuda.synchronize()
+                    _d0   = torch.zeros(_bs_warm, 3, _WARM_H, _WARM_W,
+                                        dtype=self.dtype, device=self.device)
+                    _d1   = torch.zeros_like(_d0)
+                    _embt = torch.tensor([0.5] * _bs_warm,
+                                         dtype=self.dtype, device=self.device).view(-1, 1, 1, 1)
+                    _imgt = (_d0 + _d1) * 0.5
+                    _out  = self.model(_d0, _d1, _embt, _imgt)
+                    # 显式释放所有引用后再 synchronize，防止析构顺序引发堆损坏
+                    del _out, _d0, _d1, _embt, _imgt
+                if self.device.type == 'cuda':
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
                 _t_elapsed = time.perf_counter() - _t_warm
-                print(f'  [预热] 编译完成，耗时 {_t_elapsed:.1f}s，后续帧将正常速度运行',
-                      flush=True)
+                print(f'  [{worker_label}][预热] 编译完成，耗时 {_t_elapsed:.1f}s，'
+                      f'后续帧将正常速度运行', flush=True)
             except Exception as _we:
-                print(f'  [预热] 预热跳过: {_we}', flush=True)
+                print(f'  [{worker_label}][预热] 编译失败，回退至 eager 模式: {_we}', flush=True)
+                if hasattr(self.model, '_orig_mod'):
+                    self.model = self.model._orig_mod
+                else:
+                    try:
+                        torch._dynamo.reset()
+                    except Exception:
+                        pass
             self._warmup_done = True
 
         writer = FFmpegWriter(
@@ -1091,7 +1233,6 @@ class IFRNetVideoProcessor:
             )
         else:
             audio_src = input_path if self.keep_audio else None
-            # TRT 初始化（如需要）
             if self.use_tensorrt:
                 meta = _probe_video(input_path)
                 sh   = (self.batch_size, 3, meta['height'], meta['width'])
@@ -1152,7 +1293,6 @@ class IFRNetVideoProcessor:
         )
         os.makedirs(tmp_dir, exist_ok=True)
 
-        # 无损中间段编码器
         lossless_codec, lossless_extra = HardwareCapability.lossless_encoder()
         print(f'  中间段编码: {lossless_codec} {" ".join(lossless_extra)}')
 
@@ -1162,12 +1302,10 @@ class IFRNetVideoProcessor:
         for i in range(n_workers):
             s = i * seg_size
             e = (i + 1) * seg_size - 1 if i < n_workers - 1 else nb - 1
-            # 向后延伸 1 帧（overlap），供下一段的 skip_first_output 处理
             if i < n_workers - 1:
                 e = min(e + 1, nb - 1)  # +1 overlap
             ranges.append((s, e))
 
-        # 构建 Worker 参数
         worker_args_list = []
         seg_paths        = []
         for i, (s, e) in enumerate(ranges):
@@ -1216,14 +1354,12 @@ class IFRNetVideoProcessor:
         done   = 0
         errors = []
         while done < n_workers:
-            # 检查错误
             try:
                 wid, err = error_q.get_nowait()
                 errors.append(f'Worker-{wid}: {err}')
                 print(f'\n[Worker-{wid} Error] {err}')
             except Exception:
                 pass
-            # 检查完成
             try:
                 item = result_q.get(timeout=1.0)
                 if item[0] == '__DONE__':
@@ -1262,7 +1398,6 @@ class IFRNetVideoProcessor:
             for sp in valid_segs:
                 f.write(f"file '{sp}'\n")
 
-        # 最终输出编码器
         final_codec = HardwareCapability.best_encoder(self.codec)
         if 'nvenc' in final_codec:
             final_codec_args = ['-rc:v', 'vbr', '-cq:v', str(self.crf), '-b:v', '0']
@@ -1317,7 +1452,6 @@ class IFRNetVideoProcessor:
     def _dump_report(self, input_path, output_path, fc, oc, scale, n_workers):
         if not self.report_json or not self._timing:
             return
-        elapsed = sum(self._timing)  # 近似
         report = {
             'input':      input_path,
             'output':     output_path,
@@ -1371,9 +1505,28 @@ def _ifrnet_segment_worker(
 ):
     """
     M1 多 GPU Worker：在独立进程中处理一个帧范围段。
+
+    spawn 模式启动，进程隔离，携带全部单卡 v5 升级：
+      - U1: PYTORCH_ALLOC_CONF expandable_segments（spawn 子进程需重设）
+      - U2: 抑制 inductor/dynamo 噪音日志
+      - U3: torch.compile 编译缓存持久化（通过 _load_model 中的 TORCHINDUCTOR_CACHE_DIR）
+      - U4: 小形状 32×32 预热（通过 _process_segment 中 _warmup_done 机制）
+      - U5: 分辨率自适应 batch_size 上限（通过 _process_segment）
+      - U6: OOM 级联保护 + 深度清理（通过 _safe_infer）
+
     写出无损中间文件（lossless_codec），完成后通过 result_q 通知主进程。
     """
     label = f'GPU{device_id}-W{worker_idx}'
+
+    # ── U1: spawn 子进程中必须重设 PYTORCH_ALLOC_CONF（父进程 setdefault 不自动继承）
+    os.environ.setdefault('PYTORCH_ALLOC_CONF', 'expandable_segments:True')
+
+    # ── U2: 子进程中重新抑制噪音日志
+    import logging as _log
+    _log.getLogger('torch._inductor.utils').setLevel(_log.ERROR)
+    _log.getLogger('torch.utils._sympy.interp').setLevel(_log.ERROR)
+    _log.getLogger('torch.utils._sympy').setLevel(_log.ERROR)
+
     try:
         device = torch.device(f'cuda:{device_id}')
         torch.cuda.set_device(device)
@@ -1396,20 +1549,20 @@ def _ifrnet_segment_worker(
         )
 
         ok, fc, oc = processor._process_segment(
-            input_path       = input_path,
-            output_path      = output_path,
-            scale            = scale,
-            frame_start      = frame_start,
-            frame_end        = frame_end,
-            skip_first_output= skip_first_output,
-            audio_src        = None,
-            codec_override   = lossless_codec,
-            extra_codec_args = lossless_extra,
-            worker_label     = label,
+            input_path        = input_path,
+            output_path       = output_path,
+            scale             = scale,
+            frame_start       = frame_start,
+            frame_end         = frame_end,
+            skip_first_output = skip_first_output,
+            audio_src         = None,
+            codec_override    = lossless_codec,
+            extra_codec_args  = lossless_extra,
+            worker_label      = label,
         )
 
         if not ok:
-            error_q.put((worker_idx, f'_process_segment 返回失败'))
+            error_q.put((worker_idx, '_process_segment 返回失败'))
 
     except Exception as e:
         import traceback
@@ -1427,7 +1580,7 @@ def _ifrnet_segment_worker(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='IFRNet 视频插帧 —— 终极优化版 v5',
+        description='IFRNet 视频插帧 —— 终极优化版 v5（多卡版）',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     # 基础参数
@@ -1448,11 +1601,12 @@ def main():
                         help='[V5] 强制禁用 NVDEC 硬件解码')
     # 多 GPU
     parser.add_argument('--num_process_per_gpu', type=int, default=1,
-                        help='[V5] 每 GPU Worker 数（多 GPU 模式）')
+                        help='[V5] 每 GPU Worker 数（多 GPU 模式，显存充裕时可设 2）')
     # 编码参数
     parser.add_argument('--codec',    default='libx264',
                         help='输出编码器（有 NVENC 时自动升级）')
-    parser.add_argument('--crf',      type=int, default=18)
+    parser.add_argument('--crf',      type=int, default=23,   # U6: 默认 23
+                        help='编码质量（越小越好，18~28 常用，NVENC 同映射为 CQ 值）')
     parser.add_argument('--no_audio', action='store_true')
     parser.add_argument('--ffmpeg_bin', type=str, default='ffmpeg')
     # 调试
@@ -1464,7 +1618,7 @@ def main():
 
     # 模型路径解析
     if args.model in MODEL_NAME_MAP:
-        model_path = f'{models_ifrnet}/{MODEL_NAME_MAP[args.model]}'
+        model_path = os.path.join(models_ifrnet, MODEL_NAME_MAP[args.model])
     else:
         model_path = args.model
     if not os.path.exists(model_path):
@@ -1473,39 +1627,45 @@ def main():
 
     # 打印启动信息
     print('=' * 65)
-    print('  IFRNet 视频插帧 —— 终极优化版 v5')
+    print('  IFRNet 视频插帧 —— 终极优化版 v5（多卡版）')
     print('=' * 65)
-    num_gpus = torch.cuda.device_count()
+    num_gpus  = torch.cuda.device_count()
     n_workers = max(1, num_gpus * args.num_process_per_gpu)
     print(f'  模型:   {args.model}')
-    print(f'  设备:   {args.device} | GPU 数: {num_gpus} | '
-          f'Workers: {n_workers}')
+    print(f'  设备:   {args.device} | GPU 数: {num_gpus} | Workers: {n_workers}')
+    if torch.cuda.is_available():
+        for i in range(num_gpus):
+            props = torch.cuda.get_device_properties(i)
+            vram_gb = props.total_memory / 1024**3
+            print(f'    GPU{i}: {props.name} ({vram_gb:.1f} GB)')
     print(f'  FP16:   {not args.no_fp16} | '
           f'CUDA Graph: {not args.no_cuda_graph} | '
           f'TensorRT: {args.use_tensorrt}')
     print(f'  NVDEC:  {HardwareCapability.has_nvdec() and not args.no_hwaccel} | '
           f'NVENC(h264): {HardwareCapability.has_nvenc("h264_nvenc")} | '
           f'NVENC(hevc): {HardwareCapability.has_nvenc("hevc_nvenc")}')
+    _lossless_c, _lossless_e = HardwareCapability.lossless_encoder()
     print(f'  编码器: {args.codec} → 实际: {HardwareCapability.best_encoder(args.codec)} | '
           f'CRF: {args.crf}')
+    print(f'  中间段无损编码: {_lossless_c} {" ".join(_lossless_e)}')
     print()
 
     t_total = time.time()
     processor = IFRNetVideoProcessor(
-        model_path         = model_path,
-        device             = args.device,
-        batch_size         = args.batch_size,
-        max_batch_size     = args.batch_size * 4,
-        use_fp16           = not args.no_fp16,
-        use_compile        = not args.no_compile,
-        use_cuda_graph     = not args.no_cuda_graph,
-        use_tensorrt       = args.use_tensorrt,
-        use_hwaccel        = not args.no_hwaccel,
-        codec              = args.codec,
-        crf                = args.crf,
-        keep_audio         = not args.no_audio,
-        ffmpeg_bin         = args.ffmpeg_bin,
-        report_json        = args.report,
+        model_path          = model_path,
+        device              = args.device,
+        batch_size          = args.batch_size,
+        max_batch_size      = args.batch_size * 4,
+        use_fp16            = not args.no_fp16,
+        use_compile         = not args.no_compile,
+        use_cuda_graph      = not args.no_cuda_graph,
+        use_tensorrt        = args.use_tensorrt,
+        use_hwaccel         = not args.no_hwaccel,
+        codec               = args.codec,
+        crf                 = args.crf,
+        keep_audio          = not args.no_audio,
+        ffmpeg_bin          = args.ffmpeg_bin,
+        report_json         = args.report,
         num_process_per_gpu = args.num_process_per_gpu,
     )
 
