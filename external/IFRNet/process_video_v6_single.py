@@ -146,7 +146,7 @@ MODEL_NAME_MAP: Dict[str, str] = {
 # M2/M3: 硬件能力探测
 # ─────────────────────────────────────────────────────────────────────────────
 
-class _NVMLFilter(logging.Filter):
+class _NVMLFilter(_logging.Filter):
     """[FIX-NML] 过滤 PyTorch 将 NVML 断言包装为 stderr 输出的无害噪音。
     在子进程或容器环境中，NVML_SUCCESS 与 CUDACachingAllocator 相关日志
     常以 RuntimeError 或 logging.WARNING 形式出现，污染输出但不影响正确性。
