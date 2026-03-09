@@ -574,6 +574,12 @@ class FFmpegWriter:
         if 'nvenc' in codec:
             # NVENC CQ 模式
             quality_args = ['-rc:v', 'vbr', '-cq:v', str(crf), '-b:v', '0']
+        elif codec == 'libx265':
+            # [FIX-NUMA] 容器内 set_mempolicy 受限，禁用 NUMA 线程池，
+            # 消除 "set_mempolicy: Operation not permitted" 刷屏
+            # 并防止线程池初始化异常导致的竖向条纹画面瑕疵。
+            quality_args = ['-crf', str(crf),
+                            '-x265-params', 'pools=none']
         else:
             quality_args = ['-crf', str(crf)]
 
@@ -608,13 +614,22 @@ class FFmpegWriter:
         self._thread = threading.Thread(target=self._write_loop, daemon=True)
         self._thread.start()
 
+    # x265 正常 info/warning 前缀，以及容器内 NUMA 受限噪音，不应当作错误打印
+    _STDERR_IGNORE = (
+        'x265 [info]:', 'x265 [warning]:', 'set_mempolicy:',
+        'encoded ', 'Weighted P-Frames', 'consecutive B-frames',
+        'frame I:', 'frame P:', 'frame B:',
+    )
+
     def _drain_stderr(self):
-        """持续消费 FFmpeg stderr，防止 pipe buffer 满导致死锁，并实时打印错误。"""
+        """持续消费 FFmpeg stderr，防止 pipe buffer 满导致死锁；
+        过滤 x265 info/set_mempolicy 噪音，只打印真正的错误行。"""
         try:
             for line in self._proc.stderr:
                 decoded = line.decode(errors='ignore').rstrip()
                 self._stderr_lines.append(decoded)
-                if decoded:  # FFmpeg 有实质性输出说明出错了
+                if decoded and not any(decoded.lstrip().startswith(p)
+                                       for p in self._STDERR_IGNORE):
                     print(f'[FFmpeg ERR] {decoded}')
         except Exception:
             pass
