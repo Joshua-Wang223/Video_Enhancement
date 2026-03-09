@@ -121,7 +121,8 @@ except ImportError:
 # ── 路径配置 ─────────────────────────────────────────────────────────────────
 # 以本脚本所在目录（external/IFRNet/）为基准，向上两级到项目根
 # 目录结构假设：<project_root>/external/IFRNet/process_video_v5_single.py
-base_dir       = str(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_SCRIPT_DIR    = os.path.dirname(os.path.abspath(__file__))
+base_dir       = str(os.path.dirname(os.path.dirname(_SCRIPT_DIR)))
 models_ifrnet  = os.path.join(base_dir, 'models_IFRNet', 'checkpoints')
 sys.path.insert(0, os.path.join(base_dir, 'external', 'IFRNet'))
 sys.path.insert(0, models_ifrnet)
