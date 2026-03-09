@@ -1425,6 +1425,8 @@ def _sr_worker_fn(
         torch.backends.cudnn.enabled   = True
         print(f'[Worker {worker_idx}] cudnn.benchmark = True 已启用 (cuda:{device_id})')
 
+        _mp_display = model_path if isinstance(model_path, str) else ' + '.join(model_path)
+        print(f'[Worker {worker_idx}] 加载模型: {_mp_display} → cuda:{device_id}')
         upsampler = _build_upsampler(
             model_name, model_path, dni_weight,
             tile, tile_pad, pre_pad, use_half, device
@@ -1451,6 +1453,7 @@ def _sr_worker_fn(
         if face_enhance and gfpgan_model_path:
             try:
                 from gfpgan import GFPGANer
+                print(f'[Worker {worker_idx}] 加载模型(GFPGAN): {gfpgan_model_path} → cuda:{device_id}')
                 face_enhancer = GFPGANer(
                     model_path=gfpgan_model_path,
                     upscale=outscale,
@@ -2019,6 +2022,8 @@ def inference_video_single(args, video_save_path: str, device=None):
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+    _mp_display = model_path if isinstance(model_path, str) else ' + '.join(model_path)
+    print(f'  加载模型: {_mp_display} → {device}')
     upsampler = _build_upsampler(
         args.model_name, model_path, dni_weight,
         args.tile, args.tile_pad, args.pre_pad, not args.fp32, device
@@ -2071,6 +2076,7 @@ def inference_video_single(args, video_save_path: str, device=None):
             _gfpgan_path = _gfpgan_url
 
         # [FIX-6] 不再强制 batch_size=1
+        print(f'  加载模型(GFPGAN): {_gfpgan_path} → {device}')
         face_enhancer = GFPGANer(
             model_path=_gfpgan_path,
             upscale=args.outscale,

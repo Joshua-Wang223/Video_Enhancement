@@ -169,7 +169,9 @@ except ImportError:
 
 # 以本脚本所在目录（external/Real-ESRGAN/）为基准，向上两级到项目根
 # 目录结构假设：<project_root>/external/Real-ESRGAN/inference_realesrgan_video_v6_single.py
-base_dir = osp.dirname(osp.dirname(osp.dirname(osp.abspath(__file__))))
+# base_dir = str(osp.dirname(osp.dirname(osp.dirname(osp.abspath(__file__)))))
+_SCRIPT_DIR       = osp.dirname(osp.abspath(__file__))
+base_dir          = osp.dirname(osp.dirname(_SCRIPT_DIR))
 models_RealESRGAN = osp.join(base_dir, 'models_RealESRGAN')
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1515,6 +1517,8 @@ def inference_video_single(args, video_save_path: str, device=None):
         torch.backends.cudnn.enabled   = True
         print('[FIX-1] cudnn.benchmark = True 已启用')
 
+    _mp_display = model_path if isinstance(model_path, str) else ' + '.join(model_path)
+    print(f'  加载模型: {_mp_display} → {device}')
     upsampler = _build_upsampler(
         args.model_name, model_path, dni_weight,
         args.tile, args.tile_pad, args.pre_pad, not args.fp32, device
@@ -1568,6 +1572,7 @@ def inference_video_single(args, video_save_path: str, device=None):
         # 在 _process_batch 内部 SR 批推理结束后，对每帧串行调用 face_enhance。
         # [FIX-7] upscale=args.outscale（而非 1）：告知 facexlib paste 时的坐标缩放比。
         #         bg_upsampler=None：背景由主 SR batch 提供，此处不重复超分。
+        print(f'  加载模型(GFPGAN): {_gfpgan_path} → {device}')
         face_enhancer = GFPGANer(
             model_path=_gfpgan_path,
             # [方案A修正] upscale 必须等于 outscale，而非 1。
