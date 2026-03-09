@@ -985,45 +985,51 @@ class IFRNetVideoProcessor:
                 pred_big   = self._get_cuda_graph(shape_key, img0_big, img1_big, embt, imgt_approx)
         elif getattr(self, '_trt_ok', False):
             # [FIX-TRT] TensorRT 静态 Engine 推理路径
-            import numpy as np
+            import tensorrt as _trt2
             t_vals      = timesteps * B
             embt_t      = torch.tensor(t_vals, dtype=torch.float32, device=self.device).view(-1, 1, 1, 1)
             imgt_approx = img0_exp.float() * (1 - embt_t) + img1_exp.float() * embt_t
-            # 准备 fp16 或 fp32 输入
-            dtype_np = np.float16 if self.use_fp16 else np.float32
             i0 = img0_exp.half().contiguous() if self.use_fp16 else img0_exp.float().contiguous()
             i1 = img1_exp.half().contiguous() if self.use_fp16 else img1_exp.float().contiguous()
             em = embt_t.half().contiguous() if self.use_fp16 else embt_t.contiguous()
             ia = imgt_approx.half().contiguous() if self.use_fp16 else imgt_approx.contiguous()
-            BT = i0.shape[0]
+            BT      = i0.shape[0]
             C, H_p, W_p = i0.shape[1], i0.shape[2], i0.shape[3]
-            out_buf = torch.empty((BT, 3, H_p, W_p),
-                                  dtype=torch.float16 if self.use_fp16 else torch.float32,
-                                  device=self.device)
-            ctx = self._trt_context
-            # [FIX-TRT] 绑定所有输入 tensor
-            in_names  = getattr(self, '_trt_input_names',
-                                ['img0', 'img1', 'embt', 'imgt_approx'])
+            # [FIX-TRT-PAD] TRT 静态 engine batch 固定，最后一批不足时 pad 到 engine 大小，
+            # 推理后只取前 BT 帧，避免越界写入导致周期性画面损坏。
+            in_names  = getattr(self, '_trt_input_names',  ['img0', 'img1', 'embt', 'imgt_approx'])
             out_names = getattr(self, '_trt_output_names', ['output'])
+            engine_BT = self._trt_engine.get_tensor_shape(in_names[0])[0]
+            if BT < engine_BT:
+                pad_n = engine_BT - BT
+                def _pad(t):
+                    return torch.cat([t, t[-1:].expand(pad_n, *t.shape[1:])], dim=0).contiguous()
+                i0, i1, em, ia = _pad(i0), _pad(i1), _pad(em), _pad(ia)
+            out_dtype = torch.float16 if self.use_fp16 else torch.float32
+            out_buf   = torch.empty((engine_BT, 3, H_p, W_p), dtype=out_dtype, device=self.device)
+            ctx = self._trt_context
             for name, buf in zip(in_names, [i0, i1, em, ia]):
                 ctx.set_tensor_address(name, buf.data_ptr())
-            # [FIX-TRT] TRT 要求所有输出 tensor 都必须绑定地址（包括不需要的中间输出）
-            # out_names[0] 是主输出，其余分配同形状临时 buffer
-            import tensorrt as _trt2
             ctx.set_tensor_address(out_names[0], out_buf.data_ptr())
             _dummy_bufs = []
             for _out_name in out_names[1:]:
-                # [FIX-TRT] shape/dtype 从 engine 查询，不从 context 查询
-                _shape = tuple(self._trt_engine.get_tensor_shape(_out_name))
-                _dtype = self._trt_engine.get_tensor_dtype(_out_name)
-                _torch_dtype = torch.float16 if _dtype == _trt2.DataType.HALF else torch.float32
-                _dummy = torch.empty(_shape, dtype=_torch_dtype, device=self.device)
+                _shape  = tuple(self._trt_engine.get_tensor_shape(_out_name))
+                _dtype  = self._trt_engine.get_tensor_dtype(_out_name)
+                _tdtype = torch.float16 if _dtype == _trt2.DataType.HALF else torch.float32
+                _dummy  = torch.empty(_shape, dtype=_tdtype, device=self.device)
                 ctx.set_tensor_address(_out_name, _dummy.data_ptr())
-                _dummy_bufs.append(_dummy)  # 保持引用，防止 GC
-            stream = torch.cuda.current_stream().cuda_stream
-            ctx.execute_async_v3(stream_handle=stream)
-            torch.cuda.current_stream().synchronize()
-            pred_big = out_buf.float() if self.use_fp16 else out_buf
+                _dummy_bufs.append(_dummy)
+            _trt_stream = (self.stream_compute.cuda_stream
+                           if self.stream_compute is not None
+                           else torch.cuda.current_stream().cuda_stream)
+            ctx.execute_async_v3(stream_handle=_trt_stream)
+            if self.stream_compute is not None:
+                torch.cuda.default_stream(self.device).wait_stream(self.stream_compute)
+            else:
+                torch.cuda.current_stream().synchronize()
+            # pad 时只取前 BT 帧有效结果
+            result_buf = out_buf[:BT]
+            pred_big   = result_buf.float() if self.use_fp16 else result_buf
         else:
             autocast_ctx = (
                 torch.amp.autocast(device_type='cuda', dtype=torch.float16)
