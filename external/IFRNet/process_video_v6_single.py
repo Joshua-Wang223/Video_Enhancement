@@ -1,4 +1,4 @@
-"""
+vid """
 IFRNet 视频插帧处理脚本 —— 终极优化版 v6（单卡版）
 ==========================================================
 基于 IFRNet（Intermediate Flow-based Recursive Network）的视频帧插值脚本，
@@ -783,9 +783,18 @@ class IFRNetVideoProcessor:
             # [FIX-TRT] torch.compile 包装的模型导出时需解包 _orig_mod，
             # 否则权重名带 _orig_mod. 前缀导致 TRT parser 解析失败。
             export_model = getattr(self.model, '_orig_mod', self.model)
+            # [FIX-TRT-OUTPUT] output_names 只命名输出，不限制数量。
+            # 若 forward() 返回 tuple，所有元素都会被导出为独立输出节点，
+            # 导致 engine 有多余输出（add_25/mul_12/mul_13），out_buf 写入错误数据 → 频闪。
+            # 用 wrapper 强制只返回第一个输出（插帧结果）。
+            class _SingleOut(torch.nn.Module):
+                def __init__(self, m): super().__init__(); self.m = m
+                def forward(self, i0, i1, em, ia):
+                    out = self.m(i0, i1, em, ia)
+                    return out[0] if isinstance(out, (tuple, list)) else out
             with torch.no_grad():
                 torch.onnx.export(
-                    export_model,
+                    _SingleOut(export_model),
                     (dummy0, dummy1, embt, imgt_a),
                     onnx_path,
                     input_names=['img0', 'img1', 'embt', 'imgt_approx'],
