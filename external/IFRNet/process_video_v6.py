@@ -1235,7 +1235,9 @@ class IFRNetVideoProcessor:
         # torch.compile 的实际编译发生在第一次 forward 时，会阻塞数分钟。
         # 在开启 writer 和进度条之前做预热，让用户看到明确的"编译中"提示，
         # 而不是进度条卡在 4 帧假死。
-        if not getattr(self, '_warmup_done', False):
+        # [FIX-TRT-WARMUP] TRT 激活时推理全走 TRT 分支，torch.compile 路径不会执行，
+        # 跳过预热避免浪费 ~30s 编译时间。
+        if not getattr(self, '_warmup_done', False) and not getattr(self, '_trt_ok', False):
             # 使用固定小形状 (1×3×32×32) 而非真实分辨率做编译预热。
             # 原因：Triton 在超大 shape（如 1440×2560）首次编译时会生成巨大的 .so
             # 文件，某些 CUDA/Triton 版本组合下会触发 C 级堆损坏 → SIGABRT →
