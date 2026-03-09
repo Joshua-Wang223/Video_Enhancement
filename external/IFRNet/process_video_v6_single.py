@@ -1,4 +1,4 @@
-"""
+git """
 IFRNet 视频插帧处理脚本 —— 终极优化版 v6（单卡版）
 ==========================================================
 基于 IFRNet（Intermediate Flow-based Recursive Network）的视频帧插值脚本，
@@ -774,7 +774,7 @@ class IFRNetVideoProcessor:
             # IFRNet 有 4 个输入：img0, img1, embt, imgt_approx
             dummy0 = torch.randn(*input_shape, device=self.device)
             dummy1 = torch.randn(*input_shape, device=self.device)
-            embt   = torch.tensor([0.5], dtype=torch.float32, device=self.device).view(B, 1, 1, 1).expand(B, 1, 1, 1)
+            embt   = torch.full((B,), 0.5, dtype=torch.float32, device=self.device).view(B, 1, 1, 1)
             imgt_a = (dummy0 + dummy1) * 0.5
             if self.use_fp16:
                 dummy0, dummy1, embt, imgt_a = (
