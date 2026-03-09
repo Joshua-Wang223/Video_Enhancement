@@ -961,8 +961,9 @@ class IFRNetVideoProcessor:
             ctx.set_tensor_address(out_names[0], out_buf.data_ptr())
             _dummy_bufs = []
             for _out_name in out_names[1:]:
-                _shape = tuple(ctx.get_tensor_shape(_out_name))
-                _dtype = ctx.get_tensor_dtype(_out_name)
+                # [FIX-TRT] shape/dtype 从 engine 查询，不从 context 查询
+                _shape = tuple(self._trt_engine.get_tensor_shape(_out_name))
+                _dtype = self._trt_engine.get_tensor_dtype(_out_name)
                 _torch_dtype = torch.float16 if _dtype == _trt2.DataType.HALF else torch.float32
                 _dummy = torch.empty(_shape, dtype=_torch_dtype, device=self.device)
                 ctx.set_tensor_address(_out_name, _dummy.data_ptr())
