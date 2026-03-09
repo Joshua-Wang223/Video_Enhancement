@@ -226,6 +226,16 @@ class HardwareCapability:
     @classmethod
     def best_encoder(cls, preferred: str = 'libx264') -> str:
         nvenc_map = {'libx264': 'h264_nvenc', 'libx265': 'hevc_nvenc'}
+        # 反向映射：若用户直接指定 nvenc 编码器但不可用，回退到软件编码器
+        fallback_map = {'h264_nvenc': 'libx264', 'hevc_nvenc': 'libx265'}
+        # 情况1：用户直接指定了 nvenc 编码器 → 检测可用性，不可用则回退
+        if preferred in fallback_map:
+            if cls.has_nvenc(preferred):
+                return preferred
+            fallback = fallback_map[preferred]
+            print(f'  [警告] {preferred} 不可用，自动回退到 {fallback}')
+            return fallback
+        # 情况2：用户指定软件编码器 → 尝试升级到对应 nvenc
         candidate = nvenc_map.get(preferred, preferred)
         if candidate != preferred and cls.has_nvenc(candidate):
             return candidate
@@ -592,8 +602,22 @@ class FFmpegWriter:
             cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE
         )
+        self._stderr_lines: List[str] = []
+        self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
+        self._stderr_thread.start()
         self._thread = threading.Thread(target=self._write_loop, daemon=True)
         self._thread.start()
+
+    def _drain_stderr(self):
+        """持续消费 FFmpeg stderr，防止 pipe buffer 满导致死锁，并实时打印错误。"""
+        try:
+            for line in self._proc.stderr:
+                decoded = line.decode(errors='ignore').rstrip()
+                self._stderr_lines.append(decoded)
+                if decoded:  # FFmpeg 有实质性输出说明出错了
+                    print(f'[FFmpeg ERR] {decoded}')
+        except Exception:
+            pass
 
     def _write_loop(self):
         pending: List[bytes] = []
@@ -628,6 +652,7 @@ class FFmpegWriter:
     def close(self):
         self._queue.put(self._SENTINEL)
         self._thread.join(timeout=60)
+        self._stderr_thread.join(timeout=5)
         # Close stdin FIRST to signal EOF to FFmpeg, then wait for it to exit.
         # Do NOT call communicate() after closing stdin — communicate() tries to
         # flush stdin internally and raises "flush of closed file".
@@ -642,13 +667,8 @@ class FFmpegWriter:
             self._proc.wait()
         rc = self._proc.returncode
         if rc is not None and rc != 0:
-            # Drain any remaining stderr for diagnostics
-            try:
-                stderr_out = self._proc.stderr.read()
-                print(f'\n[Warning] FFmpeg 退出码={rc}, '
-                      f'stderr: {stderr_out.decode(errors="ignore")[:400]}')
-            except Exception:
-                print(f'\n[Warning] FFmpeg 退出码={rc}')
+            stderr_out = '\n'.join(self._stderr_lines[-20:])  # 已由 _drain_stderr 实时消费
+            print(f'\n[Warning] FFmpeg 退出码={rc}, stderr: {stderr_out[:400]}')
         if self._error:
             print(f'[Warning] FFmpegWriter 累计写帧异常: {self._error}')
 
