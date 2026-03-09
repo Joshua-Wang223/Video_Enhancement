@@ -834,16 +834,25 @@ class IFRNetVideoProcessor:
                 dummy0, dummy1, embt, imgt_a = (
                     dummy0.half(), dummy1.half(), embt.half(), imgt_a.half()
                 )
+            # [FIX-TRT] torch.compile 包装的模型导出时需解包 _orig_mod，
+            # 否则权重名带 _orig_mod. 前缀导致 TRT parser 解析失败。
+            export_model = getattr(self.model, '_orig_mod', self.model)
             with torch.no_grad():
                 torch.onnx.export(
-                    self.model,
+                    export_model,
                     (dummy0, dummy1, embt, imgt_a),
                     onnx_path,
                     input_names=['img0', 'img1', 'embt', 'imgt_approx'],
                     output_names=['output'],
-                    opset_version=17,
+                    opset_version=18,       # [FIX-TRT] torch.onnx >= 2.x 最低支持 18
                     dynamic_axes=None,
                 )
+            # [FIX-TRT] 确保无 .onnx.data 外部权重文件（TRT parser 只认单文件 ONNX）
+            import onnx
+            model_proto = onnx.load(onnx_path)
+            onnx.save(model_proto, onnx_path,
+                      save_as_external_data=False,
+                      all_tensors_to_one_file=False)
             print(f'[TensorRT] ONNX 已导出: {onnx_path}')
 
             logger  = trt.Logger(trt.Logger.WARNING)
@@ -960,6 +969,33 @@ class IFRNetVideoProcessor:
                 img1_big   = img1_exp.contiguous()
                 imgt_approx = img0_big * (1 - embt) + img1_big * embt
                 pred_big   = self._get_cuda_graph(shape_key, img0_big, img1_big, embt, imgt_approx)
+        elif getattr(self, '_trt_ok', False):
+            # [FIX-TRT] TensorRT 静态 Engine 推理路径
+            import numpy as np
+            t_vals      = timesteps * B
+            embt_t      = torch.tensor(t_vals, dtype=torch.float32, device=self.device).view(-1, 1, 1, 1)
+            imgt_approx = img0_exp.float() * (1 - embt_t) + img1_exp.float() * embt_t
+            # 准备 fp16 或 fp32 输入
+            dtype_np = np.float16 if self.use_fp16 else np.float32
+            i0 = img0_exp.half().contiguous() if self.use_fp16 else img0_exp.float().contiguous()
+            i1 = img1_exp.half().contiguous() if self.use_fp16 else img1_exp.float().contiguous()
+            em = embt_t.half().contiguous() if self.use_fp16 else embt_t.contiguous()
+            ia = imgt_approx.half().contiguous() if self.use_fp16 else imgt_approx.contiguous()
+            BT = i0.shape[0]
+            C, H_p, W_p = i0.shape[1], i0.shape[2], i0.shape[3]
+            out_buf = torch.empty((BT, 3, H_p, W_p),
+                                  dtype=torch.float16 if self.use_fp16 else torch.float32,
+                                  device=self.device)
+            ctx = self._trt_context
+            ctx.set_tensor_address('img0',         i0.data_ptr())
+            ctx.set_tensor_address('img1',         i1.data_ptr())
+            ctx.set_tensor_address('embt',         em.data_ptr())
+            ctx.set_tensor_address('imgt_approx',  ia.data_ptr())
+            ctx.set_tensor_address('output',       out_buf.data_ptr())
+            stream = torch.cuda.current_stream().cuda_stream
+            ctx.execute_async_v3(stream_handle=stream)
+            torch.cuda.current_stream().synchronize()
+            pred_big = out_buf.float() if self.use_fp16 else out_buf
         else:
             autocast_ctx = (
                 torch.amp.autocast(device_type='cuda', dtype=torch.float16)
@@ -1024,7 +1060,10 @@ class IFRNetVideoProcessor:
                 in_oom_cascade = False  # 推理成功，退出级联状态
                 if self._oom_cooldown > 0:
                     self._oom_cooldown -= 1
-                elif self.batch_size < self._max_batch_size:
+                elif (self.batch_size < self._max_batch_size
+                      and not getattr(self, '_trt_ok', False)):
+                    # [FIX-TRT] TRT 静态 engine batch 必须固定，禁止扩张
+                    # [FIX-COMPILE] torch.compile dynamic 每次新 shape 重编，步长改为保守值
                     new_bs = min(self.batch_size + 1, self._max_batch_size)
                     print(f'[恢复] 显存充裕，batch_size {self.batch_size} → {new_bs}')
                     self.batch_size = new_bs
