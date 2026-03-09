@@ -949,13 +949,24 @@ class IFRNetVideoProcessor:
                                   dtype=torch.float16 if self.use_fp16 else torch.float32,
                                   device=self.device)
             ctx = self._trt_context
-            # [FIX-TRT] 用动态查询到的实际 tensor 名绑定，避免硬编码名不匹配
+            # [FIX-TRT] 绑定所有输入 tensor
             in_names  = getattr(self, '_trt_input_names',
                                 ['img0', 'img1', 'embt', 'imgt_approx'])
             out_names = getattr(self, '_trt_output_names', ['output'])
             for name, buf in zip(in_names, [i0, i1, em, ia]):
                 ctx.set_tensor_address(name, buf.data_ptr())
+            # [FIX-TRT] TRT 要求所有输出 tensor 都必须绑定地址（包括不需要的中间输出）
+            # out_names[0] 是主输出，其余分配同形状临时 buffer
+            import tensorrt as _trt2
             ctx.set_tensor_address(out_names[0], out_buf.data_ptr())
+            _dummy_bufs = []
+            for _out_name in out_names[1:]:
+                _shape = tuple(ctx.get_tensor_shape(_out_name))
+                _dtype = ctx.get_tensor_dtype(_out_name)
+                _torch_dtype = torch.float16 if _dtype == _trt2.DataType.HALF else torch.float32
+                _dummy = torch.empty(_shape, dtype=_torch_dtype, device=self.device)
+                ctx.set_tensor_address(_out_name, _dummy.data_ptr())
+                _dummy_bufs.append(_dummy)  # 保持引用，防止 GC
             stream = torch.cuda.current_stream().cuda_stream
             ctx.execute_async_v3(stream_handle=stream)
             torch.cuda.current_stream().synchronize()
