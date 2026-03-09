@@ -837,6 +837,20 @@ class IFRNetVideoProcessor:
             with open(trt_path, 'rb') as f:
                 self._trt_engine  = runtime.deserialize_cuda_engine(f.read())
             self._trt_context = self._trt_engine.create_execution_context()
+            # [FIX-TRT] 动态查询 engine 的实际 tensor 名，不硬编码
+            n = self._trt_engine.num_io_tensors
+            inputs, outputs = [], []
+            for i in range(n):
+                name = self._trt_engine.get_tensor_name(i)
+                mode = self._trt_engine.get_tensor_mode(name)
+                import tensorrt as _trt
+                if mode == _trt.TensorIOMode.INPUT:
+                    inputs.append(name)
+                else:
+                    outputs.append(name)
+            self._trt_input_names  = inputs   # e.g. ['img0','img1','embt','imgt_approx']
+            self._trt_output_names = outputs  # e.g. ['add_25']
+            print(f'[TensorRT] inputs={inputs} outputs={outputs}')
             self._trt_ok      = True
             print('[TensorRT] Engine 已激活，TRT 推理就绪。')
         except Exception as e:
@@ -935,11 +949,13 @@ class IFRNetVideoProcessor:
                                   dtype=torch.float16 if self.use_fp16 else torch.float32,
                                   device=self.device)
             ctx = self._trt_context
-            ctx.set_tensor_address('img0',         i0.data_ptr())
-            ctx.set_tensor_address('img1',         i1.data_ptr())
-            ctx.set_tensor_address('embt',         em.data_ptr())
-            ctx.set_tensor_address('imgt_approx',  ia.data_ptr())
-            ctx.set_tensor_address('output',       out_buf.data_ptr())
+            # [FIX-TRT] 用动态查询到的实际 tensor 名绑定，避免硬编码名不匹配
+            in_names  = getattr(self, '_trt_input_names',
+                                ['img0', 'img1', 'embt', 'imgt_approx'])
+            out_names = getattr(self, '_trt_output_names', ['output'])
+            for name, buf in zip(in_names, [i0, i1, em, ia]):
+                ctx.set_tensor_address(name, buf.data_ptr())
+            ctx.set_tensor_address(out_names[0], out_buf.data_ptr())
             stream = torch.cuda.current_stream().cuda_stream
             ctx.execute_async_v3(stream_handle=stream)
             torch.cuda.current_stream().synchronize()
