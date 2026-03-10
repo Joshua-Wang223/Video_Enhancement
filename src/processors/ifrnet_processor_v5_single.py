@@ -1,7 +1,7 @@
 """
 IFRNet 视频插帧处理器 v5（单卡版）
 =====================================
-对接 process_video_v5_single.py（IFRNetVideoProcessor），
+对接 process_video_v6_1_single.py（IFRNetVideoProcessor），
 保留分段直接对接与断点恢复逻辑，支持 v5 全部硬件加速参数：
   - FP16 / torch.compile / CUDA Graph（compile 激活时自动接管 Graph）
   - TensorRT 可选加速（首次构建需缓存 .trt Engine）
@@ -35,7 +35,7 @@ from video_utils import (
 class IFRNetProcessor:
     """IFRNet 插帧处理器 v5（单卡版）"""
 
-    # 支持的模型名称 → 文件名映射（与 process_video_v5_single.py 保持一致）
+    # 支持的模型名称 → 文件名映射（与 process_video_v6_1_single.py 保持一致）
     MODEL_NAME_MAP = {
         "IFRNet_Vimeo90K":   "IFRNet_Vimeo90K.pth",
         "IFRNet_S_Vimeo90K": "IFRNet_S_Vimeo90K.pth",
@@ -268,7 +268,7 @@ class IFRNetProcessor:
 
     def _process_segment(self, segment_path: str, output_path: str) -> bool:
         """
-        调用 process_video_v5_single.IFRNetVideoProcessor 处理单个分段。
+        调用 process_video_v6_1_single.IFRNetVideoProcessor 处理单个分段。
 
         Args:
             segment_path: 输入片段路径
@@ -279,7 +279,7 @@ class IFRNetProcessor:
         """
         try:
             # 导入 v5 单卡版处理器
-            from process_video_v5_single import IFRNetVideoProcessor
+            from process_video_v6_1_single import IFRNetVideoProcessor
 
             print(f"   🎬 处理片段: {Path(segment_path).name}")
             print(f"   📊 插帧倍数: {self.interpolation_factor}x")
@@ -320,7 +320,7 @@ class IFRNetProcessor:
                 return False
 
         except ImportError as e:
-            print(f"   ❌ 无法导入 process_video_v5_single: {e}")
+            print(f"   ❌ 无法导入 process_video_v6_1_single: {e}")
             return False
         except Exception as e:
             print(f"   ❌ 处理失败: {e}")
@@ -425,7 +425,7 @@ class IFRNetProcessor:
 def main():
     """
     独立调用入口：直接驱动 IFRNetProcessor，
-    底层对接 process_video_v5_single.IFRNetVideoProcessor。
+    底层对接 process_video_v6_1_single.IFRNetVideoProcessor。
 
     示例：
       # 使用默认配置，直接插帧
@@ -453,7 +453,7 @@ def main():
         description="IFRNet 视频插帧处理器（单卡版）—— 独立入口",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-底层脚本：external/IFRNet/process_video_v5_single.py
+底层脚本：external/IFRNet/process_video_v6_1_single.py
 
 特性：
   · 分段处理 + 断点恢复

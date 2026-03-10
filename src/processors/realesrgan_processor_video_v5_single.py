@@ -1,7 +1,7 @@
 """
 Real-ESRGAN 视频超分处理器 v5（单卡版）
 ==========================================
-对接 inference_realesrgan_video_v6_single.py（inference_video_single），
+对接 inference_realesrgan_video_v6_1_single.py（inference_video_single），
 保留分段直接对接与断点恢复逻辑，支持 v5/v6 全部硬件加速参数：
   - FP16 / torch.compile
   - TensorRT 可选加速（TRT 8.x / 10.x 双 API 兼容）
@@ -305,7 +305,7 @@ class RealESRGANVideoProcessor:
     def _process_segment(self, input_path: str, output_path: str,
                          segment_idx: int) -> bool:
         """
-        处理单个视频片段（调用 inference_realesrgan_video_v6_single）。
+        处理单个视频片段（调用 inference_realesrgan_video_v6_1_single）。
 
         Args:
             input_path:   输入片段路径
@@ -342,7 +342,7 @@ class RealESRGANVideoProcessor:
     def _run_esrgan_video(self, input_path: str, output_path: str,
                           segment_idx: int) -> bool:
         """
-        构建参数命名空间并调用 inference_realesrgan_video_v6_single.run()。
+        构建参数命名空间并调用 inference_realesrgan_video_v6_1_single.run()。
 
         v5 变更：
           - 新增 batch_size / prefetch_factor / use_compile
@@ -414,7 +414,7 @@ class RealESRGANVideoProcessor:
             os.makedirs(args.output, exist_ok=True)
 
             # 动态导入并运行 v6 单卡版
-            from inference_realesrgan_video_v6_single import run
+            from inference_realesrgan_video_v6_1_single import run
 
             print(f"   🔧 加载模型: {self.model_name}")
             print(f"   🖥️  设备: {self.device} | "
@@ -439,7 +439,7 @@ class RealESRGANVideoProcessor:
                 return False
 
         except ImportError as e:
-            print(f"   ❌ 无法导入 inference_realesrgan_video_v6_single: {e}")
+            print(f"   ❌ 无法导入 inference_realesrgan_video_v6_1_single: {e}")
             return False
         except Exception as e:
             print(f"   ❌ 调用 Real-ESRGAN 失败: {e}")
@@ -468,7 +468,7 @@ class RealESRGANVideoProcessor:
 def main():
     """
     独立调用入口：直接驱动 RealESRGANVideoProcessor，
-    底层对接 inference_realesrgan_video_v6_single.run()。
+    底层对接 inference_realesrgan_video_v6_1_single.run()。
 
     示例：
       # 使用默认配置，直接超分
@@ -495,7 +495,7 @@ def main():
         description="Real-ESRGAN 视频超分处理器（单卡版）—— 独立入口",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-底层脚本：external/Real-ESRGAN/inference_realesrgan_video_v6_single.py
+底层脚本：external/Real-ESRGAN/inference_realesrgan_video_v6_1_single.py
 
 特性：
   · 分段处理 + 断点恢复
