@@ -316,11 +316,14 @@ _thread_local = threading.local()
 
 
 class PinnedBufferPool:
+    # [FIX-RACE] 双 buffer 方案：img0 和 img1 各用独立的 pinned buffer（slot 0/1），
+    # 消除非阻塞 DMA 与 CPU 写入同一 buffer 的数据竞争，修复频闪根因。
     def __init__(self):
-        self._buf:     Optional[torch.Tensor] = None
+        self._bufs:    list = [None, None]  # slot 0 → img0, slot 1 → img1
         self._out_buf: Optional[torch.Tensor] = None   # [FIX-D2H] 异步 D2H 输出 buffer
 
-    def get_for_frames(self, frames: List[np.ndarray], to_rgb: bool = True) -> torch.Tensor:
+    def get_for_frames(self, frames: List[np.ndarray],
+                       to_rgb: bool = True, slot: int = 0) -> torch.Tensor:
         arr = np.stack(frames, axis=0)
         if to_rgb:
             arr = arr[:, :, :, ::-1]
@@ -328,9 +331,9 @@ class PinnedBufferPool:
         src   = torch.from_numpy(arr)
         src_f = src.permute(0, 3, 1, 2).float().div_(255.0).contiguous()
         n = src_f.numel()
-        if self._buf is None or self._buf.numel() < n:
-            self._buf = torch.empty(n, dtype=torch.float32).pin_memory()
-        dst = self._buf[:n].view_as(src_f)
+        if self._bufs[slot] is None or self._bufs[slot].numel() < n:
+            self._bufs[slot] = torch.empty(n, dtype=torch.float32).pin_memory()
+        dst = self._bufs[slot][:n].view_as(src_f)
         dst.copy_(src_f)
         return dst
 
@@ -365,9 +368,11 @@ def pad_to_stride(arr: np.ndarray, stride: int = MODEL_STRIDE):
     return np.pad(arr, ((0, pad_h), (0, pad_w), (0, 0)), mode='edge'), pad_h, pad_w
 
 
-def frames_to_tensor(frames, device, stream=None, dtype=torch.float32):
+def frames_to_tensor(frames, device, stream=None, dtype=torch.float32, slot: int = 0):
+    # slot 0/1 selects which pinned buffer to use (img0 vs img1),
+    # preventing DMA races when img0 and img1 are transferred concurrently.
     pool  = _get_pinned_pool()
-    cpu_t = pool.get_for_frames(frames, to_rgb=True)
+    cpu_t = pool.get_for_frames(frames, to_rgb=True, slot=slot)
     ctx   = torch.cuda.stream(stream) if stream is not None else nullcontext()
     with ctx:
         return cpu_t.to(device, non_blocking=True, dtype=dtype)
@@ -379,7 +384,7 @@ def tensor_to_np(t, orig_H, orig_W, sync_stream=None) -> List[np.ndarray]:
     if sync_stream is not None and torch.cuda.is_available():
         torch.cuda.current_stream().wait_stream(sync_stream)
     # GPU 上完成类型转换
-    arr_gpu  = t.clamp_(0.0, 1.0).mul_(255.0).byte()
+    arr_gpu  = t.clamp_(0.0, 1.0).mul_(255.0).round_().byte()  # [FIX-ROUND] 四舍五入避免截断偏暗
     arr_perm = arr_gpu.permute(0, 2, 3, 1).contiguous()   # [B, H, W, C]，仍在 GPU
     # 申请 pinned 输出 buffer，异步 DMA GPU→主机
     pool = _get_pinned_pool()
@@ -834,12 +839,16 @@ class IFRNetVideoProcessor:
                 os.environ.setdefault('TORCHINDUCTOR_CACHE_DIR', cache_dir)
 
                 model = torch.compile(model, mode='default', dynamic=True)
-                print(f'  torch.compile 加速已启用 (mode=default, dynamic=True)')
-                print(f'  编译缓存目录: {cache_dir}')
-                print(f'  首次运行将触发编译（约1-3分钟），后续运行秒启动')
+                if self.use_tensorrt:
+                    print(f'  torch.compile 已加载（TRT 激活时推理走 TRT 分支，compile 不执行）')
+                else:
+                    print(f'  torch.compile 加速已启用 (mode=default, dynamic=True)')
+                    print(f'  编译缓存目录: {cache_dir}')
+                    print(f'  首次运行将触发编译（约1-3分钟），后续运行秒启动')
                 if self.use_cuda_graph:
                     self.use_cuda_graph = False
-                    print('  手动 CUDA Graph 已禁用（由 torch.compile 接管）')
+                    if not self.use_tensorrt:
+                        print('  手动 CUDA Graph 已禁用（由 torch.compile 接管）')
             except Exception as e:
                 print(f'  torch.compile 不可用: {e}')
         self.model = model
@@ -873,32 +882,38 @@ class IFRNetVideoProcessor:
         else:
             print(f'[TensorRT] 构建 Engine (shape={input_shape}) ...')
             onnx_path = os.path.join(cache_dir, f'{tag}.onnx')
+            # [FIX-ONNX] inference() 使用 3 个输入：img0, img1, embt（无需 imgt_approx）
             dummy0 = torch.randn(*input_shape, device=self.device)
             dummy1 = torch.randn(*input_shape, device=self.device)
             embt   = torch.full((B,), 0.5, dtype=torch.float32, device=self.device).view(B, 1, 1, 1)
-            imgt_a = (dummy0 + dummy1) * 0.5
             if self.use_fp16:
-                dummy0, dummy1, embt, imgt_a = (
-                    dummy0.half(), dummy1.half(), embt.half(), imgt_a.half()
+                dummy0, dummy1, embt = (
+                    dummy0.half(), dummy1.half(), embt.half()
                 )
             # [FIX-TRT] torch.compile 包装的模型导出时需解包 _orig_mod，
             # 否则权重名带 _orig_mod. 前缀导致 TRT parser 解析失败。
-            export_model = getattr(self.model, '_orig_mod', self.model)
-            # [FIX-TRT-OUTPUT] output_names 只命名输出，不限制数量。
-            # 若 forward() 返回 tuple，所有元素都会被导出为独立输出节点，
-            # 导致 engine 有多余输出（add_25/mul_12/mul_13），out_buf 写入错误数据 → 频闪。
-            # 用 wrapper 强制只返回第一个输出（插帧结果）。
-            class _SingleOut(torch.nn.Module):
-                def __init__(self, m): super().__init__(); self.m = m
-                def forward(self, i0, i1, em, ia):
-                    out = self.m(i0, i1, em, ia)
-                    return out[0] if isinstance(out, (tuple, list)) else out
+            # [FIX-ONNX-EXPORT] Model.forward() 是训练接口，签名为 (img0,img1,embt,imgt,flow=None)，
+            # torch.onnx.export 仅传入 (img0,img1,embt) 会触发 "missing required argument: imgt" 错误。
+            # 解决方案：用轻量 InferenceWrapper 封装 model.inference()，
+            # 推理接口签名为 (img0,img1,embt)，返回单个 imgt_pred tensor，
+            # 无 loss 计算，无额外输出节点，无 FP16/FP32 类型冲突。
+            _base_model = getattr(self.model, '_orig_mod', self.model)
+
+            class _InferenceWrapper(torch.nn.Module):
+                """将 Model.inference() 包装为独立 nn.Module，供 ONNX 导出使用。"""
+                def __init__(self, m):
+                    super().__init__()
+                    self.m = m
+                def forward(self, img0, img1, embt):
+                    return self.m.inference(img0, img1, embt)
+
+            export_model = _InferenceWrapper(_base_model)
             with torch.no_grad():
                 torch.onnx.export(
-                    _SingleOut(export_model),
-                    (dummy0, dummy1, embt, imgt_a),
+                    export_model,
+                    (dummy0, dummy1, embt),
                     onnx_path,
-                    input_names=['img0', 'img1', 'embt', 'imgt_approx'],
+                    input_names=['img0', 'img1', 'embt'],
                     output_names=['output'],
                     opset_version=18,       # [FIX-TRT] torch.onnx >= 2.x 最低支持 18
                     dynamic_axes=None,
@@ -911,7 +926,11 @@ class IFRNetVideoProcessor:
                       all_tensors_to_one_file=False)
             print(f'[TensorRT] ONNX 已导出: {onnx_path}')
 
-            logger  = trt.Logger(trt.Logger.WARNING)
+            # [FIX-TRT-LOGGER] TRT 全局只允许一个 Logger 实例；
+            # 多次创建会触发 'logger ignored' WARNING。保存到 self._trt_logger 并复用。
+            if not hasattr(self, '_trt_logger'):
+                self._trt_logger = trt.Logger(trt.Logger.WARNING)
+            logger  = self._trt_logger
             builder = trt.Builder(logger)
             network = builder.create_network(
                 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
@@ -940,7 +959,9 @@ class IFRNetVideoProcessor:
             print(f'[TensorRT] Engine 已缓存: {trt_path}')
 
         try:
-            logger  = trt.Logger(trt.Logger.WARNING)
+            if not hasattr(self, '_trt_logger'):
+                self._trt_logger = trt.Logger(trt.Logger.WARNING)
+            logger  = self._trt_logger
             runtime = trt.Runtime(logger)
             with open(trt_path, 'rb') as f:
                 self._trt_engine  = runtime.deserialize_cuda_engine(f.read())
@@ -1021,8 +1042,9 @@ class IFRNetVideoProcessor:
         T = len(timesteps)
         t0 = time.perf_counter()
 
-        img0 = frames_to_tensor(img0_list, self.device, self.stream_transfer, self.dtype)
-        img1 = frames_to_tensor(img1_list, self.device, self.stream_transfer, self.dtype)
+        # [FIX-RACE] slot=0/1 确保 img0/img1 各用独立 pinned buffer，消除非阻塞 DMA 数据竞争
+        img0 = frames_to_tensor(img0_list, self.device, self.stream_transfer, self.dtype, slot=0)
+        img1 = frames_to_tensor(img1_list, self.device, self.stream_transfer, self.dtype, slot=1)
 
         if self.stream_compute is not None:
             self.stream_compute.wait_stream(self.stream_transfer)
@@ -1041,44 +1063,63 @@ class IFRNetVideoProcessor:
                 pred_big   = self._get_cuda_graph(shape_key, img0_big, img1_big, embt, imgt_approx)
         elif getattr(self, '_trt_ok', False):
             # [FIX-TRT] TensorRT 静态 Engine 推理路径
+            # ─────────────────────────────────────────────────────────────────
+            # [FIX-TRT-STREAM-RACE] 频闪根因（TRT 路径）：
+            #
+            # 旧代码在 default stream 上执行 img0_exp.half() / img1_exp.half() 的
+            # 类型转换 GPU kernel，然后立即调用 execute_async_v3(stream=stream_compute)。
+            # stream_compute 只 wait 了 stream_transfer（DMA完成），从未 wait default stream，
+            # 因此 TRT 在 stream_compute 上读 i0/i1 时，default stream 上的 .half() kernel
+            # 可能尚未写完 → TRT 读到未完成的半精度数据 → 每批帧概率性画面错误 → 频闪。
+            #
+            # 修复：把所有输入准备（.half()/.contiguous()/pad/bind）全部移入
+            # torch.cuda.stream(stream_compute) 上下文，使 execute_async_v3 和其所有
+            # 数据依赖都处于同一条流，彻底消除跨流竞争。
+            # ─────────────────────────────────────────────────────────────────
             import tensorrt as _trt2
-            t_vals      = timesteps * B
-            embt_t      = torch.tensor(t_vals, dtype=torch.float32, device=self.device).view(-1, 1, 1, 1)
-            imgt_approx = img0_exp.float() * (1 - embt_t) + img1_exp.float() * embt_t
-            i0 = img0_exp.half().contiguous() if self.use_fp16 else img0_exp.float().contiguous()
-            i1 = img1_exp.half().contiguous() if self.use_fp16 else img1_exp.float().contiguous()
-            em = embt_t.half().contiguous() if self.use_fp16 else embt_t.contiguous()
-            ia = imgt_approx.half().contiguous() if self.use_fp16 else imgt_approx.contiguous()
-            BT      = i0.shape[0]
-            C, H_p, W_p = i0.shape[1], i0.shape[2], i0.shape[3]
-            # [FIX-TRT-PAD] TRT 静态 engine batch 固定，最后一批不足时 pad 到 engine 大小，
-            # 推理后只取前 BT 帧，避免越界写入导致周期性画面损坏。
-            in_names  = getattr(self, '_trt_input_names',  ['img0', 'img1', 'embt', 'imgt_approx'])
+            in_names  = getattr(self, '_trt_input_names',  ['img0', 'img1', 'embt'])
             out_names = getattr(self, '_trt_output_names', ['output'])
             engine_BT = self._trt_engine.get_tensor_shape(in_names[0])[0]
-            if BT < engine_BT:
-                pad_n = engine_BT - BT
-                def _pad(t):
-                    return torch.cat([t, t[-1:].expand(pad_n, *t.shape[1:])], dim=0).contiguous()
-                i0, i1, em, ia = _pad(i0), _pad(i1), _pad(em), _pad(ia)
+            BT        = img0_exp.shape[0]
+            C, H_p, W_p = img0_exp.shape[1], img0_exp.shape[2], img0_exp.shape[3]
             out_dtype = torch.float16 if self.use_fp16 else torch.float32
+            # 输出 buffer 在 stream_compute 外分配（纯内存分配，无 GPU kernel）
             out_buf   = torch.empty((engine_BT, 3, H_p, W_p), dtype=out_dtype, device=self.device)
-            ctx = self._trt_context
-            for name, buf in zip(in_names, [i0, i1, em, ia]):
-                ctx.set_tensor_address(name, buf.data_ptr())
-            ctx.set_tensor_address(out_names[0], out_buf.data_ptr())
-            _dummy_bufs = []
-            for _out_name in out_names[1:]:
-                _shape  = tuple(self._trt_engine.get_tensor_shape(_out_name))
-                _dtype  = self._trt_engine.get_tensor_dtype(_out_name)
-                _tdtype = torch.float16 if _dtype == _trt2.DataType.HALF else torch.float32
-                _dummy  = torch.empty(_shape, dtype=_tdtype, device=self.device)
-                ctx.set_tensor_address(_out_name, _dummy.data_ptr())
-                _dummy_bufs.append(_dummy)
-            _trt_stream = (self.stream_compute.cuda_stream
-                           if self.stream_compute is not None
-                           else torch.cuda.current_stream().cuda_stream)
-            ctx.execute_async_v3(stream_handle=_trt_stream)
+
+            _trt_stream_ctx = (torch.cuda.stream(self.stream_compute)
+                               if self.stream_compute is not None else nullcontext())
+            with _trt_stream_ctx:
+                # 在 stream_compute 上做类型转换和 pad，与 execute_async_v3 同流，无竞争
+                t_vals = timesteps * B
+                embt_t = torch.tensor(t_vals, dtype=torch.float32,
+                                      device=self.device).view(-1, 1, 1, 1)
+                i0 = img0_exp.half().contiguous() if self.use_fp16 else img0_exp.float().contiguous()
+                i1 = img1_exp.half().contiguous() if self.use_fp16 else img1_exp.float().contiguous()
+                em = embt_t.half().contiguous() if self.use_fp16 else embt_t.contiguous()
+                # [FIX-TRT-PAD] 最后一批不足 engine_BT 时 pad，推理后只取前 BT 帧
+                if BT < engine_BT:
+                    pad_n = engine_BT - BT
+                    def _pad(t):
+                        return torch.cat([t, t[-1:].expand(pad_n, *t.shape[1:])], 0).contiguous()
+                    i0, i1, em = _pad(i0), _pad(i1), _pad(em)
+                ctx = self._trt_context
+                for name, buf in zip(in_names, [i0, i1, em]):
+                    ctx.set_tensor_address(name, buf.data_ptr())
+                ctx.set_tensor_address(out_names[0], out_buf.data_ptr())
+                _dummy_bufs = []
+                for _out_name in out_names[1:]:
+                    _shape  = tuple(self._trt_engine.get_tensor_shape(_out_name))
+                    _dtype  = self._trt_engine.get_tensor_dtype(_out_name)
+                    _tdtype = torch.float16 if _dtype == _trt2.DataType.HALF else torch.float32
+                    _dummy  = torch.empty(_shape, dtype=_tdtype, device=self.device)
+                    ctx.set_tensor_address(_out_name, _dummy.data_ptr())
+                    _dummy_bufs.append(_dummy)
+                _trt_stream_handle = (self.stream_compute.cuda_stream
+                                      if self.stream_compute is not None
+                                      else torch.cuda.current_stream().cuda_stream)
+                ctx.execute_async_v3(stream_handle=_trt_stream_handle)
+
+            # default stream 等待 stream_compute 上的 TRT 推理完成后再读输出
             if self.stream_compute is not None:
                 torch.cuda.default_stream(self.device).wait_stream(self.stream_compute)
             else:
@@ -1479,7 +1520,21 @@ class IFRNetVideoProcessor:
             audio_src = input_path if self.keep_audio else None
             if self.use_tensorrt:
                 meta = _probe_video(input_path)
-                sh   = (self.batch_size, 3, meta['height'], meta['width'])
+                # [FIX-TRT-PAD-DIMS] 必须用 padding 后的尺寸（对齐到 MODEL_STRIDE=32）构建 TRT Engine，
+                # 而非原始视频尺寸。否则会出现 TRT 写入 stride 与 out_buf 读取 stride 不一致的问题：
+                #
+                #   例：W=720（非32倍数）→ 实际推理输入 pad 到 W=736。
+                #   旧代码用 W=720 构建 Engine：TRT 输出按 W=720 stride 写入共 24×3×576×720 个值；
+                #   但 out_buf 按 W=736 分配（24×3×576×736），最后一帧（index=23）的 PyTorch 读取
+                #   起始偏移 = 23×3×576×736×2 = 58,503,168 字节，而 TRT 总写入量仅 59,719,680 字节，
+                #   导致该帧约 52% 的内容读到 torch.empty 的未初始化内存（零或垃圾）→ 绿色/黑色频闪。
+                #   每 batch_size×2 = 48 帧（输出）出现一次，与用户观测完全吻合。
+                #
+                #   修复：用 pad 后的 H_p/W_p 构建 Engine，TRT 输入输出 stride 与 out_buf 完全一致。
+                _trt_ceil = lambda x, s: x if x % s == 0 else x + (s - x % s)
+                _trt_H    = _trt_ceil(meta['height'], MODEL_STRIDE)
+                _trt_W    = _trt_ceil(meta['width'],  MODEL_STRIDE)
+                sh        = (self.batch_size, 3, _trt_H, _trt_W)
                 trt_dir = os.path.join(os.path.dirname(output_path) or '.', '.trt_cache')
                 self._build_trt_engine(sh, trt_dir)
 
