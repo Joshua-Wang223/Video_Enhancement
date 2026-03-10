@@ -2528,7 +2528,7 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Real-ESRGAN 视频超分 —— 终极优化版 v6（多卡版）',
+        description='Real-ESRGAN 视频超分 —— 终极优化版 v6.1（多卡版）',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     # 基础参数
@@ -2612,7 +2612,7 @@ def main():
 
     # 启动前打印硬件状态
     print('=' * 65)
-    print('  RealESRGAN 视频超分 —— 终极优化版 v6（多卡版）')
+    print('  RealESRGAN 视频超分 —— 终极优化版 v6.1（多卡版）')
     print('=' * 65)
     num_gpus = torch.cuda.device_count()
     print(f'  GPU 数量: {num_gpus}')
