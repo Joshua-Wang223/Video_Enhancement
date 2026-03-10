@@ -98,6 +98,17 @@ import torch
 
 warnings.filterwarnings('ignore')
 
+# ── [FIX-NML] stderr 过滤器：屏蔽 NVML_SUCCESS / CUDACachingAllocator 无害断言 ──
+import re as _re, sys as _sys
+class _NVMLFilter:
+    _pat = _re.compile(r'NVML_SUCCESS|INTERNAL ASSERT FAILED.*CUDACachingAllocator')
+    def __init__(self, s): self._s = s
+    def write(self, m):
+        if not self._pat.search(m): self._s.write(m)
+    def flush(self): self._s.flush()
+    def __getattr__(self, a): return getattr(self._s, a)
+_sys.stderr = _NVMLFilter(_sys.stderr)
+
 # ── 内存碎片优化：expandable_segments 允许 PyTorch 用不连续 VRAM 满足大分配请求
 # 必须在任何 CUDA 分配之前设置（setdefault 不覆盖用户已设置的值）
 os.environ.setdefault('PYTORCH_ALLOC_CONF', 'expandable_segments:True')
@@ -145,19 +156,6 @@ MODEL_NAME_MAP: Dict[str, str] = {
 # ─────────────────────────────────────────────────────────────────────────────
 # M2/M3: 硬件能力探测
 # ─────────────────────────────────────────────────────────────────────────────
-
-class _NVMLFilter(_logging.Filter):
-    """[FIX-NML] 过滤 PyTorch 将 NVML 断言包装为 stderr 输出的无害噪音。
-    在子进程或容器环境中，NVML_SUCCESS 与 CUDACachingAllocator 相关日志
-    常以 RuntimeError 或 logging.WARNING 形式出现，污染输出但不影响正确性。
-    """
-    def filter(self, record: logging.LogRecord) -> bool:
-        msg = record.getMessage()
-        return ('NVML_SUCCESS' not in msg and 'CUDACachingAllocator' not in msg)
-
-# 在模块加载时全局安装过滤器
-logging.getLogger().addFilter(_NVMLFilter())
-
 
 class HardwareCapability:
     _nvdec: Optional[bool] = None
