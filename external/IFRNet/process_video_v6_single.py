@@ -1382,21 +1382,21 @@ class IFRNetVideoProcessor:
         # M4: TRT 初始化（如需要）
         if self.use_tensorrt:
             meta = _probe_video(input_path)
-                # [FIX-TRT-PAD-DIMS] 必须用 padding 后的尺寸（对齐到 MODEL_STRIDE=32）构建 TRT Engine，
-                # 而非原始视频尺寸。否则会出现 TRT 写入 stride 与 out_buf 读取 stride 不一致的问题：
-                #
-                #   例：W=720（非32倍数）→ 实际推理输入 pad 到 W=736。
-                #   旧代码用 W=720 构建 Engine：TRT 输出按 W=720 stride 写入共 24×3×576×720 个值；
-                #   但 out_buf 按 W=736 分配（24×3×576×736），最后一帧（index=23）的 PyTorch 读取
-                #   起始偏移 = 23×3×576×736×2 = 58,503,168 字节，而 TRT 总写入量仅 59,719,680 字节，
-                #   导致该帧约 52% 的内容读到 torch.empty 的未初始化内存（零或垃圾）→ 绿色/黑色频闪。
-                #   每 batch_size×2 = 48 帧（输出）出现一次，与用户观测完全吻合。
-                #
-                #   修复：用 pad 后的 H_p/W_p 构建 Engine，TRT 输入输出 stride 与 out_buf 完全一致。
-                _trt_ceil = lambda x, s: x if x % s == 0 else x + (s - x % s)
-                _trt_H    = _trt_ceil(meta['height'], MODEL_STRIDE)
-                _trt_W    = _trt_ceil(meta['width'],  MODEL_STRIDE)
-                sh        = (self.batch_size, 3, _trt_H, _trt_W)
+            # [FIX-TRT-PAD-DIMS] 必须用 padding 后的尺寸（对齐到 MODEL_STRIDE=32）构建 TRT Engine，
+            # 而非原始视频尺寸。否则会出现 TRT 写入 stride 与 out_buf 读取 stride 不一致的问题：
+            #
+            #   例：W=720（非32倍数）→ 实际推理输入 pad 到 W=736。
+            #   旧代码用 W=720 构建 Engine：TRT 输出按 W=720 stride 写入共 24×3×576×720 个值；
+            #   但 out_buf 按 W=736 分配（24×3×576×736），最后一帧（index=23）的 PyTorch 读取
+            #   起始偏移 = 23×3×576×736×2 = 58,503,168 字节，而 TRT 总写入量仅 59,719,680 字节，
+            #   导致该帧约 52% 的内容读到 torch.empty 的未初始化内存（零或垃圾）→ 绿色/黑色频闪。
+            #   每 batch_size×2 = 48 帧（输出）出现一次，与用户观测完全吻合。
+            #
+            #   修复：用 pad 后的 H_p/W_p 构建 Engine，TRT 输入输出 stride 与 out_buf 完全一致。
+            _trt_ceil = lambda x, s: x if x % s == 0 else x + (s - x % s)
+            _trt_H    = _trt_ceil(meta['height'], MODEL_STRIDE)
+            _trt_W    = _trt_ceil(meta['width'],  MODEL_STRIDE)
+            sh        = (self.batch_size, 3, _trt_H, _trt_W)
             trt_dir = os.path.join(os.path.dirname(output_path) or '.', '.trt_cache')
             self._build_trt_engine(sh, trt_dir)
 
