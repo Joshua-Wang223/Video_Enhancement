@@ -1529,7 +1529,7 @@ class IFRNetVideoProcessor:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='IFRNet 视频插帧 —— 终极优化版 v5（单卡版）',
+        description='IFRNet 视频插帧 —— 终极优化版 v6.1（单卡版）',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     # 基础参数
@@ -1572,7 +1572,7 @@ def main():
 
     # 打印启动信息
     print('=' * 65)
-    print('  IFRNet 视频插帧 —— 终极优化版 v6（单卡版）')
+    print('  IFRNet 视频插帧 —— 终极优化版 v6.1（单卡版）')
     print('=' * 65)
     print(f'  模型:   {args.model}')
     print(f'  设备:   {args.device} | GPU: '

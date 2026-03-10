@@ -1,5 +1,5 @@
 """
-IFRNet 视频插帧处理脚本 —— 终极优化版 v6（多卡版）
+IFRNet 视频插帧处理脚本 —— 终极优化版 v6.1（多卡版）
 ==========================================================
 基于 IFRNet（Intermediate Flow-based Recursive Network）的视频帧插值脚本，
 面向多 GPU 生产环境的高性能实现。
@@ -1884,7 +1884,7 @@ def _ifrnet_segment_worker(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='IFRNet 视频插帧 —— 终极优化版 v6（多卡版）',
+        description='IFRNet 视频插帧 —— 终极优化版 v6.1（多卡版）',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     # 基础参数
@@ -1931,7 +1931,7 @@ def main():
 
     # 打印启动信息
     print('=' * 65)
-    print('  IFRNet 视频插帧 —— 终极优化版 v6（多卡版）')
+    print('  IFRNet 视频插帧 —— 终极优化版 v6.1（多卡版）')
     print('=' * 65)
     num_gpus  = torch.cuda.device_count()
     n_workers = max(1, num_gpus * args.num_process_per_gpu)
