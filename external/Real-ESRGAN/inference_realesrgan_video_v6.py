@@ -819,7 +819,7 @@ class FFmpegWriter:
             frame = np.clip(frame, 0, 255).astype(np.uint8)
         if frame.shape != expected_shape:
             import cv2 as _cv2
-            print(f'\n[WARN] write_frame 尺寸修正 {frame.shape[:2]} → '
+            tqdm.write(f'[WARN] write_frame 尺寸修正 {frame.shape[:2]} → '
                   f'({self._out_h},{self._out_w})，请检查 face_enhance 路径')
             frame = _cv2.resize(frame, (self._out_w, self._out_h))
         self._queue.put(frame.tobytes())
@@ -982,7 +982,7 @@ def _detect_faces_batch(
     _nf = sum(len(fd['crops']) for fd in face_data)
     if _nf:
         _fw = sum(1 for fd in face_data if fd['crops'])
-        print(f'\n[face_detect] 本批 {len(face_data)} 帧：{_fw} 帧含人脸，共 {_nf} 张')
+        tqdm.write(f'[face_detect] 本批 {len(face_data)} 帧：{_fw} 帧含人脸，共 {_nf} 张')
     return face_data
 
 
@@ -1032,9 +1032,9 @@ def _gfpgan_infer_batch(
             if 'out of memory' in str(_oom_e).lower() and sub_bs > 1:
                 sub_bs = max(1, sub_bs // 2)
                 torch.cuda.empty_cache()
-                print(f'\n[OOM-GFPGAN] OOM，降级 gfpgan_batch_size → {sub_bs}')
+                tqdm.write(f'[OOM-GFPGAN] OOM，降级 gfpgan_batch_size → {sub_bs}')
             else:
-                print(f'\n[OOM-GFPGAN] 不可恢复（sub_bs={sub_bs}），'
+                tqdm.write(f'[OOM-GFPGAN] 不可恢复（sub_bs={sub_bs}），'
                       f'跳过 {len(sub_crops)} 张: {_oom_e}')
                 for _ in sub_crops:
                     all_out_tensors.append(None)  # type: ignore[arg-type]
@@ -1089,12 +1089,12 @@ def _paste_faces_batch(
                 face_enhancer.face_helper, 'output', None)
             result = result if result is not None else frame_sr
         except Exception as e:
-            print(f'\n[face_enhance] 帧{fi} 贴回异常，使用 SR 结果: {e}')
+            tqdm.write(f'[face_enhance] 帧{fi} 贴回异常，使用 SR 结果: {e}')
             result = frame_sr
 
         # [FIX-PIPE-BUG] 严格尺寸校验：强制 resize 到 SR 尺寸
         if result.shape[0] != expected_h or result.shape[1] != expected_w:
-            print(f'\n[WARN] face_enhance 帧{fi} 尺寸异常 '
+            tqdm.write(f'[WARN] face_enhance 帧{fi} 尺寸异常 '
                   f'{result.shape[:2]} != ({expected_h},{expected_w})，强制 resize')
             result = _cv2.resize(result, (expected_w, expected_h),
                                  interpolation=_cv2.INTER_LANCZOS4)
@@ -1233,7 +1233,7 @@ def _process_batch(
             _frames_with_faces = sum(1 for fd in face_data if fd['crops'])
             _total_faces = sum(len(fd['crops']) for fd in face_data)
             if _frames_with_faces > 0:
-                print(f'\n[face_detect] 本批 {len(face_data)} 帧中检测到人脸：'
+                tqdm.write(f'[face_detect] 本批 {len(face_data)} 帧中检测到人脸：'
                       f'{_frames_with_faces} 帧含人脸，共 {_total_faces} 张脸')
 
             # Step-2: 汇总所有帧的 face crops → 批量 GFPGAN 前向
@@ -1267,9 +1267,9 @@ def _process_batch(
                         if 'out of memory' in str(_oom_e).lower() and sub_bs > 1:
                             sub_bs = max(1, sub_bs // 2)
                             torch.cuda.empty_cache()
-                            print(f'\n[OOM-GFPGAN] 人脸批量 OOM，降级 gfpgan_batch_size → {sub_bs}')
+                            tqdm.write(f'[OOM-GFPGAN] 人脸批量 OOM，降级 gfpgan_batch_size → {sub_bs}')
                         else:
-                            print(f'\n[OOM-GFPGAN] 不可恢复错误（sub_bs={sub_bs}），'
+                            tqdm.write(f'[OOM-GFPGAN] 不可恢复错误（sub_bs={sub_bs}），'
                                   f'跳过 {len(sub_crops)} 张脸: {_oom_e}')
                             for _ in sub_crops:
                                 all_out_tensors.append(None)   # type: ignore[arg-type]
@@ -1307,7 +1307,7 @@ def _process_batch(
                         result = getattr(face_enhancer.face_helper, 'output', None)
                     final_results.append(result if result is not None else frame_sr)
                 except Exception as e:
-                    print(f'\n[face_enhance] 帧{fi} 贴回异常，使用 SR 结果: {e}')
+                    tqdm.write(f'[face_enhance] 帧{fi} 贴回异常，使用 SR 结果: {e}')
                     final_results.append(frame_sr)
 
         else:
@@ -1335,7 +1335,7 @@ def _process_batch(
                     else:
                         final_results.append(frame_sr)
                 except Exception as e:
-                    print(f'\n[face_enhance] 帧处理异常，使用 SR 结果: {e}')
+                    tqdm.write(f'[face_enhance] 帧处理异常，使用 SR 结果: {e}')
                     final_results.append(frame_sr)
 
         # ── 输出尺寸安全检查（统一出口）──────────────────────────────────────
@@ -1346,7 +1346,7 @@ def _process_batch(
             if _res is None:
                 final_results[_i] = sr_results[_i]
             elif _res.shape[0] != expected_h or _res.shape[1] != expected_w:
-                print(f'\n[WARN] face_enhance 帧{_i} 尺寸异常 '
+                tqdm.write(f'[WARN] face_enhance 帧{_i} 尺寸异常 '
                       f'{_res.shape[:2]} != ({expected_h},{expected_w})，强制 resize')
                 final_results[_i] = _cv2.resize(_res, (expected_w, expected_h),
                                                 interpolation=_cv2.INTER_LANCZOS4)
@@ -1429,8 +1429,14 @@ def _sr_worker_fn(
         torch.backends.cudnn.enabled   = True
         print(f'[Worker {worker_idx}] cudnn.benchmark = True 已启用 (cuda:{device_id})')
 
-        _mp_display = model_path if isinstance(model_path, str) else ' + '.join(model_path)
+        _mp_display = model_path if isinstance(model_path, str) else osp.basename(model_path[0])
+        _dni_hint   = (f'[Worker {worker_idx}] [DNI 模式] denoise_strength={dni_weight[0]:.2f} → '
+                       f'{dni_weight[0]:.0%} realesr-general-x4v3 + '
+                       f'{dni_weight[1]:.0%} realesr-general-wdn-x4v3'
+                       if isinstance(model_path, list) and dni_weight else '')
         print(f'[Worker {worker_idx}] 加载模型: {_mp_display} → cuda:{device_id}')
+        if _dni_hint:
+            print(_dni_hint)
         upsampler = _build_upsampler(
             model_name, model_path, dni_weight,
             tile, tile_pad, pre_pad, use_half, device
@@ -1552,9 +1558,9 @@ def _sr_worker_fn(
                             if 'out of memory' in err_str and bs > 1:
                                 bs = max(1, bs // 2)
                                 torch.cuda.empty_cache()
-                                print(f'\n[Worker {worker_idx}] SR OOM，降级 bs → {bs}')
+                                print(f'[Worker {worker_idx}] SR OOM，降级 bs → {bs}')
                             else:
-                                print(f'\n[Worker {worker_idx}] SR Error: {e}')
+                                print(f'[Worker {worker_idx}] SR Error: {e}')
                             # 当前批失败：取消 detect future
                             if detect_fut is not None:
                                 detect_fut.cancel()
@@ -1616,7 +1622,7 @@ def _sr_worker_fn(
                     if 'out of memory' in err_str and bs > 1:
                         bs = max(1, bs // 2)
                         torch.cuda.empty_cache()
-                        print(f'\n[Worker {worker_idx}] OOM，降级 batch_size → {bs}')
+                        print(f'[Worker {worker_idx}] OOM，降级 batch_size → {bs}')
                         for idx, frm in zip(local_indices, local_frames):
                             try:
                                 out, gfp_bs = _process_batch(
@@ -1699,6 +1705,10 @@ class MultiGPUOrchestrator:
             wdn_path   = model_path.replace('realesr-general-x4v3', 'realesr-general-wdn-x4v3')
             model_path = [model_path, wdn_path]
             dni_weight = [args.denoise_strength, 1 - args.denoise_strength]
+            print(f'[Orchestrator] [DNI 模式] denoise_strength={args.denoise_strength:.2f} → '
+                  f'{args.denoise_strength:.0%} realesr-general-x4v3 + '
+                  f'{1-args.denoise_strength:.0%} realesr-general-wdn-x4v3'
+                  f'（--denoise_strength 1 可禁用）')
 
         # 探测视频元数据
         meta = get_video_meta_info(args.input)
@@ -1806,7 +1816,7 @@ class MultiGPUOrchestrator:
             while not abort_evt.is_set():
                 try:
                     wid, err_msg = error_q.get(timeout=0.5)
-                    print(f'\n[Worker {wid} Error] {err_msg}')
+                    tqdm.write(f'[Worker {wid} Error] {err_msg}')
                     abort_evt.set()
                 except queue.Empty:
                     pass
@@ -1905,7 +1915,7 @@ class MultiGPUOrchestrator:
 
         elapsed     = time.time() - t_collect_start
         frames_done = total_done[0]
-        print(f'\n[Orchestrator] 完成 {frames_done} 帧 | '
+        print(f'[Orchestrator] 完成 {frames_done} 帧 | '
               f'耗时 {elapsed:.1f}s | 平均 {frames_done/elapsed:.1f} fps')
 
         # X3: JSON 报告
@@ -1978,7 +1988,7 @@ def flush_batch_safe(
                 oom_cooldown[0] -= 1
             elif bs < max_bs[0]:
                 new_bs = min(bs + 1, max_bs[0])
-                print(f'\n[恢复] 显存充裕,batch_size {bs} → {new_bs}')
+                tqdm.write(f'[恢复] 显存充裕,batch_size {bs} → {new_bs}')
                 bs = new_bs
                 
         except RuntimeError as e:
@@ -1987,13 +1997,13 @@ def flush_batch_safe(
                 bs = max(1, bs // 2)
                 oom_cooldown[0] = 10
                 torch.cuda.empty_cache()
-                print(f'\n[OOM] 降级 batch_size → {bs}')
+                tqdm.write(f'[OOM] 降级 batch_size → {bs}')
             elif 'nvml_success' in err_str or 'cudacachingallocator' in err_str:
                 # [BUGFIX] 无害断言，跳过
                 pbar.update(len(sub))
                 i += len(sub)
             else:
-                print(f'\n[Error] {e}')
+                tqdm.write(f'[Error] {e}')
                 pbar.update(len(sub))
                 i += len(sub)
     return bs, gfp_bs
@@ -2026,8 +2036,15 @@ def inference_video_single(args, video_save_path: str, device=None):
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    _mp_display = model_path if isinstance(model_path, str) else ' + '.join(model_path)
+    _mp_display = model_path if isinstance(model_path, str) else osp.basename(model_path[0])
+    _dni_hint   = (f'  [DNI 模式] denoise_strength={args.denoise_strength:.2f} → '
+                   f'{args.denoise_strength:.0%} realesr-general-x4v3 + '
+                   f'{1-args.denoise_strength:.0%} realesr-general-wdn-x4v3\n'
+                   f'           如需纯模型推理（不混合去噪变体），请加 --denoise_strength 1'
+                   if isinstance(model_path, list) else '')
     print(f'  加载模型: {_mp_display} → {device}')
+    if _dni_hint:
+        print(_dni_hint)
     upsampler = _build_upsampler(
         args.model_name, model_path, dni_weight,
         args.tile, args.tile_pad, args.pre_pad, not args.fp32, device
@@ -2190,9 +2207,9 @@ def inference_video_single(args, video_save_path: str, device=None):
                             bs = max(1, bs // 2)
                             _oom_cd[0] = 10
                             torch.cuda.empty_cache()
-                            print(f'\n[OOM] SR 降级 batch_size → {bs}')
+                            tqdm.write(f'[OOM] SR 降级 batch_size → {bs}')
                         else:
-                            print(f'\n[Error] SR: {e}')
+                            tqdm.write(f'[Error] SR: {e}')
                         if detect_fut is not None:
                             detect_fut.cancel()
                             detect_fut = None
@@ -2253,12 +2270,15 @@ def inference_video_single(args, video_save_path: str, device=None):
                     gfpgan_bs,
                 )
                 meter.update(len(batch_frames))
-                pbar.set_postfix(
-                    fps=f'{meter.fps():.1f}',
-                    eta=f'{meter.eta(nb):.0f}s',
-                    bs=bs,
-                    ms=f'{np.mean(timing[-20:]) * 1000:.0f}' if timing else '—',
-                )
+                # [FIX-TQDM] 末帧批次已在 flush_batch_safe 内打满 100%，
+                # 此处再调 set_postfix 会触发 tqdm 重渲染出第二条完成行
+                if not end:
+                    pbar.set_postfix(
+                        fps=f'{meter.fps():.1f}',
+                        eta=f'{meter.eta(nb):.0f}s',
+                        bs=bs,
+                        ms=f'{np.mean(timing[-20:]) * 1000:.0f}' if timing else '—',
+                    )
                 batch_frames = []
             if end:
                 break
@@ -2302,14 +2322,14 @@ def inference_video_single(args, video_save_path: str, device=None):
                                     _res = np.clip(_res, 0, 255).astype(np.uint8)
                                 output = _res
                     except Exception as e:
-                        print(f'\n[face_enhance] 帧处理异常，使用 SR 结果: {e}')
+                        tqdm.write(f'[face_enhance] 帧处理异常，使用 SR 结果: {e}')
             except RuntimeError as e:
                 if 'out of memory' in str(e).lower():
-                    print(f'\n[OOM] {e}')
+                    tqdm.write(f'[OOM] {e}')
                     torch.cuda.empty_cache()
                     continue
                 else:
-                    print(f'\n[Error] {e}')
+                    tqdm.write(f'[Error] {e}')
                     continue
             writer.write_frame(output)
             meter.update(1)
@@ -2398,7 +2418,7 @@ def run(args):
     num_workers = max(1, num_gpus * nw_per_g)
 
     if num_workers > 1 and args.input_type_is_video:
-        print(f'\n[V6] 多 GPU 模式：{num_gpus} GPU × {nw_per_g} Worker = {num_workers} 总 Worker')
+        tqdm.write(f'[V6] 多 GPU 模式：{num_gpus} GPU × {nw_per_g} Worker = {num_workers} 总 Worker')
         print('[V6] 架构：Dispatcher-Queue + FIX-PIPELINE（每 Worker 独立 detect/paste 线程池）')
         orchestrator = MultiGPUOrchestrator(args, video_save_path, num_gpus, nw_per_g)
         orchestrator.run()
