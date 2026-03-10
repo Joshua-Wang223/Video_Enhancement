@@ -250,19 +250,23 @@ class HardwareCapability:
 
     @staticmethod
     def _probe_nvdec() -> bool:
-        """[FIX-NVDEC] 真实 H.264 编码+解码双阶段探测，消除 lavfi 误报。"""
+        """[FIX-NDV] 两阶段真实探测：先软件编码 H.264 流，再用 NVDEC 实际解码。
+        避免 lavfi 测试源在某些非官方 FFmpeg build 中误报"可用"。
+        编码阶段严格使用纯软件路径（无 -hwaccel），确保与解码探测完全解耦。
+        旧代码将 -hwaccel cuda 误放入编码命令（解码加速标志对编码无意义），
+        在部分系统上导致 FFmpeg 输出额外警告或提前返回非零码。
+        """
         try:
-            # 阶段1：用 FFmpeg 软编码生成一段真实 H.264 流
+            # Step-1: 软件编码 lavfi 源 → H.264 raw 流（不带任何 hwaccel）
             enc_cmd = [
                 'ffmpeg', '-f', 'lavfi',
                 '-i', 'testsrc=size=64x64:duration=0.04:rate=25',
-                '-vcodec', 'libx264', '-f', 'h264', 'pipe:1',
-                '-loglevel', 'error',
+                '-vcodec', 'libx264', '-f', 'h264', 'pipe:1', '-loglevel', 'error',
             ]
             enc = subprocess.run(enc_cmd, capture_output=True, timeout=10)
             if enc.returncode != 0 or not enc.stdout:
                 return False
-            # 阶段2：用 NVDEC 解码该 H.264 流，验证真实 GPU 解码路径
+            # Step-2: 用 NVDEC 真实解码上一步产出的 H.264 流 → 验证硬件解码可用
             dec_cmd = [
                 'ffmpeg', '-hwaccel', 'cuda',
                 '-f', 'h264', '-i', 'pipe:0',
