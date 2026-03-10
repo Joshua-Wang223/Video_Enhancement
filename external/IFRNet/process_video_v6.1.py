@@ -1081,10 +1081,27 @@ class IFRNetVideoProcessor:
             out_names = getattr(self, '_trt_output_names', ['output'])
             engine_BT = self._trt_engine.get_tensor_shape(in_names[0])[0]
             BT        = img0_exp.shape[0]
-            C, H_p, W_p = img0_exp.shape[1], img0_exp.shape[2], img0_exp.shape[3]
+            # C, H_p, W_p = img0_exp.shape[1], img0_exp.shape[2], img0_exp.shape[3]
             out_dtype = torch.float16 if self.use_fp16 else torch.float32
-            # 输出 buffer 在 stream_compute 外分配（纯内存分配，无 GPU kernel）
-            out_buf   = torch.empty((engine_BT, 3, H_p, W_p), dtype=out_dtype, device=self.device)
+            # # 输出 buffer 在 stream_compute 外分配（纯内存分配，无 GPU kernel）
+            # out_buf   = torch.empty((engine_BT, 3, H_p, W_p), dtype=out_dtype, device=self.device)
+            
+            # [FIX-TRT-OUT-SHAPE] 直接从 Engine 查询输出 shape 分配 out_buf，
+            # 替代原来手工推导的 (engine_BT, 3, H_p, W_p)。
+            #
+            # 与 FIX-TRT-PAD-DIMS（process_video 中用 pad 后尺寸构建 Engine）的关系：
+            #   FIX-TRT-PAD-DIMS 是根基：确保 Engine 本身以正确的 padded shape 构建，
+            #   因此 get_tensor_shape 返回的就是 padded shape（H_p, W_p）。
+            #   本修复是在此基础上的加固：out_buf 的 shape 直接来源于 Engine，
+            #   与 Engine 永远严格自洽，不再依赖 img0_exp.shape 的间接推导。
+            #
+            # 为什么手工推导有隐患（即使 FIX-TRT-PAD-DIMS 已修复）：
+            #   IFRNet 是帧插值模型，输入输出恰好同尺寸，手工推导目前成立；
+            #   但这是对模型结构的隐含假设，一旦换用输出通道数/尺寸不同的模型
+            #  （如带 alpha 的 4 通道输出），手工推导会静默算错，而 get_tensor_shape
+            #   能自动适应任何模型结构变化，无需修改推理代码。
+            out_shape = tuple(self._trt_engine.get_tensor_shape(out_names[0]))
+            out_buf   = torch.empty(out_shape, dtype=out_dtype, device=self.device)
 
             _trt_stream_ctx = (torch.cuda.stream(self.stream_compute)
                                if self.stream_compute is not None else nullcontext())
@@ -1520,17 +1537,22 @@ class IFRNetVideoProcessor:
             audio_src = input_path if self.keep_audio else None
             if self.use_tensorrt:
                 meta = _probe_video(input_path)
-                # [FIX-TRT-PAD-DIMS] 必须用 padding 后的尺寸（对齐到 MODEL_STRIDE=32）构建 TRT Engine，
-                # 而非原始视频尺寸。否则会出现 TRT 写入 stride 与 out_buf 读取 stride 不一致的问题：
+                # [FIX-TRT-PAD-DIMS] 必须用 padding 后的尺寸（对齐到 MODEL_STRIDE=32）构建 TRT Engine。
                 #
-                #   例：W=720（非32倍数）→ 实际推理输入 pad 到 W=736。
-                #   旧代码用 W=720 构建 Engine：TRT 输出按 W=720 stride 写入共 24×3×576×720 个值；
-                #   但 out_buf 按 W=736 分配（24×3×576×736），最后一帧（index=23）的 PyTorch 读取
-                #   起始偏移 = 23×3×576×736×2 = 58,503,168 字节，而 TRT 总写入量仅 59,719,680 字节，
-                #   导致该帧约 52% 的内容读到 torch.empty 的未初始化内存（零或垃圾）→ 绿色/黑色频闪。
-                #   每 batch_size×2 = 48 帧（输出）出现一次，与用户观测完全吻合。
+                # 背景：_infer_batch 在推理前将帧 pad 到 MODEL_STRIDE=32 的倍数（如 W=720→736）。
+                # 若 Engine 以原始尺寸构建，TRT 接收到 W=736 的输入但期望 W=720 → 输入不匹配。
                 #
-                #   修复：用 pad 后的 H_p/W_p 构建 Engine，TRT 输入输出 stride 与 out_buf 完全一致。
+                # 历史 bug 说明（已通过两个互补修复彻底消除）：
+                #   旧代码用 W=720 构建 Engine，out_buf 却按 W=736（img0_exp.shape）手工分配：
+                #     ① TRT 写入 stride=720，PyTorch 读取 stride=736 → 最后一帧读到未初始化内存
+                #       → 每 batch_size×scale=48 输出帧出现绿色/黑色上下分割（频闪）。
+                #
+                # 现已通过两个正交修复共同消除：
+                #   本修复（构建期，FIX-TRT-PAD-DIMS）：用 _trt_H/_trt_W（pad 后尺寸）构建 Engine，
+                #     确保 Engine 输入/输出 shape 与实际推理尺寸完全一致；
+                #   推理期修复（FIX-TRT-OUT-SHAPE，见 _infer_batch）：out_buf 直接从
+                #     get_tensor_shape(out_names[0]) 查询，与 Engine 永远严格自洽，
+                #     消除手工推导出错的可能性（尤其应对未来模型结构变化）。
                 _trt_ceil = lambda x, s: x if x % s == 0 else x + (s - x % s)
                 _trt_H    = _trt_ceil(meta['height'], MODEL_STRIDE)
                 _trt_W    = _trt_ceil(meta['width'],  MODEL_STRIDE)
