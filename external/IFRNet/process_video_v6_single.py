@@ -684,6 +684,19 @@ class IFRNetVideoProcessor:
         self._graph_inputs: dict = {}
         self._timing:       List[float] = []
 
+        # [FIX-TRT-MUTEX] TRT 与手动 CUDA Graph / torch.compile 三选一严格互斥：
+        # TRT 激活时推理全走 TRT 分支，手动 CUDA Graph 和 compile 路径永远不会执行，
+        # 但若不在此处提前禁用，两者仍会被初始化（compile 触发耗时编译，
+        # CUDA Graph 在 _infer_batch 中优先于 TRT 被执行），造成资源浪费或静默走错路径。
+        # 在加载模型之前统一禁用，保证后续所有初始化逻辑行为一致。
+        if self.use_tensorrt:
+            if self.use_cuda_graph:
+                self.use_cuda_graph = False
+                print('  [FIX-TRT-MUTEX] use_tensorrt=True → 已禁用手动 CUDA Graph（互斥）')
+            if use_compile:
+                use_compile = False
+                print('  [FIX-TRT-MUTEX] use_tensorrt=True → 已跳过 torch.compile（互斥，避免无效编译耗时）')
+
         # 加载模型
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
         self._load_model(self.device, use_compile)
@@ -747,6 +760,12 @@ class IFRNetVideoProcessor:
                         print('  手动 CUDA Graph 已禁用（由 torch.compile 接管）')
             except Exception as e:
                 print(f'  torch.compile 不可用: {e}')
+                # [FIX-TRT-MUTEX] compile 异常退出时若 use_tensorrt 同时开启，
+                # use_cuda_graph 未经 compile 成功路径重置，需在此补充禁用，
+                # 否则 _infer_batch 中 use_cuda_graph 分支会静默优先于 TRT 执行。
+                if self.use_tensorrt and self.use_cuda_graph:
+                    self.use_cuda_graph = False
+                    print('  [FIX-TRT-MUTEX] compile 异常 + use_tensorrt=True → 补充禁用手动 CUDA Graph')
         self.model = model
 
         if device.type == 'cuda':
