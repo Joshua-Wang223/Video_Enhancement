@@ -110,6 +110,11 @@ class IFRNetProcessor:
         self.preview          = False
         self.preview_interval = 30
 
+        # TRT Engine 缓存目录（v6+）
+        # 优先级：config.paths.trt_cache_dir（由 config_manager 自动派生为 base_dir/.trt_cache，
+        # 或用户在 config / CLI --trt-cache-dir 中显式指定）；空时兜底为 base_dir/.trt_cache。
+        self.trt_cache_dir = config.get("paths", "trt_cache_dir", default="") or ""
+
         # 验证 IFRNet 目录
         if not self.ifrnet_dir.exists():
             raise FileNotFoundError(f"IFRNet 目录不存在: {self.ifrnet_dir}")
@@ -382,17 +387,16 @@ class IFRNetProcessor:
                   f"CUDA Graph: {self.use_cuda_graph} | "
                   f"TRT: {self.use_tensorrt}")
 
-            # [FIX-TRT-CACHE-DIR] TRT 缓存目录统一使用模型文件所在目录下的 .trt_cache，
-            # 与直接调用 process_video_v6_1_single.py 的默认规则保持一致：
-            #   直接调用：trt_dir = dirname(output_path)/.trt_cache
-            #             output_path 为最终输出文件，路径固定，Engine 可复用。
-            #   经由本层调用：output_path 为临时分段文件，每次路径不同，
-            #             若不显式指定则每个视频/分段都会在 processed/.trt_cache/
-            #             下重复构建 Engine，浪费构建时间。
-            # 使用 model_path 同级目录作为稳定锚点，与直接调用场景共享同一套缓存。
-            _trt_cache_dir = os.path.join(
-                os.path.dirname(os.path.abspath(self.model_path)), '.trt_cache'
-            ) if self.use_tensorrt else None
+            # [FIX-TRT-CACHE-DIR] TRT 缓存目录优先级：
+            #   1. config.paths.trt_cache_dir（由 config_manager 自动派生为 base_dir/.trt_cache，
+            #      或用户在 config / CLI --trt-cache-dir 中显式指定）
+            #   2. 兜底：base_dir/.trt_cache（与底层脚本直接调用时的默认行为完全一致）
+            _trt_cache_dir = (self.trt_cache_dir or
+                              os.path.join(
+                                  str(self.config.get("paths", "base_dir", default="")),
+                                  '.trt_cache'
+                              )
+                              ) if self.use_tensorrt else None
 
             processor = IFRNetVideoProcessor(
                 model_path     = self.model_path,
@@ -547,6 +551,9 @@ def main():
                         help="禁用 CUDA Graph（compile 激活时已接管，可安全禁用）")
     parser.add_argument("--use-tensorrt",  action="store_true",
                         help="启用 TensorRT 加速（首次需构建 Engine，缓存于 .trt_cache/）")
+    parser.add_argument("--trt-cache-dir", metavar="DIR",
+                        help="TRT Engine 缓存目录（覆盖配置 paths.trt_cache_dir；"
+                             "默认 base_dir/.trt_cache）")
 
     # ── 硬件解/编码开关 ──────────────────────────────────────────────────────
     parser.add_argument("--no-hwaccel",  action="store_true",
@@ -616,6 +623,8 @@ def main():
         config.set("models", "ifrnet", "use_cuda_graph", value=False)
     if args.use_tensorrt:
         config.set("models", "ifrnet", "use_tensorrt", value=True)
+    if args.trt_cache_dir:
+        config.set("paths", "trt_cache_dir", value=args.trt_cache_dir)
 
     # 硬件解/编码
     if args.no_hwaccel:
@@ -657,6 +666,8 @@ def main():
           f" | CUDAGraph: {processor.use_cuda_graph} | TRT: {processor.use_tensorrt}")
     print(f"   NVDEC  : {processor.use_hwaccel} | codec: {processor.codec}"
           f" | CRF: {processor.crf}")
+    if processor.use_tensorrt:
+        print(f"   TRT 缓存: {processor.trt_cache_dir or '(自动: base_dir/.trt_cache)'}")
 
     success = processor.process_video(args.input, args.output)
     return 0 if success else 1

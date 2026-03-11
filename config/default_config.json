@@ -25,7 +25,14 @@
     "// derived_note": "output_dir / temp_dir / log_dir 留空时由 config_manager 自动派生为 base_dir/output 等",
     "output_dir":  "",
     "temp_dir":    "",
-    "log_dir":     ""
+    "log_dir":     "",
+    "// trt_cache_dir_note": [
+      "TRT Engine 缓存目录。",
+      "★ 留空（推荐）：config_manager 自动派生为 base_dir/.trt_cache。",
+      "★ 手动填写：绝对路径，IFRNet 与 ESRGan 共享同一目录（Engine 文件名含模型/Shape 信息，不会冲突）。",
+      "命令行可用 --trt-cache-dir 覆盖此字段。"
+    ],
+    "trt_cache_dir": ""
   },
 
   "models": {

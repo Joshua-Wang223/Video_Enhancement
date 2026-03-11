@@ -786,7 +786,7 @@ class IFRNetVideoProcessor:
         self.num_process_per_gpu = num_process_per_gpu
         self.dtype           = torch.float16 if self.use_fp16 else torch.float32
         # [FIX-TRT-CACHE-DIR] 允许外部指定 TRT 缓存目录（如 ifrnet_processor 传入稳定路径），
-        # 不指定时在 process_video() 中回退到 dirname(output_path)/.trt_cache 默认规则。
+        # 不指定时在 process_video() 中回退到 base_dir/.trt_cache 默认规则。
         self.trt_cache_dir   = trt_cache_dir
 
         self._pool          = TensorPool()
@@ -1581,12 +1581,10 @@ class IFRNetVideoProcessor:
                 _trt_H    = _trt_ceil(meta['height'], MODEL_STRIDE)
                 _trt_W    = _trt_ceil(meta['width'],  MODEL_STRIDE)
                 sh        = (self.batch_size, 3, _trt_H, _trt_W)
-                # [FIX-TRT-CACHE-DIR] 优先使用外部传入的稳定缓存目录（由 ifrnet_processor 等上层
-                # 传入，确保多分段处理时复用同一 Engine，避免逐段重复构建）；
-                # 未指定时回退到 output_path 同级目录（原有默认规则，兼容直接调用场景）。
-                trt_dir = self.trt_cache_dir or os.path.join(
-                    os.path.dirname(os.path.abspath(output_path)), '.trt_cache'
-                )
+                # [FIX-TRT-CACHE-DIR] 优先使用外部传入的稳定缓存目录（由 ifrnet_processor /
+                # config_manager 传入）；未指定时回退到项目根目录 base_dir/.trt_cache，
+                # 保持与上层调用路径完全一致，避免直接调用场景产生游离缓存。
+                trt_dir = self.trt_cache_dir or os.path.join(base_dir, '.trt_cache')
                 self._build_trt_engine(sh, trt_dir)
 
             ok, fc, oc = self._process_segment(
@@ -1968,6 +1966,8 @@ def main():
     parser.add_argument('--preview',  action='store_true')
     parser.add_argument('--preview_interval', type=int, default=30)
     parser.add_argument('--report',   default=None, help='JSON 性能报告路径')
+    parser.add_argument('--trt_cache_dir', default=None,
+                        help='TRT Engine 缓存目录（覆盖默认 dirname(output)/.trt_cache）')
 
     args = parser.parse_args()
 
@@ -2003,6 +2003,9 @@ def main():
     print(f'  编码器: {args.codec} → 实际: {HardwareCapability.best_encoder(args.codec)} | '
           f'CRF: {args.crf}')
     print(f'  中间段无损编码: {_lossless_c} {" ".join(_lossless_e)}')
+    if args.use_tensorrt:
+        _tcd = args.trt_cache_dir or f'(自动: {base_dir}/.trt_cache)'
+        print(f'  TRT 缓存: {_tcd}')
     print()
 
     t_total = time.time()
@@ -2021,6 +2024,7 @@ def main():
         keep_audio          = not args.no_audio,
         ffmpeg_bin          = args.ffmpeg_bin,
         report_json         = args.report,
+        trt_cache_dir       = args.trt_cache_dir,
         num_process_per_gpu = args.num_process_per_gpu,
     )
 

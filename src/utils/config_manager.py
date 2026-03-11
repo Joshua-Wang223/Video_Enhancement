@@ -32,6 +32,7 @@ class Config:
             "output_dir":  "",
             "temp_dir":    "",
             "log_dir":     "",
+            "trt_cache_dir": "",  # 留空由 _setup_paths() 自动派生为 base_dir/.trt_cache
         },
         "models": {
             "ifrnet": {
@@ -192,6 +193,12 @@ class Config:
 
         for key in ["output_dir", "temp_dir", "log_dir"]:
             Path(paths[key]).mkdir(parents=True, exist_ok=True)
+
+        # TRT Engine 缓存目录：空时自动派生为 base_dir/.trt_cache
+        if not paths.get("trt_cache_dir", ""):
+            paths["trt_cache_dir"] = str(base_dir / ".trt_cache")
+        # 仅创建父目录；.trt_cache 本身由各处理器在首次构建 Engine 时按需创建
+        Path(paths["trt_cache_dir"]).parent.mkdir(parents=True, exist_ok=True)
 
         # ------------------------------------------------------------------
         # 模型路径自动派生：model_path 为空时按项目约定目录自动填充

@@ -1624,7 +1624,10 @@ def inference_video_single(args, video_save_path: str, device=None):
     if getattr(args, 'use_tensorrt', False) and torch.cuda.is_available():
         meta    = get_video_meta_info(args.input)
         sh      = (args.batch_size, 3, meta['height'], meta['width'])
-        trt_dir = osp.join(args.output, '.trt_cache')
+        # [FIX-TRT-CACHE-DIR] 优先使用外部传入的稳定缓存目录（由 realesrgan_processor /
+        # config_manager 传入）；未指定时回退到项目根目录 base_dir/.trt_cache，
+        # 保持与上层调用路径完全一致，避免直接调用场景产生游离缓存。
+        trt_dir = getattr(args, 'trt_cache_dir', None) or osp.join(base_dir, '.trt_cache')
         trt_accel = TensorRTAccelerator(upsampler.model, device, trt_dir, sh,
                                         use_fp16=not args.fp32)
 
@@ -2115,6 +2118,8 @@ def main():
     # 报告
     parser.add_argument('--report',                  type=str, default=None,
                         help='输出 JSON 性能报告路径（如 report.json）')
+    parser.add_argument('--trt_cache_dir',           type=str, default=None,
+                        help='TRT Engine 缓存目录（覆盖默认 output/.trt_cache）')
 
     args = parser.parse_args()
     args.input = args.input.rstrip('/\\')

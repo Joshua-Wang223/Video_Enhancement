@@ -17,6 +17,7 @@
               --crf-esrgan / --codec-esrgan / --tile-size / --tile-pad /
               --pre-pad / --denoise-strength / --face-enhance / --gfpgan-model /
               --gfpgan-weight / --gfpgan-batch-size / --report-esrgan
+      共用  : --trt-cache-dir（IFRNet 与 ESRGan 共享同一 TRT Engine 缓存目录）
   · 批量模式（--batch-mode）：从 --input-dir 批量读取，输出到 --output-dir
   · 断点恢复：各处理器内部独立管理分段断点
   · 原始音频从输入一次性提取，合并时无损回写
@@ -205,6 +206,10 @@ def _apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
         config.set("output", "crf",    value=args.output_crf)
     if args.output_preset:
         config.set("output", "preset", value=args.output_preset)
+
+    # ── TRT 缓存目录（全局，IFRNet 与 ESRGan 共享）────────────────────────────
+    if args.trt_cache_dir:
+        config.set("paths", "trt_cache_dir", value=args.trt_cache_dir)
 
 
 # =============================================================================
@@ -442,6 +447,7 @@ def _build_parser() -> argparse.ArgumentParser:
                --report-esrgan
   人脸增强   : --face-enhance / --gfpgan-model / --gfpgan-weight / --gfpgan-batch-size
   合并输出   : --output-codec / --output-crf / --output-preset
+  TRT 缓存   : --trt-cache-dir（IFRNet 与 ESRGan 共享同一目录）
 """,
     )
 
@@ -572,6 +578,12 @@ def _build_parser() -> argparse.ArgumentParser:
     g.add_argument("--output-preset", metavar="PRESET",
                    help="最终合并编码预设（如 medium / slow，覆盖配置）")
 
+    # ── TRT 缓存目录（全局）─────────────────────────────────────────────────
+    g = parser.add_argument_group("TRT Engine 缓存（IFRNet / ESRGan 共用）")
+    g.add_argument("--trt-cache-dir", metavar="DIR",
+                   help="TRT Engine 缓存目录（覆盖配置 paths.trt_cache_dir；"
+                        "未指定时从配置读取；配置为空时自动使用 base_dir/.trt_cache）")
+
     return parser
 
 
@@ -616,6 +628,10 @@ def _print_startup_info(config: Config, args: argparse.Namespace, mode: str) -> 
         f", batch={esr('gfpgan_batch_size',12)})"
         if face_on else ""
     ))
+    use_trt_any = ifr('use_tensorrt', False) or esr('use_tensorrt', False)
+    if use_trt_any:
+        _tcd = config.get("paths", "trt_cache_dir", default="") or f"(自动: {base_dir}/.trt_cache)"
+        print(f"\n  TRT Engine 缓存目录: {_tcd}")
     print("─" * 70 + "\n")
 
 

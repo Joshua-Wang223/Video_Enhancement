@@ -102,6 +102,11 @@ class RealESRGANVideoProcessor:
         self.ffmpeg_bin  = config.get("models", "realesrgan", "ffmpeg_bin",  default="ffmpeg")
         self.report_json = config.get("models", "realesrgan", "report_json", default=None)
 
+        # TRT Engine 缓存目录（v6+）
+        # 优先级：config.paths.trt_cache_dir（由 config_manager 自动派生为 base_dir/.trt_cache，
+        # 或用户在 config / CLI --trt-cache-dir 中显式指定）；空时兜底为 base_dir/.trt_cache。
+        self.trt_cache_dir = config.get("paths", "trt_cache_dir", default="") or ""
+
         # 验证 Real-ESRGAN 目录
         if not self.esrgan_dir.exists():
             raise FileNotFoundError(f"Real-ESRGAN 目录不存在: {self.esrgan_dir}")
@@ -421,6 +426,8 @@ class RealESRGANVideoProcessor:
             ns.prefetch_factor = self.prefetch_factor
             ns.use_compile     = self.use_compile
             ns.use_tensorrt    = self.use_tensorrt
+            # TRT Engine 缓存目录；底层 inference_video_single() 通过 getattr 读取
+            ns.trt_cache_dir   = self.trt_cache_dir or None
 
             # ── 硬件解/编码参数（v5+）──────────────────────────────────────
             ns.use_hwaccel = self.use_hwaccel
@@ -604,6 +611,9 @@ def main():
                         help="启用 torch.compile 加速（reduce-overhead 模式）")
     parser.add_argument("--use-tensorrt", action="store_true",
                         help="启用 TensorRT 加速（首次需构建 Engine，缓存于 .trt_cache/）")
+    parser.add_argument("--trt-cache-dir", metavar="DIR",
+                        help="TRT Engine 缓存目录（覆盖配置 paths.trt_cache_dir；"
+                             "默认 base_dir/.trt_cache）")
     parser.add_argument("--fp32",         action="store_true",
                         help="使用 FP32 精度（默认 FP16）")
     parser.add_argument("--crf",          type=int,
@@ -672,6 +682,8 @@ def main():
         config.set("models", "realesrgan", "use_compile",   value=True)
     if args.use_tensorrt:
         config.set("models", "realesrgan", "use_tensorrt",  value=True)
+    if args.trt_cache_dir:
+        config.set("paths", "trt_cache_dir", value=args.trt_cache_dir)
     if args.fp32:
         config.set("models", "realesrgan", "fp32",          value=True)
     if args.crf is not None:
@@ -702,6 +714,8 @@ def main():
     print(f"   FP16   : {not processor.fp32} | compile: {processor.use_compile}"
           f" | TRT: {processor.use_tensorrt}")
     print(f"   batch  : {processor.batch_size} | prefetch: {processor.prefetch_factor}")
+    if processor.use_tensorrt:
+        print(f"   TRT 缓存: {processor.trt_cache_dir or '(自动: base_dir/.trt_cache)'}")
     face_hint = (
         f" (model={processor.gfpgan_model}, weight={processor.gfpgan_weight},"
         f" batch={processor.gfpgan_batch_size})"
