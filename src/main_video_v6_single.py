@@ -78,12 +78,23 @@ from pathlib import Path
 from typing import Optional
 
 # ----- Add the utils directory so that video_utils and config_manager can be found -----
-_SCRIPT_DIR   = Path(__file__).resolve().parent          # src/processors
-_PROJECT_ROOT = _SCRIPT_DIR.parent.parent                # Video_Enhancement/
-_UTILS_PATH   = str(_PROJECT_ROOT / "src" / "utils")
-if _UTILS_PATH not in sys.path:
-    sys.path.insert(0, _UTILS_PATH)
+# _SCRIPT_DIR   = Path(__file__).resolve().parent          # src/processors
+# _PROJECT_ROOT = _SCRIPT_DIR.parent.parent                # Video_Enhancement/
+# _UTILS_PATH   = str(_PROJECT_ROOT / "src" / "utils")
+# if _UTILS_PATH not in sys.path:
+#     sys.path.insert(0, _UTILS_PATH)
 # ----------------------------------------------------------------------------------------
+
+# 动态定位项目根目录（本文件在 src/，根目录在上一层）
+_SRC_DIR  = Path(os.path.abspath(__file__)).parent        # …/src
+_BASE_DIR = _SRC_DIR.parent                               # …/Video_Enhancement
+
+# 导入自定义工具
+_utils_path      = str(_BASE_DIR / "src" / "utils")
+_processors_path = str(_BASE_DIR / "src" / "processors")
+for _p in (_utils_path, _processors_path):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from config_manager import Config
 from video_utils import (
@@ -91,7 +102,7 @@ from video_utils import (
     smart_extract_audio, VideoInfo,
 )
 
-_DEFAULT_CFG = str(_PROJECT_ROOT / "config" / "default_config.json")
+_DEFAULT_CFG = str(_BASE_DIR / "config" / "default_config.json")
 
 
 # =============================================================================
