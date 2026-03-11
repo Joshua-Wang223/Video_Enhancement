@@ -26,24 +26,24 @@ IFRNet 视频插帧处理脚本 —— 终极优化版 v6（单卡版）
 
 【命令行使用示例】
   # 基础用法（FP16 + torch.compile + NVDEC/NVENC 自动启用）
-  python process_video_v5_single.py \\
+  python process_video_v6_single.py \\
       --input input.mp4 --output output_2x.mp4 --scale 2
 
   # 4× 插帧，关闭 compile（跳过预热，启动更快，适合短视频）
-  python process_video_v5_single.py \\
+  python process_video_v6_single.py \\
       --input input.mp4 --output output_4x.mp4 --scale 4 --no_compile
 
   # TensorRT 加速（首次构建 Engine，后续秒启动）
-  python process_video_v5_single.py \\
+  python process_video_v6_single.py \\
       --input input.mp4 --output output.mp4 --scale 2 --use_tensorrt
 
   # 禁用所有加速（调试/CPU 环境）
-  python process_video_v5_single.py \\
+  python process_video_v6_single.py \\
       --input input.mp4 --output output.mp4 --scale 2 \\
       --no_fp16 --no_compile --no_cuda_graph --no_hwaccel --device cpu
 
   # 输出性能报告
-  python process_video_v5_single.py \\
+  python process_video_v6_single.py \\
       --input input.mp4 --output output.mp4 --scale 2 --report report.json
 
 【关键参数说明】
@@ -662,6 +662,7 @@ class IFRNetVideoProcessor:
         keep_audio:       bool = True,
         ffmpeg_bin:       str = 'ffmpeg',
         report_json:      Optional[str] = None,
+        trt_cache_dir:    Optional[str] = None,
     ):
         self.model_path      = model_path
         self.device_str      = device
@@ -678,6 +679,9 @@ class IFRNetVideoProcessor:
         self.ffmpeg_bin      = ffmpeg_bin
         self.report_json     = report_json
         self.dtype           = torch.float16 if self.use_fp16 else torch.float32
+        # [FIX-TRT-CACHE-DIR] 允许外部指定 TRT 缓存目录（如 ifrnet_processor 传入稳定路径），
+        # 不指定时在 process_video() 中回退到 dirname(output_path)/.trt_cache 默认规则。
+        self.trt_cache_dir   = trt_cache_dir
 
         self._pool          = TensorPool()
         self._graph:        dict = {}
@@ -1436,7 +1440,12 @@ class IFRNetVideoProcessor:
             _trt_H    = _trt_ceil(meta['height'], MODEL_STRIDE)
             _trt_W    = _trt_ceil(meta['width'],  MODEL_STRIDE)
             sh        = (self.batch_size, 3, _trt_H, _trt_W)
-            trt_dir = os.path.join(os.path.dirname(output_path) or '.', '.trt_cache')
+            # [FIX-TRT-CACHE-DIR] 优先使用外部传入的稳定缓存目录（由 ifrnet_processor 等上层
+            # 传入，确保多分段处理时复用同一 Engine，避免逐段重复构建）；
+            # 未指定时回退到 output_path 同级目录（原有默认规则，兼容直接调用场景）。
+            trt_dir = self.trt_cache_dir or os.path.join(
+                os.path.dirname(os.path.abspath(output_path)), '.trt_cache'
+            )
             self._build_trt_engine(sh, trt_dir)
 
         ok, fc, oc = self._process_segment(

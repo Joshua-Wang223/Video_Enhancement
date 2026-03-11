@@ -76,25 +76,25 @@ RealESRGAN 视频超分处理脚本 —— 终极优化版 v6.1（多卡版）
 
 【命令行使用示例】
   # 双卡超分（每卡 1 Worker）
-  python inference_realesrgan_video_v6.py -i input.mp4 -o results/ -s 2
+  python inference_realesrgan_video_v6_1.py -i input.mp4 -o results/ -s 2
 
   # 4× 放大 + 每卡 2 Worker（24G+ 显存）
-  python inference_realesrgan_video_v6.py -i input.mp4 -o results/ -s 4 \\
+  python inference_realesrgan_video_v6_1.py -i input.mp4 -o results/ -s 4 \\
       --num_process_per_gpu 2
 
   # 开启 face_enhance（v6 流水线加速，每 Worker 独立 detect/paste 并行）
-  python inference_realesrgan_video_v6.py -i input.mp4 -o results/ -s 2 \\
+  python inference_realesrgan_video_v6_1.py -i input.mp4 -o results/ -s 2 \\
       --face_enhance --gfpgan_model 1.4 --gfpgan_weight 0.5
 
   # TRT 加速（首次构建 Engine，之后秒加载）
-  python inference_realesrgan_video_v6.py -i input.mp4 -o results/ -s 2 \\
+  python inference_realesrgan_video_v6_1.py -i input.mp4 -o results/ -s 2 \\
       --use_tensorrt
 
   # 直接指定输出文件路径 + FP32 模式
-  python inference_realesrgan_video_v6.py -i input.mp4 -o output_4k.mkv -s 2 --fp32
+  python inference_realesrgan_video_v6_1.py -i input.mp4 -o output_4k.mkv -s 2 --fp32
 
   # 输出 JSON 性能报告
-  python inference_realesrgan_video_v6.py -i input.mp4 -o results/ -s 2 \\
+  python inference_realesrgan_video_v6_1.py -i input.mp4 -o results/ -s 2 \\
       --report report.json
 
 【版本演进历史】

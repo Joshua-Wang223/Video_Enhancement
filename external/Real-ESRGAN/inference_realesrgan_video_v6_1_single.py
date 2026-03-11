@@ -46,33 +46,33 @@ v6.1 在 v6 基础上反向移植 IFRNet v5 的 OOM 级联保护机制：
 
 【命令行使用示例】
   # 基础超分（2× 放大，FP16 + NVDEC/NVENC 自动启用）
-  python inference_realesrgan_video_v6_single.py \\
+  python inference_realesrgan_video_v6_1_single.py \\
       -i input.mp4 -o results/ -s 2
 
   # 4× 放大，动画视频专用模型
-  python inference_realesrgan_video_v6_single.py \\
+  python inference_realesrgan_video_v6_1_single.py \\
       -i input.mp4 -o results/ -n realesr-animevideov3 -s 4
 
   # 开启 face_enhance，指定 GFPGAN 版本和融合权重
-  python inference_realesrgan_video_v6_single.py \\
+  python inference_realesrgan_video_v6_1_single.py \\
       -i input.mp4 -o results/ -s 2 \\
       --face_enhance --gfpgan_model 1.4 --gfpgan_weight 0.5
 
   # 大批量 + TensorRT 加速（首次构建 Engine）
-  python inference_realesrgan_video_v6_single.py \\
+  python inference_realesrgan_video_v6_1_single.py \\
       -i input.mp4 -o results/ -s 2 \\
       --batch_size 16 --use_tensorrt
 
   # tile 模式（显存不足时切块处理）
-  python inference_realesrgan_video_v6_single.py \\
+  python inference_realesrgan_video_v6_1_single.py \\
       -i input.mp4 -o results/ -s 2 -t 512 --tile_pad 10
 
   # 直接输出到指定文件（非目录），FP32 模式
-  python inference_realesrgan_video_v6_single.py \\
+  python inference_realesrgan_video_v6_1_single.py \\
       -i input.mp4 -o output.mp4 -s 2 --fp32
 
   # 输出 JSON 性能报告
-  python inference_realesrgan_video_v6_single.py \\
+  python inference_realesrgan_video_v6_1_single.py \\
       -i input.mp4 -o results/ -s 2 --report report.json
 
 【关键参数说明】

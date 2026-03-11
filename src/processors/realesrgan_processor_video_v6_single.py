@@ -1,15 +1,31 @@
 """
-Real-ESRGAN 视频超分处理器 v5（单卡版）
+Real-ESRGAN 视频超分处理器 v6（单卡版）
 ==========================================
-对接 inference_realesrgan_video_v6_1_single.py（inference_video_single），
-保留分段直接对接与断点恢复逻辑，支持 v5/v6 全部硬件加速参数：
+对接 inference_realesrgan_video_v6_1_single.py（run / inference_video_single），
+保留分段直接对接与断点恢复逻辑，支持 v6.1 全部硬件加速参数：
   - FP16 / torch.compile
-  - TensorRT 可选加速（TRT 8.x / 10.x 双 API 兼容）
-  - NVDEC 硬件解码 / NVENC 硬件编码
-  - OOM 自动降级
-  - 批量推理（batch_size 默认 8）/ JSON 性能报告
-  - face_enhance：批量 GFPGAN 推理 + 原始帧检测 + 无脸跳过（v6 新增）
-  - CPU-GPU 流水线并行：detect/paste 异步，SR 推理不停顿（v6 新增）
+  - TensorRT 可选加速（TRT 8.x / 10.x 双 API 兼容；FIX-3 已修复，真正有效）
+  - NVDEC 硬件解码 / NVENC 硬件编码（自动探测，失败时回退软解/软编）
+  - OOM 级联保护（backport from IFRNet v5）：
+      首次 OOM 永久降低 max_batch_size 天花板
+      级联 OOM 不重复修改上限（内存仍脏，惩罚无意义）
+      batch_size=1 仍 OOM → 深度清理 + 按剩余显存动态恢复
+  - 批量推理（batch_size 默认 12）/ JSON 性能报告
+  - face_enhance（v6 重点优化）：
+      批量 GFPGAN 推理（堆叠一批所有人脸 crops → 单次前向）
+      原始帧检测（低分辨率帧上 RetinaFace，比 SR 帧快 4×）
+      无人脸帧跳过（检测为空时直接跳过 GFPGAN，零额外开销）
+      CPU-GPU 流水线并行（detect/paste 后台线程与 SR 主线程并行）
+      GFPGAN FP16（torch.autocast，利用 Tensor Core）
+      GFPGAN OOM 保护（gfpgan_batch_size 子批量 + OOM 自动降级）
+
+【v6 变更说明（相对 v5）】
+  - 对齐底层 inference_realesrgan_video_v6_1_single.py v6.1
+  - 构造函数新增参数与 default_config.json 完全对齐
+  - main() CLI 新增 --prefetch-factor（v5 中有属性但 CLI 缺失）
+  - main() CLI 参数文档更新，覆盖 face_enhance 流水线说明
+  - _run_esrgan_video Namespace 字段与底层 v6.1 argparse 定义严格对齐
+  - 输出路径处理：兼容 run() 新增的 _output_is_file() 逻辑
 """
 
 import os
@@ -33,12 +49,12 @@ if utils_path not in sys.path:
 
 from video_utils import (
     get_video_duration, format_time, verify_video_integrity,
-    split_video_by_time, merge_videos_by_codec
+    split_video_by_time, merge_videos_by_codec,
 )
 
 
 class RealESRGANVideoProcessor:
-    """Real-ESRGAN 视频超分处理器 v5（单卡版）"""
+    """Real-ESRGAN 视频超分处理器 v6（单卡版）"""
 
     def __init__(self, config):
         """
@@ -47,7 +63,7 @@ class RealESRGANVideoProcessor:
         Args:
             config: 配置对象（应包含 paths, models.realesrgan, processing 等节）
         """
-        self.config = config
+        self.config    = config
         self.esrgan_dir = Path(config.get("paths", "base_dir")) / "external" / "Real-ESRGAN"
         self.model_name = config.get("models", "realesrgan", "model_name",
                                      default="realesr-general-x4v3")
@@ -57,10 +73,10 @@ class RealESRGANVideoProcessor:
         use_gpu = config.get("models", "realesrgan", "use_gpu", default=True)
         self.device = "cuda" if use_gpu and torch.cuda.is_available() else "cpu"
 
-        self.upscale_factor   = config.get("processing", "upscale_factor",   default=4)
-        self.segment_duration = config.get("processing", "segment_duration",  default=30)
+        self.upscale_factor   = config.get("processing",    "upscale_factor",   default=4)
+        self.segment_duration = config.get("processing",    "segment_duration",  default=30)
 
-        # Real-ESRGAN 基础参数
+        # Real-ESRGAN 基础推理参数
         self.denoise_strength = config.get("models", "realesrgan", "denoise_strength", default=0.5)
         self.tile_size        = config.get("models", "realesrgan", "tile_size",        default=0)
         self.tile_pad         = config.get("models", "realesrgan", "tile_pad",         default=10)
@@ -68,18 +84,18 @@ class RealESRGANVideoProcessor:
         self.fp32             = config.get("models", "realesrgan", "fp32",             default=False)
         self.face_enhance     = config.get("models", "realesrgan", "face_enhance",     default=False)
 
-        # v5 新增：推理优化参数（batch_size/prefetch_factor 对齐 v6 默认值）
-        self.batch_size       = config.get("models", "realesrgan", "batch_size",       default=12)
-        self.prefetch_factor  = config.get("models", "realesrgan", "prefetch_factor",  default=24)
-        self.use_compile      = config.get("models", "realesrgan", "use_compile",      default=False)
-        self.use_tensorrt     = config.get("models", "realesrgan", "use_tensorrt",     default=False)
+        # 推理优化参数（v5+，对齐 v6.1 默认值）
+        self.batch_size      = config.get("models", "realesrgan", "batch_size",      default=12)
+        self.prefetch_factor = config.get("models", "realesrgan", "prefetch_factor", default=24)
+        self.use_compile     = config.get("models", "realesrgan", "use_compile",     default=False)
+        self.use_tensorrt    = config.get("models", "realesrgan", "use_tensorrt",    default=False)
 
-        # v6 新增：face_enhance 精细控制参数
-        self.gfpgan_model       = config.get("models", "realesrgan", "gfpgan_model",       default="1.4")
-        self.gfpgan_weight      = config.get("models", "realesrgan", "gfpgan_weight",      default=0.5)
-        self.gfpgan_batch_size  = config.get("models", "realesrgan", "gfpgan_batch_size",  default=12)
+        # face_enhance 精细控制参数（v6）
+        self.gfpgan_model      = config.get("models", "realesrgan", "gfpgan_model",      default="1.4")
+        self.gfpgan_weight     = config.get("models", "realesrgan", "gfpgan_weight",     default=0.5)
+        self.gfpgan_batch_size = config.get("models", "realesrgan", "gfpgan_batch_size", default=12)
 
-        # v5 新增：硬件解/编码参数
+        # 硬件解/编码参数（v5+）
         self.use_hwaccel = config.get("models", "realesrgan", "use_hwaccel", default=True)
         self.codec       = config.get("models", "realesrgan", "codec",       default="libx264")
         self.crf         = config.get("models", "realesrgan", "crf",         default=23)
@@ -114,7 +130,7 @@ class RealESRGANVideoProcessor:
             是否成功
         """
         print("\n" + "=" * 65)
-        print("🎨 Real-ESRGAN 视频超分处理（完整流程）")
+        print("🎨 Real-ESRGAN 视频超分处理（完整流程）—— v6.1")
         print(f"📹 输入: {input_video}")
         print(f"📤 输出: {output_video}")
         print(f"⚡ 超分倍数: {self.upscale_factor}x")
@@ -163,7 +179,7 @@ class RealESRGANVideoProcessor:
         Returns:
             处理后的分段文件路径列表
         """
-        print(f"\n🎨 Real-ESRGAN 超分处理（分段模式）")
+        print(f"\n🎨 Real-ESRGAN 超分处理（分段模式）—— v6.1")
         print(f"📹 输入: {input_video}")
         print(f"⚡ 超分倍数: {self.upscale_factor}x | 模型: {self.model_name}")
         print(f"🖥️  设备: {self.device} | "
@@ -213,7 +229,7 @@ class RealESRGANVideoProcessor:
         Returns:
             处理后的分段文件路径列表
         """
-        print(f"\n🎨 Real-ESRGAN 超分处理（接收分段输入）")
+        print(f"\n🎨 Real-ESRGAN 超分处理（接收分段输入）—— v6.1")
         print(f"📹 输入分段数: {len(input_segments)}")
         print(f"⚡ 超分倍数: {self.upscale_factor}x")
         print(f"🖥️  设备: {self.device}")
@@ -257,7 +273,7 @@ class RealESRGANVideoProcessor:
                 json.dump(checkpoint, f, indent=2)
 
     def _process_segments(self, segment_files: List[str],
-                          checkpoint: dict) -> List[str]:
+                           checkpoint: dict) -> List[str]:
         """
         遍历分段列表，跳过已处理项，处理并更新断点。
 
@@ -297,7 +313,7 @@ class RealESRGANVideoProcessor:
                 continue
 
             # 估算剩余时间
-            elapsed = time.time() - start_time
+            elapsed   = time.time() - start_time
             completed = len(checkpoint["processed_segments"])
             if completed > 0:
                 avg_time  = elapsed / completed
@@ -314,7 +330,7 @@ class RealESRGANVideoProcessor:
         return processed_files
 
     def _process_segment(self, input_path: str, output_path: str,
-                         segment_idx: int) -> bool:
+                          segment_idx: int) -> bool:
         """
         处理单个视频片段（调用 inference_realesrgan_video_v6_1_single）。
 
@@ -351,19 +367,18 @@ class RealESRGANVideoProcessor:
             return False
 
     def _run_esrgan_video(self, input_path: str, output_path: str,
-                          segment_idx: int) -> bool:
+                           segment_idx: int) -> bool:
         """
         构建参数命名空间并调用 inference_realesrgan_video_v6_1_single.run()。
 
-        v5 变更：
-          - 新增 batch_size / prefetch_factor / use_compile
-          - 新增 use_tensorrt / use_hwaccel / no_hwaccel
-          - 新增 codec / crf / report
-          - 移除 extract_frame_first / num_process_per_gpu
-        v6 变更（新增 face_enhance 精细控制参数）：
-          - 新增 gfpgan_model（1.3 / 1.4 / RestoreFormer）
-          - 新增 gfpgan_weight（融合权重，0.0~1.0）
-          - 新增 gfpgan_batch_size（单次 GFPGAN 前向最多处理的人脸数，防 OOM）
+        Namespace 字段与底层 v6.1 argparse 严格对齐：
+          基础: input, output, model_name, denoise_strength, outscale, suffix
+          推理: tile, tile_pad, pre_pad, face_enhance, fp32, fps
+          face_enhance: gfpgan_model, gfpgan_weight, gfpgan_batch_size
+          优化: batch_size, prefetch_factor, use_compile, use_tensorrt
+          硬件: use_hwaccel, no_hwaccel, codec, crf, ffmpeg_bin
+          输出: alpha_upsampler, ext
+          报告: report
 
         Args:
             input_path:   输入视频路径
@@ -374,57 +389,54 @@ class RealESRGANVideoProcessor:
             是否成功
         """
         try:
-            args = argparse.Namespace()
+            ns = argparse.Namespace()
 
-            # 基本路径
-            args.input  = input_path
-            args.output = str(Path(output_path).parent)
+            # ── 基本路径 ─────────────────────────────────────────────────────
+            # run() 支持 output 既可以是目录也可以是文件（_output_is_file 自动判断）。
+            # 传入 output_path（目标文件路径），让 run() 直接写到该路径，
+            # 规避后续 shutil.move 时路径不匹配的问题。
+            ns.input  = input_path
+            ns.output = output_path      # v6: 直接传文件路径，run() 内部识别
 
-            # 模型与基础处理参数
-            args.model_name       = self.model_name
-            args.denoise_strength = self.denoise_strength
-            args.outscale         = self.upscale_factor
-            args.suffix           = f"processed_{segment_idx:03d}"
+            # ── 模型与基础处理参数 ──────────────────────────────────────────
+            ns.model_name       = self.model_name
+            ns.denoise_strength = self.denoise_strength
+            ns.outscale         = float(self.upscale_factor)
+            ns.suffix           = f"processed_{segment_idx:03d}"
 
-            args.tile        = self.tile_size
-            args.tile_pad    = self.tile_pad
-            args.pre_pad     = self.pre_pad
-            args.face_enhance= self.face_enhance
-            args.fp32        = self.fp32
-            args.fps         = None          # 保持原帧率
+            ns.tile         = self.tile_size
+            ns.tile_pad     = self.tile_pad
+            ns.pre_pad      = self.pre_pad
+            ns.face_enhance = self.face_enhance
+            ns.fp32         = self.fp32
+            ns.fps          = None          # 保持原帧率
 
-            # v5 新增：推理优化参数
-            args.batch_size      = self.batch_size
-            args.prefetch_factor = self.prefetch_factor
-            args.use_compile     = self.use_compile
-            args.use_tensorrt    = self.use_tensorrt
+            # ── face_enhance 精细控制参数（v6）─────────────────────────────
+            ns.gfpgan_model      = self.gfpgan_model
+            ns.gfpgan_weight     = self.gfpgan_weight
+            ns.gfpgan_batch_size = self.gfpgan_batch_size
 
-            # v5 新增：硬件解/编码参数
-            args.use_hwaccel = self.use_hwaccel
-            args.no_hwaccel  = not self.use_hwaccel
-            args.codec       = self.codec
-            args.crf         = self.crf
-            args.ffmpeg_bin  = self.ffmpeg_bin
+            # ── 推理优化参数（v5+）─────────────────────────────────────────
+            ns.batch_size      = self.batch_size
+            ns.prefetch_factor = self.prefetch_factor
+            ns.use_compile     = self.use_compile
+            ns.use_tensorrt    = self.use_tensorrt
 
-            # v5 新增：性能报告
-            args.report = self.report_json
+            # ── 硬件解/编码参数（v5+）──────────────────────────────────────
+            ns.use_hwaccel = self.use_hwaccel
+            ns.no_hwaccel  = not self.use_hwaccel  # 底层同时读取两个标志
+            ns.codec       = self.codec
+            ns.crf         = self.crf
+            ns.ffmpeg_bin  = self.ffmpeg_bin
 
-            # v6 新增：face_enhance 精细控制参数
-            args.gfpgan_model      = self.gfpgan_model
-            args.gfpgan_weight     = self.gfpgan_weight
-            args.gfpgan_batch_size = self.gfpgan_batch_size
+            # ── 性能报告 ────────────────────────────────────────────────────
+            ns.report = self.report_json
 
-            # 其他 inference_realesrgan_video_v5_single 所需参数
-            args.alpha_upsampler = "realesrgan"
-            args.ext             = "auto"
+            # ── 其他 inference_realesrgan_video_v6_1_single 所需参数 ────────
+            ns.alpha_upsampler = "realesrgan"
+            ns.ext             = "auto"
 
-            # 视频名称（用于临时文件前缀）
-            video_name    = Path(input_path).stem
-            args.video_name = f"{video_name}_{segment_idx:03d}"
-
-            os.makedirs(args.output, exist_ok=True)
-
-            # 动态导入并运行 v6 单卡版
+            # 动态导入并运行 v6.1 单卡版
             from inference_realesrgan_video_v6_1_single import run
 
             print(f"   🔧 加载模型: {self.model_name}")
@@ -440,21 +452,27 @@ class RealESRGANVideoProcessor:
                       f"gfpgan_batch={self.gfpgan_batch_size}")
 
             start_time = time.time()
+            run(ns)
+            elapsed = time.time() - start_time
 
-            run(args)
-
-            # run() 生成文件路径：{output_dir}/{video_name}_{suffix}.mp4
-            temp_output = os.path.join(
-                args.output, f"{args.video_name}_{args.suffix}.mp4"
-            )
-            if os.path.exists(temp_output):
-                shutil.move(temp_output, output_path)
-                elapsed = time.time() - start_time
+            # run() 在 output_path 是文件路径时直接写入该文件
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                 print(f"   ✅ 处理完成 ({format_time(elapsed)})")
                 return True
             else:
-                print(f"   ❌ 输出文件未生成: {temp_output}")
-                return False
+                # 兼容旧版 run()：output_path 是目录时，拼接生成的文件名
+                video_name   = Path(input_path).stem
+                temp_output  = str(
+                    Path(output_path).parent
+                    / f"{video_name}_{ns.suffix}.mp4"
+                )
+                if os.path.exists(temp_output):
+                    shutil.move(temp_output, output_path)
+                    print(f"   ✅ 处理完成 ({format_time(elapsed)})")
+                    return True
+                else:
+                    print(f"   ❌ 输出文件未生成: {output_path}")
+                    return False
 
         except ImportError as e:
             print(f"   ❌ 无法导入 inference_realesrgan_video_v6_1_single: {e}")
@@ -490,20 +508,20 @@ def main():
 
     示例：
       # 使用默认配置，直接超分
-      python realesrgan_processor_video_v5_single.py -i input.mp4 -o output.mp4
+      python realesrgan_processor_v6_single.py -i input.mp4 -o output.mp4
 
       # 指定配置文件 + 开启人脸增强
-      python realesrgan_processor_video_v5_single.py -c config.json \\
+      python realesrgan_processor_v6_single.py -c config.json \\
              -i input.mp4 -o output.mp4 --face-enhance
 
       # 覆盖超分倍数、模型、GFPGAN 精细控制
-      python realesrgan_processor_video_v5_single.py -i input.mp4 -o output.mp4 \\
+      python realesrgan_processor_v6_single.py -i input.mp4 -o output.mp4 \\
              --upscale-factor 4 --model realesr-animevideov3 \\
              --face-enhance --gfpgan-model 1.4 --gfpgan-weight 0.5 \\
              --gfpgan-batch-size 8
 
       # TensorRT 加速 + 大批量
-      python realesrgan_processor_v5_single.py -i input.mp4 -o output.mp4 \\
+      python realesrgan_processor_v6_single.py -i input.mp4 -o output.mp4 \\
              --use-tensorrt --batch-size 16 --prefetch-factor 32
     """
 
@@ -516,7 +534,7 @@ def main():
     from config_manager import Config
 
     parser = argparse.ArgumentParser(
-        description="Real-ESRGAN 视频超分处理器（单卡版）—— 独立入口",
+        description="Real-ESRGAN 视频超分处理器 v6（单卡版）—— 独立入口",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 底层脚本：external/Real-ESRGAN/inference_realesrgan_video_v6_1_single.py
@@ -536,7 +554,7 @@ def main():
 """,
     )
 
-    # 基础参数
+    # ── 基础参数 ─────────────────────────────────────────────────────────────
     parser.add_argument("--config", "-c", default=_default_cfg,
                         help=f"配置文件路径（默认: {_default_cfg}）")
     parser.add_argument("--input",  "-i", required=True,
@@ -561,8 +579,12 @@ def main():
                         help="读帧预取队列深度（建议 ≥ batch_size×2，覆盖配置，默认 24）")
     parser.add_argument("--tile-size", type=int,
                         help="tile 切块大小（0=不切块；VRAM 不足时设 512，覆盖配置）")
+    parser.add_argument("--tile-pad", type=int,
+                        help="tile 边缘填充大小（默认 10）")
+    parser.add_argument("--pre-pad", type=int,
+                        help="预处理填充大小（默认 0）")
 
-    # face_enhance 精细控制
+    # ── face_enhance 精细控制 ─────────────────────────────────────────────────
     _fe = parser.add_mutually_exclusive_group()
     _fe.add_argument("--face-enhance",    dest="face_enhance", action="store_true",
                      default=None, help="开启人脸增强（GFPGAN）")
@@ -626,6 +648,10 @@ def main():
         config.set("models", "realesrgan", "prefetch_factor",   value=args.prefetch_factor)
     if args.tile_size is not None:
         config.set("models", "realesrgan", "tile_size",         value=args.tile_size)
+    if args.tile_pad is not None:
+        config.set("models", "realesrgan", "tile_pad",          value=args.tile_pad)
+    if args.pre_pad is not None:
+        config.set("models", "realesrgan", "pre_pad",           value=args.pre_pad)
     if args.denoise_strength is not None:
         config.set("models", "realesrgan", "denoise_strength",  value=args.denoise_strength)
 
@@ -667,7 +693,7 @@ def main():
         return 1
 
     face_on = config.get("models", "realesrgan", "face_enhance", default=False)
-    print(f"\n🎨 Real-ESRGAN v5 独立超分")
+    print(f"\n🎨 Real-ESRGAN v6 独立超分")
     print(f"   输入   : {args.input}")
     print(f"   输出   : {args.output}")
     print(f"   模型   : {processor.model_name}")
