@@ -477,9 +477,17 @@ def main():
       python ifrnet_processor_v6_single.py -i input.mp4 -o output.mp4 \\
              --no-compile --no-cuda-graph
              
+      # 强制启用 CUDA Graph（覆盖 config 中 use_cuda_graph=false）
+      python ifrnet_processor_v6_single.py -i input.mp4 -o output.mp4 \\
+             --use-cuda-graph --no-compile
+
       # 启用 TensorRT + 关闭 compile（短视频启动更快）
       python ifrnet_processor_v6_single.py -i input.mp4 -o output.mp4 \\
              --use-tensorrt --no-compile
+
+      # 强制禁用 TensorRT（覆盖 config 中 use_tensorrt=true）
+      python ifrnet_processor_v6_single.py -i input.mp4 -o output.mp4 \\
+             --no-tensorrt
 
       # 关闭所有加速（调试/CPU 环境）
       python ifrnet_processor_v6_single.py -i input.mp4 -o output.mp4 \\
@@ -554,6 +562,19 @@ def main():
     parser.add_argument("--trt-cache-dir", metavar="DIR",
                         help="TRT Engine 缓存目录（覆盖配置 paths.trt_cache_dir；"
                              "默认 base_dir/.trt_cache）")
+    # ── 高优先级覆盖开关（覆盖 config / --no-* 默认值，优先级高于上方对应参数）──
+    parser.add_argument("--use-cuda-graph", dest="use_cuda_graph_force",
+                        action="store_true", default=False,
+                        help="[覆盖] 强制启用 CUDA Graph，覆盖 --no-cuda-graph / config。"
+                             "与 torch.compile 互斥（compile 激活时自动禁用）；"
+                             "如需确保生效，请同时指定 --no-compile。")
+    parser.add_argument("--use-compile", dest="use_compile_force",
+                        action="store_true", default=False,
+                        help="[覆盖] 强制启用 torch.compile，覆盖 --no-compile / config。"
+                             "与 --use-tensorrt 互斥（TRT 激活时 compile 被跳过）。")
+    parser.add_argument("--no-tensorrt", dest="no_tensorrt",
+                        action="store_true", default=False,
+                        help="[覆盖] 强制禁用 TensorRT，覆盖 --use-tensorrt / config。")
 
     # ── 硬件解/编码开关 ──────────────────────────────────────────────────────
     parser.add_argument("--no-hwaccel",  action="store_true",
@@ -625,6 +646,43 @@ def main():
         config.set("models", "ifrnet", "use_tensorrt", value=True)
     if args.trt_cache_dir:
         config.set("paths", "trt_cache_dir", value=args.trt_cache_dir)
+    # ── 高优先级覆盖（后写入，覆盖上方 --no-* / config 的值）──────────────────
+    # 互斥关系由底层 IFRNetVideoProcessor.__init__ 最终裁定，此处仅写入并给出预警
+    _cli_overrides = []
+    if args.no_tensorrt and args.use_tensorrt:
+        config.set("models", "ifrnet", "use_tensorrt", value=False)
+        _cli_overrides.append("--no-tensorrt  覆盖了  --use-tensorrt  → TensorRT 已禁用")
+    elif args.no_tensorrt:
+        config.set("models", "ifrnet", "use_tensorrt", value=False)
+    if args.use_compile_force:
+        config.set("models", "ifrnet", "use_compile", value=True)
+        if args.no_compile:
+            _cli_overrides.append("--use-compile  覆盖了  --no-compile  → torch.compile 已启用")
+    if args.use_cuda_graph_force:
+        config.set("models", "ifrnet", "use_cuda_graph", value=True)
+        if args.no_cuda_graph:
+            _cli_overrides.append("--use-cuda-graph  覆盖了  --no-cuda-graph  → CUDA Graph 已启用")
+    # 互斥冲突预警（基于最终写入 config 的有效值）
+    _eff_trt     = config.get("models", "ifrnet", "use_tensorrt",   default=False)
+    _eff_compile = config.get("models", "ifrnet", "use_compile",    default=True)
+    _eff_cugraph = config.get("models", "ifrnet", "use_cuda_graph", default=True)
+    if args.use_cuda_graph_force and _eff_compile and not _eff_trt:
+        print("[CLI警告] --use-cuda-graph 与 torch.compile 互斥："
+              "compile 成功后 CUDA Graph 将被自动禁用。")
+        print("          若要确保 CUDA Graph 生效，请同时指定 --no-compile。")
+    if args.use_cuda_graph_force and _eff_trt:
+        print("[CLI警告] --use-cuda-graph 与 --use-tensorrt 互斥："
+              "TensorRT 优先，CUDA Graph 将被禁用。")
+        print("          如需 CUDA Graph，请同时指定 --no-tensorrt。")
+    if args.use_compile_force and _eff_trt:
+        print("[CLI警告] --use-compile 与 --use-tensorrt 互斥："
+              "TensorRT 优先，compile 将被跳过。")
+        print("          如需 torch.compile，请同时指定 --no-tensorrt。")
+    if _cli_overrides:
+        print("[CLI覆盖] 以下设置已被高优先级参数覆盖：")
+        for msg in _cli_overrides:
+            print(f"          · {msg}")
+        print()
 
     # 硬件解/编码
     if args.no_hwaccel:

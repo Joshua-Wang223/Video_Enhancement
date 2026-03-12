@@ -22,7 +22,7 @@ IFRNet 视频插帧处理脚本 —— 终极优化版 v6.1（多卡版）
       输出阶段自动升级 h264_nvenc / hevc_nvenc，不可用时回退 libx264。
 
   M4. [TensorRT 可选加速]
-      --use_tensorrt：导出 ONNX → 构建 TRT Engine（FP16 静态形状）
+      --use-tensorrt：导出 ONNX → 构建 TRT Engine（FP16 静态形状）
 
   M5. [跨进程异常完整传播]
       Worker 进程异常通过 mp.Queue 传回主进程，避免静默挂起。
@@ -86,16 +86,16 @@ IFRNet 视频插帧处理脚本 —— 终极优化版 v6.1（多卡版）
 
   # 每 GPU 2 Worker（适合 24GB+ 显存）
   python process_video_v6_1.py \\
-      --input input.mp4 --output output.mp4 --scale 2 --num_process_per_gpu 2
+      --input input.mp4 --output output.mp4 --scale 2 --num-process-per-gpu 2
 
   # TensorRT 加速（首次构建 Engine，后续秒启动）
   python process_video_v6_1.py \\
-      --input input.mp4 --output output.mp4 --scale 2 --use_tensorrt
+      --input input.mp4 --output output.mp4 --scale 2 --use-tensorrt
 
   # 禁用所有加速（调试模式）
   python process_video_v6_1.py \\
       --input input.mp4 --output output.mp4 --scale 2 \\
-      --no_fp16 --no_compile --no_cuda_graph --no_hwaccel --device cpu
+      --no-fp16 --no-compile --no-cuda-graph --no-hwaccel --device cpu
 
   # 输出性能报告
   python process_video_v6_1.py \\
@@ -1942,34 +1942,95 @@ def main():
     parser.add_argument('--scale',    type=float, default=2.0, help='插帧倍数（≥2 整数）')
     parser.add_argument('--model',    default='IFRNet_S_Vimeo90K', help='模型名称或 .pth 路径')
     parser.add_argument('--device',   default='cuda',  choices=['cuda', 'cpu'])
-    parser.add_argument('--batch_size',  type=int, default=4)
+    parser.add_argument('--batch-size',  type=int, default=4)
     # 推理优化
-    parser.add_argument('--no_fp16',     action='store_true', help='禁用 FP16')
-    parser.add_argument('--no_compile',  action='store_true', help='禁用 torch.compile')
-    parser.add_argument('--no_cuda_graph', action='store_true', help='禁用 CUDA Graph')
-    parser.add_argument('--use_tensorrt', action='store_true',
+    parser.add_argument('--no-fp16',     action='store_true', help='禁用 FP16')
+    parser.add_argument('--no-compile',  action='store_true', help='禁用 torch.compile')
+    parser.add_argument('--no-cuda-graph', action='store_true', help='禁用 CUDA Graph')
+    parser.add_argument('--use-tensorrt', action='store_true',
                         help='[V5] 启用 TensorRT 加速（首次需构建 Engine）')
+    # ── 高优先级覆盖参数（可覆盖 config / 默认值，优先级高于上方对应参数）──────────
+    parser.add_argument('--use-cuda-graph', dest='use_cuda_graph_force',
+                        action='store_true', default=False,
+                        help='[覆盖] 强制启用 CUDA Graph，覆盖 --no-cuda-graph / config。'
+                             '与 torch.compile 互斥（compile 成功时自动禁用 CUDA Graph）；'
+                             '如需确保生效，请同时指定 --no-compile。')
+    parser.add_argument('--use-compile', dest='use_compile_force',
+                        action='store_true', default=False,
+                        help='[覆盖] 强制启用 torch.compile，覆盖 --no-compile / config。'
+                             '与 --use-tensorrt 互斥（TRT 激活时 compile 被跳过）。')
+    parser.add_argument('--no-tensorrt', dest='no_tensorrt',
+                        action='store_true', default=False,
+                        help='[覆盖] 强制禁用 TensorRT，覆盖 --use-tensorrt / config。')
     # 硬件加速
-    parser.add_argument('--no_hwaccel',  action='store_true',
+    parser.add_argument('--no-hwaccel',  action='store_true',
                         help='[V5] 强制禁用 NVDEC 硬件解码')
     # 多 GPU
-    parser.add_argument('--num_process_per_gpu', type=int, default=1,
+    parser.add_argument('--num-process-per-gpu', type=int, default=1,
                         help='[V5] 每 GPU Worker 数（多 GPU 模式，显存充裕时可设 2）')
     # 编码参数
     parser.add_argument('--codec',    default='libx264',
                         help='输出编码器（有 NVENC 时自动升级）')
     parser.add_argument('--crf',      type=int, default=23,   # U6: 默认 23
                         help='编码质量（越小越好，18~28 常用，NVENC 同映射为 CQ 值）')
-    parser.add_argument('--no_audio', action='store_true')
-    parser.add_argument('--ffmpeg_bin', type=str, default='ffmpeg')
+    parser.add_argument('--no-audio', action='store_true')
+    parser.add_argument('--ffmpeg-bin', type=str, default='ffmpeg')
     # 调试
     parser.add_argument('--preview',  action='store_true')
-    parser.add_argument('--preview_interval', type=int, default=30)
+    parser.add_argument('--preview-interval', type=int, default=30)
     parser.add_argument('--report',   default=None, help='JSON 性能报告路径')
-    parser.add_argument('--trt_cache_dir', default=None,
+    parser.add_argument('--trt-cache-dir', default=None,
                         help='TRT Engine 缓存目录（覆盖默认 dirname(output)/.trt_cache）')
 
     args = parser.parse_args()
+
+    # ── 高优先级覆盖参数解析（优先级：新覆盖参数 > 旧参数 > 默认值）────────────────
+    # 互斥优先级由底层逻辑决定，此处只做覆盖与冲突提示，不改变互斥裁定顺序：
+    #   TensorRT（最高）> torch.compile > CUDA Graph（最低）
+    _cli_overrides: list = []
+
+    # 步骤 1：--no-tensorrt 覆盖 --use-tensorrt
+    if args.no_tensorrt and args.use_tensorrt:
+        args.use_tensorrt = False
+        _cli_overrides.append('--no-tensorrt  覆盖了  --use-tensorrt  → TensorRT 已禁用')
+
+    # 步骤 2：--use-compile 覆盖 --no-compile
+    if args.use_compile_force and args.no_compile:
+        args.no_compile = False
+        _cli_overrides.append('--use-compile  覆盖了  --no-compile  → torch.compile 已启用')
+
+    # 步骤 3：--use-cuda-graph 覆盖 --no-cuda-graph
+    if args.use_cuda_graph_force and args.no_cuda_graph:
+        args.no_cuda_graph = False
+        _cli_overrides.append('--use-cuda-graph  覆盖了  --no-cuda-graph  → CUDA Graph 已启用')
+
+    # 步骤 4：跨参数互斥冲突预警（行为由 __init__ / _load_model 最终裁定，此处仅告知）
+    # 注意：以下判断均基于步骤 1-3 解析后的"有效值"
+    _effective_trt     = args.use_tensorrt
+    _effective_compile = not args.no_compile
+
+    if args.use_cuda_graph_force and _effective_compile and not _effective_trt:
+        # compile 成功时 _load_model 会把 use_cuda_graph 强制置 False
+        print('[CLI警告] --use-cuda-graph 与 torch.compile 互斥：'
+              'compile 成功后 CUDA Graph 将被自动禁用。')
+        print('          若要确保 CUDA Graph 生效，请同时指定 --no-compile'
+              '（或 --use-cuda-graph --no-compile）。')
+
+    if args.use_cuda_graph_force and _effective_trt:
+        print('[CLI警告] --use-cuda-graph 与 --use-tensorrt 互斥：'
+              'TensorRT 优先，CUDA Graph 将被禁用。')
+        print('          如需 CUDA Graph，请同时指定 --no-tensorrt。')
+
+    if args.use_compile_force and _effective_trt:
+        print('[CLI警告] --use-compile 与 --use-tensorrt 互斥：'
+              'TensorRT 优先，compile 将被跳过。')
+        print('          如需 torch.compile，请同时指定 --no-tensorrt。')
+
+    if _cli_overrides:
+        print('[CLI覆盖] 以下设置已被高优先级参数覆盖：')
+        for msg in _cli_overrides:
+            print(f'          · {msg}')
+        print()
 
     # 模型路径解析
     if args.model in MODEL_NAME_MAP:
@@ -1993,7 +2054,9 @@ def main():
             props = torch.cuda.get_device_properties(i)
             vram_gb = props.total_memory / 1024**3
             print(f'    GPU{i}: {props.name} ({vram_gb:.1f} GB)')
+    # 以步骤 1-3 解析后的有效值为准打印（反映覆盖结果）
     print(f'  FP16:   {not args.no_fp16} | '
+          f'Compile: {not args.no_compile} | '
           f'CUDA Graph: {not args.no_cuda_graph} | '
           f'TensorRT: {args.use_tensorrt}')
     print(f'  NVDEC:  {HardwareCapability.has_nvdec() and not args.no_hwaccel} | '

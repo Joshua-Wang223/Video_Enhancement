@@ -11,7 +11,8 @@
               --no-cuda-graph-ifrnet / --no-hwaccel-ifrnet / --batch-size-ifrnet /
               --max-batch-size-ifrnet / --crf-ifrnet / --codec-ifrnet /
               --ifrnet-model / --ifrnet-model-path / --report-ifrnet /
-              --preview-ifrnet / --preview-interval-ifrnet
+              --preview-ifrnet / --preview-interval-ifrnet /
+              --use-cuda-graph-ifrnet / --use-compile-ifrnet / --no-tensorrt-ifrnet
       ESRGan: --use-tensorrt-esrgan / --use-compile-esrgan / --fp32-esrgan /
               --no-hwaccel-esrgan / --batch-size-esrgan / --prefetch-factor-esrgan /
               --crf-esrgan / --codec-esrgan / --tile-size / --tile-pad /
@@ -156,6 +157,45 @@ def _apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
         config.set("models", "ifrnet", "keep_audio",     value=False)
     if args.report_ifrnet:
         config.set("models", "ifrnet", "report_json",    value=args.report_ifrnet)
+    # ── IFRNet 高优先级覆盖（后写入，覆盖上方 --no-* / config 的值）────────────
+    # 互斥关系由底层 IFRNetVideoProcessor.__init__ 最终裁定，此处仅写入并给出预警
+    _ifrnet_overrides = []
+    if args.no_tensorrt_ifrnet and args.use_tensorrt_ifrnet:
+        config.set("models", "ifrnet", "use_tensorrt", value=False)
+        _ifrnet_overrides.append(
+            "--no-tensorrt-ifrnet  覆盖了  --use-tensorrt-ifrnet  → IFRNet TensorRT 已禁用")
+    elif args.no_tensorrt_ifrnet:
+        config.set("models", "ifrnet", "use_tensorrt", value=False)
+    if args.use_compile_force_ifrnet:
+        config.set("models", "ifrnet", "use_compile", value=True)
+        if args.no_compile_ifrnet:
+            _ifrnet_overrides.append(
+                "--use-compile-ifrnet  覆盖了  --no-compile-ifrnet  → IFRNet torch.compile 已启用")
+    if args.use_cuda_graph_force_ifrnet:
+        config.set("models", "ifrnet", "use_cuda_graph", value=True)
+        if args.no_cuda_graph_ifrnet:
+            _ifrnet_overrides.append(
+                "--use-cuda-graph-ifrnet  覆盖了  --no-cuda-graph-ifrnet  → IFRNet CUDA Graph 已启用")
+    # 互斥冲突预警（基于最终写入 config 的有效值）
+    _eff_trt_ifr     = config.get("models", "ifrnet", "use_tensorrt",   default=False)
+    _eff_compile_ifr = config.get("models", "ifrnet", "use_compile",    default=True)
+    if args.use_cuda_graph_force_ifrnet and _eff_compile_ifr and not _eff_trt_ifr:
+        print("[CLI警告] --use-cuda-graph-ifrnet 与 torch.compile 互斥："
+              "compile 成功后 CUDA Graph 将被自动禁用。")
+        print("          若要确保 CUDA Graph 生效，请同时指定 --no-compile-ifrnet。")
+    if args.use_cuda_graph_force_ifrnet and _eff_trt_ifr:
+        print("[CLI警告] --use-cuda-graph-ifrnet 与 --use-tensorrt-ifrnet 互斥："
+              "TensorRT 优先，CUDA Graph 将被禁用。")
+        print("          如需 CUDA Graph，请同时指定 --no-tensorrt-ifrnet。")
+    if args.use_compile_force_ifrnet and _eff_trt_ifr:
+        print("[CLI警告] --use-compile-ifrnet 与 --use-tensorrt-ifrnet 互斥："
+              "TensorRT 优先，compile 将被跳过。")
+        print("          如需 torch.compile，请同时指定 --no-tensorrt-ifrnet。")
+    if _ifrnet_overrides:
+        print("[CLI覆盖] IFRNet 以下设置已被高优先级参数覆盖：")
+        for msg in _ifrnet_overrides:
+            print(f"          · {msg}")
+        print()
 
     # ── ESRGan 模型参数 ──────────────────────────────────────────────────────
     if args.esrgan_model:
@@ -439,7 +479,8 @@ def _build_parser() -> argparse.ArgumentParser:
   IFRNet参数 : --ifrnet-model* / --use-tensorrt-ifrnet / --no-fp16-ifrnet /
                --no-compile-ifrnet / --no-cuda-graph-ifrnet / --no-hwaccel-ifrnet /
                --batch-size-ifrnet / --max-batch-size-ifrnet / --crf-ifrnet /
-               --codec-ifrnet / --report-ifrnet / --preview-ifrnet
+               --codec-ifrnet / --report-ifrnet / --preview-ifrnet /
+               --use-cuda-graph-ifrnet / --use-compile-ifrnet / --no-tensorrt-ifrnet
   ESRGan参数 : --esrgan-model / --use-tensorrt-esrgan / --use-compile-esrgan /
                --fp32-esrgan / --no-hwaccel-esrgan / --batch-size-esrgan /
                --prefetch-factor-esrgan / --tile-size / --tile-pad / --pre-pad /
@@ -520,6 +561,18 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="IFRNet 处理时弹出帧预览窗口（调试用）")
     g.add_argument("--preview-interval-ifrnet", type=int, default=30, metavar="N",
                    help="IFRNet 帧预览间隔（每隔 N 帧弹出一次，默认 30）")
+    # ── 高优先级覆盖开关（覆盖 config / --no-* 默认值）────────────────────────
+    g.add_argument("--use-cuda-graph-ifrnet", dest="use_cuda_graph_force_ifrnet",
+                   action="store_true", default=False,
+                   help="[覆盖] 强制启用 IFRNet CUDA Graph，覆盖 --no-cuda-graph-ifrnet / config。"
+                        "与 torch.compile 互斥；如需确保生效请同时指定 --no-compile-ifrnet。")
+    g.add_argument("--use-compile-ifrnet", dest="use_compile_force_ifrnet",
+                   action="store_true", default=False,
+                   help="[覆盖] 强制启用 IFRNet torch.compile，覆盖 --no-compile-ifrnet / config。"
+                        "与 --use-tensorrt-ifrnet 互斥。")
+    g.add_argument("--no-tensorrt-ifrnet", dest="no_tensorrt_ifrnet",
+                   action="store_true", default=False,
+                   help="[覆盖] 强制禁用 IFRNet TensorRT，覆盖 --use-tensorrt-ifrnet / config。")
 
     # ── Real-ESRGAN 参数 ─────────────────────────────────────────────────────
     g = parser.add_argument_group("Real-ESRGAN 参数")

@@ -8,15 +8,15 @@ v6 在 v5 基础上重点修复并提升了 face_enhance（GFPGAN）路径性能
 【最终功能特性】
   推理加速：
     · FP16 半精度推理（默认开启，--fp32 可禁用）
-    · torch.compile 可选加速（--use_compile, mode=reduce-overhead）
-    · TensorRT 可选加速（--use_tensorrt；FIX-3 修复后全程 GPU 内存，真正有效）
+    · torch.compile 可选加速（--use-compile, mode=reduce-overhead）
+    · TensorRT 可选加速（--use-tensorrt；FIX-3 修复后全程 GPU 内存，真正有效）
       - TRT 8.x / 10.x 双 API 兼容（FIX-TRT10）
       - Engine 缓存于 .trt_cache/，GPU 不兼容时自动重建
     · cuDNN benchmark 自动最优卷积算法（FIX-1）
     · OOM 自动降级：batch_size 减半，降级值跨批次持久化
 
   I/O 加速：
-    · NVDEC 硬件解码（--use_hwaccel；自动探测，失败回退 CPU）
+    · NVDEC 硬件解码（--use-hwaccel；自动探测，失败回退 CPU）
     · NVENC 硬件编码（有 h264_nvenc/hevc_nvenc 时自动升级）
     · 异步帧预取（FFmpegReader 后台线程 + PinnedBufferPool，默认 prefetch=16）
     · 批量推理（默认 batch_size=8，充分利用 T4/A10 显存）
@@ -50,12 +50,12 @@ v6 在 v5 基础上重点修复并提升了 face_enhance（GFPGAN）路径性能
   # 开启 face_enhance，指定 GFPGAN 版本和融合权重
   python inference_realesrgan_video_v6_single.py \\
       -i input.mp4 -o results/ -s 2 \\
-      --face_enhance --gfpgan_model 1.4 --gfpgan_weight 0.5
+      --face-enhance --gfpgan-model 1.4 --gfpgan-weight 0.5
 
   # 大批量 + TensorRT 加速（首次构建 Engine）
   python inference_realesrgan_video_v6_single.py \\
       -i input.mp4 -o results/ -s 2 \\
-      --batch_size 16 --use_tensorrt
+      --batch-size 16 --use-tensorrt
 
   # tile 模式（显存不足时切块处理）
   python inference_realesrgan_video_v6_single.py \\
@@ -75,15 +75,15 @@ v6 在 v5 基础上重点修复并提升了 face_enhance（GFPGAN）路径性能
   -n / --model_name    模型名称（默认 realesr-animevideov3）
   -s / --outscale      放大倍数（如 2, 4）
   --face_enhance       启用 GFPGAN 人脸增强
-  --gfpgan_model       GFPGAN 版本（1.3 / 1.4 / RestoreFormer，默认 1.4）
-  --gfpgan_weight      GFPGAN 融合权重（0.0~1.0，默认 0.5）
+  --gfpgan-model       GFPGAN 版本（1.3 / 1.4 / RestoreFormer，默认 1.4）
+  --gfpgan-weight      GFPGAN 融合权重（0.0~1.0，默认 0.5）
   --gfpgan_batch_size  单次 GFPGAN 前向最多处理的人脸数（防 OOM，默认 12）
   --fp32               禁用 FP16（默认开启 FP16）
   --batch_size         批处理大小（默认 8，T4 16G 建议 8~12）
   --prefetch_factor    读帧预取队列深度（默认 16）
   --tile / -t          切块大小（0=不切块，VRAM 不足时设 512）
   --use_compile        启用 torch.compile
-  --use_tensorrt       启用 TensorRT 加速
+  --use-tensorrt       启用 TensorRT 加速
   --no_hwaccel         强制禁用 NVDEC
   --video_codec        偏好编码器（libx264/libx265，NVENC 可用时自动升级）
   --crf                编码质量（默认 23）
@@ -1535,9 +1535,17 @@ def inference_video_single(args, video_save_path: str, device=None):
         args.tile, args.tile_pad, args.pre_pad, not args.fp32, device
     )
 
-    if args.use_compile and hasattr(torch, 'compile'):
+    # ── compile / TRT 冲突防御（programmatic 调用也能正确处理）──────────────────
+    if getattr(args, 'use_compile', False) and getattr(args, 'use_tensorrt', False):
+        print('[Warning] inference_video_single: use_compile 与 use_tensorrt 同时为 True，'
+              '\n          TRT 接管推理路径，torch.compile 无效，已自动禁用。')
+        args.use_compile = False
+
+    if getattr(args, 'use_compile', False) and hasattr(torch, 'compile'):
         print('[Info] torch.compile 加速中 ...')
         upsampler.model = torch.compile(upsampler.model, mode='reduce-overhead')
+    elif getattr(args, 'use_compile', False) and not hasattr(torch, 'compile'):
+        print('[Warning] 当前 PyTorch 版本不支持 torch.compile，已跳过（需要 PyTorch >= 2.0）。')
 
     # M3: TensorRT 可选（[FIX-3] 已修复，现在真正有效）
     trt_accel: Optional[TensorRTAccelerator] = None
@@ -1556,7 +1564,7 @@ def inference_video_single(args, video_save_path: str, device=None):
     if args.face_enhance:
         from gfpgan import GFPGANer
 
-        # 根据 --gfpgan_model 选择 arch / channel_multiplier / 模型文件名 / 下载 URL
+        # 根据 --gfpgan-model 选择 arch / channel_multiplier / 模型文件名 / 下载 URL
         _GFPGAN_MODELS = {
             '1.3': ('clean', 2, 'GFPGANv1.3',
                     'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.3.pth'),
@@ -1956,25 +1964,25 @@ def main():
     )
     # 基础参数
     parser.add_argument('-i',  '--input',            type=str, default='inputs')
-    parser.add_argument('-n',  '--model_name',       type=str, default='realesr-animevideov3')
+    parser.add_argument('-n',  '--model-name',       type=str, default='realesr-animevideov3')
     parser.add_argument('-o',  '--output',           type=str, default='results')
-    parser.add_argument('-dn', '--denoise_strength', type=float, default=0.5)
+    parser.add_argument('-dn', '--denoise-strength', type=float, default=0.5)
     parser.add_argument('-s',  '--outscale',         type=float, default=4)
     parser.add_argument('--suffix',                  type=str, default='out')
     # 推理参数
     parser.add_argument('-t',  '--tile',             type=int, default=0)
-    parser.add_argument('--tile_pad',                type=int, default=10)
-    parser.add_argument('--pre_pad',                 type=int, default=0)
-    parser.add_argument('--face_enhance',            action='store_true')
-    parser.add_argument('--gfpgan_model',             type=str, default='1.4',
+    parser.add_argument('--tile-pad',                type=int, default=10)
+    parser.add_argument('--pre-pad',                 type=int, default=0)
+    parser.add_argument('--face-enhance',            action='store_true')
+    parser.add_argument('--gfpgan-model',             type=str, default='1.4',
                         choices=['1.3', '1.4', 'RestoreFormer'],
-                        help='GFPGAN 模型版本（--face_enhance 时生效）。'
+                        help='GFPGAN 模型版本（--face-enhance 时生效）。'
                              '1.4=更自然/低质量鲁棒，1.3=与1.4相近，RestoreFormer=Transformer方案。'
                              '本地优先查找 experiments/pretrained_models/ 和 gfpgan/weights/，'
                              '不存在时自动下载。Default: 1.4')
-    parser.add_argument('--gfpgan_weight',            type=float, default=0.5,
+    parser.add_argument('--gfpgan-weight',            type=float, default=0.5,
                         help='GFPGAN 增强融合权重，0.0=不增强，1.0=完全替换，Default: 0.5')
-    parser.add_argument('--gfpgan_batch_size',        type=int, default=12,
+    parser.add_argument('--gfpgan-batch-size',        type=int, default=12,
                         help='[OOM-FIX] 单次 GFPGAN 前向最多处理的人脸数。'
                              '人脸密集视频（群像/演唱会）可能每批超过 30 张脸，'
                              '全部堆叠为一次 StyleGAN2 前向会触发 OOM；'
@@ -1984,28 +1992,28 @@ def main():
                         help='禁用 FP16（默认启用 FP16）')
     parser.add_argument('--fps',                     type=float, default=None)
     # [FIX-5] 默认 batch_size 8（原来 4），充分利用 T4 15G 显存
-    parser.add_argument('--batch_size',              type=int, default=8,
+    parser.add_argument('--batch-size',              type=int, default=8,
                         help='批处理大小，T4 15G 建议 8~12（重模型）或 16~24（轻模型）')
     # [FIX-5] 默认 prefetch_factor 16（原来 8）
-    parser.add_argument('--prefetch_factor',         type=int, default=16,
+    parser.add_argument('--prefetch-factor',         type=int, default=16,
                         help='读帧预取队列深度，建议 ≥ batch_size*2')
-    parser.add_argument('--use_compile',             action='store_true',
+    parser.add_argument('--use-compile',             action='store_true',
                         help='启用 torch.compile（reduce-overhead）')
     # V5 新参数（保留）
-    parser.add_argument('--use_tensorrt',            action='store_true',
+    parser.add_argument('--use-tensorrt',            action='store_true',
                         help='[V5] 启用 TensorRT 加速（首次需要构建 Engine，[FIX-3] 已修复）')
-    parser.add_argument('--use_hwaccel',             action='store_true', default=True,
+    parser.add_argument('--use-hwaccel',             action='store_true', default=True,
                         help='[V5] 启用 NVDEC 硬件解码（自动探测，失败时回退）')
-    parser.add_argument('--no_hwaccel',              action='store_true',
+    parser.add_argument('--no-hwaccel',              action='store_true',
                         help='[V5] 强制禁用 NVDEC 硬件解码')
     # 编码参数
-    parser.add_argument('--video_codec',             type=str, default='libx264',
+    parser.add_argument('--video-codec',             type=str, default='libx264',
                         choices=['libx264', 'libx265', 'libvpx-vp9'],
                         help='偏好编码器（有 NVENC 时自动升级为 h264_nvenc/hevc_nvenc）')
     parser.add_argument('--crf',                     type=int, default=23)
-    parser.add_argument('--ffmpeg_bin',              type=str, default='ffmpeg')
+    parser.add_argument('--ffmpeg-bin',              type=str, default='ffmpeg')
     # 模型 alpha 通道 / 扩展名
-    parser.add_argument('--alpha_upsampler',         type=str, default='realesrgan',
+    parser.add_argument('--alpha-upsampler',         type=str, default='realesrgan',
                         choices=['realesrgan', 'bicubic'])
     parser.add_argument('--ext',                     type=str, default='auto',
                         choices=['auto', 'jpg', 'png'])
@@ -2020,7 +2028,26 @@ def main():
     if not _output_is_file(args.output):
         os.makedirs(args.output, exist_ok=True)
 
-    # 处理 --no_hwaccel
+    # ── 记录 CLI 显式传入的标志，供冲突仲裁使用 ────────────────────────────────
+    import sys as _sys
+    _cli_argv = set(_sys.argv[1:])
+    _compile_explicit  = '--use-compile'  in _cli_argv
+    _tensorrt_explicit = '--use-tensorrt' in _cli_argv
+
+    # ── 冲突仲裁：--use-compile 与 --use-tensorrt 同时开启 ────────────────────
+    if args.use_compile and args.use_tensorrt:
+        if _compile_explicit and not _tensorrt_explicit:
+            print('[Warning] CLI 显式传入 --use-compile，但 args.use_tensorrt=True（来自外部配置）。'
+                  '\n          CLI 优先：禁用 TensorRT，使用 torch.compile 路径。'
+                  '\n          若需要 TRT，请在 CLI 显式传入 --use-tensorrt。')
+            args.use_tensorrt = False
+        else:
+            print('[Warning] --use-compile 与 --use-tensorrt 同时开启。'
+                  '\n          TRT 推理路径完全接管，torch.compile 不会被执行，已自动禁用。'
+                  '\n          如需 torch.compile，请去掉 --use-tensorrt。')
+            args.use_compile = False
+
+    # 处理 --no-hwaccel
     if args.no_hwaccel:
         args.use_hwaccel = False
 
@@ -2040,10 +2067,12 @@ def main():
     print(f'  NVDEC:   {HardwareCapability.has_nvdec()} | '
           f'NVENC(h264): {HardwareCapability.has_nvenc("h264_nvenc")} | '
           f'NVENC(hevc): {HardwareCapability.has_nvenc("hevc_nvenc")}')
-    print(f'  TensorRT: {getattr(args, "use_tensorrt", False)} | '
-          f'torch.compile: {getattr(args, "use_compile", False)}')
-    print(f'  batch_size: {args.batch_size} | prefetch: {args.prefetch_factor}')
-    print(f'  face_enhance: {args.face_enhance} '
+    _accel_label = ('TensorRT' if args.use_tensorrt else
+                    'compile' if args.use_compile else 'FP16-only')
+    print(f'  推理加速: {_accel_label} | '
+          f'TensorRT={args.use_tensorrt} | torch.compile={args.use_compile}')
+    print(f'  batch-size: {args.batch_size} | prefetch: {args.prefetch_factor}')
+    print(f'  face-enhance: {args.face_enhance} '
           f'(model={getattr(args, "gfpgan_model", "1.4")} | '
           f'weight={getattr(args, "gfpgan_weight", 0.5)} | '
           f'GFPGAN-batch={getattr(args, "gfpgan_batch_size", 12)} | '
