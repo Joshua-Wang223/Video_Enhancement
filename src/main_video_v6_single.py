@@ -471,7 +471,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # ── 全局处理控制 ─────────────────────────────────────────────────────────
     g = parser.add_argument_group("处理控制")
-    g.add_argument("--mode",
+    g.add_argument("--mode", "-m",
                    choices=["interpolate_then_upscale", "upscale_then_interpolate"],
                    help="处理顺序（覆盖配置，默认 interpolate_then_upscale）")
     g.add_argument("--interpolation-factor", type=int, choices=[2, 4, 8, 16],
