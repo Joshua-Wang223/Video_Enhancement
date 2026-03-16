@@ -2945,7 +2945,10 @@ def main():
           f'FIX-DETECT-BUG | FIX-PIPE-BUG | 每Worker独立流水线')
     print()
 
+    t_total = time.time()
     run(args)
+    m, s = divmod(int(time.time() - t_total), 60)
+    print(f'\n⏱️  总耗时（含模型加载）: {m}分{s}秒')
 
 
 if __name__ == '__main__':

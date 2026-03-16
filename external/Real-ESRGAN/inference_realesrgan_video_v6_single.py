@@ -1992,13 +1992,6 @@ def inference_video_single(args, video_save_path: str, device=None):
                         if end:
                             break
                         continue
-      else:
-                            tqdm.write(f'[Error] SR: {e}')
-                            detect_fut.cancel()
-                            detect_fut = None
-                            if end:
-                                break
-                            continue
 
                     # ── Step D: 等 detect(N) 完成（通常 SR > detect，已就绪）────
                     face_data = detect_fut.result()
@@ -2393,7 +2386,10 @@ def main():
     print(f'  [v5++ 优化] cudnn.benchmark | 异步D2H | TRT专用Stream | 批量GFPGAN | 原始帧检测')
     print()
 
+    t_total = time.time()
     run(args)
+    m, s = divmod(int(time.time() - t_total), 60)
+    print(f'\n⏱️  总耗时（含模型加载）: {m}分{s}秒')
 
 
 if __name__ == '__main__':
