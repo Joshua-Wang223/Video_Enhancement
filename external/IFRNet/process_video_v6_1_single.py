@@ -153,6 +153,41 @@ sys.path.insert(0, os.path.join(base_dir, 'external', 'IFRNet'))
 sys.path.insert(0, models_ifrnet)
 
 from models.IFRNet_S import Model  # noqa: E402
+_ifrnet_s_mod = sys.modules['models.IFRNet_S']
+
+# [FIX-CUDA-GRAPH-WARP] ───────────────────────────────────────────────────────
+# 根本原因：utils.warp 每次调用都用 torch.arange（CPU）+ .to(img) 动态生成坐标
+# 网格，触发 cudaMemcpy(Host→Device)。CUDA Graph 捕获期间该操作被严格禁止
+# （cudaErrorStreamCaptureUnsupported）。Warmup 3 次在捕获流外运行故不报错，
+# 但进入 torch.cuda.graph 上下文后同一调用再次触发 H2D 复制 → 崩溃。
+#
+# 修复：将 models.IFRNet_S 模块命名空间中的 warp 替换为带 GPU 缓存的版本。
+# 首次调用（Warmup 期间）为给定 (B, H, W, device, dtype) 在 GPU 上预分配网格；
+# 此后（含捕获期间）直接复用已有 tensor，不产生任何新的 CUDA malloc / H2D 复制。
+import torch.nn.functional as _F_warp
+
+_warp_grid_cache: dict = {}
+
+def _cached_warp(img: 'torch.Tensor', flow: 'torch.Tensor') -> 'torch.Tensor':
+    B, _C, H, W = img.shape
+    key = (B, H, W, str(img.device), img.dtype)
+    if key not in _warp_grid_cache:
+        # 直接在 GPU 上构建，避免任何 CPU→GPU 传输
+        xs = torch.arange(0, W, device=img.device, dtype=img.dtype)
+        ys = torch.arange(0, H, device=img.device, dtype=img.dtype)
+        grid_y, grid_x = torch.meshgrid(ys, xs, indexing='ij')          # [H, W]
+        grid = torch.stack([grid_x, grid_y], dim=0)                      # [2, H, W]
+        _warp_grid_cache[key] = grid.unsqueeze(0).expand(B, -1, -1, -1) # [B, 2, H, W]
+    base_grid = _warp_grid_cache[key]                                    # 已在 GPU，无复制
+    vgrid = base_grid + flow                                              # [B, 2, H, W]
+    vgrid_x = 2.0 * vgrid[:, 0:1] / max(W - 1, 1) - 1.0
+    vgrid_y = 2.0 * vgrid[:, 1:2] / max(H - 1, 1) - 1.0
+    vgrid_scaled = torch.cat([vgrid_x, vgrid_y], dim=1).permute(0, 2, 3, 1)  # [B, H, W, 2]
+    return _F_warp.grid_sample(img, vgrid_scaled,
+                               mode='bilinear', padding_mode='border', align_corners=True)
+
+_ifrnet_s_mod.warp = _cached_warp   # 替换模块命名空间中的引用
+# ─────────────────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 常量
@@ -760,6 +795,7 @@ class IFRNetVideoProcessor:
                 use_compile = False
                 print('  [FIX-TRT-MUTEX] use_tensorrt=True → 已跳过 torch.compile（互斥，避免无效编译耗时）')
 
+        self.use_compile = use_compile
         # 加载模型
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
         self._load_model(self.device, use_compile)
@@ -980,31 +1016,69 @@ class IFRNetVideoProcessor:
             s['img0'].copy_(img0)
             s['img1'].copy_(img1)
             s['embt'].copy_(embt)
-            s['imgt_approx'].copy_(imgt_approx)
             self._graph[shape_key].replay()
             return s['output']
 
         print(f'  [CUDA Graph] 捕获 shape={shape_key} ...')
-        static_img0  = img0.clone()
-        static_img1  = img1.clone()
-        static_embt  = embt.clone()
-        static_imgt  = imgt_approx.clone()
+        static_img0 = img0.clone()
+        static_img1 = img1.clone()
+        static_embt = embt.clone()
 
-        for _ in range(3):
+        # [FIX-CUDA-GRAPH-INFERENCE] 必须用 model.inference()，forward() 含损失计算会触发 CPU 分配。
+        #
+        # [FIX-CG-BENCHMARK] 根本修复：cudnn.benchmark=True 导致 FIND 在 capture context 内
+        # 重新测速而崩溃（FIND was unable to find an engine）。
+        # 原理：
+        #   · Warmup 阶段 benchmark=True → cuDNN 运行测速、选出最优算法并写入内部 cache。
+        #   · 捕获阶段切换为 benchmark=False → cuDNN 走确定性 heuristic 路径，
+        #     完全跳过 FIND/测速流程，避免在 capture context 内发起受限内存分配。
+        #   · 捕获完成后恢复 benchmark=True，后续普通推理仍受益于 benchmark 缓存。
+        # 增加至 5 次 warmup，确保内存碎片恢复后每层 conv 算法均已充分缓存。
+
+        # ── Warmup（benchmark=True，充分缓存每层 conv 最优算法）────────────────
+        for _ in range(5):
             with torch.cuda.stream(self.stream_compute):
-                _ = self.model(static_img0, static_img1, static_embt, static_imgt)
-        torch.cuda.current_stream().wait_stream(self.stream_compute)
+                _ = self.model.inference(static_img0, static_img1, static_embt)
+        # 捕获前完整同步，确保所有 warmup kernel 落盘、cuDNN 算法 cache 写入完成
+        torch.cuda.synchronize(self.device)
 
+        # ── CUDA Graph 捕获（benchmark=False 防止 FIND 在捕获内触发测速）─────────
         g = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(g, stream=self.stream_compute):
-            static_output = self.model(static_img0, static_img1, static_embt, static_imgt)
-            if isinstance(static_output, tuple):
-                static_output = static_output[0]
+        _saved_benchmark = torch.backends.cudnn.benchmark
+        torch.backends.cudnn.benchmark = False  # [FIX-CG-BENCHMARK]
+        try:
+            with torch.cuda.graph(g, stream=self.stream_compute):
+                static_output = self.model.inference(static_img0, static_img1, static_embt)
+        except Exception as e:
+            # [FIX-CG-FALLBACK] 捕获失败时的兜底：同步、清理、禁用 CUDA Graph、回退普通推理
+            torch.backends.cudnn.benchmark = _saved_benchmark
+            try:
+                torch.cuda.synchronize(self.device)
+            except Exception:
+                pass
+            torch.cuda.empty_cache()
+            self.use_cuda_graph = False
+            print(f'  [CUDA Graph] 捕获失败（{type(e).__name__}: {str(e)[:120]}），'
+                  f'已禁用 CUDA Graph，本批及后续均走普通推理路径。')
+            # warmup 已把权重数据写入 static tensor，直接用原始输入做一次普通推理返回
+            with torch.cuda.stream(self.stream_compute):
+                return self.model.inference(img0, img1, embt)
+        finally:
+            torch.backends.cudnn.benchmark = _saved_benchmark  # 无论成败都恢复
+
+        # [FIX-CUDA-GRAPH-CAPTURE-REPLAY]
+        # CUDA Graph 捕获期间操作只是被录制，并不执行
+        # （cudaStreamBeginCapture 官方文档：work is not executed during capture）。
+        # capture 路径直接返回 static_output 拿到的是未初始化内存 → 黑帧。
+        # 必须在 capture 后立即 replay 一次，让 static_output 填入真实结果，
+        # 再通过 wait_stream 让调用方安全读取。
+        with torch.cuda.stream(self.stream_compute):
+            g.replay()
 
         self._graph[shape_key] = g
         self._graph_inputs[shape_key] = {
             'img0': static_img0, 'img1': static_img1,
-            'embt': static_embt, 'imgt_approx': static_imgt,
+            'embt': static_embt,
             'output': static_output,
         }
         return static_output
@@ -1140,9 +1214,7 @@ class IFRNetVideoProcessor:
             with stream_ctx, autocast_ctx:
                 t_vals      = timesteps * B
                 embt        = torch.tensor(t_vals, dtype=self.dtype, device=self.device).view(-1, 1, 1, 1)
-                imgt_approx = img0_exp * (1 - embt) + img1_exp * embt
-                out         = self.model(img0_exp, img1_exp, embt, imgt_approx)
-                pred_big    = out[0] if isinstance(out, tuple) else out
+                pred_big    = self.model.inference(img0_exp, img1_exp, embt)
 
         # [FIX-STREAM] compute_stream 上的推理可能尚未完成，
         # 必须在 .float() 之前让 default_stream 等待 compute_stream，
@@ -1201,6 +1273,18 @@ class IFRNetVideoProcessor:
                 torch.cuda.empty_cache()
                 self._pool.clear()
                 self._graph.clear()
+                self._graph_inputs.clear()  # [FIX-OOM-STREAM] 清理 static tensor 引用
+
+                # [FIX-OOM-STREAM] OOM 若发生在 CUDA Graph capture 内部会使 stream_compute
+                # 残留 cudaErrorStreamCaptureInvalidated 状态，导致后续 capture 持续失败。
+                # 重建流确保后续所有操作（capture / replay / 普通推理）在干净 stream 上运行。
+                if self.stream_compute is not None:
+                    try:
+                        torch.cuda.synchronize(self.device)
+                    except Exception:
+                        pass
+                    self.stream_compute  = torch.cuda.Stream(device=self.device)
+                    self.stream_transfer = torch.cuda.Stream(device=self.device)
 
                 if not in_oom_cascade:
                     # ── 首次 OOM：永久更新天花板，此 batch_size 已证明不可用 ──
@@ -1242,6 +1326,39 @@ class IFRNetVideoProcessor:
                 self._oom_cooldown = 10
                 print(f'\n[OOM] 自动降低 batch_size → {self.batch_size}')
 
+            except (RuntimeError, Exception) as _cg_err:
+                # [FIX-CG-RTERR] 捕获 CUDA Graph capture 引发的非 OOM GPU 错误：
+                #   · "FIND was unable to find an engine" — cudnn 在 capture 内 FIND 失败
+                #   · "cudaErrorStreamCaptureInvalidated" — stream 被前序 OOM 污染
+                #   · "operation failed due to a previous error during capture"
+                # 对策：禁用 CUDA Graph，重建 CUDA 流，用普通推理重试当前 batch。
+                # 非 CUDA Graph 相关错误则直接 reraise，不静默吞掉。
+                _err_s = str(_cg_err)
+                _is_cg = (
+                    'FIND was unable to find an engine' in _err_s
+                    or 'cudaErrorStreamCaptureInvalidated' in _err_s
+                    or 'operation failed due to a previous error during capture' in _err_s
+                    or 'cudaErrorIllegalState' in _err_s
+                    or ('AcceleratorError' in type(_cg_err).__name__ and 'capture' in _err_s)
+                )
+                if self.use_cuda_graph and _is_cg:
+                    print(f'[CUDA Graph 错误] {type(_cg_err).__name__}: {_err_s[:200]}')
+                    print('  → 禁用 CUDA Graph，重建 CUDA 流，后续走普通推理路径...')
+                    self.use_cuda_graph = False
+                    self._graph.clear()
+                    self._graph_inputs.clear()
+                    self._pool.clear()
+                    torch.cuda.empty_cache()
+                    if self.stream_compute is not None:
+                        try:
+                            torch.cuda.synchronize(self.device)
+                        except Exception:
+                            pass
+                        self.stream_compute  = torch.cuda.Stream(device=self.device)
+                        self.stream_transfer = torch.cuda.Stream(device=self.device)
+                    continue  # 以 use_cuda_graph=False 重试当前 batch
+                raise  # 非 CUDA Graph 错误，原样上抛
+
     # ──────────────────────────────────────────────────────────────────────────
     # 单段处理核心
     # ──────────────────────────────────────────────────────────────────────────
@@ -1266,7 +1383,7 @@ class IFRNetVideoProcessor:
         返回 (成功, 原始帧数, 输出帧数)。
         """
         # [FIX-PAD] 将 pad_stride 传入 reader，padding 在后台线程完成
-        _pad_stride_val = MODEL_STRIDE  # [FIX-PAD] 始终传入 stride，后台线程按需 pad
+        # [FIX-PAD-VAR] 直接使用 MODEL_STRIDE，无需冗余中间变量
         reader = FFmpegFrameReader(
             input_path,
             frame_start  = frame_start,
@@ -1274,7 +1391,7 @@ class IFRNetVideoProcessor:
             prefetch     = self.batch_size * 3,
             use_hwaccel  = self.use_hwaccel,
             ffmpeg_bin   = self.ffmpeg_bin,
-            pad_stride   = _pad_stride_val,  # [FIX-PAD] 交由后台线程 pad
+            pad_stride   = MODEL_STRIDE,      # [FIX-PAD] 交由后台线程 pad
         )
         W, H      = reader.width, reader.height
         fps       = reader.fps
@@ -1286,13 +1403,15 @@ class IFRNetVideoProcessor:
         free_bytes = 0
         if torch.cuda.is_available():
             free_bytes = torch.cuda.mem_get_info(self.device)[0]
+        # [FIX-BS] 局部变量 effective_bs，不修改实例状态，避免多段处理状态泄漏
+        effective_bs = self.batch_size
         if free_bytes > 0:
             res_max_bs = max(1, int(free_bytes * 0.6 / bytes_per_frame))
-            if self.batch_size > res_max_bs:
-                print(f'[分辨率限制] {W}×{H} 下 batch_size {self.batch_size} → {res_max_bs}')
-                self.batch_size = res_max_bs
+            if effective_bs > res_max_bs:
+                print(f'[分辨率限制] {W}×{H} 下 batch_size {effective_bs} → {res_max_bs}')
+                effective_bs = res_max_bs
             if self._max_batch_size > res_max_bs:
-                self._max_batch_size = max(self.batch_size, res_max_bs)
+                self._max_batch_size = max(effective_bs, res_max_bs)
 
         # [FIX-PAD] padding 已由 FFmpegFrameReader 后台线程完成；
         # 此处仅从 reader 读取预计算好的值供 flush_buf 裁剪使用
@@ -1317,24 +1436,17 @@ class IFRNetVideoProcessor:
         if 'nvenc' in use_codec:
             print(f'[{worker_label}] NVENC 编码: {use_codec}')
 
-        # ── torch.compile 预热 ────────────────────────────────────────────────
+        # [FIX-TSTART] 端到端计时，包含 warmup 耗时，避免计时虚高
+        t_start = time.time()
+        
+		# ── torch.compile 预热 ────────────────────────────────────────────────
         # torch.compile 的实际编译发生在第一次 forward 时，会阻塞数分钟。
         # 在开启 writer 和进度条之前做预热，让用户看到明确的"编译中"提示，
         # 而不是进度条卡在 4 帧假死。
-        if hasattr(self.model, '_is_compiled') or (
-            hasattr(self.model, '_orig_mod')  # torch.compile wraps with _orig_mod
-        ):
-            _need_warmup = True
-        else:
-            # check via dynamo
-            try:
-                _need_warmup = hasattr(self.model, '_dynamo_ctx')
-            except Exception:
-                _need_warmup = False
         # Simpler reliable check: always warmup once per segment if compile is active
         # [FIX-TRT-WARMUP] TRT 激活时推理全走 TRT 分支，torch.compile 路径不会执行，
         # 跳过预热避免浪费 ~30s 编译时间。
-        if not getattr(self, '_warmup_done', False) and not getattr(self, '_trt_ok', False):
+        if self.use_compile and not getattr(self, '_warmup_done', False) and not getattr(self, '_trt_ok', False):
             # ── 预热形状说明 ────────────────────────────────────────────────────
             # 使用固定小形状 (1×3×32×32) 而非真实分辨率做编译预热。
             # 原因：Triton 在超大 shape（如 1440×2560）首次编译时会生成巨大的 .so
@@ -1354,10 +1466,9 @@ class IFRNetVideoProcessor:
                     _d1   = torch.zeros_like(_d0)
                     _embt = torch.tensor([0.5] * _bs_warm,
                                          dtype=self.dtype, device=self.device).view(-1,1,1,1)
-                    _imgt = (_d0 + _d1) * 0.5
-                    _out  = self.model(_d0, _d1, _embt, _imgt)
+                    _out  = self.model.inference(_d0, _d1, _embt)
                     # 显式释放所有引用后再 synchronize，防止析构顺序引发堆损坏
-                    del _out, _d0, _d1, _embt, _imgt
+                    del _out, _d0, _d1, _embt
                 if self.device.type == 'cuda':
                     torch.cuda.synchronize()
                     torch.cuda.empty_cache()
@@ -1369,7 +1480,11 @@ class IFRNetVideoProcessor:
                 if hasattr(self.model, '_orig_mod'):
                     self.model = self.model._orig_mod
                 else:
-                    torch._dynamo.reset()
+                    # [FIX-DYNAMO] 避免 dynamo 未初始化时 reset() 二次崩溃
+                    try:
+                        torch._dynamo.reset()
+                    except Exception:
+                        pass
             self._warmup_done = True
 
         writer = FFmpegWriter(
@@ -1429,7 +1544,6 @@ class IFRNetVideoProcessor:
 
         # ── 主读帧循环 ─────────────────────────────────────────────────────
         # [FIX-PAD] reader.read() 已在后台线程完成 padding，主线程直接解包
-        t_start = time.time()
         while True:
             pair = reader.read()
             if pair is None:
@@ -1440,7 +1554,7 @@ class IFRNetVideoProcessor:
             raw_buf.append(frame)
             padded_buf.append(frame_padded)
 
-            if len(raw_buf) == self.batch_size + 1:
+            if len(raw_buf) == effective_bs + 1:
                 flush_buf()
                 raw_buf    = [raw_buf[-1]]
                 padded_buf = [padded_buf[-1]]
@@ -1470,7 +1584,7 @@ class IFRNetVideoProcessor:
 
         elapsed = time.time() - t_start
         print(f'[{worker_label}] 完成 | 原始帧={frame_count} → 输出帧={output_count} | '
-              f'{frame_count/elapsed:.1f} 原始帧/s')
+              f'{frame_count/elapsed:.1f} 原始帧/s（含 warmup/初始化）')
         return True, frame_count, output_count
 
     # ──────────────────────────────────────────────────────────────────────────
