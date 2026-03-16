@@ -15,6 +15,7 @@ class Config:
     
     # 默认配置 —— 与 config/default_config.json 保持完全一致
     # （JSON 优先；此处作为纯代码环境的兜底，字段齐全则避免 KeyError）
+    # ⚠️  变更记录：realesrgan.fp32 已移除，改用 realesrgan.use_fp16（与 ifrnet 对齐）
     DEFAULT_CONFIG = {
         "processing": {
             "mode":                 "interpolate_then_upscale",
@@ -65,21 +66,24 @@ class Config:
                 "tile_size":        0,
                 "tile_pad":         10,
                 "pre_pad":          0,
-                "fp32":             False,
+                # fp32 已移除；使用 use_fp16 控制精度（与 ifrnet 保持一致）
+                "use_fp16":         True,
                 "face_enhance":     False,
-                # v5 推理优化
-                "batch_size":       8,
-                "prefetch_factor":  16,
+                # v5+ 推理优化（与 ifrnet 保持一致）
+                "batch_size":       12,
+                "prefetch_factor":  36,
                 "use_compile":      False,
-                "use_tensorrt":     False,
+                "use_cuda_graph":   True,
+                "use_tensorrt":     True,
                 # v6 face_enhance 精细控制
                 "gfpgan_model":      "1.4",
                 "gfpgan_weight":     0.5,
-                "gfpgan_batch_size": 8,
+                "gfpgan_batch_size": 12,
                 # v5 硬件解/编码
                 "use_hwaccel":    True,
-                "video_codec":    "libx264",
-                "crf":            18,
+                "video_codec":    "libx264",   # 已废弃，保留兼容旧 config
+                "codec":          "libx264",
+                "crf":            23,
                 "ffmpeg_bin":     "ffmpeg",
                 # 性能报告
                 "report_json":    None,
