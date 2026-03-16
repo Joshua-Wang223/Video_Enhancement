@@ -81,13 +81,14 @@ class RealESRGANVideoProcessor:
         self.tile_size        = config.get("models", "realesrgan", "tile_size",        default=0)
         self.tile_pad         = config.get("models", "realesrgan", "tile_pad",         default=10)
         self.pre_pad          = config.get("models", "realesrgan", "pre_pad",          default=0)
-        self.fp32             = config.get("models", "realesrgan", "fp32",             default=False)
+        self.use_fp16         = config.get("models", "realesrgan", "use_fp16",         default=True)
         self.face_enhance     = config.get("models", "realesrgan", "face_enhance",     default=False)
 
         # 推理优化参数（v5+，对齐 v6.1 默认值）
         self.batch_size      = config.get("models", "realesrgan", "batch_size",      default=12)
         self.prefetch_factor = config.get("models", "realesrgan", "prefetch_factor", default=24)
-        self.use_compile     = config.get("models", "realesrgan", "use_compile",     default=False)
+        self.use_compile     = config.get("models", "realesrgan", "use_compile",     default=True)
+        self.use_cuda_graph  = config.get("models", "realesrgan", "use_cuda_graph",  default=True)
         self.use_tensorrt    = config.get("models", "realesrgan", "use_tensorrt",    default=False)
 
         # face_enhance 精细控制参数（v6）
@@ -141,8 +142,8 @@ class RealESRGANVideoProcessor:
         print(f"⚡ 超分倍数: {self.upscale_factor}x")
         print(f"🖥️  设备: {self.device}")
         print(f"🧩 分段时长: {self.segment_duration}秒")
-        print(f"   FP16: {not self.fp32} | compile: {self.use_compile}"
-              f" | TRT: {self.use_tensorrt}")
+        print(f"   FP16: {self.use_fp16} | compile: {self.use_compile}"
+              f" | CUDA Graph: {self.use_cuda_graph} | TRT: {self.use_tensorrt}")
         face_hint = (
             f" (model={self.gfpgan_model}, weight={self.gfpgan_weight},"
             f" gfpgan_batch={self.gfpgan_batch_size})"
@@ -188,8 +189,9 @@ class RealESRGANVideoProcessor:
         print(f"📹 输入: {input_video}")
         print(f"⚡ 超分倍数: {self.upscale_factor}x | 模型: {self.model_name}")
         print(f"🖥️  设备: {self.device} | "
-              f"FP16: {not self.fp32} | "
+              f"FP16: {self.use_fp16} | "
               f"compile: {self.use_compile} | "
+              f"CUDA Graph: {self.use_cuda_graph} | "
               f"TRT: {self.use_tensorrt}")
 
         video_name = Path(input_video).stem
@@ -378,9 +380,9 @@ class RealESRGANVideoProcessor:
 
         Namespace 字段与底层 v6.1 argparse 严格对齐：
           基础: input, output, model_name, denoise_strength, outscale, suffix
-          推理: tile, tile_pad, pre_pad, face_enhance, fp32, fps
+          推理: tile, tile_pad, pre_pad, face_enhance, use_fp16/no_fp16, fps
           face_enhance: gfpgan_model, gfpgan_weight, gfpgan_batch_size
-          优化: batch_size, prefetch_factor, use_compile, use_tensorrt
+          优化: batch_size, prefetch_factor, use_compile, use_cuda_graph, use_tensorrt
           硬件: use_hwaccel, no_hwaccel, codec, crf, ffmpeg_bin
           输出: alpha_upsampler, ext
           报告: report
@@ -413,7 +415,8 @@ class RealESRGANVideoProcessor:
             ns.tile_pad     = self.tile_pad
             ns.pre_pad      = self.pre_pad
             ns.face_enhance = self.face_enhance
-            ns.fp32         = self.fp32
+            ns.use_fp16     = self.use_fp16
+            ns.no_fp16      = not self.use_fp16  # 推理层 shim 从 no_fp16 派生 use_fp16
             ns.fps          = None          # 保持原帧率
 
             # ── face_enhance 精细控制参数（v6）─────────────────────────────
@@ -425,7 +428,13 @@ class RealESRGANVideoProcessor:
             ns.batch_size      = self.batch_size
             ns.prefetch_factor = self.prefetch_factor
             ns.use_compile     = self.use_compile
+            ns.use_cuda_graph  = self.use_cuda_graph
             ns.use_tensorrt    = self.use_tensorrt
+            # 反向标志对齐：底层 inference_video_single 通过 getattr 读取，
+            # processor 已解析最终有效值，直接同步对应的 no_* 字段
+            ns.no_compile     = not self.use_compile
+            ns.no_cuda_graph  = not self.use_cuda_graph
+            ns.no_tensorrt    = not self.use_tensorrt
             # TRT Engine 缓存目录；底层 inference_video_single() 通过 getattr 读取
             ns.trt_cache_dir   = self.trt_cache_dir or None
 
@@ -448,8 +457,9 @@ class RealESRGANVideoProcessor:
 
             print(f"   🔧 加载模型: {self.model_name}")
             print(f"   🖥️  设备: {self.device} | "
-                  f"FP16: {not self.fp32} | "
+                  f"FP16: {self.use_fp16} | "
                   f"compile: {self.use_compile} | "
+                  f"CUDA Graph: {self.use_cuda_graph} | "
                   f"TRT: {self.use_tensorrt}")
             print(f"   📦 batch_size: {self.batch_size} | "
                   f"prefetch: {self.prefetch_factor}")
@@ -514,7 +524,7 @@ def main():
     底层对接 inference_realesrgan_video_v6_1_single.run()。
 
     示例：
-      # 使用默认配置，直接超分
+      # 使用默认配置，直接超分（compile + CUDA Graph 默认开启）
       python realesrgan_processor_v6_single.py -i input.mp4 -o output.mp4
 
       # 指定配置文件 + 开启人脸增强
@@ -527,9 +537,13 @@ def main():
              --face-enhance --gfpgan-model 1.4 --gfpgan-weight 0.5 \\
              --gfpgan-batch-size 8
 
-      # TensorRT 加速 + 大批量
+      # TensorRT 加速 + 大批量（TRT 优先，compile/CUDA Graph 自动禁用）
       python realesrgan_processor_v6_single.py -i input.mp4 -o output.mp4 \\
              --use-tensorrt --batch-size 16 --prefetch-factor 32
+
+      # 禁用所有 GPU 加速（调试模式）
+      python realesrgan_processor_v6_single.py -i input.mp4 -o output.mp4 \\
+             --no-compile --no-cuda-graph --no-fp16
     """
 
     # 自动定位默认配置文件（假设脚本在 src/processors/，config 在项目根/config/）
@@ -605,23 +619,39 @@ def main():
                         help="单次 GFPGAN 前向最多处理的人脸数（OOM 保护，覆盖配置）")
 
     # ── 推理/编码开关 ─────────────────────────────────────────────────────────
-    parser.add_argument("--no-hwaccel",   action="store_true",
+    parser.add_argument("--no-hwaccel",    action="store_true",
                         help="禁用 NVDEC 硬件解码（默认自动探测）")
-    parser.add_argument("--use-compile",  action="store_true",
-                        help="启用 torch.compile 加速（reduce-overhead 模式）")
-    parser.add_argument("--use-tensorrt", action="store_true",
+    parser.add_argument("--no-compile",    action="store_true",
+                        help="禁用 torch.compile（默认开启；短视频或调试时可禁用跳过编译等待）")
+    parser.add_argument("--no-cuda-graph", action="store_true",
+                        help="禁用 CUDA Graph（默认开启；compile/TRT 激活时自动禁用）")
+    parser.add_argument("--use-tensorrt",  action="store_true",
                         help="启用 TensorRT 加速（首次需构建 Engine，缓存于 .trt_cache/）")
     parser.add_argument("--trt-cache-dir", metavar="DIR",
                         help="TRT Engine 缓存目录（覆盖配置 paths.trt_cache_dir；"
                              "默认 base_dir/.trt_cache）")
-    parser.add_argument("--fp32",         action="store_true",
-                        help="使用 FP32 精度（默认 FP16）")
-    parser.add_argument("--crf",          type=int,
+    parser.add_argument("--no-fp16",       action="store_true",
+                        help="禁用 FP16（默认开启 FP16）")
+    parser.add_argument("--crf",           type=int,
                         help="分段输出视频质量 CRF（0~51，默认 23）")
-    parser.add_argument("--codec",        type=str,
+    parser.add_argument("--codec",         type=str,
                         help="分段输出编码器（默认 libx264；有 NVENC 时自动升级）")
-    parser.add_argument("--ffmpeg-bin",   type=str,
+    parser.add_argument("--ffmpeg-bin",    type=str,
                         help="ffmpeg 可执行文件路径（默认 ffmpeg）")
+    # ── 高优先级覆盖开关（强制启用，覆盖上方 --no-* / config 中的禁用设置）────────
+    parser.add_argument("--no-tensorrt", dest="no_tensorrt",
+                        action="store_true", default=False,
+                        help="[覆盖] 强制禁用 TensorRT，覆盖 --use-tensorrt / config。"
+                             "适用于 config 中 use_tensorrt=true 但本次不希望启用 TRT 的场景。")
+    parser.add_argument("--use-compile", dest="use_compile_force",
+                        action="store_true", default=False,
+                        help="[覆盖] 强制启用 torch.compile，覆盖 --no-compile / config。"
+                             "与 --use-tensorrt 互斥（TRT 优先）。")
+    parser.add_argument("--use-cuda-graph", dest="use_cuda_graph_force",
+                        action="store_true", default=False,
+                        help="[覆盖] 强制启用 CUDA Graph，覆盖 --no-cuda-graph / config。"
+                             "与 compile/TRT 互斥（compile/TRT 优先）。"
+                             "如需确保生效，请同时指定 --no-compile --no-tensorrt。")
 
     # ── 性能报告 ─────────────────────────────────────────────────────────────
     parser.add_argument("--report", metavar="PATH",
@@ -675,17 +705,19 @@ def main():
     if args.gfpgan_batch_size:
         config.set("models", "realesrgan", "gfpgan_batch_size", value=args.gfpgan_batch_size)
 
-    # 推理/编码开关
+    # 推理/编码开关（--no-* 时显式写 False，其余留给 __init__ default=True 兜底）
     if args.no_hwaccel:
         config.set("models", "realesrgan", "use_hwaccel",   value=False)
-    if args.use_compile:
-        config.set("models", "realesrgan", "use_compile",   value=True)
+    if args.no_compile:
+        config.set("models", "realesrgan", "use_compile",   value=False)
+    if args.no_cuda_graph:
+        config.set("models", "realesrgan", "use_cuda_graph", value=False)
     if args.use_tensorrt:
         config.set("models", "realesrgan", "use_tensorrt",  value=True)
     if args.trt_cache_dir:
         config.set("paths", "trt_cache_dir", value=args.trt_cache_dir)
-    if args.fp32:
-        config.set("models", "realesrgan", "fp32",          value=True)
+    if args.no_fp16:
+        config.set("models", "realesrgan", "use_fp16",   value=False)
     if args.crf is not None:
         config.set("models", "realesrgan", "crf",           value=args.crf)
     if args.codec:
@@ -696,6 +728,26 @@ def main():
         config.set("models", "realesrgan", "report_json",   value=args.report)
     if args.auto_cleanup:
         config.set("processing", "auto_cleanup_temp",       value=True)
+    # ── 高优先级覆盖（后写入，覆盖上方 --no-* / config 的值）─────────────────
+    _esr_overrides = []
+    if args.no_tensorrt and args.use_tensorrt:
+        config.set("models", "realesrgan", "use_tensorrt", value=False)
+        _esr_overrides.append("--no-tensorrt    覆盖了  --use-tensorrt  → TensorRT 已禁用")
+    elif args.no_tensorrt:
+        config.set("models", "realesrgan", "use_tensorrt", value=False)
+    if args.use_compile_force:
+        config.set("models", "realesrgan", "use_compile", value=True)
+        if args.no_compile:
+            _esr_overrides.append("--use-compile    覆盖了  --no-compile   → torch.compile 已启用")
+    if args.use_cuda_graph_force:
+        config.set("models", "realesrgan", "use_cuda_graph", value=True)
+        if args.no_cuda_graph:
+            _esr_overrides.append("--use-cuda-graph 覆盖了  --no-cuda-graph → CUDA Graph 已启用")
+    if _esr_overrides:
+        print("[CLI覆盖] Real-ESRGAN 以下设置已被高优先级参数覆盖：")
+        for msg in _esr_overrides:
+            print(f"          · {msg}")
+        print()
 
     # ── 创建处理器并执行 ──────────────────────────────────────────────────────
     try:
@@ -711,8 +763,8 @@ def main():
     print(f"   模型   : {processor.model_name}")
     print(f"   倍数   : {processor.upscale_factor}x")
     print(f"   设备   : {processor.device}")
-    print(f"   FP16   : {not processor.fp32} | compile: {processor.use_compile}"
-          f" | TRT: {processor.use_tensorrt}")
+    print(f"   FP16   : {processor.use_fp16} | compile: {processor.use_compile}"
+          f" | CUDA Graph: {processor.use_cuda_graph} | TensorRT: {processor.use_tensorrt}")
     print(f"   batch  : {processor.batch_size} | prefetch: {processor.prefetch_factor}")
     if processor.use_tensorrt:
         print(f"   TRT 缓存: {processor.trt_cache_dir or '(自动: base_dir/.trt_cache)'}")

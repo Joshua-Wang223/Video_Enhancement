@@ -91,7 +91,7 @@ RealESRGAN 视频超分处理脚本 —— 终极优化版 v6（多卡版）
       --use-tensorrt
 
   # 直接指定输出文件路径 + FP32 模式
-  python inference_realesrgan_video_v6.py -i input.mp4 -o output_4k.mkv -s 2 --fp32
+  python inference_realesrgan_video_v6.py -i input.mp4 -o output_4k.mkv -s 2 --no-fp16
 
   # 输出 JSON 性能报告
   python inference_realesrgan_video_v6.py -i input.mp4 -o results/ -s 2 \\
@@ -639,6 +639,112 @@ class TensorRTAccelerator:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# CUDA Graph 加速器（优先级：TRT > compile > CUDA Graph > eager）
+# ─────────────────────────────────────────────────────────────────────────────
+
+class CUDAGraphAccelerator:
+    """
+    CUDA Graph 加速器：捕获并重放模型前向图，消除 CPU kernel dispatch 开销。
+
+    原理：
+      首次遇到某一输入形状时，先做 3 次预热（填充 cudnn.benchmark 缓存选定
+      最优 kernel），再通过 torch.cuda.CUDAGraph 录制完整推理，后续相同形状
+      直接重放，CPU 无需逐一下发 CUDA kernel，吞吐提升约 10~25%。
+
+    适用条件：
+      · 不与 torch.compile / TRT 共用；优先级：TRT > compile > CUDA Graph。
+      · 仅 CUDA 可用时生效；CPU 设备自动禁用（available=False）。
+      · 每种 (B, C, H, W) 形状独立捕获一张图。末批或 OOM 降级后 batch_size
+        变小时触发新图捕获，不影响已缓存的大批图，与 TRT 策略一致。
+
+    实现要点：
+      · 捕获在 compute_stream 上进行；replay 前通过 static_in.copy_(batch_t)
+        更新数据（GPU→GPU，在 compute_stream 上执行），replay 后通过
+        static_out.clone() 取出结果以防下一批覆盖。
+      · 调用方负责：
+          replay 前：compute_stream.wait_stream(transfer_stream)
+          replay 后：default_stream.wait_stream(compute_stream)
+        与普通 PyTorch 批处理路径完全对称。
+    """
+
+    def __init__(self, model: torch.nn.Module, device: torch.device,
+                 compute_stream: Optional[torch.cuda.Stream] = None):
+        self.model          = model
+        self.device         = device
+        self.compute_stream = compute_stream
+        self._graphs: dict  = {}   # shape_key → (graph, static_in, static_out)
+        self.available      = torch.cuda.is_available()
+        if not self.available:
+            print('[CUDA Graph] GPU 不可用，CUDA Graph 已禁用')
+        else:
+            print('[CUDA Graph] 已启用（首帧推理时触发捕获，后续直接重放）')
+
+    @property
+    def num_cached(self) -> int:
+        return len(self._graphs)
+
+    def infer(self, batch_t: torch.Tensor) -> torch.Tensor:
+        """
+        推理入口：形状首次出现时执行预热+捕获，后续直接重放。
+        调用方须在此之前完成 compute_stream.wait_stream(transfer_stream)，
+        在此之后执行 default_stream.wait_stream(compute_stream)。
+        """
+        key = tuple(batch_t.shape)
+        if key not in self._graphs:
+            self._capture(batch_t, key)
+        graph, static_in, static_out = self._graphs[key]
+        s = self.compute_stream
+        if s is not None:
+            with torch.cuda.stream(s):
+                static_in.copy_(batch_t)   # GPU→GPU，在 compute_stream 上执行
+                graph.replay()
+                result = static_out.clone()
+        else:
+            static_in.copy_(batch_t)
+            graph.replay()
+            result = static_out.clone()
+        return result
+
+    def infer_or_eager(self, batch_t: torch.Tensor,
+                       eager_fn) -> torch.Tensor:
+        """
+        有缓存图时 replay，否则 eager fallback（不触发新图捕获）。
+        用于末批等只出现一次的非标准形状，避免不必要的 capture 开销。
+        首批（_graphs 为空）时仍触发 _capture，以保证主形状被图化。
+        """
+        key = tuple(batch_t.shape)
+        if key in self._graphs:
+            return self.infer(batch_t)
+        if not self._graphs:
+            # 真正的首批：捕获主形状图
+            self._capture(batch_t, key)
+            return self.infer(batch_t)
+        # 图已存在但形状不匹配（末批等）→ eager
+        return eager_fn(batch_t)
+
+    def _capture(self, sample_input: torch.Tensor, key: tuple):
+        """在 compute_stream 上预热 + 捕获 CUDAGraph。"""
+        s = self.compute_stream or torch.cuda.current_stream(self.device)
+        # 预热：3 次 eager 前向，让 cudnn.benchmark 选定最优 kernel
+        with torch.cuda.stream(s):
+            for _ in range(3):
+                with torch.no_grad():
+                    _ = self.model(sample_input)
+        torch.cuda.synchronize(self.device)
+
+        static_in = sample_input.clone()
+        graph     = torch.cuda.CUDAGraph()
+        with torch.cuda.stream(s):
+            with torch.cuda.graph(graph, stream=s):
+                with torch.no_grad():
+                    static_out = self.model(static_in)
+        torch.cuda.synchronize(self.device)
+
+        self._graphs[key] = (graph, static_in, static_out)
+        print(f'[CUDA Graph] 新形状 {key} 已捕获，当前缓存图数: {len(self._graphs)}')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Reader（支持 NVDEC + 异常传播）
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -894,12 +1000,14 @@ def _sr_infer_batch(
     transfer_stream,
     compute_stream,
     trt_accel,
+    cuda_graph_accel=None,
 ) -> List[np.ndarray]:
     """
     [FIX-PIPELINE] 纯 SR 推理：H2D → 模型前向 → 后处理 → 异步 D2H。
     不含任何 face_enhance 逻辑，流水线主循环在主线程调用，
     与后台 detect 线程并行（两者不共享任何 GPU 对象）。
     所有 FIX-2/FIX-STREAM/FIX-TRT3 优化全部保留。
+    三路分发：TRT → CUDA Graph → eager PyTorch。
     """
     device    = upsampler.device
     use_half  = upsampler.half
@@ -923,6 +1031,15 @@ def _sr_infer_batch(
         if transfer_stream is not None:
             torch.cuda.current_stream(device).wait_stream(transfer_stream)
         output_t = trt_accel.infer(batch_t).float()
+    elif cuda_graph_accel is not None and cuda_graph_accel.available:
+        if transfer_stream is not None and compute_stream is not None:
+            compute_stream.wait_stream(transfer_stream)
+        def _eager_model(x):
+            with torch.no_grad():
+                return upsampler.model(x)
+        output_t = cuda_graph_accel.infer_or_eager(batch_t, _eager_model)
+        if compute_stream is not None:
+            torch.cuda.default_stream(device).wait_stream(compute_stream)
     else:
         if transfer_stream is not None and compute_stream is not None:
             compute_stream.wait_stream(transfer_stream)
@@ -1115,6 +1232,7 @@ def _process_batch(
     transfer_stream,
     compute_stream,
     trt_accel: Optional['TensorRTAccelerator'] = None,
+    cuda_graph_accel: Optional['CUDAGraphAccelerator'] = None,
     face_enhancer=None,
     face_fp16: bool = False,
     gfpgan_weight: float = 0.5,
@@ -1164,6 +1282,16 @@ def _process_batch(
         if transfer_stream is not None:
             torch.cuda.current_stream(device).wait_stream(transfer_stream)
         output_t = trt_accel.infer(batch_t).float()
+    elif cuda_graph_accel is not None and cuda_graph_accel.available:
+        # CUDA Graph 路径：replay 预录的计算图，消除 CPU kernel dispatch 开销
+        if transfer_stream is not None and compute_stream is not None:
+            compute_stream.wait_stream(transfer_stream)
+        def _eager_model_fn(x):
+            with torch.no_grad():
+                return upsampler.model(x)
+        output_t = cuda_graph_accel.infer_or_eager(batch_t, _eager_model_fn)
+        if compute_stream is not None:
+            torch.cuda.default_stream(device).wait_stream(compute_stream)
     else:
         # PyTorch 路径：compute_stream 等待 transfer_stream
         if transfer_stream is not None and compute_stream is not None:
@@ -1390,6 +1518,7 @@ def _sr_worker_fn(
     gfpgan_weight:      float = 0.5,
     gfpgan_batch_size:  int   = 12,
     face_fp16:          bool  = False,
+    use_cuda_graph:     bool  = True,
 ):
     """
     多进程 GPU 推理 Worker（v6 版）。从 dispatch_q 获取帧，处理后放入 result_q。
@@ -1451,10 +1580,12 @@ def _sr_worker_fn(
                   f'TRT 优先，torch.compile 已禁用。')
             use_compile = False
 
+        _compile_activated = False
         if use_compile and hasattr(torch, 'compile'):
             try:
                 upsampler.model = torch.compile(upsampler.model, mode='reduce-overhead')
                 print(f'[Worker {worker_idx}] torch.compile 加速已启用')
+                _compile_activated = True
             except Exception as e:
                 print(f'[Worker {worker_idx}] torch.compile 失败: {e}')
         elif use_compile and not hasattr(torch, 'compile'):
@@ -1466,6 +1597,19 @@ def _sr_worker_fn(
             trt_accel = TensorRTAccelerator(
                 upsampler.model, device, trt_cache_dir, sh, use_fp16=use_half
             )
+
+        # ── CUDA Graph 初始化（优先级：TRT > compile > CUDA Graph）────────────
+        cuda_graph_accel: Optional[CUDAGraphAccelerator] = None
+        _use_cuda_graph_worker = (
+            use_cuda_graph
+            and not use_trt
+            and not _compile_activated
+            and torch.cuda.is_available()
+            and tile == 0
+            and batch_size > 1
+        )
+        if _use_cuda_graph_worker:
+            cuda_graph_accel = CUDAGraphAccelerator(upsampler.model, device, compute_stream)
 
         # [FIX-6] face_enhance：Worker 内独立初始化 GFPGANer
         # GFPGANer 不可序列化，不能跨进程传递，必须在 Worker 内构建
@@ -1559,16 +1703,45 @@ def _sr_worker_fn(
                             paste_idxs = []
 
                         # Step C: SR 推理（GPU 主线程，与 detect 后台并行）
+                        # [v6 OOM-CASCADE] 级联标志（每个 Worker 独立）
+                        if '_worker_oom_cascade' not in dir():
+                            _worker_oom_cascade = False
+                            _max_bs_worker = [bs]
                         try:
                             sr_results = _sr_infer_batch(
                                 upsampler, current_batch, outscale, netscale,
-                                transfer_stream, compute_stream, trt_accel)
-                        except RuntimeError as e:
-                            err_str = str(e).lower()
-                            if 'out of memory' in err_str and bs > 1:
-                                bs = max(1, bs // 2)
+                                transfer_stream, compute_stream, trt_accel,
+                                cuda_graph_accel)
+                            _worker_oom_cascade = False  # 推理成功，重置级联
+                        except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+                            is_oom = (isinstance(e, torch.cuda.OutOfMemoryError)
+                                      or 'out of memory' in str(e).lower())
+                            if is_oom:
                                 torch.cuda.empty_cache()
-                                print(f'[Worker {worker_idx}] SR OOM，降级 bs → {bs}')
+                                if not _worker_oom_cascade:
+                                    safe_ceiling = max(1, bs - 1)
+                                    if _max_bs_worker[0] > safe_ceiling:
+                                        print(f'[Worker {worker_idx}] 永久降低 max_bs: '
+                                              f'{_max_bs_worker[0]} → {safe_ceiling}')
+                                        _max_bs_worker[0] = safe_ceiling
+                                    _worker_oom_cascade = True
+                                if bs <= 1:
+                                    torch.cuda.synchronize()
+                                    torch.cuda.empty_cache()
+                                    try:
+                                        torch._dynamo.reset()
+                                    except Exception:
+                                        pass
+                                    torch.cuda.empty_cache()
+                                    bs = _estimate_safe_batch_size(
+                                        current_batch[0].shape[0],
+                                        current_batch[0].shape[1],
+                                        _max_bs_worker[0], device)
+                                    _worker_oom_cascade = False
+                                    print(f'[Worker {worker_idx}] 深度清理后恢复 bs={bs}')
+                                else:
+                                    bs = max(1, bs // 2)
+                                    print(f'[Worker {worker_idx}] SR OOM，降级 bs → {bs}')
                             else:
                                 print(f'[Worker {worker_idx}] SR Error: {e}')
                             # 当前批失败：取消 detect future
@@ -1760,7 +1933,7 @@ class MultiGPUOrchestrator:
             gfpgan_model_path = _gfpgan_path
 
             # [FIX-8] FP16 autocast
-            face_fp16 = not args.fp32 and torch.cuda.is_available()
+            face_fp16 = args.use_fp16 and torch.cuda.is_available()
             print(f'[Orchestrator] face_enhance 已启用: {_gfpgan_name} | '
                   f'{"FP16" if face_fp16 else "FP32"} | '
                   f'SR-batch={args.batch_size} | '
@@ -1773,7 +1946,7 @@ class MultiGPUOrchestrator:
         result_q:   mp.Queue = mp.Queue(maxsize=max_q)
         error_q:    mp.Queue = mp.Queue()
 
-        trt_cache = osp.join(args.output, '.trt_cache')
+        trt_cache = getattr(args, 'trt_cache_dir', None) or osp.join(base_dir, '.trt_cache')
         use_trt   = getattr(args, 'use_tensorrt', False)
 
         worker_kwargs = dict(
@@ -1786,8 +1959,8 @@ class MultiGPUOrchestrator:
             tile              = args.tile,
             tile_pad          = args.tile_pad,
             pre_pad           = args.pre_pad,
-            use_half          = not args.fp32,
-            use_compile       = getattr(args, 'use_compile', False),
+            use_half          = args.use_fp16,
+            use_compile       = getattr(args, 'use_compile', True),
             use_trt           = use_trt,
             trt_cache_dir     = trt_cache,
             outscale          = args.outscale,
@@ -1802,6 +1975,7 @@ class MultiGPUOrchestrator:
             gfpgan_weight     = getattr(args, 'gfpgan_weight', 0.5),
             gfpgan_batch_size = getattr(args, 'gfpgan_batch_size', 12),
             face_fp16         = face_fp16,
+            use_cuda_graph    = getattr(args, 'use_cuda_graph', True),
         )
 
         ctx     = mp.get_context('spawn')
@@ -1939,7 +2113,7 @@ class MultiGPUOrchestrator:
                 'num_workers':  self.num_workers,
                 'num_gpus':     self.num_gpus,
                 'batch_size':   args.batch_size,
-                'fp16':         not args.fp32,
+                'fp16':         args.use_fp16,
                 'face_enhance': args.face_enhance,
                 'nvenc':        HardwareCapability.best_video_encoder(
                     getattr(args, 'video_codec', 'libx264')
@@ -1964,11 +2138,32 @@ class MultiGPUOrchestrator:
 # flush_batch_safe（OOM 降级 + 恢复，单卡路径用）
 # ─────────────────────────────────────────────────────────────────────────────
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OOM 级联保护辅助（backport from IFRNet v5）
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _estimate_safe_batch_size(H: int, W: int, max_bs: int, device=None) -> int:
+    """[OOM-CASCADE] 根据当前实测空闲显存估算安全的 batch_size。
+    backport from IFRNet v5 _estimate_safe_batch_size。
+    """
+    if not torch.cuda.is_available():
+        return 1
+    try:
+        dev = device if device is not None else torch.device('cuda')
+        free_bytes, _ = torch.cuda.mem_get_info(dev)
+        bytes_per_frame = H * W * 3 * 2 * 6
+        estimated = max(1, int(free_bytes * 0.7 / bytes_per_frame))
+        return min(estimated, max_bs)
+    except Exception:
+        return 1
+
 def flush_batch_safe(
     upsampler, frames, outscale, netscale,
     transfer_stream, compute_stream, writer,
     pbar, init_bs, oom_cooldown, max_bs, timing,
     trt_accel=None,
+    cuda_graph_accel=None,
     face_enhancer=None,
     face_fp16: bool = False,
     gfpgan_weight: float = 0.5,
@@ -1978,6 +2173,10 @@ def flush_batch_safe(
     bs     = min(init_bs, len(frames))
     gfp_bs = gfpgan_batch_size
     i      = 0
+    # [BUG-C FIX] 级联 OOM 保护变量
+    in_oom_cascade = False
+    _H = frames[0].shape[0] if frames else 0
+    _W = frames[0].shape[1] if frames else 0
     while i < len(frames):
         sub = frames[i: i + bs]
         try:
@@ -1985,6 +2184,7 @@ def flush_batch_safe(
             outputs, gfp_bs = _process_batch(
                 upsampler, sub, outscale, netscale,
                 transfer_stream, compute_stream, trt_accel,
+                cuda_graph_accel,
                 face_enhancer, face_fp16, gfpgan_weight, gfp_bs,
             )
             timing.append(time.perf_counter() - t0)
@@ -1994,19 +2194,76 @@ def flush_batch_safe(
             avg_ms = np.mean(timing[-20:]) * 1000 if timing else 0
             pbar.set_postfix(bs=bs, ms=f'{avg_ms:.0f}')
             i += bs
+            in_oom_cascade = False  # 推理成功，退出级联状态
             if oom_cooldown[0] > 0:
                 oom_cooldown[0] -= 1
             elif bs < max_bs[0]:
                 new_bs = min(bs + 1, max_bs[0])
-                tqdm.write(f'[恢复] 显存充裕,batch_size {bs} → {new_bs}')
+                tqdm.write(f'[恢复] 显存充裕，batch_size {bs} → {new_bs}')
                 bs = new_bs
-                
+
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            if not in_oom_cascade:
+                safe_ceiling = max(1, bs - 1)
+                if max_bs[0] > safe_ceiling:
+                    tqdm.write(f'[OOM] 永久降低 max_batch_size: {max_bs[0]} → {safe_ceiling}')
+                    max_bs[0] = safe_ceiling
+                in_oom_cascade = True
+            if bs <= 1:
+                tqdm.write('[OOM] batch_size=1 仍 OOM，深度清理后按剩余显存估算恢复...')
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+                    try:
+                        torch._dynamo.reset()
+                    except Exception:
+                        pass
+                    torch.cuda.empty_cache()
+                recovered_bs = _estimate_safe_batch_size(_H, _W, max_bs[0])
+                if recovered_bs < max_bs[0]:
+                    tqdm.write(f'[OOM] 深度清理后估算安全 batch_size={recovered_bs}，'
+                               f'更新 max_batch_size: {max_bs[0]} → {recovered_bs}')
+                    max_bs[0] = recovered_bs
+                bs = recovered_bs
+                oom_cooldown[0] = 20
+                in_oom_cascade = False
+                tqdm.write(f'[OOM] 恢复 batch_size={bs}，继续处理...')
+                continue
+            bs = max(1, bs // 2)
+            oom_cooldown[0] = 10
+            tqdm.write(f'[OOM] 自动降低 batch_size → {bs}')
+
         except RuntimeError as e:
             err_str = str(e).lower()
-            if 'out of memory' in err_str and bs > 1:
+            if 'out of memory' in err_str:
+                torch.cuda.empty_cache()
+                if not in_oom_cascade:
+                    safe_ceiling = max(1, bs - 1)
+                    if max_bs[0] > safe_ceiling:
+                        tqdm.write(f'[OOM] 永久降低 max_batch_size: {max_bs[0]} → {safe_ceiling}')
+                        max_bs[0] = safe_ceiling
+                    in_oom_cascade = True
+                if bs <= 1:
+                    tqdm.write('[OOM] RuntimeError OOM bs=1，深度清理后估算恢复...')
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                        torch.cuda.empty_cache()
+                        try:
+                            torch._dynamo.reset()
+                        except Exception:
+                            pass
+                        torch.cuda.empty_cache()
+                    recovered_bs = _estimate_safe_batch_size(_H, _W, max_bs[0])
+                    if recovered_bs < max_bs[0]:
+                        tqdm.write(f'[OOM] 估算安全 bs={recovered_bs}，更新 max_bs: {max_bs[0]} → {recovered_bs}')
+                        max_bs[0] = recovered_bs
+                    bs = recovered_bs
+                    oom_cooldown[0] = 20
+                    in_oom_cascade = False
+                    continue
                 bs = max(1, bs // 2)
                 oom_cooldown[0] = 10
-                torch.cuda.empty_cache()
                 tqdm.write(f'[OOM] 降级 batch_size → {bs}')
             elif 'nvml_success' in err_str or 'cudacachingallocator' in err_str:
                 # [BUGFIX] 无害断言，跳过
@@ -2057,7 +2314,7 @@ def inference_video_single(args, video_save_path: str, device=None):
         print(_dni_hint)
     upsampler = _build_upsampler(
         args.model_name, model_path, dni_weight,
-        args.tile, args.tile_pad, args.pre_pad, not args.fp32, device
+        args.tile, args.tile_pad, args.pre_pad, args.use_fp16, device
     )
 
     # [FIX-1] cuDNN benchmark
@@ -2066,9 +2323,30 @@ def inference_video_single(args, video_save_path: str, device=None):
         torch.backends.cudnn.enabled   = True
         print('[FIX-1] cudnn.benchmark = True 已启用')
 
+    # [BUG-B FIX] programmatic 调用兼容守卫
+    if not hasattr(args, 'use_fp16'):
+        args.use_fp16 = not getattr(args, 'no_fp16', False)
+    if not hasattr(args, 'use_compile'):
+        args.use_compile = True
+    if not hasattr(args, 'use_cuda_graph'):
+        args.use_cuda_graph = True
+    if getattr(args, 'use_compile', True) and getattr(args, 'use_tensorrt', False):
+        args.use_compile = False
+    if getattr(args, 'use_cuda_graph', True) and getattr(args, 'use_tensorrt', False):
+        args.use_cuda_graph = False
+    if getattr(args, 'use_cuda_graph', True) and getattr(args, 'use_compile', True):
+        args.use_cuda_graph = False
+
+    _compile_activated = False
     if args.use_compile and hasattr(torch, 'compile'):
         print('[Info] torch.compile 加速中 ...')
-        upsampler.model = torch.compile(upsampler.model, mode='reduce-overhead')
+        try:
+            upsampler.model = torch.compile(upsampler.model, mode='reduce-overhead')
+            _compile_activated = True
+        except Exception as _ce:
+            print(f'[Warning] torch.compile 失败，已跳过: {_ce}')
+    elif args.use_compile:
+        print('[Warning] 当前 PyTorch 不支持 torch.compile，已跳过。')
 
     # M3: TensorRT 可选
     trt_accel: Optional[TensorRTAccelerator] = None
@@ -2077,7 +2355,7 @@ def inference_video_single(args, video_save_path: str, device=None):
         sh      = (args.batch_size, 3, meta['height'], meta['width'])
         trt_dir = osp.join(args.output, '.trt_cache')
         trt_accel = TensorRTAccelerator(upsampler.model, device, trt_dir, sh,
-                                        use_fp16=not args.fp32)
+                                        use_fp16=args.use_fp16)
 
     if 'anime' in args.model_name and args.face_enhance:
         print('[Warning] anime 模型不支持 face_enhance，已禁用。')
@@ -2116,7 +2394,7 @@ def inference_video_single(args, video_save_path: str, device=None):
             bg_upsampler=None,
         )
         # [FIX-8] FP16 autocast
-        face_fp16 = not args.fp32 and torch.cuda.is_available()
+        face_fp16 = args.use_fp16 and torch.cuda.is_available()
         print(f'[v6] 流水线GFPGAN已启用: {_gfpgan_name} | {"FP16" if face_fp16 else "FP32"} | '
               f'basicsr_utils={"OK" if _HAS_BATCHGFPGAN else "缺失（逐帧回退）"}')
 
@@ -2130,6 +2408,23 @@ def inference_video_single(args, video_save_path: str, device=None):
     if torch.cuda.is_available():
         transfer_stream = torch.cuda.Stream(device=device)
         compute_stream  = torch.cuda.Stream(device=device)
+
+    # ── CUDA Graph 初始化（优先级最低：TRT > compile > CUDA Graph）────────────────
+    # programmatic 调用兜底：use_cuda_graph 默认 True（与 main() 解析后行为一致）
+    cuda_graph_accel: Optional[CUDAGraphAccelerator] = None
+    _use_cuda_graph = (
+        not getattr(args, 'use_tensorrt', False)
+        and not _compile_activated
+        and getattr(args, 'use_cuda_graph', True)
+        and torch.cuda.is_available()
+        and args.tile == 0
+        and args.batch_size > 1
+    )
+    if _use_cuda_graph:
+        cuda_graph_accel = CUDAGraphAccelerator(upsampler.model, device, compute_stream)
+
+    # [v6.1 OOM-CASCADE] 流水线路径 OOM 级联标志
+    _pipeline_oom_cascade = [False]
 
     reader = FFmpegReader(
         args.input,
@@ -2210,14 +2505,38 @@ def inference_video_single(args, video_save_path: str, device=None):
                     try:
                         sr_results = _sr_infer_batch(
                             upsampler, current_batch, args.outscale, netscale,
-                            transfer_stream, compute_stream, trt_accel)
+                            transfer_stream, compute_stream, trt_accel,
+                            cuda_graph_accel)
                         timing.append(time.perf_counter() - t0)
-                    except RuntimeError as e:
-                        if 'out of memory' in str(e).lower() and bs > 1:
-                            bs = max(1, bs // 2)
-                            _oom_cd[0] = 10
+                        _pipeline_oom_cascade[0] = False  # 推理成功，重置级联
+                    except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+                        is_oom = (isinstance(e, torch.cuda.OutOfMemoryError)
+                                  or 'out of memory' in str(e).lower())
+                        if is_oom:
                             torch.cuda.empty_cache()
-                            tqdm.write(f'[OOM] SR 降级 batch_size → {bs}')
+                            if not _pipeline_oom_cascade[0]:
+                                safe_ceiling = max(1, bs - 1)
+                                if _max_bs[0] > safe_ceiling:
+                                    tqdm.write(f'[OOM] 永久降低 max_batch_size: {_max_bs[0]} → {safe_ceiling}')
+                                    _max_bs[0] = safe_ceiling
+                                _pipeline_oom_cascade[0] = True
+                            if bs <= 1:
+                                torch.cuda.synchronize()
+                                torch.cuda.empty_cache()
+                                try:
+                                    torch._dynamo.reset()
+                                except Exception:
+                                    pass
+                                torch.cuda.empty_cache()
+                                bs = _estimate_safe_batch_size(
+                                    current_batch[0].shape[0],
+                                    current_batch[0].shape[1], _max_bs[0])
+                                _pipeline_oom_cascade[0] = False
+                                tqdm.write(f'[OOM] 深度清理后恢复 bs={bs}')
+                            else:
+                                bs = max(1, bs // 2)
+                                _oom_cd[0] = 10
+                                tqdm.write(f'[OOM] SR 降级 batch_size → {bs}')
                         else:
                             tqdm.write(f'[Error] SR: {e}')
                         if detect_fut is not None:
@@ -2275,6 +2594,7 @@ def inference_video_single(args, video_save_path: str, device=None):
                     upsampler, batch_frames, args.outscale, netscale,
                     transfer_stream, compute_stream, writer, pbar,
                     bs, _oom_cd, _max_bs, timing, trt_accel,
+                    cuda_graph_accel,
                     face_enhancer, face_fp16,
                     getattr(args, 'gfpgan_weight', 0.5),
                     gfpgan_bs,
@@ -2365,7 +2685,7 @@ def inference_video_single(args, video_save_path: str, device=None):
             'model':        args.model_name,
             'outscale':     args.outscale,
             'batch_size':   args.batch_size,
-            'fp16':         not args.fp32,
+            'fp16':         args.use_fp16,
             'face_enhance': args.face_enhance,
             'trt':          trt_accel is not None and trt_accel.available,
             'nvdec':        HardwareCapability.has_nvdec(),
@@ -2478,16 +2798,17 @@ def main():
                         help='[FIX-OOM-GFP] 单次 GFPGAN 前向最多处理的人脸数。'
                              'OOM 时自动对半降级。A10(24G) 建议 8~12，T4(16G) 建议 4~8。'
                              'Default: 12')
-    parser.add_argument('--fp32',                    action='store_true',
-                        help='禁用 FP16（默认启用 FP16）')
+    parser.add_argument('--no-fp16',                 action='store_true',
+                        help='禁用 FP16（默认开启 FP16）')
     parser.add_argument('--fps',                     type=float, default=None)
     # [FIX-5] batch_size 默认 8，prefetch_factor 默认 16
     parser.add_argument('--batch-size',              type=int, default=8,
                         help='批处理大小（T4 15G 建议 8~12，A100 80G 可到 32）')
     parser.add_argument('--prefetch-factor',         type=int, default=16,
                         help='读帧预取队列深度，建议 ≥ batch_size×2')
-    parser.add_argument('--use-compile',             action='store_true',
-                        help='启用 torch.compile（reduce-overhead，每 Worker 独立编译）')
+    parser.add_argument('--no-compile',             action='store_true',
+                        help='禁用 torch.compile（默认开启；短视频或调试时可禁用跳过编译等待）。'
+                             '注意：--use-tensorrt 激活时 compile 自动禁用。')
     # V5 参数
     parser.add_argument('--use-tensorrt',            action='store_true',
                         help='[V5] 启用 TensorRT 加速（[FIX-TRT3] 已修复 TRT 8/10 兼容性）')
@@ -2495,6 +2816,8 @@ def main():
                         help='[V5] 启用 NVDEC 硬件解码（自动探测，失败时回退）')
     parser.add_argument('--no-hwaccel',              action='store_true',
                         help='[V5] 强制禁用 NVDEC 硬件解码')
+    parser.add_argument('--no-cuda-graph',           action='store_true',
+                        help='禁用 CUDA Graph（默认开启；compile/TRT 激活时自动禁用）')
     # 多卡参数
     parser.add_argument('--num-process-per-gpu',     type=int, default=1,
                         help='每 GPU 启动的 Worker 进程数（24G+ 显存可设 2）')
@@ -2512,6 +2835,20 @@ def main():
                         choices=['auto', 'jpg', 'png'])
     parser.add_argument('--report',                  type=str, default=None,
                         help='输出 JSON 性能报告路径（如 report.json）')
+    parser.add_argument('--trt-cache-dir',           type=str, default=None,
+                        help='TRT Engine 缓存目录（覆盖默认 output/.trt_cache）')
+    # ── 高优先级覆盖开关 ────────────────────────────────────────────────────────
+    parser.add_argument('--no-tensorrt', dest='no_tensorrt',
+                        action='store_true', default=False,
+                        help='[覆盖] 强制禁用 TensorRT，覆盖 --use-tensorrt / 外部 config 注入。')
+    parser.add_argument('--use-compile', dest='use_compile_force',
+                        action='store_true', default=False,
+                        help='[覆盖] 强制启用 torch.compile，覆盖 --no-compile / config。'
+                             '与 --use-tensorrt 互斥（TRT 优先）。')
+    parser.add_argument('--use-cuda-graph', dest='use_cuda_graph_force',
+                        action='store_true', default=False,
+                        help='[覆盖] 强制启用 CUDA Graph，覆盖 --no-cuda-graph / config。'
+                             '与 compile/TRT 互斥（compile/TRT 优先）。')
 
     args = parser.parse_args()
     args.input = args.input.rstrip('/\\')
@@ -2520,24 +2857,50 @@ def main():
     if not _output_is_file(args.output):
         os.makedirs(args.output, exist_ok=True)
 
-    # ── 记录 CLI 显式传入的标志，供冲突仲裁使用 ────────────────────────────────
-    import sys as _sys
-    _cli_argv = set(_sys.argv[1:])
-    _compile_explicit  = '--use-compile'  in _cli_argv
-    _tensorrt_explicit = '--use-tensorrt' in _cli_argv
+    # ── 从 --no-fp16 派生 use_fp16 ────────────────────────────────────────────
+    args.use_fp16 = not args.no_fp16
 
-    # ── 冲突仲裁：--use-compile 与 --use-tensorrt 同时开启 ────────────────────
+    # ── 从 --no-compile / --no-cuda-graph 派生有效布尔值（默认均开启）────────
+    args.use_compile    = not args.no_compile      # True by default
+    args.use_cuda_graph = not args.no_cuda_graph   # True by default
+
+    # ── 高优先级覆盖参数解析 ──────────────────────────────────────────────────
+    _override_msgs = []
+    if args.no_tensorrt and args.use_tensorrt:
+        args.use_tensorrt = False
+        _override_msgs.append('--no-tensorrt    覆盖了  --use-tensorrt  → TensorRT 已禁用')
+    elif args.no_tensorrt:
+        args.use_tensorrt = False
+    if args.use_compile_force:
+        args.use_compile = True
+        if args.no_compile:
+            _override_msgs.append('--use-compile    覆盖了  --no-compile   → torch.compile 已启用')
+    if args.use_cuda_graph_force:
+        args.use_cuda_graph = True
+        if args.no_cuda_graph:
+            _override_msgs.append('--use-cuda-graph 覆盖了  --no-cuda-graph → CUDA Graph 已启用')
+    if _override_msgs:
+        print('[CLI覆盖] 以下设置已被高优先级参数覆盖：')
+        for msg in _override_msgs:
+            print(f'          · {msg}')
+        print()
+
+    # ── 冲突仲裁：优先级 TRT > compile > CUDA Graph ───────────────────────────
     if args.use_compile and args.use_tensorrt:
-        if _compile_explicit and not _tensorrt_explicit:
-            print('[Warning] CLI 显式传入 --use-compile，但 args.use_tensorrt=True（来自外部配置）。'
-                  '\n          CLI 优先：禁用 TensorRT，使用 torch.compile 路径。'
-                  '\n          若需要 TRT，请在 CLI 显式传入 --use-tensorrt。')
-            args.use_tensorrt = False
-        else:
-            print('[Warning] --use-compile 与 --use-tensorrt 同时开启。'
-                  '\n          TRT 推理路径完全接管，torch.compile 不会被执行，已自动禁用。'
-                  '\n          如需 torch.compile，请去掉 --use-tensorrt。')
-            args.use_compile = False
+        print('[Warning] --use-tensorrt 与 torch.compile 互斥。'
+              '\n          TRT 推理路径完全接管，torch.compile 不会被执行，已自动禁用。'
+              '\n          如需 torch.compile，请加 --no-tensorrt。')
+        args.use_compile = False
+
+    if args.use_cuda_graph:
+        if args.use_tensorrt:
+            print('[Warning] CUDA Graph 与 TRT 互斥，TRT 优先，CUDA Graph 已自动禁用。'
+                  '\n          如需 CUDA Graph，请加 --no-tensorrt。')
+            args.use_cuda_graph = False
+        elif args.use_compile:
+            print('[Info] torch.compile 已启用（reduce-overhead 模式内含 cudagraphs），'
+                  '\n       CUDA Graph 已自动禁用（避免双重 capture）。')
+            args.use_cuda_graph = False
 
     # 处理 --no-hwaccel
     if args.no_hwaccel:
@@ -2563,10 +2926,14 @@ def main():
     print(f'  NVDEC:   {HardwareCapability.has_nvdec()} | '
           f'NVENC(h264): {HardwareCapability.has_nvenc("h264_nvenc")} | '
           f'NVENC(hevc): {HardwareCapability.has_nvenc("hevc_nvenc")}')
-    _accel_label = ('TensorRT' if args.use_tensorrt else
-                    'compile' if args.use_compile else 'FP16-only')
+    _accel_label = ('TensorRT'   if args.use_tensorrt  else
+                    'compile'    if args.use_compile   else
+                    'CUDA Graph' if args.use_cuda_graph else
+                    'FP16-only'  if args.use_fp16       else 'FP32-only')
+    print(f'  FP16:     {args.use_fp16}')
     print(f'  推理加速: {_accel_label} | '
-          f'TensorRT={args.use_tensorrt} | torch.compile={args.use_compile}')
+          f'TRT={args.use_tensorrt} | compile={args.use_compile} | '
+          f'CUDA Graph={args.use_cuda_graph}')
     print(f'  batch-size: {args.batch_size} | prefetch: {args.prefetch_factor} | '
           f'num-process-per-gpu: {args.num_process_per_gpu}')
     print(f'  face-enhance: {args.face_enhance} '

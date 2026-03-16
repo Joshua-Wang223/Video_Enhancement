@@ -13,11 +13,12 @@
               --ifrnet-model / --ifrnet-model-path / --report-ifrnet /
               --preview-ifrnet / --preview-interval-ifrnet /
               --use-cuda-graph-ifrnet / --use-compile-ifrnet / --no-tensorrt-ifrnet
-      ESRGan: --use-tensorrt-esrgan / --use-compile-esrgan / --fp32-esrgan /
-              --no-hwaccel-esrgan / --batch-size-esrgan / --prefetch-factor-esrgan /
-              --crf-esrgan / --codec-esrgan / --tile-size / --tile-pad /
-              --pre-pad / --denoise-strength / --face-enhance / --gfpgan-model /
-              --gfpgan-weight / --gfpgan-batch-size / --report-esrgan
+      ESRGan: --use-tensorrt-esrgan / --no-compile-esrgan / --no-cuda-graph-esrgan /
+              --no-fp16-esrgan / --no-hwaccel-esrgan / --batch-size-esrgan /
+              --prefetch-factor-esrgan / --crf-esrgan / --codec-esrgan / --tile-size /
+              --tile-pad / --pre-pad / --denoise-strength / --face-enhance /
+              --gfpgan-model / --gfpgan-weight / --gfpgan-batch-size / --report-esrgan /
+              --no-tensorrt-esrgan / --use-compile-esrgan / --use-cuda-graph-esrgan
       共用  : --trt-cache-dir（IFRNet 与 ESRGan 共享同一 TRT Engine 缓存目录）
   · 批量模式（--batch-mode）：从 --input-dir 批量读取，输出到 --output-dir
   · 断点恢复：各处理器内部独立管理分段断点
@@ -67,7 +68,7 @@
   python main_video_v6_single.py -c my_config.json \\
       -i input.mp4 -o output.mp4 \\
       --interpolation-factor 4 --upscale-factor 2 \\
-      --no-fp16-ifrnet --use-compile-esrgan
+      --no-fp16-ifrnet --no-compile-esrgan
 """
 
 from __future__ import annotations
@@ -204,10 +205,12 @@ def _apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
         config.set("models", "realesrgan", "denoise_strength", value=args.denoise_strength)
 
     # ── ESRGan 推理优化 ──────────────────────────────────────────────────────
-    if args.fp32_esrgan:
-        config.set("models", "realesrgan", "fp32",            value=True)
-    if args.use_compile_esrgan:
-        config.set("models", "realesrgan", "use_compile",     value=True)
+    if args.no_fp16_esrgan:
+        config.set("models", "realesrgan", "use_fp16",        value=False)
+    if args.no_compile_esrgan:
+        config.set("models", "realesrgan", "use_compile",     value=False)
+    if args.no_cuda_graph_esrgan:
+        config.set("models", "realesrgan", "use_cuda_graph",  value=False)
     if args.use_tensorrt_esrgan:
         config.set("models", "realesrgan", "use_tensorrt",    value=True)
     if args.no_hwaccel_esrgan:
@@ -228,6 +231,45 @@ def _apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
         config.set("models", "realesrgan", "codec",           value=args.codec_esrgan)
     if args.report_esrgan:
         config.set("models", "realesrgan", "report_json",     value=args.report_esrgan)
+    # ── ESRGan 高优先级覆盖（后写入，覆盖上方 --no-* / config 的值）────────────
+    _esr_overrides = []
+    if args.no_tensorrt_esrgan and args.use_tensorrt_esrgan:
+        config.set("models", "realesrgan", "use_tensorrt", value=False)
+        _esr_overrides.append(
+            "--no-tensorrt-esrgan    覆盖了  --use-tensorrt-esrgan  → ESRGan TensorRT 已禁用")
+    elif args.no_tensorrt_esrgan:
+        config.set("models", "realesrgan", "use_tensorrt", value=False)
+    if args.use_compile_force_esrgan:
+        config.set("models", "realesrgan", "use_compile", value=True)
+        if args.no_compile_esrgan:
+            _esr_overrides.append(
+                "--use-compile-esrgan    覆盖了  --no-compile-esrgan   → ESRGan torch.compile 已启用")
+    if args.use_cuda_graph_force_esrgan:
+        config.set("models", "realesrgan", "use_cuda_graph", value=True)
+        if args.no_cuda_graph_esrgan:
+            _esr_overrides.append(
+                "--use-cuda-graph-esrgan 覆盖了  --no-cuda-graph-esrgan → ESRGan CUDA Graph 已启用")
+    # 互斥警告（给出提示但不强制仲裁，底层 inference_video_single 有二道防线）
+    _eff_trt_esr     = config.get("models", "realesrgan", "use_tensorrt",   default=False)
+    _eff_compile_esr = config.get("models", "realesrgan", "use_compile",    default=True)
+    _eff_cg_esr      = config.get("models", "realesrgan", "use_cuda_graph", default=True)
+    if args.use_cuda_graph_force_esrgan and _eff_compile_esr and not _eff_trt_esr:
+        print("[CLI警告] --use-cuda-graph-esrgan 与 torch.compile 互斥："
+              "compile 成功后 CUDA Graph 将被自动禁用。")
+        print("          若要确保 CUDA Graph 生效，请同时指定 --no-compile-esrgan。")
+    if args.use_cuda_graph_force_esrgan and _eff_trt_esr:
+        print("[CLI警告] --use-cuda-graph-esrgan 与 --use-tensorrt-esrgan 互斥："
+              "TensorRT 优先，CUDA Graph 将被禁用。")
+        print("          如需 CUDA Graph，请同时指定 --no-tensorrt-esrgan。")
+    if args.use_compile_force_esrgan and _eff_trt_esr:
+        print("[CLI警告] --use-compile-esrgan 与 --use-tensorrt-esrgan 互斥："
+              "TensorRT 优先，torch.compile 将被禁用。")
+        print("          如需 torch.compile，请同时指定 --no-tensorrt-esrgan。")
+    if _esr_overrides:
+        print("[CLI覆盖] ESRGan 以下设置已被高优先级参数覆盖：")
+        for msg in _esr_overrides:
+            print(f"          · {msg}")
+        print()
 
     # ── face_enhance ─────────────────────────────────────────────────────────
     if args.face_enhance is not None:
@@ -481,11 +523,12 @@ def _build_parser() -> argparse.ArgumentParser:
                --batch-size-ifrnet / --max-batch-size-ifrnet / --crf-ifrnet /
                --codec-ifrnet / --report-ifrnet / --preview-ifrnet /
                --use-cuda-graph-ifrnet / --use-compile-ifrnet / --no-tensorrt-ifrnet
-  ESRGan参数 : --esrgan-model / --use-tensorrt-esrgan / --use-compile-esrgan /
-               --fp32-esrgan / --no-hwaccel-esrgan / --batch-size-esrgan /
-               --prefetch-factor-esrgan / --tile-size / --tile-pad / --pre-pad /
-               --denoise-strength / --crf-esrgan / --codec-esrgan /
-               --report-esrgan
+  ESRGan参数 : --esrgan-model / --use-tensorrt-esrgan / --no-compile-esrgan /
+               --no-cuda-graph-esrgan / --no-fp16-esrgan / --no-hwaccel-esrgan /
+               --batch-size-esrgan / --prefetch-factor-esrgan / --tile-size /
+               --tile-pad / --pre-pad / --denoise-strength / --crf-esrgan /
+               --codec-esrgan / --report-esrgan / --no-tensorrt-esrgan /
+               --use-compile-esrgan / --use-cuda-graph-esrgan
   人脸增强   : --face-enhance / --gfpgan-model / --gfpgan-weight / --gfpgan-batch-size
   合并输出   : --output-codec / --output-crf / --output-preset
   TRT 缓存   : --trt-cache-dir（IFRNet 与 ESRGan 共享同一目录）
@@ -593,10 +636,12 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="tile 边缘填充（默认 10）")
     g.add_argument("--pre-pad",    type=int, metavar="N",
                    help="预处理填充（默认 0）")
-    g.add_argument("--fp32-esrgan", action="store_true",
-                   help="ESRGan 使用 FP32 精度（默认 FP16）")
-    g.add_argument("--use-compile-esrgan", action="store_true",
-                   help="启用 ESRGan torch.compile（reduce-overhead 模式）")
+    g.add_argument("--no-fp16-esrgan", action="store_true",
+                   help="ESRGan 禁用 FP16（默认开启 FP16）")
+    g.add_argument("--no-compile-esrgan", action="store_true",
+                   help="禁用 ESRGan torch.compile（默认开启；短视频或调试时可禁用）")
+    g.add_argument("--no-cuda-graph-esrgan", action="store_true",
+                   help="禁用 ESRGan CUDA Graph（默认开启；compile/TRT 激活时自动禁用）")
     g.add_argument("--use-tensorrt-esrgan", action="store_true",
                    help="启用 ESRGan TensorRT 加速（首次需构建 Engine，缓存于 .trt_cache/）")
     g.add_argument("--no-hwaccel-esrgan", action="store_true",
@@ -607,6 +652,20 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="ESRGan 分段输出编码器（默认 libx264，有 NVENC 时自动升级）")
     g.add_argument("--report-esrgan", metavar="PATH",
                    help="ESRGan JSON 性能报告输出路径")
+    # ── 高优先级覆盖开关（强制启用，覆盖 --no-* / config 中的禁用设置）──────────
+    g.add_argument("--no-tensorrt-esrgan", dest="no_tensorrt_esrgan",
+                   action="store_true", default=False,
+                   help="[覆盖] 强制禁用 ESRGan TensorRT，覆盖 --use-tensorrt-esrgan / config。"
+                        "适用于 config 中 use_tensorrt=true 但本次不希望启用 TRT 的场景。")
+    g.add_argument("--use-compile-esrgan", dest="use_compile_force_esrgan",
+                   action="store_true", default=False,
+                   help="[覆盖] 强制启用 ESRGan torch.compile，覆盖 --no-compile-esrgan / config。"
+                        "与 --use-tensorrt-esrgan 互斥（TRT 优先）。")
+    g.add_argument("--use-cuda-graph-esrgan", dest="use_cuda_graph_force_esrgan",
+                   action="store_true", default=False,
+                   help="[覆盖] 强制启用 ESRGan CUDA Graph，覆盖 --no-cuda-graph-esrgan / config。"
+                        "与 compile/TRT 互斥（compile/TRT 优先）。"
+                        "如需确保生效，请同时指定 --no-compile-esrgan --no-tensorrt。")
 
     # ── face_enhance 参数 ─────────────────────────────────────────────────────
     g = parser.add_argument_group("face_enhance 参数（Real-ESRGAN）")
@@ -662,15 +721,16 @@ def _print_startup_info(config: Config, args: argparse.Namespace, mode: str) -> 
     print(f"     FP16       : {ifr('use_fp16',True)}"
           f"  |  compile: {ifr('use_compile',True)}"
           f"  |  CUDA Graph: {ifr('use_cuda_graph',True)}"
-          f"  |  TRT: {ifr('use_tensorrt',False)}")
+          f"  |  TensorRT: {ifr('use_tensorrt',False)}")
     print(f"     batch_size : {ifr('batch_size',4)} (上限 {ifr('max_batch_size',8)})"
           f"  |  NVDEC: {ifr('use_hwaccel',True)}")
     print()
     print(f"  ── Real-ESRGAN ──")
     print(f"     模型       : {esr('model_name','realesr-general-x4v3')}")
-    print(f"     FP16       : {not esr('fp32',False)}"
+    print(f"     FP16       : {esr('use_fp16',True)}"
           f"  |  compile: {esr('use_compile',False)}"
-          f"  |  TRT: {esr('use_tensorrt',False)}")
+          f"  |  CUDA Graph: {esr('use_cuda_graph',True)}"
+          f"  |  TensorRT: {esr('use_tensorrt',False)}")
     print(f"     batch_size : {esr('batch_size',12)}"
           f"  |  prefetch: {esr('prefetch_factor',24)}"
           f"  |  NVDEC: {esr('use_hwaccel',True)}")
