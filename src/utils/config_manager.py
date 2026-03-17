@@ -79,6 +79,9 @@ class Config:
                 "gfpgan_model":      "1.4",
                 "gfpgan_weight":     0.5,
                 "gfpgan_batch_size": 12,
+                # use_gfpgan_trt：GFPGAN 独立 TRT 加速（--gfpgan-trt）
+                # 不可与 use_tensorrt 同时为 True（Myelin 内存分配器冲突）
+                "use_gfpgan_trt":    False,
                 # v5 硬件解/编码
                 "use_hwaccel":    True,
                 "video_codec":    "libx264",   # 已废弃，保留兼容旧 config

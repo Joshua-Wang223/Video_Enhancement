@@ -6,12 +6,15 @@ __pycache__/
 .ipynb_checkpoints/
 .vscode/
 .idea/
+.trt_cache/
 _bak*
 *.bak*
 *_bak*
 logs/
 models/
 models_*/
+gfpgan/
 output/
 temp/
+output*.txt
 Video_Enhancement_github_token.txt
