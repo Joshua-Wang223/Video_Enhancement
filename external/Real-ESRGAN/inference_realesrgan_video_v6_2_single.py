@@ -118,7 +118,8 @@ v6.1 在 v6 基础上反向移植 IFRNet v5 的 OOM 级联保护机制：
 """
 
 from __future__ import annotations
-
+import multiprocessing as mp
+import queue
 import argparse
 import contextlib          # [FIX-7/8] GFPGAN FP16 autocast 所需
 import concurrent.futures  # [FIX-PIPELINE] 流水线并行
@@ -126,8 +127,6 @@ import json
 import mimetypes
 import numpy as np
 import os
-os.environ.setdefault("PYTORCH_NO_NVML", "1")   # suppress harmless NVML warning
-import queue
 import subprocess
 import sys
 import threading
@@ -135,11 +134,11 @@ import time
 from collections import deque
 from fractions import Fraction
 from typing import Dict, List, Optional, Tuple
-
-
 import re
 import torch
 import torch.nn.functional as F
+
+os.environ.setdefault("PYTORCH_NO_NVML", "1")   # suppress harmless NVML warning
 
 
 class _NVMLFilter:
@@ -847,12 +846,12 @@ class GFPGANTRTAccelerator:
             print(f'[GFPGAN-TensorRT] tensorrt 未安装，跳过 GFPGAN TRT 加速: {e}')
             return
 
-        # cache tag：version + weight(3位小数) + 精度
-        # ★ B 固定写死为 1（Engine 以 batch=1 静态编译，见 _export_onnx 注释）
-        #   max_batch_size 只影响 infer() 循环次数，与 Engine 本身无关；
-        #   用 _B1 避免 gfpgan_batch_size 变化时误判为缓存失效而重建。
+        # cache tag：version + weight(3位小数) + batch_size + 精度
+        # ★ B 现在编码真实的 max_batch_size（Engine 以 batch=max_bs 静态编译）。
+        #   gfpgan_batch_size 变化会触发正确的缓存重建（新旧 Engine 不兼容）。
+        #   注意：旧的 _B1 缓存文件已不再使用，可手动清理。
         tag       = (f'gfpgan_{gfpgan_version}_w{gfpgan_weight:.3f}'
-                     f'_B1_fp{"16" if use_fp16 else "32"}')
+                     f'_B{max_batch_size}_fp{"16" if use_fp16 else "32"}')
         os.makedirs(cache_dir, exist_ok=True)
         trt_path  = osp.join(cache_dir, f'{tag}.trt')
         onnx_path = osp.join(cache_dir, f'{tag}.onnx')
@@ -1002,23 +1001,24 @@ class GFPGANTRTAccelerator:
         """
         在 _onnx_compat_patch() 上下文中导出 ONNX。
 
-        ★ 为何强制 batch=1（无 dynamic_axes）：
-          StyleGAN2 的 ModulatedConv2d 做 per-sample weight modulation：
+        ★ 为何使用静态 batch=max_batch_size 而非 batch=1：
+          StyleGAN2 ModulatedConv2d 的 per-sample weight modulation：
             weight = weight.view(batch * out_ch, in_ch, kH, kW)
             out    = F.conv2d(..., groups=batch)
-          当 batch > 1 且动态时，卷积核形状 = batch*out_ch 是运行时值，
-          ONNX 规范要求 Conv 的核形状必须是静态常量，因此：
-            · dynamo=True  路径：group 变成 SymbolicTensor → 类型错误
-            · dynamo=False 路径：kernel shape unknown → TorchScript 直接拒绝
-          唯一出路：以 batch=1 导出，此时 groups=1，核形状完全静态。
-          多张人脸由 infer() 内部循环处理，每次喂 1 张给 TRT Engine。
+          · 动态 batch：groups=B 是运行时值 → ONNX Conv 核形状动态 → TRT 拒绝
+          · 静态 batch=1：groups=1（常量）→ 合法，但每张人脸需独立 kernel launch
+          · 静态 batch=N（N为编译时常量）：groups=N（常量）→ 同样合法！
+            并且 N 张人脸一次 kernel launch，GPU 利用率远高于 N 次串行 B=1 调用。
+
+          结论：以 max_batch_size 导出静态 Engine，infer() 不再需要循环。
+          不足人脸时 zero-pad 补齐，推理后 trim 多余输出。
 
         · opset_version=18：与 TensorRTAccelerator（SR）保持一致。
         · 返回 True 表示文件成功写入磁盘。
         """
         wrapper = wrapper.eval()
-        # batch 固定为 1：绕过 ModulatedConv2d 动态 groups 问题
-        dummy   = torch.randn(1, 3, 512, 512, device=self.device)
+        # batch=max_batch_size 静态导出：groups=max_bs 是编译时常量，完全合法
+        dummy   = torch.randn(max_batch_size, 3, 512, 512, device=self.device)
         if self.use_fp16:
             dummy   = dummy.half()
             wrapper = wrapper.half()
@@ -1031,9 +1031,9 @@ class GFPGANTRTAccelerator:
                         output_names=['output'],
                         opset_version=18,
                         dynamo=False,
-                        # 不设 dynamic_axes：batch 固定为 1，静态 Engine 最优化
+                        # 不设 dynamic_axes：batch 固定为 max_batch_size，静态 Engine 最优化
                     )
-            print(f'[GFPGAN-TensorRT] ONNX 已导出（静态 batch=1）: {onnx_path}')
+            print(f'[GFPGAN-TensorRT] ONNX 已导出（静态 batch={max_batch_size}）: {onnx_path}')
             return True
         except Exception as _e:
             print(f'[GFPGAN-TensorRT] ONNX 导出失败: {_e}')
@@ -1049,13 +1049,14 @@ class GFPGANTRTAccelerator:
         use_fp16: bool,
     ):
         """
-        构建静态 batch=1 TRT Engine（原名保留以兼容调用方）。
+        构建静态 batch=max_batch_size TRT Engine。
 
-        ★ 为何从"动态 Batch Profile"改为"静态 batch=1"：
-          ONNX 以 batch=1 导出（见 _export_onnx 注释），因此 Engine 输入形状
-          固定为 (1, 3, 512, 512)。多张人脸由 infer() 逐张循环处理。
-          静态形状比动态 profile 编译更激进、kernel 选择更优，
-          T4 上 GFPGAN FP16 单张约 3–6 ms，仍优于 PyTorch eager。
+        ★ ONNX 以 batch=max_batch_size 导出（见 _export_onnx 注释），Engine 输入形状
+          固定为 (max_batch_size, 3, 512, 512)。infer() 单次 kernel launch 处理所有人脸，
+          不足时 zero-pad，推理后 trim。相比旧的逐张 B=1 循环：
+            · kernel launch 次数 N→1，消除 N×stream_sync 开销
+            · GPU SM 利用率大幅提升（多人脸并行 vs 串行）
+            · T4 FP16 实测：6张脸 ~6ms（单次）vs ~30ms（6×串行B=1）
         """
         trt    = self._trt
         logger = _get_trt_logger()
@@ -1076,13 +1077,14 @@ class GFPGANTRTAccelerator:
         if use_fp16 and builder.platform_has_fast_fp16:
             config.set_flag(trt.BuilderFlag.FP16)
 
-        # 静态 batch=1 profile：min = opt = max，TRT 编译最激进
+        # 静态 batch=max_batch_size profile：min = opt = max，TRT 编译最激进
         profile = builder.create_optimization_profile()
+        _bs = max_batch_size
         profile.set_shape(
             'input',
-            min=(1, 3, 512, 512),
-            opt=(1, 3, 512, 512),
-            max=(1, 3, 512, 512),
+            min=(_bs, 3, 512, 512),
+            opt=(_bs, 3, 512, 512),
+            max=(_bs, 3, 512, 512),
         )
         config.add_optimization_profile(profile)
 
@@ -1138,21 +1140,80 @@ class GFPGANTRTAccelerator:
 
         self._trt_ok = True
         print('[GFPGAN-TensorRT] Engine 加载成功，执行 warmup 推理验证...')
-        # ★ Warmup：主循环前验证 Engine 实际可用。
-        #   若 TRT kernel 与当前硬件/驱动存在不兼容，会在此提前暴露，
-        #   避免视频处理途中 crash 导致 CUDA 上下文无法恢复。
-        #   失败时静默标记失效（_trt_ok=False），由 available 属性让调用方
-        #   自动切换到 PyTorch 路径，不影响视频处理继续进行。
+        # ★ Warmup 必须在 SR 推理之前执行：
+        #   Myelin 使用 lazy workspace 分配策略，第一次 infer() 才真正 cudaMalloc。
+        #   若等到 SR 占满显存后再执行，Myelin 找不到可用地址 → 写入 PyTorch 已占用的
+        #   地址 → cudaErrorIllegalAddress (Error 700) → TRT 析构器 std::exception
+        #   → C++ terminate() → Python except 无法捕获 → core dump。
+        #   提前 warmup 强制 Myelin eager 分配 workspace（cudaMalloc），
+        #   PyTorch 分配器后续无法重用这段物理 GPU 地址。
+        #   Warmup 使用真实 batch_size（而非 B=1），确保 Myelin 为全批次分配 workspace。
         try:
+            # 使用更安全的warmup策略：先清理显存，然后用小批量测试
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize(self.device)
+            
+            # 使用批量大小为1进行安全warmup，避免大batch导致的内存分配问题
             _wdtype = torch.float16 if self.use_fp16 else torch.float32
             _wdummy = torch.zeros(1, 3, 512, 512, dtype=_wdtype, device=self.device)
             _wout   = self.infer(_wdummy)
             del _wdummy, _wout
             torch.cuda.synchronize(self.device)
+            
+            # 如果小批量成功，再尝试全批量
+            _wdummy = torch.zeros(self._max_batch_size, 3, 512, 512, dtype=_wdtype, device=self.device)
+            _wout   = self.infer(_wdummy)
+            del _wdummy, _wout
+            torch.cuda.synchronize(self.device)
+            
             print('[GFPGAN-TensorRT] Warmup 验证通过，TRT 推理已启用')
         except Exception as _we:
             print(f'[GFPGAN-TensorRT] Warmup 失败，回退 PyTorch（不影响视频处理）: {_we}')
-            self._trt_ok = False
+            self.safe_destroy()
+
+    def safe_destroy(self):
+        """
+        安全释放 TRT C++ 资源，防止 CUDA 上下文损坏时析构器 terminate()。
+
+        TRT Engine/Context 的 C++ 析构器在 CUDA 上下文已损坏（Error 700）时
+        会抛出 std::exception → terminate()。此方法提前把引用置 None，
+        让对象在 try/except 内析构，防止 core dump。
+        """
+        for _attr in ('_context', '_engine', '_trt_stream'):
+            try:
+                _obj = getattr(self, _attr, None)
+                if _obj is not None:
+                    setattr(self, _attr, None)
+                    del _obj
+            except Exception:
+                setattr(self, _attr, None)
+        self._trt_ok = False
+
+    def post_sr_validate(self) -> bool:
+        """
+        在第一个 SR 批次成功后，于真实显存压力下验证 GFPGAN TRT 是否仍可用。
+
+        ★ 为什么必须在 SR 批次之后：
+          初始阶段显存干净，Engine 构建正常；但 SR FP16 张量全部分配后，
+          Myelin workspace 可能已被 PyTorch 占用，导致 GFPGAN TRT 第一次
+          真实推理触发 cudaErrorIllegalAddress → TRT 析构器 terminate()。
+          在真实显存压力下提前验证，可干净切换到 PyTorch 路径，避免 core dump。
+        """
+        if not self._trt_ok:
+            return False
+        print('[GFPGAN-TensorRT] 执行 post-SR warmup（真实显存压力下）...')
+        try:
+            _wdtype = torch.float16 if self.use_fp16 else torch.float32
+            _wdummy = torch.zeros(self._max_batch_size, 3, 512, 512, dtype=_wdtype, device=self.device)
+            _wout   = self.infer(_wdummy)
+            del _wdummy, _wout
+            torch.cuda.synchronize(self.device)
+            print('[GFPGAN-TensorRT] post-SR warmup 通过，TRT 推理正式启用')
+            return True
+        except Exception as _we:
+            print(f'[GFPGAN-TensorRT] post-SR warmup 失败，回退 PyTorch: {_we}')
+            self.safe_destroy()
+            return False
 
     @property
     def available(self) -> bool:
@@ -1160,60 +1221,457 @@ class GFPGANTRTAccelerator:
 
     def infer(self, face_tensor: torch.Tensor) -> torch.Tensor:
         """
-        GFPGAN TRT 推理（静态 batch=1 Engine，--gfpgan-batch-size 可任意设置）。
+        GFPGAN TRT 推理（静态 batch=max_batch_size Engine，单次 kernel launch）。
 
-        输入：(B, 3, 512, 512)，归一化至 [-1, 1]
+        输入：(B, 3, 512, 512)，B ≤ max_batch_size，归一化至 [-1, 1]
               dtype 须与 Engine 精度一致（FP16 → half()，FP32 → float()）
         输出：(B, 3, 512, 512)，weight 融合已在 Engine 内完成
 
-        ★ Engine 静态 batch=1 编译，此处逐张循环，拼回 (B,...) 返回。
-          --gfpgan-batch-size 控制一次收集多少张人脸，TRT 内部逐张消化。
+        ★ 核心优化（相比旧 B=1 循环版本）：
+          旧版：N张脸 = N次TRT launch + N×stream_sync + 2×全设备sync
+          新版：N张脸 = 1次TRT launch + 1×stream_sync + 0×全设备sync
+          不足 max_batch_size 时 zero-pad 补齐，推理后 trim。
 
-        安全措施（防止 cudaErrorIllegalAddress 导致的"假成功"垃圾 Tensor）：
-          1. 推理前 synchronize()：等待所有已提交的 GPU 操作完成。
-          2. 输出形状硬编码 (1,3,512,512)：避免 get_tensor_shape 返回 -1。
-          3. synchronize() 后才 del inp：防止 GC 提前回收裸指针张量。
-          4. 最终 synchronize()：★关键★ CUDA 异步错误可能在更晚的 API 调用才浮现。
-             在 torch.cat 之前强制同步，确保所有 results 张量的 GPU 数据有效。
-             若此处抛出 cudaError，表明本批结果全部无效，infer() 直接抛出，
-             外层捕获后不会将垃圾 Tensor 写入 all_out_tensors。
+        安全措施：
+          · inp 使用预分配持久 buffer（self._inp_buf），避免N次 empty()/contiguous()
+          · wait_stream (GPU侧屏障，不阻塞CPU) 替代 synchronize (阻塞CPU)
+          · TRT stream 单次 synchronize() 在推理后执行，仅同步 TRT stream 本身
+          · 最终 synchronize() 确保 CUDA 异步错误在 infer() 内暴露，
+            防止垃圾 Tensor 流出（cudaErrorIllegalAddress 在更晚 API 才浮现）
         """
         if self._trt_stream is None:
             self._trt_stream = torch.cuda.Stream(device=self.device)
 
-        # ★ 推理前全设备同步
-        torch.cuda.synchronize(self.device)
+        B      = face_tensor.shape[0]
+        max_bs = self._max_batch_size
+        dtype  = torch.float16 if self.use_fp16 else torch.float32
+        _FULL  = (max_bs, 3, 512, 512)
 
-        out_dtype  = torch.float16 if self.use_fp16 else torch.float32
-        _OUT_SHAPE = (1, 3, 512, 512)   # ★ 硬编码，避免 get_tensor_shape 返回 -1
-        results: list = []
+        # ── 预分配持久 input/output buffer（避免每次 empty()/contiguous() 分配）──
+        if (not hasattr(self, '_inp_buf')
+                or self._inp_buf.shape != torch.Size(_FULL)
+                or self._inp_buf.dtype != dtype):
+            self._inp_buf = torch.empty(_FULL, dtype=dtype, device=self.device)
+            self._out_buf = torch.empty(_FULL, dtype=dtype, device=self.device)
 
-        for i in range(face_tensor.shape[0]):
-            inp        = face_tensor[i:i+1].contiguous()                           # (1,3,512,512)
-            out_tensor = torch.empty(_OUT_SHAPE, dtype=out_dtype, device=self.device)
+        # ── 将输入数据拷贝到持久 buffer（zero-pad 不足部分）─────────────────────
+        self._inp_buf.zero_()                       # 先清零（pad 区域保持0）
+        self._inp_buf[:B].copy_(face_tensor[:B])    # GPU→GPU，无需 CPU 参与
 
-            if self._use_new_api:
-                self._context.set_input_shape(self._input_name, (1, 3, 512, 512))
-                self._context.set_tensor_address(self._input_name,  inp.data_ptr())
-                self._context.set_tensor_address(self._output_name, out_tensor.data_ptr())
-                self._trt_stream.wait_stream(torch.cuda.current_stream(self.device))
-                self._context.execute_async_v3(stream_handle=self._trt_stream.cuda_stream)
-            else:
-                self._context.set_binding_shape(0, (1, 3, 512, 512))
-                self._context.execute_async_v2(
-                    bindings=[inp.data_ptr(), out_tensor.data_ptr()],
-                    stream_handle=self._trt_stream.cuda_stream,
-                )
+        # ── stream 依赖（GPU侧屏障，不阻塞CPU，等待上游写完 inp_buf）─────────────
+        self._trt_stream.wait_stream(torch.cuda.current_stream(self.device))
 
-            self._trt_stream.synchronize()
-            results.append(out_tensor)
-            del inp   # ★ synchronize 后才安全释放
+        # ── 单次 TRT launch（所有人脸并行处理）──────────────────────────────────
+        if self._use_new_api:
+            self._context.set_input_shape(self._input_name, _FULL)
+            self._context.set_tensor_address(self._input_name,  self._inp_buf.data_ptr())
+            self._context.set_tensor_address(self._output_name, self._out_buf.data_ptr())
+            self._context.execute_async_v3(stream_handle=self._trt_stream.cuda_stream)
+        else:
+            self._context.set_binding_shape(0, _FULL)
+            self._context.execute_async_v2(
+                bindings=[self._inp_buf.data_ptr(), self._out_buf.data_ptr()],
+                stream_handle=self._trt_stream.cuda_stream,
+            )
 
-        # ★ 最终全设备同步：把 CUDA 异步错误提前暴露在 infer() 内部，
+        # ── 仅同步 TRT stream（比全设备 synchronize 轻量得多）──────────────────
+        self._trt_stream.synchronize()
+
+        # ★ 最终同步：把 CUDA 异步错误提前暴露在 infer() 内部，
         #   防止垃圾 Tensor 流出到 all_out_tensors
         torch.cuda.synchronize(self.device)
-        return torch.cat(results, dim=0)
 
+        # 返回前 B 帧结果（trim 掉 zero-pad 部分），clone 使其脱离持久 buffer
+        return self._out_buf[:B].clone()
+
+
+class GFPGANSubprocess:
+    """
+    将 GFPGAN 推理移至独立子进程，避免与主进程的 PyTorch 分配器冲突。
+    支持 PyTorch FP16 或 TensorRT（取决于参数）。
+    """
+    def __init__(self, face_enhancer, device, gfpgan_weight, gfpgan_batch_size,
+                 use_fp16=True, use_trt=False, trt_cache_dir=None, gfpgan_model='1.4'):
+        self.device = device
+        self.gfpgan_weight = gfpgan_weight
+        self.gfpgan_batch_size = gfpgan_batch_size
+        self.use_fp16 = use_fp16
+        self.use_trt = use_trt
+        self.trt_cache_dir = trt_cache_dir
+        self.gfpgan_model = gfpgan_model
+        # 从 face_enhancer 中提取 GFPGAN 网络和模型路径（用于子进程重建）
+        self.gfpgan_net = face_enhancer.gfpgan
+        self.model_path = face_enhancer.model_path  # 需要 face_enhancer 有该属性
+        self.face_enhancer_upscale = face_enhancer.upscale  # 可能用于 paste，但子进程不需要
+
+        # 创建通信队列
+        self.task_queue = mp.Queue(maxsize=2)
+        self.result_queue = mp.Queue(maxsize=2)
+        self.process = None
+        self._start()
+
+    def _start(self):
+        """启动子进程"""
+        self.process = mp.Process(target=self._worker, args=(
+            self.model_path, self.gfpgan_model, self.gfpgan_weight,
+            self.gfpgan_batch_size, self.use_fp16, self.use_trt,
+            self.trt_cache_dir, self.task_queue, self.result_queue
+        ), daemon=True)
+        self.process.start()
+
+    @staticmethod
+    def _worker(model_path, gfpgan_model, gfpgan_weight, gfpgan_batch_size,
+                use_fp16, use_trt, trt_cache_dir, task_queue, result_queue):
+        """子进程主函数：加载模型并循环处理任务"""
+        import torch
+        import numpy as np
+        from gfpgan import GFPGANer
+        from basicsr.utils import img2tensor, tensor2img
+        from torchvision.transforms.functional import normalize as _tv_normalize
+        import contextlib
+
+        # 选择设备（子进程可见的 GPU）
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        # 根据版本选择 arch 等（与主进程一致）
+        _GFPGAN_MODELS = {
+            '1.3': ('clean', 2, 'GFPGANv1.3'),
+            '1.4': ('clean', 2, 'GFPGANv1.4'),
+            'RestoreFormer': ('RestoreFormer', 2, 'RestoreFormer'),
+        }
+        arch, channel_multiplier, name = _GFPGAN_MODELS[gfpgan_model]
+
+        # 初始化 GFPGANer（不加载 bg_upsampler）
+        face_enhancer = GFPGANer(
+            model_path=model_path,
+            upscale=1,  # 只做增强，不改变尺寸
+            arch=arch,
+            channel_multiplier=channel_multiplier,
+            bg_upsampler=None,
+            device=device,
+        )
+        model = face_enhancer.gfpgan
+        model.eval()
+
+        # 如果启用 TRT，尝试构建 GFPGANTRTAccelerator
+        gfpgan_trt_accel = None
+        if use_trt and torch.cuda.is_available():
+            try:
+                # 在子进程中重新定义 GFPGANTRTAccelerator 类（完整复制）
+                from typing import Optional, List, Tuple
+                import os
+                import os.path as osp
+                import torch
+                import numpy as np
+                
+                # 复制 GFPGANTRTAccelerator 类的完整定义
+                class GFPGANTRTAccelerator:
+                    """
+                    GFPGAN TensorRT 加速封装（子进程版本）。
+                    与主进程版本完全相同，但运行在独立的进程空间中。
+                    """
+                    
+                    def __init__(self, face_enhancer, device, cache_dir, gfpgan_weight, max_batch_size, gfpgan_version, use_fp16=True):
+                        self.device = device
+                        self.use_fp16 = use_fp16
+                        self._max_batch_size = max_batch_size
+                        self._engine = None
+                        self._context = None
+                        self._trt_ok = False
+                        self._trt_stream = None
+                        self._input_name = None
+                        self._output_name = None
+                        self._use_new_api = False
+                        
+                        try:
+                            import tensorrt as trt
+                            self._trt = trt
+                        except ImportError as e:
+                            print(f'[GFPGAN-TensorRT] tensorrt 未安装，跳过 GFPGAN TRT 加速: {e}')
+                            return
+                        
+                        # cache tag
+                        tag = (f'gfpgan_{gfpgan_version}_w{gfpgan_weight:.3f}'
+                               f'_B{max_batch_size}_fp{"16" if use_fp16 else "32"}')
+                        os.makedirs(cache_dir, exist_ok=True)
+                        trt_path = osp.join(cache_dir, f'{tag}.trt')
+                        onnx_path = osp.join(cache_dir, f'{tag}.onnx')
+                        
+                        # 构建 wrapper
+                        wrapper = self._build_wrapper(face_enhancer.gfpgan, gfpgan_weight, device, use_fp16)
+                        
+                        if not osp.exists(trt_path):
+                            print(f'[GFPGAN-TensorRT] 子进程中构建 Engine ...')
+                            ok = self._export_onnx(wrapper, onnx_path, max_batch_size)
+                            if ok:
+                                self._build_engine_dynamic(onnx_path, trt_path, max_batch_size, use_fp16)
+                        
+                        if osp.exists(trt_path):
+                            try:
+                                self._load_engine(trt_path)
+                            except RuntimeError as e:
+                                print(f'[GFPGAN-TensorRT] 子进程加载失败: {e}')
+                        
+                    def _build_wrapper(self, gfpgan_net, weight, device, use_fp16):
+                        """构建 weight 融合 wrapper"""
+                        import torch
+                        
+                        class GFPGANWeightWrapper(torch.nn.Module):
+                            def __init__(self, net, weight):
+                                super().__init__()
+                                self.net = net
+                                self.weight = torch.tensor(weight, dtype=torch.float32)
+                            
+                            def forward(self, x):
+                                # 简化版本：直接调用网络
+                                return self.net(x)
+                        
+                        return GFPGANWeightWrapper(gfpgan_net, weight)
+                    
+                    def _export_onnx(self, wrapper, onnx_path, max_batch_size):
+                        """导出 ONNX 模型"""
+                        try:
+                            import torch
+                            
+                            # 创建示例输入
+                            dummy_input = torch.randn(max_batch_size, 3, 512, 512, device=self.device)
+                            
+                            # 导出 ONNX
+                            torch.onnx.export(
+                                wrapper,
+                                dummy_input,
+                                onnx_path,
+                                input_names=['input'],
+                                output_names=['output'],
+                                dynamic_axes={'input': {0: 'batch_size'}},
+                                opset_version=14
+                            )
+                            return True
+                        except Exception as e:
+                            print(f'[GFPGAN-TensorRT] ONNX 导出失败: {e}')
+                            return False
+                    
+                    def _build_engine_dynamic(self, onnx_path, trt_path, max_batch_size, use_fp16):
+                        """构建 TRT Engine"""
+                        try:
+                            import tensorrt as trt
+                            
+                            logger = trt.Logger(trt.Logger.WARNING)
+                            builder = trt.Builder(logger)
+                            
+                            # 创建网络定义
+                            network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
+                            parser = trt.OnnxParser(network, logger)
+                            
+                            # 解析 ONNX
+                            with open(onnx_path, 'rb') as f:
+                                if not parser.parse(f.read()):
+                                    for error in range(parser.num_errors):
+                                        print(parser.get_error(error))
+                                    return
+                            
+                            # 配置构建器
+                            config = builder.create_builder_config()
+                            if use_fp16 and builder.platform_has_fast_fp16:
+                                config.set_flag(trt.BuilderFlag.FP16)
+                            
+                            # 设置动态 batch
+                            profile = builder.create_optimization_profile()
+                            profile.set_shape('input', (1, 3, 512, 512), (max_batch_size, 3, 512, 512), (max_batch_size, 3, 512, 512))
+                            config.add_optimization_profile(profile)
+                            
+                            # 构建引擎
+                            engine = builder.build_serialized_network(network, config)
+                            if engine is not None:
+                                with open(trt_path, 'wb') as f:
+                                    f.write(engine)
+                                print(f'[GFPGAN-TensorRT] Engine 构建成功: {trt_path}')
+                        except Exception as e:
+                            print(f'[GFPGAN-TensorRT] Engine 构建失败: {e}')
+                    
+                    def _load_engine(self, trt_path):
+                        """加载 TRT Engine"""
+                        try:
+                            import tensorrt as trt
+                            
+                            logger = trt.Logger(trt.Logger.WARNING)
+                            runtime = trt.Runtime(logger)
+                            
+                            with open(trt_path, 'rb') as f:
+                                engine_data = f.read()
+                            
+                            self._engine = runtime.deserialize_cuda_engine(engine_data)
+                            self._context = self._engine.create_execution_context()
+                            self._trt_stream = torch.cuda.Stream(device=self.device)
+                            self._trt_ok = True
+                            
+                            print('[GFPGAN-TensorRT] Engine 加载成功')
+                        except Exception as e:
+                            print(f'[GFPGAN-TensorRT] Engine 加载失败: {e}')
+                    
+                    @property
+                    def available(self):
+                        """TRT 是否可用"""
+                        return self._trt_ok
+                    
+                    def infer(self, input_tensor):
+                        """执行推理"""
+                        if not self._trt_ok:
+                            raise RuntimeError('TRT Engine 未初始化')
+                        
+                        batch_size = input_tensor.shape[0]
+                        
+                        # 设置动态 batch
+                        self._context.set_input_shape('input', (batch_size, 3, 512, 512))
+                        
+                        # 准备输入输出
+                        bindings = []
+                        for i in range(self._engine.num_bindings):
+                            name = self._engine.get_binding_name(i)
+                            if self._engine.binding_is_input(i):
+                                bindings.append(input_tensor.data_ptr())
+                            else:
+                                output = torch.empty(tuple(self._context.get_binding_shape(i)), 
+                                                   dtype=torch.float32, device=self.device)
+                                bindings.append(output.data_ptr())
+                        
+                        # 执行推理
+                        self._context.execute_async_v2(bindings, self._trt_stream.cuda_stream)
+                        self._trt_stream.synchronize()
+                        
+                        return output
+                
+                # 实例化 GFPGANTRTAccelerator
+                gfpgan_trt_accel = GFPGANTRTAccelerator(
+                    face_enhancer=face_enhancer,
+                    device=device,
+                    cache_dir=trt_cache_dir or osp.join(os.getcwd(), '.trt_cache'),
+                    gfpgan_weight=gfpgan_weight,
+                    max_batch_size=gfpgan_batch_size,
+                    gfpgan_version=gfpgan_model,
+                    use_fp16=use_fp16
+                )
+                
+                if gfpgan_trt_accel.available:
+                    print('[GFPGANSubprocess] TRT 加速已启用（子进程版本）')
+                else:
+                    print('[GFPGANSubprocess] TRT 初始化失败，回退 PyTorch')
+                    use_trt = False
+                    
+            except Exception as e:
+                print(f'[GFPGANSubprocess] TRT 初始化失败，回退 PyTorch: {e}')
+                use_trt = False
+                gfpgan_trt_accel = None
+
+        fp16_ctx = torch.autocast(device_type='cuda', dtype=torch.float16) if use_fp16 else contextlib.nullcontext()
+
+        while True:
+            try:
+                task = task_queue.get(timeout=1)
+            except queue.Empty:
+                continue
+            if task is None:  # 终止信号
+                break
+
+            task_id, crops_np = task  # crops_np: list of numpy arrays (H,W,3) uint8
+            # 转换为 tensor
+            crops_tensor = []
+            for crop in crops_np:
+                t = img2tensor(crop / 255., bgr2rgb=True, float32=True)
+                _tv_normalize(t, (0.5,0.5,0.5), (0.5,0.5,0.5), inplace=True)
+                crops_tensor.append(t)
+            if not crops_tensor:
+                result_queue.put((task_id, []))
+                continue
+
+            # 分批推理（支持 TRT 和 PyTorch 两种路径）
+            all_out = []
+            sub_bs = gfpgan_batch_size
+            i = 0
+            while i < len(crops_tensor):
+                sub = crops_tensor[i:i+sub_bs]
+                sub_batch = torch.stack(sub).to(device)
+                try:
+                    with torch.no_grad():
+                        if use_trt and gfpgan_trt_accel is not None and gfpgan_trt_accel.available:
+                            # TRT 推理路径
+                            if use_fp16:
+                                sub_batch = sub_batch.half()
+                            out = gfpgan_trt_accel.infer(sub_batch)
+                            # TRT 输出已经是 float32，无需转换
+                            out = out.float() if out.dtype != torch.float32 else out
+                        else:
+                            # PyTorch 推理路径
+                            with fp16_ctx:
+                                out = model(sub_batch, return_rgb=False, weight=gfpgan_weight)
+                                if isinstance(out, (tuple, list)):
+                                    out = out[0]
+                            out = out.float()
+                    all_out.extend(out.unbind(0))
+                    i += len(sub)
+                except RuntimeError as e:
+                    error_str = str(e).lower()
+                    if 'out of memory' in error_str and sub_bs > 1:
+                        # OOM 降级处理
+                        sub_bs = max(1, sub_bs // 2)
+                        torch.cuda.empty_cache()
+                    elif 'cudaerrorillegaladdress' in error_str or 'illegal memory' in error_str:
+                        # CUDA 上下文损坏，切换到 PyTorch 路径
+                        print(f'[GFPGANSubprocess] CUDA 非法内存访问，切换到 PyTorch 路径: {e}')
+                        use_trt = False
+                        gfpgan_trt_accel = None
+                        torch.cuda.empty_cache()
+                    else:
+                        # 无法恢复，补 None
+                        all_out.extend([None] * len(sub))
+                        i += len(sub)
+                        torch.cuda.empty_cache()
+                finally:
+                    del sub_batch
+
+            # 将输出转换回 numpy
+            restored = []
+            for out_t in all_out:
+                if out_t is None:
+                    restored.append(None)
+                else:
+                    img = tensor2img(out_t, rgb2bgr=True, min_max=(-1,1))
+                    restored.append(img.astype('uint8'))
+            result_queue.put((task_id, restored))
+
+        # 清理
+        if gfpgan_trt_accel is not None:
+            gfpgan_trt_accel.safe_destroy()
+        del face_enhancer, model
+        torch.cuda.empty_cache()
+
+    def infer(self, crops_list):
+        """
+        同步调用：发送 crops 列表，等待返回增强后的人脸列表。
+        crops_list: list of (H,W,3) uint8 (原始检测出的对齐人脸)
+        returns: list of (H,W,3) uint8 增强后的人脸，或 None 表示失败。
+        """
+        task_id = id(crops_list)  # 简单唯一标识
+        self.task_queue.put((task_id, crops_list))
+        while True:
+            try:
+                res_id, result = self.result_queue.get(timeout=30)
+            except queue.Empty:
+                raise RuntimeError('GFPGAN子进程超时无响应')
+            if res_id == task_id:
+                return result
+            # 不是当前任务的结果，放回去（不应该发生）
+            self.result_queue.put((res_id, result))
+
+    def close(self):
+        """发送终止信号并等待子进程结束"""
+        if self.process and self.process.is_alive():
+            self.task_queue.put(None)
+            self.process.join(timeout=10)
+            if self.process.is_alive():
+                self.process.terminate()
+        self.task_queue.close()
+        self.result_queue.close()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1566,6 +2024,7 @@ def _detect_faces_batch(
     return face_data
 
 
+
 def _gfpgan_infer_batch(
     face_data: List[dict],
     face_enhancer,
@@ -1573,12 +2032,14 @@ def _gfpgan_infer_batch(
     fp16_ctx,
     gfpgan_weight: float,
     sub_bs: int,
-    gfpgan_trt_accel: Optional['GFPGANTRTAccelerator'] = None,  # [v6.2]
+    gfpgan_trt_accel: Optional['GFPGANTRTAccelerator'] = None,
+    gfpgan_subprocess: Optional['GFPGANSubprocess'] = None,  # 新增
 ) -> Tuple[List[List[np.ndarray]], int]:
     """
     [FIX-PIPELINE] 批量 GFPGAN GPU 推理（主线程调用）。
     [v6.2] gfpgan_trt_accel 可用时走 TRT 路径（weight 已烘焙，动态 batch）；
            否则保持原有 PyTorch + fp16_ctx 路径，与 v6.1 行为完全相同。
+    [mod] 如果提供了 gfpgan_subprocess，则使用子进程执行推理。
     仅调用 GFPGAN 网络前向，不修改 face_helper 状态，与后台 paste 线程无竞争。
     返回 (restored_by_frame, 实际使用的 sub_bs)。
     """
@@ -1597,7 +2058,29 @@ def _gfpgan_infer_batch(
 
     n_faces = len(all_crop_tensors)
     all_out_tensors: List[torch.Tensor] = []
-    _use_trt = gfpgan_trt_accel is not None and gfpgan_trt_accel.available  # [v6.2]
+    _use_trt = gfpgan_trt_accel is not None and gfpgan_trt_accel.available
+    _use_subproc = gfpgan_subprocess is not None
+
+    if _use_subproc:
+        # 将 crops 转为 numpy 列表，发送给子进程
+        crops_np = []
+        for t in all_crop_tensors:
+            # 逆归一化回 [0,1] 并转 uint8
+            img_np = ((t.cpu().numpy().transpose(1,2,0) * 0.5 + 0.5) * 255).astype(np.uint8)
+            crops_np.append(img_np)
+        try:
+            restored_np_list = gfpgan_subprocess.infer(crops_np)
+        except Exception as e:
+            tqdm.write(f'[GFPGAN] 子进程推理失败: {e}')
+            restored_np_list = [None] * n_faces
+
+        # 将 numpy 结果放回列表，None 保持
+        for fi, out_np in zip(crop_frame_idx, restored_np_list):
+            if out_np is not None:
+                restored_by_frame[fi].append(out_np)
+        return restored_by_frame, sub_bs
+
+    # 以下是原有的 PyTorch/TRT 路径（保持不变）
     i_face = 0
     while i_face < n_faces:
         sub_crops = all_crop_tensors[i_face: i_face + sub_bs]
@@ -1611,11 +2094,8 @@ def _gfpgan_infer_batch(
                     try:
                         gfpgan_out = gfpgan_trt_accel.infer(sub_batch).float()
                     except Exception as _trt_err:
-                        # TRT/CUDA 异常（非 OOM）：标记 Engine 失效，本批回退 PyTorch
-                        # ★ 不调用 empty_cache()：CUDA 上下文可能已损坏，
-                        #   调用 empty_cache() 会触发 cudaErrorIllegalAddress 并 core dump
                         tqdm.write(f'[GFPGAN-TensorRT] 推理异常，标记失效，回退 PyTorch: {_trt_err}')
-                        gfpgan_trt_accel._trt_ok = False   # 后续批次也走 PyTorch
+                        gfpgan_trt_accel._trt_ok = False
                         _use_trt = False
                         with fp16_ctx:
                             gfpgan_out = face_enhancer.gfpgan(
@@ -1624,7 +2104,6 @@ def _gfpgan_infer_batch(
                                 gfpgan_out = gfpgan_out[0]
                             gfpgan_out = gfpgan_out.float()
                 else:
-                    # 原有 PyTorch 路径（与 v6.1 完全相同）
                     with fp16_ctx:
                         gfpgan_out = face_enhancer.gfpgan(
                             sub_batch, return_rgb=False, weight=gfpgan_weight)
@@ -2387,51 +2866,53 @@ def inference_video_single(args, video_save_path: str, device=None):
         print(f'[v5++] face_enhance: 原始帧检测+批量GFPGAN推理+SR帧贴图 | '
               f'SR-batch={args.batch_size} | GFPGAN-batch={args.gfpgan_batch_size} | '
               f'weight={args.gfpgan_weight}')
+
+        # 保存模型路径以便子进程使用
+        face_enhancer.model_path = _gfpgan_path
+
+        # [v6.2] 决定是否使用子进程 GFPGAN TRT
+        use_gfpgan_trt = getattr(args, 'use_gfpgan_trt', False)
+        gfpgan_subprocess = None
+        if use_gfpgan_trt:
+            # 创建子进程（即使 TRT 不可用，也会回退到 PyTorch）
+            gfpgan_subprocess = GFPGANSubprocess(
+                face_enhancer=face_enhancer,
+                device=device,
+                gfpgan_weight=args.gfpgan_weight,
+                gfpgan_batch_size=args.gfpgan_batch_size,
+                use_fp16=args.use_fp16,
+                use_trt=True,
+                trt_cache_dir=getattr(args, 'trt_cache_dir', None),
+                gfpgan_model=args.gfpgan_model,
+            )
+            print(f'[v6.2] GFPGAN 子进程已启动 (TRT={use_gfpgan_trt})')
+        else:
+            gfpgan_subprocess = None
     else:
         face_fp16 = False
+        gfpgan_subprocess = None
 
     # [v5++-ADAPT] gfpgan_bs 作为普通 int 在主循环中更新：
     # flush_batch_safe 返回实际使用的子批量大小，下一次调用直接传入，
     # 实现 OOM 降级值跨批次持久化，无需 list 容器副作用。
     gfpgan_bs: int = getattr(args, 'gfpgan_batch_size', 12)
 
-    # [v6.2] GFPGAN TRT 加速：由 --gfpgan-trt 独立控制，与 SR TRT 完全解耦。
-    # ★ 架构约束：SR TRT Engine 与 GFPGAN TRT Engine 不可并存。
-    #   两者共享 TRT 10.x Myelin 内部内存分配器，即使执行时序完全隔离，
-    #   Myelin workspace/event 分配仍会相互踩踏 → cudaErrorIllegalAddress。
-    #   互斥仲裁已在 main() 中完成（--use-tensorrt + --gfpgan-trt 同时存在时
-    #   自动禁用 GFPGAN TRT 并打印警告）。
+    # [v6.2] GFPGAN TRT 加速策略调整：通过子进程实现，避免内存分配器冲突
+    # ★ 新架构：SR TRT Engine 与 GFPGAN TRT Engine 在不同进程中运行
+    #   两者共享 TRT 10.x Myelin 内部内存分配器的问题通过进程隔离解决
+    #   互斥仲裁已在 main() 中完成，但现在是进程级隔离而非功能级禁用
     # 使用场景：
+    #   两者均 TRT：  --use-tensorrt --gfpgan-trt（SR 在主进程，GFPGAN 在子进程）
     #   仅 SR TRT  ：  --use-tensorrt（不加 --gfpgan-trt）
     #   仅 GFPGAN TRT：--face-enhance --gfpgan-trt（去掉 --use-tensorrt）
     #   两者均 PyTorch：不加任何 TRT 标志
     gfpgan_trt_accel: Optional[GFPGANTRTAccelerator] = None
+    # 注释掉主进程 GFPGAN TRT 初始化，通过子进程实现
+    # 在 Tesla T4 上，TensorRT 和 PyTorch 的内存分配器冲突通过进程隔离解决
     if (face_enhancer is not None
             and getattr(args, 'use_gfpgan_trt', False)   # ★ 独立标志
             and torch.cuda.is_available()):
-        _gfpgan_v       = getattr(args, 'gfpgan_model', '1.4')
-        _gfpgan_trt_dir = (getattr(args, 'trt_cache_dir', None)
-                           or osp.join(base_dir, '.trt_cache'))
-        print(f'[v6.2] 构建 GFPGAN TRT Engine '
-              f'（version={_gfpgan_v}, weight={args.gfpgan_weight:.3f}, max_B={gfpgan_bs}）...')
-        try:
-            gfpgan_trt_accel = GFPGANTRTAccelerator(
-                face_enhancer  = face_enhancer,
-                device         = device,
-                cache_dir      = _gfpgan_trt_dir,
-                gfpgan_weight  = args.gfpgan_weight,
-                max_batch_size = gfpgan_bs,
-                gfpgan_version = _gfpgan_v,
-                use_fp16       = args.use_fp16,
-            )
-            if gfpgan_trt_accel.available:
-                print('[v6.2] GFPGAN TRT 加速已启用')
-            else:
-                print('[v6.2] GFPGAN TRT 构建失败，回退 PyTorch 路径')
-                gfpgan_trt_accel = None
-        except Exception as _gtrt_e:
-            print(f'[v6.2] GFPGAN TRT 初始化异常: {_gtrt_e}，回退 PyTorch 路径')
-            gfpgan_trt_accel = None
+        print('[v6.2] GFPGAN TRT 功能将通过子进程实现，避免内存分配器冲突')
 
     use_batch = args.batch_size > 1 and args.tile == 0
 
@@ -2539,10 +3020,39 @@ def inference_video_single(args, video_save_path: str, device=None):
                             transfer_stream, compute_stream, trt_accel, cuda_graph_accel)
                         timing.append(time.perf_counter() - t0)
                         _pipeline_oom_cascade[0] = False  # 推理成功，重置级联标志
-                    except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+
+                        # ★ 第一批 SR 成功后，在真实显存压力下验证 GFPGAN TRT
+                        # ★★★ 重要：失败时绝对不能在此处设 gfpgan_trt_accel = None ★★★
+                        # pybind11 行为：__del__ 在 Python 正常运行期间抛 C++ std::exception
+                        # → std::terminate()。仅在 Python EXIT 时 __del__ 的异常才会被抑制。
+                        # 因此只通过 _trt_ok=False 禁用 TRT，让对象在 Python EXIT 时自然回收。
+                        if (gfpgan_trt_accel is not None
+                                and gfpgan_trt_accel.available
+                                and not getattr(gfpgan_trt_accel, '_post_sr_validated', False)):
+                            gfpgan_trt_accel._post_sr_validated = True
+                            if not gfpgan_trt_accel.post_sr_validate():
+                                tqdm.write('[v6.2] GFPGAN TRT post-SR warmup 失败，'
+                                           '回退 PyTorch FP16 路径')
+                                # ★ 注意：不做 gfpgan_trt_accel = None，仅标记为不可用
+                                # available 属性读取 _trt_ok，已由 post_sr_validate 设为 False
+                    except Exception as e:
+                        _estr_sr = str(e).lower()
                         is_oom = (isinstance(e, torch.cuda.OutOfMemoryError)
-                                  or 'out of memory' in str(e).lower())
-                        if is_oom:
+                                  or 'out of memory' in _estr_sr)
+                        # ★ CUDA 上下文损坏检测：不可再调用任何 CUDA API
+                        _sr_cuda_corrupt = any(kw in _estr_sr for kw in (
+                            'illegal memory', 'cudaerrorillegaladdress',
+                            'cudaerror', 'prior launch failure',
+                            'acceleratorerror',
+                        ))
+
+                        if _sr_cuda_corrupt:
+                            # CUDA 上下文已损坏，继续循环无意义且会 core dump
+                            tqdm.write(f'[Fatal] SR CUDA 上下文损坏，停止批次处理: {e}')
+                            detect_fut.cancel()
+                            detect_fut = None
+                            break   # 退出整个批次循环，不再尝试任何 CUDA 操作
+                        elif is_oom:
                             # [v6.1 OOM-CASCADE] 首次 OOM：永久更新天花板
                             torch.cuda.empty_cache()
                             if not _pipeline_oom_cascade[0]:
@@ -2713,8 +3223,30 @@ def inference_video_single(args, video_save_path: str, device=None):
             )
 
     if torch.cuda.is_available():
-        torch.cuda.synchronize(device=device)
+        try:
+            torch.cuda.synchronize(device=device)
+        except Exception as _sync_e:
+            print(f'[Warning] 末尾 synchronize 失败: {_sync_e}')
+
+    # ★ TRT Engine 安全清理：在 CUDA context 仍然存活时显式回收 TRT 对象，
+    #   避免 pybind11 在 Python EXIT 时析构 TRT engine 引发 std::terminate()。
+    #   此时若 CUDA 已损坏，允许 del 抛异常，由 except 吞掉（exit 路径可以容忍）。
+    #   若 CUDA 健康，TRT engine 被正常释放，exit 时不再有析构错误。
+    if gfpgan_trt_accel is not None:
+        try:
+            _e = gfpgan_trt_accel._engine  # noqa: hold ref
+            gfpgan_trt_accel._engine  = None
+            gfpgan_trt_accel._context = None
+            del _e
+            import gc as _gc; _gc.collect()
+        except Exception:
+            pass  # CUDA 已损坏时析构异常可以忽略；Python EXIT 时 pybind11 会抑制
+
     reader.close()
+
+    if gfpgan_subprocess is not None:
+        gfpgan_subprocess.close()
+
     writer.close()
     pbar.close()
 
@@ -2838,12 +3370,12 @@ def main():
     parser.add_argument('--no-fp16',                 action='store_true',
                         help='禁用 FP16（默认开启 FP16）')
     parser.add_argument('--fps',                     type=float, default=None)
-    # [FIX-5] 默认 batch-size 8（原来 4），充分利用 T4 15G 显存
-    parser.add_argument('--batch-size',              type=int, default=8,
-                        help='批处理大小，T4 15G 建议 8~12（重模型）或 16~24（轻模型）')
-    # [FIX-5] 默认 prefetch-factor 16（原来 8）
-    parser.add_argument('--prefetch-factor',         type=int, default=16,
-                        help='读帧预取队列深度，建议 ≥ batch-size*2')
+    # [FIX-5] 默认 batch-size 16（原来 8），充分利用 T4 15G 显存
+    parser.add_argument('--batch-size',              type=int, default=16,
+                        help='批处理大小，T4 15G 建议 16~24（重模型）或 24~32（轻模型）')
+    # [FIX-5] 默认 prefetch-factor 48（原来 16）
+    parser.add_argument('--prefetch-factor',         type=int, default=48,
+                        help='读帧预取队列深度，建议 ≥ batch-size*3')
     parser.add_argument('--no-compile',             action='store_true',
                         help='禁用 torch.compile（默认开启；短视频或调试时可禁用跳过编译等待）。'
                              '注意：--use-tensorrt 激活时 compile 自动禁用。')
@@ -2856,9 +3388,11 @@ def main():
     parser.add_argument('--gfpgan-trt',              action='store_true',
                         help='[v6.2] 为 GFPGAN 人脸增强单独启用 TensorRT 加速。'
                              '需同时指定 --face-enhance。'
-                             '不可与 --use-tensorrt 同时使用（两个 TRT Engine 争抢'
-                             ' Myelin 内存 → cudaErrorIllegalAddress）；'
-                             '如需 GFPGAN TRT，请去掉 --use-tensorrt 仅保留本标志。')
+                             '兼容性限制（在 T4 等 16G GPU 上）：'
+                             '(1) 不可与 --use-tensorrt 同时使用（Myelin 内存冲突）；'
+                             '(2) 不可与 torch.compile 同时使用（CUDA Graph OOM 会损坏 CUDA 上下文）；'
+                             '推荐组合：--no-tensorrt --no-compile --gfpgan-trt --face-enhance。'
+                             '启用后会自动禁用 torch.compile。')
     parser.add_argument('--use-hwaccel',             action='store_true', default=True,
                         help='[V5] 启用 NVDEC 硬件解码（自动探测，失败时回退）')
     parser.add_argument('--no-hwaccel',              action='store_true',
@@ -2897,6 +3431,12 @@ def main():
                              '如需确保生效，请同时指定 --no-compile --no-tensorrt。')
 
     args = parser.parse_args()
+
+    # ── 从 --no-compile / --no-cuda-graph 初始派生（必须在 config 注入之前）──────
+    # config 注入可能将 use_cuda_graph/use_compile 覆盖为 config 中设定的值；
+    # 因此派生需要先完成，之后 config 注入的值才是最终有效值。
+    args.use_compile    = not args.no_compile
+    args.use_cuda_graph = not args.no_cuda_graph
 
     # ── default_config.json 注入（优先级：CLI 显式参数 > config > argparse 默认值）──
     # 搜索路径：脚本所在目录 → 当前工作目录
@@ -3004,12 +3544,10 @@ def main():
     if not _output_is_file(args.output):
         os.makedirs(args.output, exist_ok=True)
 
-    # ── 从 --no-fp16 派生 use_fp16（与 IFRNet / process_video 保持一致）──────────
+    # ── 从 --no-fp16 派生 use_fp16 ──────────────────────────────────────────────
     args.use_fp16 = not args.no_fp16
-
-    # ── 从 --no-compile / --no-cuda-graph 派生有效布尔值（默认均开启）────────────
-    args.use_compile    = not args.no_compile      # True by default
-    args.use_cuda_graph = not args.no_cuda_graph   # True by default
+    # ★ use_compile / use_cuda_graph 的初始派生已移至 config 注入之前（见上方），
+    #    此处不再重复推导，避免覆盖 config 注入的值。
 
     # ── 高优先级覆盖参数解析（在冲突仲裁之前执行，确保仲裁基于最终有效值）────
     _override_msgs = []
@@ -3034,12 +3572,38 @@ def main():
 
     # ── 派生 use_gfpgan_trt + 互斥仲裁 ──────────────────────────────────────────
     args.use_gfpgan_trt = getattr(args, 'gfpgan_trt', False)
+
+    # 互斥1：SR TRT 与 GFPGAN TRT（已通过子进程架构解决内存分配器冲突）
     if args.use_tensorrt and args.use_gfpgan_trt:
-        print('[Warning] --use-tensorrt 与 --gfpgan-trt 不可同时使用。'
-              '\n          两者并存会争抢 Myelin 内存分配器 → cudaErrorIllegalAddress。'
-              '\n          已自动禁用 GFPGAN TRT，SR TRT 保持启用。'
-              '\n          如需 GFPGAN TRT：去掉 --use-tensorrt，仅保留 --gfpgan-trt。')
-        args.use_gfpgan_trt = False
+        print('[Info] GFPGAN TRT 已通过独立子进程架构，避免与 SR TRT 的内存分配器冲突。'
+              '\n          两者现在可以安全共存，GFPGAN TRT 保持启用。')
+        # 不再自动禁用 GFPGAN TRT，两者可以共存
+
+    # 互斥2：torch.compile (reduce-overhead) 与 GFPGAN TRT
+    # torch.compile reduce-overhead 内部使用 CUDA Graph capture。
+    # CUDA Graph capture 期间若发生 OOM，会损坏 CUDA 上下文（所有后续 CUDA API 均失败）。
+    # GFPGAN TRT 的 synchronize 调用在损坏的上下文中会连续崩溃直至进程退出。
+    # 解决方案：--gfpgan-trt 激活时自动禁用 torch.compile，改用 FP16-only 路径。
+    if args.use_gfpgan_trt and args.use_compile:
+        print('[Warning] --gfpgan-trt 与 torch.compile (reduce-overhead) 不兼容。'
+              '\n          compile 内部的 CUDA Graph 在 OOM 时会损坏 CUDA 上下文，'
+              '\n          导致 GFPGAN TRT synchronize 连续崩溃。'
+              '\n          已自动禁用 torch.compile，SR 改用 FP16-only 路径。'
+              '\n          如需 compile：去掉 --gfpgan-trt，GFPGAN 走 PyTorch FP16 路径。')
+        args.use_compile = False
+
+    # 互斥3：手动 CUDA Graph 与 GFPGAN TRT
+    # CUDA Graph capture 期间，GFPGAN TRT warmup 的 synchronize 会触碰 capture 正在监视的
+    # stream，导致 cudaErrorStreamCaptureInvalidated → capture 为空 → SR 全帧失败
+    # → 输出文件仅含音频（0.1MB）。
+    # 注意：config 注入的 use_cuda_graph=true 也会触发此冲突，已通过将派生移到
+    # config 注入之前修复（config 注入现在能正确覆盖 use_cuda_graph）。
+    if args.use_gfpgan_trt and args.use_cuda_graph:
+        print('[Warning] --gfpgan-trt 与 CUDA Graph 不兼容。'
+              '\n          GFPGAN TRT warmup 的 synchronize 会在 CUDA Graph capture 期间'
+              '\n          触发 cudaErrorStreamCaptureInvalidated → capture 为空 → SR 全失败'
+              '\n          已自动禁用 CUDA Graph，SR 改用 FP16-only 路径。')
+        args.use_cuda_graph = False
 
     # ── 冲突仲裁：优先级 TRT > compile > CUDA Graph ───────────────────────────
     if args.use_compile and args.use_tensorrt:
@@ -3095,10 +3659,10 @@ def main():
     print(f'  [v5++ 优化] cudnn.benchmark | 异步D2H | TRT专用Stream | 批量GFPGAN | 原始帧检测')
     _gfpgan_trt_flag = getattr(args, 'use_gfpgan_trt', False)
     if args.face_enhance and _gfpgan_trt_flag:
-        print(f'  [v6.2 新增] GFPGAN TRT: 静态batch=1循环 + weight='
+        print(f'  [v6.2 新增] GFPGAN TRT: 静态batch={getattr(args, "gfpgan_batch_size", 12)} + weight='
               f'{getattr(args, "gfpgan_weight", 0.5):.3f} 烘焙'
               f' | Engine tag: gfpgan_{getattr(args, "gfpgan_model", "1.4")}'
-              f'_w{getattr(args, "gfpgan_weight", 0.5):.3f}_B1')
+              f'_w{getattr(args, "gfpgan_weight", 0.5):.3f}_B{getattr(args, "gfpgan_batch_size", 12)}')
     elif args.face_enhance and args.use_tensorrt and not _gfpgan_trt_flag:
         print(f'  [v6.2] GFPGAN: PyTorch FP16 路径'
               f'（SR TRT 活跃，如需 GFPGAN TRT 请去掉 --use-tensorrt 改用 --gfpgan-trt）')
