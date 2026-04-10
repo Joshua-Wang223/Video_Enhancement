@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Real-ESRGAN Video Enhancement v6.3 - 架构优化版 (最终修复版)
+Real-ESRGAN Video Enhancement v6.4 - 架构优化版 (最终修复版)
 基于v6.2代码重构，实现深度流水线、GPU内存池和异步计算优化
 修复了视频末尾卡死的问题，增强退出机制。
 
@@ -4556,7 +4556,7 @@ def main_optimized(args):
 def main():
     """主函数 - 参数解析"""
     parser = argparse.ArgumentParser(
-        description='Real-ESRGAN 视频超分 —— 架构优化版 v6.3',
+        description='Real-ESRGAN 视频超分 —— 架构优化版 v6.4',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     
@@ -4631,7 +4631,7 @@ def main():
     if args.no_adaptive_batch:
         args.adaptive_batch = False
 
-    print("Real-ESRGAN Video Enhancement v6.3 - 架构优化版")
+    print("Real-ESRGAN Video Enhancement v6.4 - 架构优化版")
     print("主要优化特性:")
     print("1. 深度流水线架构（4级并行处理）")
     print("2. GPU内存池优化（避免频繁分配释放）")
