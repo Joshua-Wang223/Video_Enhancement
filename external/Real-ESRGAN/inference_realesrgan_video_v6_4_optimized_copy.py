@@ -7,12 +7,6 @@ Real-ESRGAN Video Enhancement v6.3 - 架构优化版 (最终修复版)
 FIX-DET-THRESHOLD: 增加人脸检测置信度阈值，过滤低质量检测，减少不必要的 GFPGAN 推理
 FIX-ADAPTIVE-BATCH: 基于人脸密度的自适应批处理大小，提升 GPU 利用率
 FIX-GPU-PREFETCH: SR 推理完成后预取下一批 H2D 传输，重叠传输与计算
-
-FIX-BGR:        FFmpeg 读写统一 bgr24，与 OpenCV/GFPGAN BGR 约定一致
-FIX-INV-AFFINE: 预计算逆仿射矩阵乘以 upscale_factor，人脸贴回位置正确
-FIX-TASK-ID:    单调递增 task_id 替代 id()，杜绝内存地址复用导致结果错配
-FIX-SLOT-POOL:  Queue 池管理共享内存 slot，与 pending 出队联动释放
-FIX-SYNC-PATH:  清理同步回退路径不可靠判断
 """
 
 import os
@@ -23,7 +17,6 @@ import queue
 import threading
 import concurrent.futures
 import multiprocessing as mp
-import multiprocessing.shared_memory as shm
 import numpy as np
 import torch
 import torch.nn as nn
@@ -52,9 +45,6 @@ except ImportError:
 # 导入必要的类定义（这些类在原始v6.2脚本中定义）
 import subprocess
 from collections import deque
-
-import warnings
-warnings.filterwarnings('ignore', category=UserWarning, module='multiprocessing.resource_tracker')
 
 # 路径配置
 _SCRIPT_DIR       = osp.dirname(osp.abspath(__file__))
@@ -252,13 +242,8 @@ class FFmpegReader:
         self.nb_frames = meta['nb_frames']
         self.audio = meta['audio']
         
-        # 构建输入流时注入 hwaccel 参数
-        input_kwargs = {}
-        if self.use_hwaccel:
-            input_kwargs['hwaccel'] = 'auto'  # 自动选择最佳硬件解码器 (cuda, qsv, dxva2等)
-        
         # 创建FFmpeg输入流
-        self._ffmpeg_input = ffmpeg.input(input_path, **input_kwargs)
+        self._ffmpeg_input = ffmpeg.input(input_path)
         
         # 帧队列
         self._frame_queue = queue.Queue(maxsize=prefetch_factor)
@@ -272,7 +257,6 @@ class FFmpegReader:
         """后台读取帧的线程"""
         try:
             # 设置FFmpeg输出格式
-            # 注意：如果开启了 hwaccel，FFmpeg 会尝试在硬件层解码并传回到系统内存
             process = (
                 self._ffmpeg_input
                 .output('pipe:', format='rawvideo', pix_fmt='rgb24', vsync=0)
@@ -468,6 +452,13 @@ class FFmpegWriter:
 
     def _init_ffmpeg_process(self):
         """初始化FFmpeg进程 - FIX-MANUAL-CMD: 手动构造命令行，绕过 ffmpeg-python 参数排序问题"""
+        video_stream = ffmpeg.input(
+            'pipe:',
+            format='rawvideo',
+            pix_fmt='rgb24',
+            s=f'{self.width}x{self.height}',
+            r=self.fps,
+        )
 
         # 获取用户指定的编码器
         video_codec = getattr(self.args, 'video_codec', 'libx264')
@@ -905,7 +896,7 @@ class FFmpegWriter:
                 print(f'[FFmpegWriter] 合并音轨: {_tmp} + {_src} → {self.output_path}',
                       flush=True)
                 _mux_cmd = [
-                    getattr(self.args, 'ffmpeg_bin', 'ffmpeg'), '-y',
+                    'ffmpeg', '-y',
                     '-i', _tmp,
                     '-i', _src,
                     '-map', '0:v:0',
@@ -959,15 +950,11 @@ class FFmpegWriter:
             except Exception:
                 pass
 
+# 添加缺失的函数定义
 def _make_detect_helper(face_enhancer, device):
     """
     创建独立的 FaceRestoreHelper 实例，专供后台 detect 线程使用。
     与主线程 face_enhancer.face_helper 互为独立对象，无共享状态，线程安全。
-
-    FIX-DET-CPU (优化4): 强制在 CPU 上运行人脸检测（retinaface_resnet50）。
-    原因：人脸检测与 SR/GFPGAN 共享 GPU，导致互相抢占，GPU 利用率出现谷值。
-    CPU 上 retinaface 对 640px resize 的推理约 30-50ms/帧，远快于 SR 的 ~300ms/帧，
-    不会成为瓶颈，但释放了 GPU 带宽给 SR 和 GFPGAN。
     """
     from facexlib.utils.face_restoration_helper import FaceRestoreHelper
     upscale_factor = getattr(face_enhancer.face_helper, 'upscale_factor', 1)
@@ -978,7 +965,7 @@ def _make_detect_helper(face_enhancer, device):
         det_model      = 'retinaface_resnet50',
         save_ext       = 'png',
         use_parse      = True,
-        device         = torch.device('cpu'),  # FIX-DET-CPU: 强制 CPU
+        device         = device,
     )
 
 
@@ -986,17 +973,24 @@ def _detect_faces_batch(frames: List[np.ndarray], helper,
                          det_threshold: float = 0.5) -> Tuple[List[dict], int, int, int]:
     """
     在原始低分辨率帧上检测人脸，返回序列化检测结果。
-    FIX-DET-THRESHOLD + FIX-PRECOMPUTE-INV-AFFINE (优化6): 在检测阶段预计算逆仿射矩阵，
-    避免 _paste_faces_batch 中重复调用 get_inverse_affine()。
-    对于人脸密集场景（每帧 5+ 个人脸），节省 ~10-20ms/帧的 CPU 开销。
+    使用 _make_detect_helper() 创建的独立实例，可在后台线程与 SR 推理并行调用。
+    每项 dict 包含：crops（对齐 crop）、affines（仿射矩阵）、orig（原始帧引用）。
+
+    FIX-DET-THRESHOLD: 增加 det_threshold 参数，过滤低于该置信度的检测结果。
+    检测模型（retinaface_resnet50）输出的 det_faces 每行格式为
+    [x1, y1, x2, y2, confidence]，confidence ∈ [0, 1]。
+    提高阈值可有效过滤：
+      · 模糊/远景人脸（检测器不确定，GFPGAN 增强效果也差）
+      · 非人脸误检（海报、雕像、动物等）
+    减少 GFPGAN 推理次数 → 直接提升整体处理速度，尤其在人脸密集场景中效果显著。
+
+    返回 4-tuple: (face_data, faces_with_face_count, total_face_count, filtered_count)
     """
-    import cv2 as _cv2
     face_data = []
     _total_filtered = 0   # FIX-DET-THRESHOLD: 被阈值过滤的人脸总数
     for orig_frame in frames:
         helper.clean_all()
-        bgr_frame = _cv2.cvtColor(orig_frame, _cv2.COLOR_RGB2BGR)
-        helper.read_image(bgr_frame)
+        helper.read_image(orig_frame)
         try:
             helper.get_face_landmarks_5(
                 only_center_face=False, resize=640, eye_dist_threshold=5)
@@ -1012,20 +1006,15 @@ def _detect_faces_batch(frames: List[np.ndarray], helper,
                 len(helper.det_faces) > 0):
             _before_count = len(helper.det_faces)
             keep_indices = []
-            # 过滤面积过小的检测（通常是误检）
-            MIN_FACE_AREA = 48 * 48  # 最小人脸面积
             for _fi, _face in enumerate(helper.det_faces):
                 # det_faces 格式: [x1, y1, x2, y2, confidence] 或 numpy array
-                x1, y1, x2, y2 = _face[:4]
-                area = (x2 - x1) * (y2 - y1)
-                if area < MIN_FACE_AREA:
-                    continue  # 跳过过小的检测
                 _score = float(_face[4]) if len(_face) > 4 else float(_face[-1])
                 if _score >= det_threshold:
                     keep_indices.append(_fi)
             _after_count = len(keep_indices)
             if _after_count < _before_count:
-                _total_filtered += _before_count - _after_count
+                _n_removed = _before_count - _after_count
+                _total_filtered += _n_removed
                 # 同步过滤 all_landmarks_5 和 det_faces，保持索引一致
                 if hasattr(helper, 'all_landmarks_5') and helper.all_landmarks_5:
                     helper.all_landmarks_5 = [helper.all_landmarks_5[_ki]
@@ -1033,20 +1022,10 @@ def _detect_faces_batch(frames: List[np.ndarray], helper,
                 helper.det_faces = [helper.det_faces[_ki] for _ki in keep_indices]
 
         helper.align_warp_face()
-
-        # FIX-PRECOMPUTE-INV-AFFINE (优化6): 预计算逆仿射矩阵
-        inv_affines = []
-        _upscale = getattr(helper, 'upscale_factor', 1)
-        for a in helper.affine_matrices:
-            inv = _cv2.invertAffineTransform(a)
-            inv *= _upscale  # FIX-INV-AFFINE: 缩放到 SR 图像坐标系
-            inv_affines.append(inv)
-
         face_data.append({
-            'crops':       [c.copy() for c in helper.cropped_faces],  # 现在是 BGR
-            'affines':     [a.copy() for a in helper.affine_matrices],
-            'inv_affines': inv_affines,  # 优化6: 预计算
-            'orig':        bgr_frame,  # 存 BGR 版本
+            'crops':   [c.copy() for c in helper.cropped_faces],
+            'affines': [a.copy() for a in helper.affine_matrices],
+            'orig':    orig_frame,
         })
     _nf = sum(len(fd['crops']) for fd in face_data)
     _fw = sum(1 for fd in face_data if fd['crops'])
@@ -1076,11 +1055,6 @@ def _sr_infer_batch(
     本轮可直接使用该预传输 tensor，跳过 H2D 阶段，节省 ~1-3ms/batch 的传输延迟。
     预取在人脸稀疏时最有价值：GPU 计算单元处于 SR 推理→GFPGAN 交接的空闲窗口，
     利用空闲内存总线提前完成下一批数据的搬运。
-
-    FIX-SYNC: 修复 D2H 同步不足导致的鬼脸漂移。
-    原代码仅同步 compute_stream，但 out_pinned.copy_(non_blocking=True) 的 D2H 拷贝
-    运行在 default stream 上，compute_stream.synchronize() 无法保证 D2H 完成。
-    改为 torch.cuda.synchronize(device) 同步所有流，与 v6.1 行为一致。
     """
     device   = upsampler.device
     use_half = upsampler.half
@@ -1151,12 +1125,10 @@ def _sr_infer_batch(
     out_pinned = pool.get_output_buf(out_perm.shape, torch.uint8)
     out_pinned.copy_(out_perm, non_blocking=True)
 
-    # FIX-SYNC: 必须同步所有流（包括 default stream 上的 D2H 异步拷贝）。
-    # 原代码仅 compute_stream.synchronize()，但 out_pinned.copy_(non_blocking=True)
-    # 运行在 default stream 上，compute_stream 同步无法保证 D2H 完成，
-    # 导致 out_pinned.numpy() 读到上一批残留数据与本批的混合 → 帧间鬼影叠加。
-    # 改为 torch.cuda.synchronize(device)，与 v6.1 行为完全一致。
-    torch.cuda.synchronize(device)
+    if compute_stream is not None:
+        compute_stream.synchronize() # 仅同步计算流
+    else:
+        torch.cuda.current_stream(device).synchronize()
 
     out_np     = out_pinned.numpy()
     sr_results = [out_np[i].copy() for i in range(B)]
@@ -1213,25 +1185,13 @@ def _gfpgan_infer_batch(face_data, face_enhancer, device, fp16_ctx, gfpgan_weigh
             try:
                 with torch.no_grad():
                     with _fp16:
-                        out = face_enhancer.gfpgan(sub_batch, return_rgb=True, weight=gfpgan_weight)
+                        out = face_enhancer.gfpgan(sub_batch, return_rgb=False, weight=gfpgan_weight)
                         if isinstance(out, (tuple, list)):
                             out = out[0]
                     out = out.float()
-
                 for out_t in out.unbind(0):
-                    if out_t is None:
-                        all_restored.append(None)
-                    else:
-                        # --- 修复开始：处理 TRT FP16 导致的 NaN 和数值溢出 ---
-                        # 1. 将 NaN 转换为 0，将正负无穷转换为对应边界值
-                        out_t = torch.nan_to_num(out_t, nan=0.0, posinf=1.0, neginf=-1.0)
-                        # 2. 强制截断到 GFPGAN 预期的 -1 到 1 范围，防止超出该范围的值在后处理时产生异常色块
-                        out_t = torch.clamp(out_t, min=-1.0, max=1.0)
-                        # --- 修复结束 ---
-
-                        restored = tensor2img(out_t, rgb2bgr=True, min_max=(-1, 1))  # 现在正确：RGB → BGR
-                        all_restored.append(restored.astype('uint8'))
-
+                    restored = tensor2img(out_t, rgb2bgr=True, min_max=(-1, 1))
+                    all_restored.append(restored.astype('uint8'))
                 i += len(sub_crops)
             except RuntimeError as e:
                 _estr = str(e).lower()
@@ -1252,11 +1212,7 @@ def _gfpgan_infer_batch(face_data, face_enhancer, device, fp16_ctx, gfpgan_weigh
 
 
 def _paste_faces_batch(face_data, restored_by_frame, sr_results, face_enhancer):
-    """人脸贴回函数
-
-    FIX-PRECOMPUTE-INV-AFFINE (优化6): 使用预计算的逆仿射矩阵，
-    跳过 face_helper.get_inverse_affine()，减少 CPU 开销。
-    """
+    """人脸贴回函数"""
     import cv2 as _cv2
     expected_h, expected_w = sr_results[0].shape[:2]
     final_frames = []
@@ -1267,64 +1223,32 @@ def _paste_faces_batch(face_data, restored_by_frame, sr_results, face_enhancer):
             continue
         try:
             face_enhancer.face_helper.clean_all()
-            sr_bgr = _cv2.cvtColor(sr_frame, _cv2.COLOR_RGB2BGR)
-            face_enhancer.face_helper.read_image(fd['orig'])   # 传入低分辨率原始帧（BGR）
-
-            # # 直接传入 SR 尺寸的参考图而非低分辨率原图
-            # _orig_upscaled = _cv2.resize(
-            #     fd['orig'],
-            #     (sr_bgr.shape[1], sr_bgr.shape[0]),
-            #     interpolation=_cv2.INTER_LANCZOS4
-            # )
-            # face_enhancer.face_helper.read_image(_orig_upscaled)  # 传入与SR同分辨率的BGR帧
-
-            # FIX-ALIGN-AFFINE: 过滤掉 None 位置，保持 affines 与 valid_restored 数量一致
-            # None 由 _gfpgan_infer_batch 在不可恢复错误时填入，表示该人脸推理失败
+            # FIX-INPUT-IMG: 必须传入原始低分辨率帧（非 SR 帧）
+            face_enhancer.face_helper.read_image(fd['orig'])
             _raw = restored_by_frame[fi]
             _affines = fd['affines']
             _crops   = fd['crops']
-            _inv_affines = fd.get('inv_affines', [])  # 优化6: 预计算的逆仿射
-            _n = min(len(_raw), len(_affines), len(_crops))  # 若长度不一致（理论上不应发生），取最短对齐
-            valid_pairs = [(rf, _affines[j], _crops[j],
-                            _inv_affines[j] if j < len(_inv_affines) else None)
+            _n = min(len(_raw), len(_affines), len(_crops))
+            valid_pairs = [(rf, _affines[j], _crops[j])
                            for j, rf in enumerate(_raw[:_n]) if rf is not None]
             if not valid_pairs:
-                # 所有人脸推理均失败，返回 RGB sr_frame
                 final_frames.append(sr_frame)
                 continue
-
-            valid_restored, valid_affines, valid_crops, valid_inv = zip(*valid_pairs)
+            valid_restored, valid_affines, valid_crops = zip(*valid_pairs)
             face_enhancer.face_helper.affine_matrices = list(valid_affines)
             face_enhancer.face_helper.cropped_faces   = list(valid_crops)
             for rf in valid_restored:
                 face_enhancer.face_helper.add_restored_face(rf)
-
-            # FIX-PRECOMPUTE-INV-AFFINE (优化6): 直接设置预计算的逆仿射矩阵
-            if all(v is not None for v in valid_inv):
-                face_enhancer.face_helper.inverse_affine_matrices = list(valid_inv)
-            else:
-                face_enhancer.face_helper.get_inverse_affine(None)
-
-            # FIX-BGR: 传入 sr_bgr（BGR）而非 sr_frame（RGB）
+            face_enhancer.face_helper.get_inverse_affine(None)
             _ret = face_enhancer.face_helper.paste_faces_to_input_image(
-                upsample_img=sr_bgr)
-
-            # facexlib 0.3.0+ 直接返回结果；旧版写入 .output 属性
-            result_bgr = _ret if _ret is not None else getattr(
+                upsample_img=sr_frame)
+            result = _ret if _ret is not None else getattr(
                 face_enhancer.face_helper, 'output', None)
-
-            if result_bgr is not None:
-                # FIX-BGR: facexlib 输出 BGR，转回 RGB 保持与 sr_results 一致
-                result = _cv2.cvtColor(result_bgr, _cv2.COLOR_BGR2RGB)
-            else:
-                # paste 返回 None（理论上不应发生），回退原始 RGB sr_frame
-                result = sr_frame
-
+            result = result if result is not None else sr_frame
         except Exception as e:
             print(f'[face_enhance] 帧{fi} 贴回异常，使用 SR 结果: {e}')
-            result = sr_frame  # 回退 RGB sr_frame
+            result = sr_frame
 
-        # 尺寸安全检查：确保输出与 SR 帧严格一致
         if result.shape[0] != expected_h or result.shape[1] != expected_w:
             print(f'[WARN] face_enhance 帧{fi} 尺寸异常 '
                   f'{result.shape[:2]} != ({expected_h},{expected_w})，强制 resize')
@@ -1333,6 +1257,7 @@ def _paste_faces_batch(face_data, restored_by_frame, sr_results, face_enhancer):
         final_frames.append(result)
 
     return final_frames
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TRT 进程级 Logger 单例
@@ -1438,57 +1363,16 @@ class TensorRTAccelerator:
         config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 4 * (1 << 30))
         if use_fp16 and builder.platform_has_fast_fp16:
             config.set_flag(trt.BuilderFlag.FP16)
-
-        # 添加 SM 检测和时间预估
-        _gpu_name = 'unknown'
-        _sm_major = 0
-        _sm_minor = 0
-        if torch.cuda.is_available():
-            _props = torch.cuda.get_device_properties(0)
-            _gpu_name = _props.name
-            _sm_major = _props.major
-            _sm_minor = _props.minor
-            if _sm_major < 7 or (_sm_major == 7 and _sm_minor < 5):
-                print(f'[TensorRT] 警告: {_gpu_name} (SM {_sm_major}.{_sm_minor}) '
-                      f'可能不受当前 TRT 版本支持（通常需要 SM 7.5+）')
-        _sm_code = _sm_major * 10 + _sm_minor
-        _time_hint = {
-            75: '约需 20~30 分钟（T4/RTX20系 SM7.5）',
-            80: '约需 8~15 分钟（A100/A30 SM8.0）',
-            86: '约需 10~18 分钟（A10/RTX30系 SM8.6）',
-            89: '约需 8~12 分钟（RTX40系 SM8.9）',
-            90: '约需 5~10 分钟（H100 SM9.0）',
-        }.get(_sm_code, f'约需 10~30 分钟（{_gpu_name} SM{_sm_major}.{_sm_minor}）')
-        print(f'[TensorRT] {_time_hint}')
-        
-        # 添加心跳线程，每300秒报告一次状态
-        _build_start = time.time()
-        _build_done = threading.Event()
-        def _heartbeat():
-            _last = time.time()
-            while not _build_done.wait(timeout=5):
-                if time.time() - _last >= 300:
-                    elapsed = time.time() - _build_start
-                    print(f'[TensorRT] 编译中... {elapsed:.0f}s（仍在运行，请耐心等待）')
-                    _last = time.time()
-        _hb_thread = threading.Thread(target=_heartbeat, daemon=True)
-        _hb_thread.start()
-
         serialized = builder.build_serialized_network(network, config)
-        _build_done.set()
-        _build_elapsed = time.time() - _build_start
         del config, parser, network, builder
         import gc; gc.collect()
         if serialized is None:
-            _sm_str = f'SM {_sm_major}.{_sm_minor if _sm_major else "?"}' if torch.cuda.is_available() else ''
-            _sm_hint = (f'\n[TensorRT] 提示: {_gpu_name} ({_sm_str}) 可能不受此 TRT 版本支持'
-                        if _sm_major < 8 else '')
-            print(f'[TensorRT] Engine 构建失败（返回 None，用时 {_build_elapsed:.0f}s）{_sm_hint}')
+            print('[TensorRT] Engine 构建失败')
             return
         with open(trt_path, 'wb') as f:
             f.write(serialized)
         del serialized
-        print(f'[TensorRT] Engine 已缓存（用时 {_build_elapsed:.0f}s）: {trt_path}')
+        print(f'[TensorRT] Engine 已缓存: {trt_path}')
 
     def _load_engine(self, trt_path):
         _cur_sm_tag = ''
@@ -1685,19 +1569,6 @@ class GFPGANSubprocess:
                 else:
                     print(f'[GFPGANSubprocess] Phase 1 失败（用时 {_p1_elapsed:.0f}s，.trt 未生成），Phase 2 将走 PyTorch 路径', flush=True)
 
-        # ── FIX-SHM-IPC (优化3): 创建双缓冲共享内存 ──────────────────
-        self.shm_buf: Optional[SharedMemoryDoubleBuffer] = None
-        try:
-            self.shm_buf = SharedMemoryDoubleBuffer()
-            print(f'[GFPGANSubprocess] 共享内存双缓冲已创建 '
-                  f'(input: {self.shm_buf.input_names}, '
-                  f'output: {self.shm_buf.output_names})', flush=True)
-        except Exception as _shm_e:
-            print(f'[GFPGANSubprocess] 共享内存创建失败，回退 pickle: {_shm_e}',
-                  flush=True)
-            self.shm_buf = None
-
-        # Phase 2: 始终启动 Inference 进程（干净 CUDA context）
         self._start()
 
     @staticmethod
@@ -1783,15 +1654,9 @@ class GFPGANSubprocess:
             dummy_d = dummy_d.half()
             gfpgan_net = gfpgan_net.half()
         with torch.no_grad():
-            _test = gfpgan_net(dummy_d, return_rgb=True)
+            _test = gfpgan_net(dummy_d, return_rgb=False)
         _returns_tuple = isinstance(_test, (tuple, list))
         _w = float(gfpgan_weight)
-        
-        # FIX-TRT-WEIGHT: 移除 TRT wrapper 中的 weight blending。
-        # v6.1 不在 GFPGAN 推理阶段做 weight blending（weight 参数被网络忽略），
-        # blending 语义仅在 paste_faces_to_input_image 的 mask 融合中体现。
-        # TRT wrapper 内嵌 blending 导致输出是 (w*enhanced + (1-w)*input)，
-        # 增强脸与原始裁切亮度/色彩差异在 paste 边界产生花斑。
         class _W(torch.nn.Module):
             def __init__(self):
                 super().__init__()
@@ -1799,9 +1664,9 @@ class GFPGANSubprocess:
             def forward(self, x):
                 out = self.net(x, return_rgb=False)
                 if _returns_tuple: out = out[0]
-                return out
+                if abs(_w - 1.0) < 1e-6: return out
+                return _w * out + (1.0 - _w) * x
         wrapper = _W().to(device)
-
         if use_fp16:
             wrapper = wrapper.half()
         wrapper.eval()
@@ -1891,8 +1756,7 @@ class GFPGANSubprocess:
             gc.collect()
             if serialized is None:
                 _sm_str = f'SM {_sm_major}.{_sm_minor if _sm_major else "?"}' if torch.cuda.is_available() else ''
-                _sm_hint = (f'\n[Builder] 提示: {_gpu_name_b} ({_sm_str}) 可能不受此 TRT 版本支持，'
-                            f'请降级 TRT 或改用 PyTorch FP16（去掉 --gfpgan-trt）'
+                _sm_hint = (f'\n[Builder] 提示: {_gpu_name_b} ({_sm_str}) 可能不受此 TRT 版本支持'
                             if _sm_major < 8 else '')
                 print(f'[Builder] Engine 构建失败（返回 None，用时 {_build_elapsed:.0f}s）{_sm_hint}', flush=True)
                 import os as _os; _os._exit(1)
@@ -1906,24 +1770,19 @@ class GFPGANSubprocess:
         import os as _os; _os._exit(0)
 
     def _start(self):
-        """启动 Phase 2 Inference 子进程（spawn，CUDA context 干净）"""
-        # FIX-SHM-IPC: 传递共享内存名称给子进程
-        _shm_input_names = self.shm_buf.input_names if self.shm_buf else None
-        _shm_output_names = self.shm_buf.output_names if self.shm_buf else None
+        """启动 Phase 2 Inference 子进程"""
         self.process = self._mp_ctx.Process(target=self._worker, args=(
             self.model_path, self.gfpgan_model, self.gfpgan_weight,
             self.gfpgan_batch_size, self.use_fp16, self.use_trt,
             self.trt_cache_dir, self.task_queue, self.result_queue,
             self.ready_event,
-            _shm_input_names, _shm_output_names,  # 优化：共享内存 + 异步支持
         ), daemon=True)
         self.process.start()
 
     @staticmethod
     def _worker(model_path, gfpgan_model, gfpgan_weight, gfpgan_batch_size,
                 use_fp16, use_trt, trt_cache_dir, task_queue, result_queue,
-                ready_event=None,
-                shm_input_names=None, shm_output_names=None):  # 优化：共享内存 + 异步支持
+                ready_event=None):
         """子进程主函数：加载模型并循环处理任务"""
         import warnings
         warnings.filterwarnings('ignore')
@@ -2050,9 +1909,9 @@ class GFPGANSubprocess:
                             dummy      = dummy.half()
                             gfpgan_net = gfpgan_net.half()
                         with torch.no_grad():
-                            _test = gfpgan_net(dummy, return_rgb=True)
+                            _test = gfpgan_net(dummy, return_rgb=False)
                         _returns_tuple = isinstance(_test, (tuple, list))
-                        # FIX-TRT-WEIGHT: 移除 weight blending，与 v6.1 一致。
+                        _w = float(weight)
                         class _W(torch.nn.Module):
                             def __init__(self):
                                 super().__init__()
@@ -2060,7 +1919,8 @@ class GFPGANSubprocess:
                             def forward(self, x):
                                 out = self.net(x, return_rgb=False)
                                 if _returns_tuple: out = out[0]
-                                return out
+                                if abs(_w - 1.0) < 1e-6: return out
+                                return _w * out + (1.0 - _w) * x
                         return _W().to(device)
 
                     @staticmethod
@@ -2295,43 +2155,13 @@ class GFPGANSubprocess:
             pass
         elif use_trt and gfpgan_trt_accel is not None and gfpgan_trt_accel.available:
             print('[GFPGANSubprocess] TRT 成功，进入任务循环', flush=True)
-            if ready_event is not None:
-                ready_event.set()
+            if ready_event is not None: ready_event.set()
         elif use_trt and (gfpgan_trt_accel is None or not gfpgan_trt_accel.available):
             print('[GFPGANSubprocess] TRT 失败但 context 正常，以 PyTorch 模式服务', flush=True)
-            if ready_event is not None:
-                ready_event.set()
+            if ready_event is not None: ready_event.set()
         else:
             print('[GFPGANSubprocess] PyTorch 模式，进入任务循环', flush=True)
-            if ready_event is not None:
-                ready_event.set()
-
-        # ── FIX-SHM-IPC (优化3): Attach 到主进程创建的共享内存 ────────
-        import multiprocessing.shared_memory as shm
-        _shm_inputs = []
-        _shm_outputs = []
-        _shm_available = False
-        _shm_max_faces = 64
-        _shm_face_shape = (512, 512, 3)
-        if shm_input_names and shm_output_names:
-            try:
-                for _sname in shm_input_names:
-                    _shm_inputs.append(shm.SharedMemory(name=_sname))
-                for _sname in shm_output_names:
-                    _shm_outputs.append(shm.SharedMemory(name=_sname))
-                _shm_available = True
-                print(f'[GFPGANSubprocess] 共享内存 attach 成功 '
-                      f'({len(_shm_inputs)} input slots + '
-                      f'{len(_shm_outputs)} output slots)', flush=True)
-            except Exception as _shm_e:
-                print(f'[GFPGANSubprocess] 共享内存 attach 失败，回退 pickle: '
-                      f'{_shm_e}', flush=True)
-                _shm_available = False
-                _shm_inputs = []
-                _shm_outputs = []
-        else:
-            print('[GFPGANSubprocess] 未传入共享内存名称，使用 pickle 传输',
-                  flush=True)
+            if ready_event is not None: ready_event.set()
 
         while True:
             try:
@@ -2362,72 +2192,29 @@ class GFPGANSubprocess:
                             'acceleratorerror', 'cudaerror'))
                         _is_oom = 'out of memory' in _ve_str
                         if _ctx_dead:
-                            # 区分是 OOM 还是真正的 context 损坏
                             if 'out of memory' in _ve_str:
-                                # OOM: 降级到 PyTorch，继续服务
-                                print('[GFPGANSubprocess] post-SR OOM，降级 PyTorch...')
                                 gfpgan_trt_accel._trt_ok = False
                                 use_trt = False
                                 result_queue.put(('__validate__', _val_id, False), timeout=5.0)
                             else:
-                                # 真正的 context 损坏: 必须退出
                                 result_queue.put(('__validate__', _val_id, False), timeout=5.0)
                                 os._exit(0)
                         else:
-                            # OOM 或其他可恢复错误：降级 PyTorch，子进程继续服务
-                            print(f'[GFPGANSubprocess] post-SR warmup 失败（{"OOM" if _is_oom else "其他"}），'
-                                  f'降级 PyTorch 路径继续: {_ve}', flush=True)
                             gfpgan_trt_accel._trt_ok = False
                             use_trt = False
                             result_queue.put(('__validate__', _val_id, False), timeout=5.0)
                 else:
-                    # TRT 从未成功初始化（build 失败 / SM 不支持 / .trt 不存在）
-                    # 子进程已在 PyTorch FP16 路径服务，直接回报 False，无需任何处理
-                    print('[GFPGANSubprocess] post-SR validate: TRT 未初始化，'
-                          '子进程以 PyTorch FP16 路径服务', flush=True)
                     result_queue.put(('__validate__', _val_id, False), timeout=5.0)
                 continue
 
             if isinstance(task, tuple) and len(task) == 2 and task[0] == '__pause__':
                 _pause_duration = task[1]
-                print(f'[GFPGANSubprocess] 收到暂停信号，休眠 {_pause_duration}s 释放显存...', flush=True)
-                torch.cuda.empty_cache()  # 立即释放显存
+                torch.cuda.empty_cache()
                 time.sleep(_pause_duration)
-                torch.cuda.empty_cache()  # 再次清理
-                print(f'[GFPGANSubprocess] 暂停结束，恢复处理', flush=True)
+                torch.cuda.empty_cache()
                 continue
 
-            # ── FIX-SHM-IPC (优化3): 兼容共享内存和 pickle 两种传输格式 ──
-            # 共享内存格式: (task_id, n_faces, slot_id) — 3-tuple, slot_id 是 int
-            # pickle 格式:  (task_id, crops_np)          — 2-tuple, crops_np 是 list
-            _use_shm_output = False
-            _shm_slot_id = -1
-            if (isinstance(task, tuple) and len(task) == 3
-                    and isinstance(task[1], int) and isinstance(task[2], int)):
-                # 共享内存路径
-                task_id, _n_faces, _shm_slot_id = task
-                if _shm_available and _shm_slot_id < len(_shm_inputs):
-                    _shm_face_shape = (512, 512, 3)
-                    _shm_max_faces = 64
-                    _inp_buf = np.ndarray(
-                        (_shm_max_faces, *_shm_face_shape), dtype=np.uint8,
-                        buffer=_shm_inputs[_shm_slot_id].buf)
-                    crops_np = [_inp_buf[i].copy() for i in range(_n_faces)]
-                    _use_shm_output = True
-                else:
-                    # shm attach 失败，此 task 无法处理
-                    print(f'[GFPGANSubprocess] 共享内存 slot {_shm_slot_id} 不可用，跳过',
-                          flush=True)
-                    try:
-                        result_queue.put((task_id, []), timeout=5.0)
-                    except queue.Full:
-                        pass
-                    continue
-            else:
-                # pickle 路径（原有逻辑）
-                task_id, crops_np = task
-
-            # 转换为 tensor
+            task_id, crops_np = task
             crops_tensor = []
             for crop in crops_np:
                 t = img2tensor(crop / 255., bgr2rgb=True, float32=True)
@@ -2437,7 +2224,6 @@ class GFPGANSubprocess:
                 result_queue.put((task_id, []), timeout=5.0)
                 continue
 
-            # 分批推理（支持 TRT 和 PyTorch 两种路径）
             all_out = []
             sub_bs = gfpgan_batch_size
             i = 0
@@ -2450,31 +2236,11 @@ class GFPGANSubprocess:
                             if use_fp16: sub_batch = sub_batch.half()
                             out = gfpgan_trt_accel.infer(sub_batch)
                             out = out.float() if out.dtype != torch.float32 else out
-                            # --- [修复] 处理 FP16 数值溢出 (NaN/Inf) 并补充缺失的 Weight Blending ---
-                            # 1. 将 NaN 转为 0，Inf 转为边界值，防止转换图像时出现噪点
-                            out = torch.nan_to_num(out, nan=0.0, posinf=1.0, neginf=-1.0)
-                            
-                            # 2. 强制截断到 GFPGAN 预期的 -1 到 1 范围
-                            out = torch.clamp(out, min=-1.0, max=1.0)
-                            
-                            # 3. 补充缺失的 Weight Blending (权重融合)
-                            # TRT 导出的是纯网络前向，缺少这一步会导致结果不一致且容易产生噪声
-                            if abs(gfpgan_weight - 1.0) > 1e-6:
-                                _sub_b = sub_batch.float() if sub_batch.dtype == torch.float16 else sub_batch
-                                out = gfpgan_weight * out + (1.0 - gfpgan_weight) * _sub_b
-                            
-                            # 4. 混合后再次 clamp 确保范围正确
-                            out = torch.clamp(out, min=-1.0, max=1.0)
-                            # ------------------------------------------------------------------------
                         else:
                             with fp16_ctx:
-                                out = model(sub_batch, return_rgb=False)
+                                out = model(sub_batch, return_rgb=False, weight=gfpgan_weight)
                                 if isinstance(out, (tuple, list)): out = out[0]
                             out = out.float()
-                            # 手动 weight 融合（与 TRT wrapper 行为对齐）
-                            if abs(gfpgan_weight - 1.0) > 1e-6:
-                                # sub_batch 在 [-1,1] RGB 空间，out 也在 [-1,1] RGB 空间
-                                out = gfpgan_weight * out + (1.0 - gfpgan_weight) * sub_batch.float()
                     all_out.extend(out.unbind(0))
                     i += len(sub)
                 except RuntimeError as e:
@@ -2496,77 +2262,26 @@ class GFPGANSubprocess:
                 finally:
                     del sub_batch
 
-            # 将输出转换回 numpy
             restored = []
             for out_t in all_out:
                 if out_t is None:
                     restored.append(None)
                 else:
-                    # --- 修复开始：处理 TRT FP16 导致的 NaN 和数值溢出 ---
-                    # 1. 将 NaN 转换为 0，将正负无穷转换为对应边界值
-                    out_t = torch.nan_to_num(out_t, nan=0.0, posinf=1.0, neginf=-1.0)
-                    # 2. 强制截断到 GFPGAN 预期的 -1 到 1 范围，防止超出该范围的值在后处理时产生异常色块
-                    out_t = torch.clamp(out_t, min=-1.0, max=1.0)
-                    # --- 修复结束 ---
-
-                    img = tensor2img(out_t, rgb2bgr=True, min_max=(-1, 1))  # 现在正确：RGB → BGR
+                    img = tensor2img(out_t, rgb2bgr=True, min_max=(-1,1))
                     restored.append(img.astype('uint8'))
-
-            # ── FIX-SHM-IPC (优化3): 共享内存写回或 pickle 返回 ──────
-            if _use_shm_output and _shm_slot_id >= 0 and _shm_slot_id < len(_shm_outputs):
-                # 共享内存路径：将结果写入 output shm，queue 只传 (task_id, n_restored)
-                _face_shape = (512, 512, 3)
-                _max_faces = 64
-                _out_buf = np.ndarray(
-                    (_max_faces, *_face_shape), dtype=np.uint8,
-                    buffer=_shm_outputs[_shm_slot_id].buf)
-                _n_valid = 0
-                for i, r in enumerate(restored):
-                    if r is not None and i < _max_faces:
-                        if r.shape == _face_shape:
-                            _out_buf[i] = r
-                        else:
-                            # 尺寸不匹配时 resize（理论上不应发生）
-                            import cv2 as _cv_w
-                            _out_buf[i] = _cv_w.resize(
-                                r, (_face_shape[1], _face_shape[0]))
-                        _n_valid += 1
-                    elif i < _max_faces:
-                        _out_buf[i] = 0  # None 位置清零
-                try:
-                    # 只传元数据：(task_id, 有效结果数量)
-                    # AsyncGFPGANDispatcher._collect_loop 收到 int 型 result
-                    # 时知道从 output shm 读取
-                    result_queue.put((task_id, len(restored)), timeout=5.0)
-                    # result_queue.put((task_id, _n_valid), timeout=5.0)
-                except queue.Full:
-                    pass
-            else:
-                # pickle 路径（原有逻辑）
-                try:
-                    result_queue.put((task_id, restored), timeout=5.0)
-                except queue.Full:
-                    pass
-
-        # ── FIX-SHM-IPC (优化3): 关闭共享内存 attach（不 unlink，由主进程负责）──
-        for _s in _shm_inputs + _shm_outputs:
             try:
-                _s.close()
-            except Exception:
+                result_queue.put((task_id, restored), timeout=5.0)
+            except queue.Full:
                 pass
 
         if gfpgan_trt_accel is not None:
-            gfpgan_trt_accel._trt_ok = False   # 禁用，不 safe_destroy
-        try:
-            del face_enhancer, model
-        except Exception:
-            pass
-        try:
-            torch.cuda.empty_cache()
-        except Exception:
-            pass
+            gfpgan_trt_accel._trt_ok = False
+        try: del face_enhancer, model
+        except Exception: pass
+        try: torch.cuda.empty_cache()
+        except Exception: pass
         import os as _os_worker_exit
-        _os_worker_exit._exit(0)   # FIX-WORKER-EXIT: 跳过 Python GC，子进程立即退出
+        _os_worker_exit._exit(0)
 
     def infer(self, crops_list):
         if not self.process or not self.process.is_alive():
@@ -2610,333 +2325,29 @@ class GFPGANSubprocess:
         return False
 
     def pause(self, duration: float = 5.0):
-        """通知 GFPGAN 子进程暂停处理一段时间。"""
         if not self.process or not self.process.is_alive():
             return
         try:
             self.task_queue.put(('__pause__', duration), timeout=2.0)
-            print(f'[GFPGANSubprocess] 已发送暂停信号 ({duration}s)', flush=True)
         except queue.Full:
             pass
 
     def close(self):
-        """发送终止信号并等待子进程结束
-        
-        FIX-CLOSE-KILL:
-          原实现：terminate() 之后不再 join，不调 kill()，直接 task_queue.close()。
-          若子进程深陷 CUDA C 调用忽略 SIGTERM，进程活着但 close() 已经返回，
-          主进程继续但子进程一直驻留显存（8.2GB 不释放）。
-          修复：terminate() → join(5s) → kill() 三级终止，确保子进程一定死透。
-        """
         if self.process and self.process.is_alive():
-            # 1. 发送正常终止信号（子进程走 os._exit(0) 路径，此处通常立即返回）
-            try:
-                self.task_queue.put(None, timeout=3)   # FIX: 加 timeout 防止满队列死锁
-            except Exception:
-                pass
-            # 2. 等待正常退出（FIX-WORKER-EXIT 后子进程会立刻 _exit(0)，join 几乎即时）
+            try: self.task_queue.put(None, timeout=3)
+            except Exception: pass
             self.process.join(timeout=15)
-            # 3. 仍存活 → SIGTERM
             if self.process.is_alive():
                 self.process.terminate()
                 self.process.join(timeout=5)
-            # 4. 仍存活 → SIGKILL（FIX-CLOSE-KILL: 最终兜底，无视 CUDA C 调用）
             if self.process.is_alive():
-                print('[GFPGANSubprocess] 子进程未响应 SIGTERM，发送 SIGKILL...', flush=True)
                 self.process.kill()
                 self.process.join(timeout=5)
-                
-        # FIX-SHM-IPC (优化3): 清理共享内存
-        if self.shm_buf is not None:
-            self.shm_buf.close()
-            self.shm_buf = None
+        try: self.task_queue.close()
+        except Exception: pass
+        try: self.result_queue.close()
+        except Exception: pass
 
-        try:
-            self.task_queue.close()
-        except Exception:
-            pass
-        try:
-            self.result_queue.close()
-        except Exception:
-            pass
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SharedMemoryDoubleBuffer（优化3：零拷贝 IPC）
-# 预分配双缓冲共享内存，替代 pickle 序列化，减少 GFPGAN IPC 开销 20-30%。
-# 双缓冲配合 AsyncGFPGANDispatcher（优化5B）：最多 2 批 in-flight，
-# 各占一个 slot，由 task_queue maxsize=2 保证不会同时写同一 slot。
-# ─────────────────────────────────────────────────────────────────────────────
-
-class SharedMemoryDoubleBuffer:
-    """双缓冲共享内存，用于主进程与 GFPGAN 子进程之间的零拷贝数据传输。
-
-    FIX-SHM-IPC: 原实现通过 multiprocessing.Queue 传递人脸 crops，
-    底层 pickle 序列化 20+ 张 512×512×3 ≈ 15MB，序列化+反序列化 ~200-400ms。
-    修复：使用 POSIX 共享内存预分配双缓冲区，task_queue 只传元数据
-    (task_id, n_faces, slot_id)，不传数据本身。
-
-    FIX-SLOT-POOL: 替代原 _slot_counter 盲目轮转。
-    使用 queue.Queue 池管理 slot 的借出/归还，确保：
-      1. slot 仅在空闲时被分配（acquire_slot）
-      2. slot 仅在对应任务结果取回后才归还（release_slot）
-      3. queue.Queue 是线程安全的，无需额外加锁
-      4. acquire_slot 的阻塞天然提供背压，不再需要外部 _MAX_IN_FLIGHT 常量
-    """
-
-    N_SLOTS = 2          # 双缓冲
-    MAX_FACES = 64       # 单 slot 最大人脸数（覆盖极端密集场景）
-    FACE_SHAPE = (512, 512, 3)
-
-    def __init__(self):
-        face_bytes = int(np.prod(self.FACE_SHAPE))
-        slot_bytes = self.MAX_FACES * face_bytes
-        self._input_shms = []
-        self._output_shms = []
-        for _ in range(self.N_SLOTS):
-            self._input_shms.append(shm.SharedMemory(create=True, size=slot_bytes))
-            self._output_shms.append(shm.SharedMemory(create=True, size=slot_bytes))
-        # FIX-SLOT-POOL: Queue 池管理替代盲目轮转计数器
-        # 初始时所有 slot 均可用，放入池中
-        self._slot_pool = queue.Queue(maxsize=self.N_SLOTS)
-        for i in range(self.N_SLOTS):
-            self._slot_pool.put(i)
-
-    # ── 名称属性（传给子进程 _worker 用于 attach）──────────────────
-    @property
-    def input_names(self) -> List[str]:
-        return [s.name for s in self._input_shms]
-
-    @property
-    def output_names(self) -> List[str]:
-        return [s.name for s in self._output_shms]
-
-    def acquire_slot(self, timeout: float = 30.0) -> int:
-        """从池中借出一个空闲 slot，阻塞直到有可用 slot。
-
-        替代原 next_slot() 的盲目轮转。
-        注意：在与 _pending_tasks 出队同一线程中调用时，
-        应优先使用 try_acquire_slot() + 手动排空 pending 的模式，
-        避免单线程自死锁（acquire 阻塞 → 无人 release）。
-        """
-        try:
-            return self._slot_pool.get(timeout=timeout)
-        except queue.Empty:
-            raise TimeoutError(
-                f'无法在 {timeout}s 内获取空闲 slot，'
-                f'可能存在 slot 泄漏（未调用 release_slot）')
-
-    def try_acquire_slot(self) -> Optional[int]:
-        """非阻塞尝试获取空闲 slot，无可用则返回 None。
-
-        用于 _process_gfpgan 单线程场景：先 try_acquire，
-        失败则手动排空 _pending_tasks（释放 slot），再重试。
-        """
-        try:
-            return self._slot_pool.get_nowait()
-        except queue.Empty:
-            return None
-
-    def release_slot(self, slot: int):
-        """归还 slot 到池中。slot 为 None 时无操作（幂等）。"""
-        if slot is not None:
-            self._slot_pool.put(slot)
-
-    def write_input(self, slot: int, crops: List[np.ndarray]) -> int:
-        """将 crops 写入指定 slot 的输入共享内存，返回实际写入数量"""
-        n = min(len(crops), self.MAX_FACES)
-        buf = np.ndarray(
-            (self.MAX_FACES, *self.FACE_SHAPE), dtype=np.uint8,
-            buffer=self._input_shms[slot].buf)
-        for i in range(n):
-            c = crops[i]
-            if c.shape == self.FACE_SHAPE:
-                buf[i] = c
-            else:
-                # 尺寸不匹配（理论上不应发生，align_warp_face 输出固定 512x512）
-                import cv2 as _cv
-                buf[i] = _cv.resize(c, (self.FACE_SHAPE[1], self.FACE_SHAPE[0]))
-        return n
-
-    def read_output(self, slot: int, n: int) -> List[np.ndarray]:
-        """从指定 slot 的输出共享内存读取 n 个结果（深拷贝）"""
-        buf = np.ndarray(
-            (self.MAX_FACES, *self.FACE_SHAPE), dtype=np.uint8,
-            buffer=self._output_shms[slot].buf)
-        return [buf[i].copy() for i in range(n)]
-
-    def close(self):
-        """清理共享内存（主进程负责 unlink）"""
-        for s_list in [self._input_shms, self._output_shms]:
-            for s in s_list:
-                try:
-                    s.close()
-                except Exception:
-                    pass
-                try:
-                    s.unlink()
-                except Exception:
-                    pass
-
-# ─────────────────────────────────────────────────────────────────────────────
-# AsyncGFPGANDispatcher（优化5B：异步 GFPGAN 调度）
-# 将 GFPGAN IPC 从同步调用改为异步提交+后台收集。
-# 主线程提交人脸 crops 后不等结果，立即返回，允许 SR 继续下一批推理。
-# 后台 _collector 线程从 result_queue 收集结果。
-# wait_result() 按 task_id 等待特定批次完成。
-# ─────────────────────────────────────────────────────────────────────────────
-
-class AsyncGFPGANDispatcher:
-    """异步 GFPGAN 调度器
-
-    FIX-ASYNC-GFPGAN: 解耦 SR → GFPGAN → Writer 的串行依赖。
-    SR 推理完成后，将人脸 crops 异步提交给 GFPGAN 子进程，
-    不等待结果即开始下一批 SR 推理。GPU 利用率从锯齿状脉冲
-    变为持续高占用（SR 和 GFPGAN 在同一 GPU 上时分复用）。
-
-    线程安全：_lock + _cv 保护 _results/_pending；
-    _validate_lock + _validate_cv 保护 _validate_results。
-    """
-
-    def __init__(self, subprocess_obj, shm_buf: Optional[SharedMemoryDoubleBuffer] = None):
-        self.subprocess = subprocess_obj
-        self.shm_buf = shm_buf          # FIX-SHM-IPC: 共享内存双缓冲
-        self._results: Dict[int, Any] = {}
-        self._lock = threading.Lock()
-        self._cv = threading.Condition(self._lock)
-        self._validate_results: Dict[int, bool] = {}
-        self._validate_lock = threading.Lock()
-        self._validate_cv = threading.Condition(self._validate_lock)
-        self._running = True
-        # 后台结果收集线程
-        self._collector = threading.Thread(
-            target=self._collect_loop, daemon=True,
-            name='async_gfpgan_collector')
-        self._collector.start()
-
-    def _collect_loop(self):
-        """后台线程：持续从子进程 result_queue 收集结果"""
-        while self._running:
-            try:
-                res = self.subprocess.result_queue.get(timeout=1.0)
-            except queue.Empty:
-                continue
-            if res is None:
-                break
-            # ── __validate__ 响应路由 ──
-            if (isinstance(res, tuple) and len(res) == 3
-                    and res[0] == '__validate__'):
-                _, val_id, ok = res
-                with self._validate_lock:
-                    self._validate_results[val_id] = ok
-                    self._validate_cv.notify_all()
-                continue
-            # ── 正常推理结果 ──
-            if isinstance(res, tuple) and len(res) == 2:
-                task_id, result = res
-                with self._lock:
-                    self._results[task_id] = result
-                    self._cv.notify_all()
-
-    # ── 异步提交（非阻塞）──────────────────────────────────────────
-    def _submit_blocking(self, crops_list: List[np.ndarray], task_id: Optional[int] = None) -> Tuple[int, Optional[int]]:
-        """不用于 _process_gfpgan（后者需要非阻塞+排空模式）
-
-        非阻塞提交 crops，返回 (task_id, slot)。
-        使用共享内存时，先 acquire slot → 写入 shm → 发元数据；否则走 pickle。
-        调用方负责在结果取回后调用 shm_buf.release_slot(slot) 归还槽位。
-
-        FIX-SLOT-POOL: 替代原 next_slot() 盲目轮转。
-        提交失败时自动归还 slot，不泄漏。
-        """
-        if task_id is None:
-            task_id = id(crops_list)
-        _slot = None
-
-        if (self.shm_buf is not None
-                and len(crops_list) <= SharedMemoryDoubleBuffer.MAX_FACES):
-            # FIX-SLOT-POOL: 共享内存路径 — acquire → write → put
-            _slot = self.shm_buf.acquire_slot(timeout=30.0)
-            try:
-                n = self.shm_buf.write_input(_slot, crops_list)
-                self.subprocess.task_queue.put(
-                    (task_id, n, _slot), timeout=10.0)
-            except Exception:
-                # 提交失败，立即归还 slot 防止泄漏
-                self.shm_buf.release_slot(_slot)
-                _slot = None
-                raise
-        else:
-            # Fallback: pickle 路径（crops 过多或无 shm）
-            self.subprocess.task_queue.put(
-                (task_id, crops_list), timeout=10.0)
-
-        return task_id, _slot
-    # ── 阻塞等待结果 ──────────────────────────────────────────────
-
-    def wait_result(self, task_id: int, timeout: float = 120.0,
-                    slot: Optional[int] = None) -> Optional[list]:
-        """阻塞等待 task_id 的结果。
-        共享内存路径时 slot 非 None，从 output_shm 读取结果。
-        """
-        deadline = time.time() + timeout
-        with self._lock:
-            while task_id not in self._results:
-                remaining = deadline - time.time()
-                if remaining <= 0:
-                    return None
-                self._cv.wait(timeout=min(1.0, remaining))
-                if not self._running:
-                    return None
-            raw = self._results.pop(task_id)
-
-        # FIX-SHM-IPC: 如果 raw 是 int（n_faces），从 output_shm 读取
-        if isinstance(raw, int) and self.shm_buf is not None and slot is not None:
-            # return self.shm_buf.read_output(slot, raw)
-            # 调整读取后的处理：将全零视为 None
-            restored_list = self.shm_buf.read_output(slot, raw)
-            restored_list = [r if r.any() else None for r in restored_list]
-            return restored_list
-        return raw  # pickle 路径直接返回
-
-    # ── validate 结果等待 ─────────────────────────────────────────
-
-    def wait_validate(self, val_id: int, timeout: float = 180.0) -> bool:
-        """阻塞等待 validate 结果"""
-        deadline = time.time() + timeout
-        with self._validate_lock:
-            while val_id not in self._validate_results:
-                remaining = deadline - time.time()
-                if remaining <= 0:
-                    return False
-                if (self.subprocess.process is not None
-                        and not self.subprocess.process.is_alive()):
-                    return False
-                self._validate_cv.wait(timeout=min(5.0, remaining))
-            return self._validate_results.pop(val_id)
-
-    def submit_validate(self, val_id: int):
-        """非阻塞提交 validate 请求"""
-        try:
-            self.subprocess.task_queue.put(
-                ('__validate__', val_id), timeout=5.0)
-        except queue.Full:
-            pass
-
-    def in_flight(self) -> int:
-        """当前在途的推理任务数"""
-        with self._lock:
-            # result_queue 中的结果已被 _collector 收入 _results
-            # task_queue 中的 + 正在处理的 = subprocess.task_queue.qsize() + 1(maybe)
-            return self.subprocess.task_queue.qsize()
-
-    def close(self):
-        self._running = False
-        with self._lock:
-            self._cv.notify_all()
-        with self._validate_lock:
-            self._validate_cv.notify_all()
-        if self._collector.is_alive():
-            self._collector.join(timeout=5.0)
 
 class GPUMemoryPool:
     """流水线并发槽计数器（纯信号量）"""
@@ -2982,16 +2393,16 @@ class DeepPipelineOptimizer:
         self.optimal_batch_size = min(args.batch_size, 24)  # 限制最大batch_size
         
         # 深度缓冲队列（4级流水线）
-        self.frame_queue = queue.Queue(maxsize=48)        # 原始帧队列
-        self.detect_queue = queue.Queue(maxsize=32)       # 检测结果队列  
-        self.sr_queue = queue.Queue(maxsize=16)           # SR结果队列
-        self.gfpgan_queue = queue.Queue(maxsize=16)       # GFPGAN结果队列
+        self.frame_queue = queue.Queue(maxsize=48)
+        self.detect_queue = queue.Queue(maxsize=32)
+        self.sr_queue = queue.Queue(maxsize=16)
+        self.gfpgan_queue = queue.Queue(maxsize=16)
         
-        # GPU内存池（减少内存分配以避免OOM）
+        # GPU内存池
         self.memory_pool = GPUMemoryPool(
-            max_batches=8,                          # 足够深，避免spin-wait
-            batch_size=self.optimal_batch_size,     # 匹配实际 batch 大小
-            img_size=(input_h, input_w),          # 从视频元数据读取，不要硬编码
+            max_batches=8,
+            batch_size=self.optimal_batch_size,
+            img_size=(input_h, input_w),
             device=device
         )
                 
@@ -3081,18 +2492,10 @@ class DeepPipelineOptimizer:
                     print(f'[优化架构] GFPGAN 子进程创建失败: {e}')
                     self.gfpgan_subprocess = None
                     args._gfpgan_trt_failed = True
-
-        # ── FIX-ASYNC-GFPGAN (优化5B): 创建异步调度器 ────────────────
-        self._async_dispatcher: Optional[AsyncGFPGANDispatcher] = None
-        # 调度器在 optimize_pipeline() 中 GFPGAN 子进程就绪后创建
-
-        # ── FIX id() 复用导致异步结果错配
-        self._task_id_counter = 0
-        self._task_id_lock = threading.Lock()
     
     def optimize_pipeline(self, reader, writer, pbar, total_frames):
         """运行优化的深度流水线"""
-
+        
         print("[优化架构] 启动深度流水线处理...")
         print(f"[优化架构] 队列深度: F{self.frame_queue.maxsize}/D{self.detect_queue.maxsize}/S{self.sr_queue.maxsize}/G{self.gfpgan_queue.maxsize}")
         print(f"[优化架构] 内存池: {self.memory_pool.max_batches}批次")
@@ -3105,111 +2508,65 @@ class DeepPipelineOptimizer:
                   f"低密度阈值={self._low_face_threshold}, 高密度阈值={self._high_face_threshold})")
         else:
             print(f"[优化架构] 自适应批处理: 关闭")
-
+        
         if self.gfpgan_subprocess is not None:
             print('[优化架构] 等待 GFPGAN Inference 进程初始化（加载 .trt + warmup）...')
-            max_elapsed = 2700   # 最多等 45 分钟
+            max_elapsed = 2700
             deadline = time.time() + max_elapsed
             ready = False
-            _poll_interval = 5   # FIX-FAST-DETECT: 每 5s 轮询一次进程存活状态
-            _report_every  = 300  # 每 300s 打印一次等待进度
-            _last_report   = time.time() - _report_every  # 立即允许第一次打印
+            _poll_interval = 5
+            _report_every  = 300
+            _last_report   = time.time() - _report_every
             while time.time() < deadline:
-                # FIX-FAST-DETECT: 优先检测进程是否已死（崩溃），避免傻等超时
                 if not self.gfpgan_subprocess.process.is_alive():
                     exitcode = self.gfpgan_subprocess.process.exitcode
                     if exitcode == 0:
-                        print('[优化架构] GFPGAN 子进程因 CUDA context 污染主动退出，'
-                              '降级到主进程内 GFPGAN（PyTorch FP16）路径')
+                        print('[优化架构] GFPGAN 子进程因 CUDA context 污染主动退出')
                     else:
                         print(f'[优化架构] GFPGAN 子进程意外退出（exitcode={exitcode}），回退 PyTorch')
                     break
                 if self.gfpgan_subprocess.ready_event.wait(timeout=_poll_interval):
-                    # ready_event 有两种触发方：
-                    #   (A) 初始化成功 → 进入 task loop，进程持续存活
-                    #   (B) warmup 失败 → 进程在 ready_event.set() 后 sleep(0.5) 再 os._exit(0)
-                    # 等待 1.0s（> 0.5s 子进程 sleep），再检查进程是否仍然存活以区分两者。
                     time.sleep(1.0)
                     if not self.gfpgan_subprocess.process.is_alive():
                         exitcode = self.gfpgan_subprocess.process.exitcode
                         if exitcode == 0:
-                            print('[优化架构] GFPGAN TRT warmup 失败，子进程主动退出（exitcode=0），'
-                                  '降级到主进程内 GFPGAN PyTorch 路径')
+                            print('[优化架构] GFPGAN TRT warmup 失败，子进程主动退出')
                         else:
-                            print(f'[优化架构] GFPGAN 子进程 ready 后意外退出（exitcode={exitcode}），'
-                                  '回退 PyTorch 路径')
-                        break   # ready 保持 False → 后面设 gfpgan_subprocess = None
+                            print(f'[优化架构] GFPGAN 子进程 ready 后意外退出（exitcode={exitcode}）')
+                        break
                     ready = True
                     break
-                # 每 300s 打印一次进度（不影响每 5s 轮询）
                 now = time.time()
                 if now - _last_report >= _report_every:
                     elapsed = now - (deadline - max_elapsed)
-                    print(f'[优化架构] 等待中... {elapsed:.0f}s（Inference 进程初始化中）', flush=True)
+                    print(f'[优化架构] 等待中... {elapsed:.0f}s', flush=True)
                     _last_report = now
             if ready:
                 print('[优化架构] GFPGAN 子进程已就绪，启动流水线')
-                # FIX-ASYNC-GFPGAN (优化5B): 创建异步调度器
-                _shm = getattr(self.gfpgan_subprocess, 'shm_buf', None)
-                self._async_dispatcher = AsyncGFPGANDispatcher(
-                    self.gfpgan_subprocess, shm_buf=_shm)
-                print('[优化架构] AsyncGFPGANDispatcher 已创建'
-                      f' (shm={"是" if _shm else "否"})')
             else:
                 print('[优化架构] GFPGAN 子进程未就绪，回退 PyTorch 路径')
                 self.gfpgan_subprocess = None
 
-        # 启动读取线程
         read_thread = threading.Thread(target=self._read_frames, args=(reader,), daemon=True)
         read_thread.start()
-        
-        # 启动检测线程
         detect_thread = threading.Thread(target=self._detect_faces, daemon=True)
         detect_thread.start()
-        
-        # 启动SR处理线程
         sr_thread = threading.Thread(target=self._process_sr, daemon=True)
         sr_thread.start()
-        
-        # 启动GFPGAN处理线程
         gfpgan_thread = threading.Thread(target=self._process_gfpgan, daemon=True)
         gfpgan_thread.start()
         
-        # 记录线程句柄以便 close 时等待
         self._read_thread = read_thread
         self._detect_thread = detect_thread
         self._sr_thread = sr_thread
         self._gfpgan_thread = gfpgan_thread
         
-        # 主线程处理写入
         self._write_frames(writer, pbar, total_frames)
-
-        # ── FIX-JOIN-HANG: _write_frames 退出后立即终止所有流水线线程 ─────
-        # 根因：_write_frames 通过"强制退出"条件退出时，哨兵可能尚未传播到
-        # 所有线程。线程仍在 while self.running 循环中，join() 无限等待。
-        # 修复：设置 running=False → 发送哨兵解除队列阻塞 → 带超时 join。
-        print("[Pipeline] _write_frames 已退出，通知所有流水线线程终止...", flush=True)
-        self.running = False
-
-        # 向每个队列注入 None 哨兵，解除线程在 queue.get() 上的阻塞
-        for q_name, q in [('frame', self.frame_queue),
-                          ('detect', self.detect_queue),
-                          ('sr', self.sr_queue)]:
-            try:
-                q.put(None, timeout=1.0)
-            except (queue.Full, Exception):
-                pass
-
-        _JOIN_TIMEOUT = 15.0
-        for name, t in [('read', read_thread), ('detect', detect_thread),
-                        ('sr', sr_thread), ('gfpgan', gfpgan_thread)]:
-            t.join(timeout=_JOIN_TIMEOUT)
-            if t.is_alive():
-                print(f"[Pipeline] 警告: {name} 线程未在 {_JOIN_TIMEOUT:.0f}s 内退出",
-                      flush=True)
-            else:
-                print(f"[Pipeline] {name} 线程已退出", flush=True)
-        # ── FIX-JOIN-HANG 结束 ───────────────────────────────────────────
+        
+        read_thread.join()
+        detect_thread.join()
+        sr_thread.join()
+        gfpgan_thread.join()
     
     def _read_frames(self, reader):
         """读取视频帧到队列
@@ -3463,34 +2820,22 @@ class DeepPipelineOptimizer:
                         timing = time.perf_counter() - t0
                         self.timing.append(timing)
 
-                        # POST-SR-VALIDATE: 第一个 SR 批次完成 → 真实显存压力下验证 GFPGAN TRT
+                        # POST-SR-VALIDATE
                         if not _first_batch_done and self.gfpgan_subprocess is not None:
                             _first_batch_done = True
                             print('[优化架构] 第一个 SR 批次完成，触发 GFPGAN TRT post-SR 验证...', flush=True)
                             torch.cuda.synchronize()
                             torch.cuda.empty_cache()
-
-                            # FIX-ASYNC-GFPGAN: 通过 dispatcher 路由 validate
-                            if self._async_dispatcher is not None:
-                                _val_id = id(self)
-                                self._async_dispatcher.submit_validate(_val_id)
-                                _val_ok = self._async_dispatcher.wait_validate(
-                                    _val_id, timeout=180.0)
-                            else:
-                                _val_ok = self.gfpgan_subprocess.post_sr_validate()
-
+                            _val_ok = self.gfpgan_subprocess.post_sr_validate()
                             if _val_ok:
                                 print('[优化架构] GFPGAN TRT post-SR 验证通过，TRT 推理正式启用', flush=True)
                             else:
                                 self.gfpgan_subprocess.process.join(timeout=1.5)
                                 if not self.gfpgan_subprocess.process.is_alive():
-                                    print('[优化架构] GFPGAN 子进程因 CUDA context 损坏已退出，'
-                                          '降级到主进程内 GFPGAN PyTorch 路径', flush=True)
+                                    print('[优化架构] GFPGAN 子进程因 CUDA context 损坏已退出，降级', flush=True)
                                     self.gfpgan_subprocess = None
-                                    self._async_dispatcher = None
                                 else:
-                                    print('[优化架构] GFPGAN 子进程以 PyTorch FP16 路径服务'
-                                          '（TRT 未启用：SM不兼容 / build失败 / OOM）', flush=True)
+                                    print('[优化架构] GFPGAN 子进程以 PyTorch FP16 路径服务', flush=True)
 
                         # ── FIX-GPU-PREFETCH: SR 完成后预取下一批 H2D ──────────────
                         # 时机：SR 推理刚完成，结果尚未传给 GFPGAN，GPU 计算单元短暂空闲。
@@ -3543,618 +2888,190 @@ class DeepPipelineOptimizer:
                 except Exception as e:
                     print(f"SR处理错误: {e}")
         finally:
-            # ── FIX-PREFETCH-LOSS: 处理预取但未消费的帧，避免帧丢失 ────────
-            # 场景：预取成功（_prefetched_item 非 None），但下一轮循环未执行
-            # （异常/self.running=False/break），帧已从 detect_queue 取出却未处理。
-            if _prefetched_item is not None:
-                _pk_frames, _pk_face_data, _pk_is_end = _prefetched_item
-                if _pk_frames is not None:
-                    _pk_count = len(_pk_frames)
-                    print(f'[SR] 检测到预取残留帧: {_pk_count} 帧，尝试补处理...',
-                          flush=True)
-                    try:
-                        # 尝试正常 SR 推理（不使用预取 tensor，它可能已失效）
-                        _pk_sr, _, _ = _sr_infer_batch(
-                            self.upsampler, _pk_frames, self.args.outscale,
-                            getattr(self.args, 'netscale', 4),
-                            self.transfer_stream, self.sr_stream,
-                            self.trt_accel, self.cuda_graph_accel,
-                            prefetched_batch_t=None,  # 显式不用预取 tensor
-                        )
-                        self.sr_queue.put(
-                            (_pk_frames, _pk_face_data, None, _pk_sr, _pk_is_end),
-                            timeout=5.0)
-                        print(f'[SR] 预取残留帧 SR 推理成功: {_pk_count} 帧已送入 sr_queue',
-                              flush=True)
-                    except Exception as _pf_e:
-                        # SR 推理失败（GPU 状态异常 / OOM），回退到 CPU resize
-                        print(f'[SR] 预取残留帧 SR 推理失败 ({_pf_e})，'
-                              f'回退 CPU resize 保帧...', flush=True)
-                        try:
-                            import cv2 as _cv2_fb
-                            _out_h = int(_pk_frames[0].shape[0] * self.args.outscale)
-                            _out_w = int(_pk_frames[0].shape[1] * self.args.outscale)
-                            _fallback_sr = [
-                                _cv2_fb.resize(f, (_out_w, _out_h),
-                                               interpolation=_cv2_fb.INTER_LANCZOS4)
-                                for f in _pk_frames
-                            ]
-                            self.sr_queue.put(
-                                (_pk_frames, _pk_face_data, None,
-                                 _fallback_sr, _pk_is_end),
-                                timeout=5.0)
-                            print(f'[SR] 预取残留帧已用 CPU resize 替代: '
-                                  f'{_pk_count} 帧（质量降级但不丢帧）', flush=True)
-                        except Exception as _fb_e:
-                            print(f'[SR] 预取残留帧彻底丢失: {_pk_count} 帧 '
-                                  f'({_fb_e})', flush=True)
-
-                # 释放预取 GPU tensor 显存
-                _prefetched_item = None
-                if _prefetched_tensor is not None:
-                    del _prefetched_tensor
-                    _prefetched_tensor = None
-            # ── FIX-PREFETCH-LOSS 结束 ────────────────────────────────────
             if not _sentinel_sent:
                 try:
                     self.sr_queue.put((None, None, None, None, True), timeout=3.0)
                 except Exception:
                     pass
     
+    
     def _process_gfpgan(self):
-        """GFPGAN处理 - 优化2(提前释放) + 优化5B(异步派发)
-
-        FIX-EARLY-RELEASE (优化2): SR 结果已是 CPU numpy，不再需要 GPU memory_block。
-        在取出 sr_queue 项后立即释放，解除 memory_pool 对 SR 的反压。
-
-        FIX-ASYNC-GFPGAN (优化5B): 使用 AsyncGFPGANDispatcher 异步提交人脸 crops，
-        不等待 GFPGAN 结果即处理下一个 SR 输出。GFPGAN 结果到达后在主循环中收集。
-        实现 SR 和 GFPGAN 在时间上的重叠执行。
-
-        FIX-ORDER-PRESERVE: 所有批次（有脸异步/有脸同步/无脸直通）统一通过
-        _pending_tasks 有序队列输出，杜绝无人脸批次"插队"导致帧序颠倒。
-        task_id=None 的"直通"项表示结果已就绪，阶段A 中可立即输出，
-        但必须等前面的任务先完成才能出队，从而严格保序。
-
-        FIX-SLOT-TRACKING (Bug 3): 显式跟踪共享内存双缓冲槽位占用状态，
-        替代 SharedMemoryDoubleBuffer.next_slot() 的盲目轮转。
-        slot 仅从 {0,1} - _slots_in_use 中分配，仅在对应任务从 _pending_tasks
-        出队且结果已取回后才释放。task_queue.put() 失败时立即回收，不泄漏。
-
-        FIX-ADAPTIVE-POLL (Bug 4): sr_queue.get() 的超时时间根据 _pending_tasks
-        中是否存在未完成的异步任务动态调整。有异步等待时缩短至 50ms 以便快速
-        回到 Phase A 检查结果；无异步任务时保持 500ms 避免空转。
+        """GFPGAN处理 - 支持子进程TRT
+        
+        FIX-ADAPTIVE-BATCH: 每批处理后更新人脸密度 EMA，
+        动态调整 _adaptive_read_batch_size 反馈给 _read_frames 线程。
         """
-        _sentinel_sent = False
-
-        # FIX-INFLIGHT-LOSS: 跟踪当前从 sr_queue 取出但尚未完成处理的项
-        # 异常发生在 sr_queue.get() 和 gfpgan_queue.put() 之间时，
-        # 没有此跟踪帧会永久丢失。finally 中据此做降级转发。
-        _current_sr_item = None  # 类型: item 元组 或 None
-
-        # FIX-ASYNC-GFPGAN + FIX-ORDER-PRESERVE: 维护所有批次的有序输出队列
-        # 每个元素: (task_id, face_data, sr_results, slot_or_none, is_end)
-        #
-        # task_id != None → "异步批次"：需等待 AsyncGFPGANDispatcher 返回结果后组装。
-        # task_id == None → "直通批次"：结果已就绪（sr_results 字段存放 final_frames），
-        #                    阶段A 中可立即输出，但必须等前面的任务先完成才能出队。
-        _pending_tasks: List[Tuple] = []
-        _MAX_IN_FLIGHT = 2  # 与 task_queue maxsize 对齐
-
-        # ── FIX-SLOT-POOL (Bug 3 修复): Queue 池化槽位管理 ────────────
-        # 早期捕获 _shm 引用：即使后续 self.gfpgan_subprocess 被置 None
-        # （如 post-SR validate 失败），局部引用仍指向同一 SharedMemoryDoubleBuffer。
-        # _release_slot / _pop_and_output_head 通过闭包访问 _shm。
-        _shm: Optional[SharedMemoryDoubleBuffer] = (
-            getattr(self.gfpgan_subprocess, 'shm_buf', None)
-            if self.gfpgan_subprocess is not None else None)
-
-        def _release_slot(slot):
-            """归还共享内存槽位到池中。
-
-            FIX-SLOT-POOL: 委托 _shm.release_slot()，由 Queue.put() 实现。
-            幂等：slot=None 或 _shm=None 时无操作。
-            """
-            if slot is not None and _shm is not None:
-                _shm.release_slot(slot)
-
-        # FIX-SLOT-POOL: 公共弹出+输出辅助函数
-        # Phase B / slot-ensure 循环 / _drain_all_pending 共用，
-        # 确保每个出队点都在 finally 中调用 _release_slot，消除遗漏风险。
-        def _pop_and_output_head():
-            """弹出 _pending_tasks[0]，阻塞等待结果(如需)，发送到 gfpgan_queue。
-            异常时降级发送 sr_results。无论成功/失败，finally 中自动 _release_slot。"""
-            if not _pending_tasks:
-                return
-            _h_tid, _h_fd, _h_sr, _h_slot, _h_is_end = _pending_tasks.pop(0)
-            try:
-                try:
-                    if _h_tid is None:
-                        # 直通批次，_h_sr 已是组装好的 final_frames
-                        _h_final = _h_sr
-                    elif self._async_dispatcher is not None:
-                        _h_restored = self._async_dispatcher.wait_result(
-                            _h_tid, timeout=120.0, slot=_h_slot)
-                        _h_final = self._assemble_result(
-                            _h_fd, _h_restored, _h_sr)
-                    else:
-                        # 无 dispatcher，降级输出 sr_results
-                        _h_final = _h_sr
-                except Exception as _he:
-                    print(f'[GFPGAN] _pop_and_output_head 等待结果失败: {_he}',
-                          flush=True)
-                    _h_final = _h_sr  # 降级：发送未增强的 SR 帧
-                # 发送到 gfpgan_queue
-                _put_ok = False
-                while self.running:
-                    try:
-                        self.gfpgan_queue.put(
-                            (_h_final, None, _h_is_end), timeout=1.0)
-                        _put_ok = True
-                        break
-                    except queue.Full:
-                        continue
-                if not _put_ok:
-                    # self.running 已 False，最后尝试一次
-                    try:
-                        self.gfpgan_queue.put(
-                            (_h_final, None, _h_is_end), timeout=5.0)
-                    except Exception:
-                        pass
-            finally:
-                # FIX-SLOT-POOL: 无论成功/失败/异常，归还 slot 到池中
-                _release_slot(_h_slot)
-
-        # FIX-ORDER-PRESERVE + FIX-SLOT-TRACKING: 排空 _pending_tasks 的局部辅助函数
-        # 用于发送结束哨兵前，确保所有已入队批次按序输出。
-        # 改用 _pop_and_output_head 统一处理，确保每项释放槽位。
-        def _drain_all_pending():
-            """排空所有 _pending_tasks，按序输出。用于发送哨兵前。"""
-            while _pending_tasks:
-                _pop_and_output_head()
-
+        _sentinel_sent = False  # FIX-DUP-SENTINEL
         try:
             while self.running:
-                # ── 阶段A: 按序输出已就绪的 pending 任务 ──────────────
-                while _pending_tasks:
-                    _oldest = _pending_tasks[0]
-                    _tid, _fd, _sr, _slot, _is_end = _oldest
-
-                    # FIX-ORDER-PRESERVE: 直通批次（无人脸/同步完成），立即可输出
-                    if _tid is None:
-                        _pending_tasks.pop(0)
-                        _release_slot(_slot)  # FIX-SLOT-TRACKING: 防御性释放（直通 slot 应为 None）
-                        # _sr 中已是组装好的 final_frames
-                        while self.running:
-                            try:
-                                self.gfpgan_queue.put(
-                                    (_sr, None, _is_end), timeout=1.0)
-                                break
-                            except queue.Full:
-                                continue
-                        continue  # 继续检查队列中下一个任务
-
-                    if self._async_dispatcher is None:
-                        # 同步路径结果已在 _oldest 中，直接处理
+                try:
+                    item = self.sr_queue.get(timeout=1.0)
+                    
+                    if item is None:
+                        self.gfpgan_queue.put(None)
+                        _sentinel_sent = True
                         break
+                    
+                    batch_frames, face_data, memory_block, sr_results, is_end = item
+                    
+                    if batch_frames is None:
+                        self.gfpgan_queue.put((None, None, True))
+                        _sentinel_sent = True
+                        break
+                    # FIX: 提前检查 face_data 是否有效
+                    has_valid_faces = (face_data is not None and 
+                                      len(face_data) > 0 and 
+                                      any(fd.get('crops') for fd in face_data if fd))
 
-                    # 检查最早提交的任务是否完成（非阻塞 peek）
-                    with self._async_dispatcher._lock:
-                        if _tid not in self._async_dispatcher._results:
-                            break  # 还没完成，不处理
+                    # FIX: 检查 GFPGAN 是否可用（子进程或主进程）
+                    gfpgan_available = False
+                    num_frames = len(face_data) if face_data else 0
+                    _n_faces_this_batch = sum(len(fd.get("crops", [])) for fd in face_data or [])
+                    avg_faces = _n_faces_this_batch / num_frames if num_frames > 0 else 0.0
+                    if self.gfpgan_subprocess and self.gfpgan_subprocess.process.is_alive():
+                        gfpgan_available = True
+                        print(f'[GFPGAN] 使用子进程TRT处理 {_n_faces_this_batch} 个人脸。当前批次共 {num_frames} 帧，平均每帧 {avg_faces:.2f} 个人脸')
+                    elif (self.face_enhancer is not None and 
+                          getattr(self.face_enhancer, 'gfpgan', None) is not None):
+                        gfpgan_available = True
+                        print(f'[GFPGAN] 使用主进程PyTorch处理 {_n_faces_this_batch} 个人脸。当前批次共 {num_frames} 帧，平均每帧 {avg_faces:.2f} 个人脸')
+                    else:
+                        if has_valid_faces:
+                            print(f'[GFPGAN] GFPGAN不可用，跳过人脸增强')
+                    
+                    # GFPGAN处理
+                    if has_valid_faces and gfpgan_available:
+                        try:
+                            restored_by_frame = []
+                            
+                            if self.gfpgan_subprocess and self.gfpgan_subprocess.process.is_alive():
+                                all_crops = []
+                                crops_per_frame = []
+                                for fd in face_data:
+                                    crops = fd.get('crops', [])
+                                    crops_per_frame.append(len(crops))
+                                    all_crops.extend(crops)
 
-                    # 已完成：取出结果，贴回人脸，发送到 writer
-                    _pending_tasks.pop(0)
-                    try:
-                        all_restored = self._async_dispatcher.wait_result(
-                            _tid, timeout=0.1, slot=_slot)
-
-                        final_frames = self._assemble_result(
-                            _fd, all_restored, _sr)
-                    except Exception as _phase_a_err:
-                        print(f'[GFPGAN] Phase A 结果获取异常: {_phase_a_err}，'
-                              f'降级发送 SR 结果', flush=True)
-                        final_frames = _sr
-                    finally:
-                        _release_slot(_slot)  # 无论成功失败都归还 slot
-
+                                if all_crops:
+                                    all_restored = self.gfpgan_subprocess.infer(all_crops)
+                                    idx = 0
+                                    for count in crops_per_frame:
+                                        restored_by_frame.append(
+                                            all_restored[idx:idx + count] if count else []
+                                        )
+                                        idx += count
+                                else:
+                                    restored_by_frame = [[] for _ in face_data]
+                            else:
+                                if (self.face_enhancer is None or 
+                                    getattr(self.face_enhancer, 'gfpgan', None) is None):
+                                    raise RuntimeError("face_enhancer 或 gfpgan 为 None")
+                                    
+                                restored_by_frame, _ = _gfpgan_infer_batch(
+                                    face_data, self.face_enhancer, self.device,
+                                    None, self.args.gfpgan_weight, 
+                                    getattr(self.args, 'gfpgan_batch_size', 4), None, None
+                                )
+                            
+                            if not restored_by_frame or all(r is None or len(r) == 0 for r in restored_by_frame):
+                                final_frames = sr_results
+                            else:
+                                future = self.paste_executor.submit(
+                                    _paste_faces_batch, face_data, restored_by_frame, 
+                                    sr_results, self.face_enhancer
+                                )
+                                try:
+                                    final_frames = future.result(timeout=60)
+                                except concurrent.futures.TimeoutError:
+                                    final_frames = sr_results
+                                
+                        except Exception as e:
+                            print(f"GFPGAN处理错误: {e}")
+                            import traceback; traceback.print_exc()
+                            final_frames = sr_results
+                    else:
+                        final_frames = sr_results
+                    
+                    # ── FIX-ADAPTIVE-BATCH: 更新人脸密度 EMA 并调整自适应批处理大小 ──
+                    # 每批 GFPGAN 处理完成后，根据实际人脸数更新密度估计。
+                    # 低密度 → 增大读取批次（SR 处理更多帧/GPU调用，摊薄 kernel launch 开销）
+                    # 高密度 → 减小读取批次（减少单次 SR 占用的显存，为 GFPGAN TRT 留出空间）
+                    if self._enable_adaptive_batch and face_data is not None:
+                        _frames_in_batch = max(1, len(face_data))
+                        _cur_density = _n_faces_this_batch / _frames_in_batch
+                        with self._adaptive_batch_lock:
+                            self._face_density_ema = (
+                                (1.0 - self._face_density_alpha) * self._face_density_ema +
+                                self._face_density_alpha * _cur_density
+                            )
+                            _prev_adaptive = self._adaptive_read_batch_size
+                            if self._face_density_ema < self._low_face_threshold:
+                                # 人脸稀疏：GFPGAN 空闲多 → 增大 SR 批次利用空闲 GPU
+                                _new_bs = self._max_adaptive_batch
+                            elif self._face_density_ema > self._high_face_threshold:
+                                # 人脸密集：GFPGAN 是瓶颈 → 减小 SR 批次省显存
+                                _new_bs = self._min_adaptive_batch
+                            else:
+                                _new_bs = self._base_batch_size
+                            # 不超过 optimal_batch_size（可能已被 OOM 降级）
+                            _new_bs = min(_new_bs, max(self.optimal_batch_size, self._min_adaptive_batch))
+                            self._adaptive_read_batch_size = _new_bs
+                    # ── FIX-ADAPTIVE-BATCH 结束 ──────────────────────────────────
+                    
                     while self.running:
                         try:
-                            self.gfpgan_queue.put(
-                                (final_frames, None, _is_end), timeout=1.0)
+                            self.gfpgan_queue.put((final_frames, memory_block, is_end), timeout=1.0)
                             break
                         except queue.Full:
                             continue
-
-                # ── 阶段B: 从 sr_queue 取新的 SR 结果 ────────────────
-                # 如果 in-flight 已满，先等待一个完成
-                if len(_pending_tasks) >= _MAX_IN_FLIGHT:
-                    # FIX-SLOT-TRACKING: 使用 _pop_and_output_head 统一处理，
-                    # 替代原有内联代码，确保槽位释放不遗漏。
-                    _pop_and_output_head()
-
-                # ── FIX-ADAPTIVE-POLL (Bug 4): 动态超时 ──────────────
-                # 有未完成异步任务时 50ms 快速轮询以便及时回到阶段A 检查结果，
-                # 否则 500ms 节能等待。避免异步结果就绪后白等 ≤500ms。
-                _has_async_pending = any(
-                    t[0] is not None for t in _pending_tasks)
-                _sr_timeout = 0.05 if _has_async_pending else 0.5
-                # ── FIX-ADAPTIVE-POLL 结束 ────────────────────────────
-
-                try:
-                    item = self.sr_queue.get(timeout=_sr_timeout)
+                    
                 except queue.Empty:
                     continue
-
-                # FIX-INFLIGHT-LOSS: 记录当前取出的项，确保异常时可在 finally 中恢复
-                _current_sr_item = item
-
-                if item is None:
-                    # FIX-ORDER-PRESERVE: 排空所有 pending 任务后再发送哨兵，
-                    # 否则 writer 收到哨兵后停止接收，pending 帧丢失。
-                    _drain_all_pending()
-
-                    self.gfpgan_queue.put(None)
-                    _sentinel_sent = True
-                    _current_sr_item = None  # FIX-INFLIGHT-LOSS: 哨兵已转发
-                    break
-
-                batch_frames, face_data, memory_block, sr_results, is_end = item
-
-                # ── 优化2: 立即释放 memory_pool 槽位 ─────────────────
-                if memory_block is not None:
-                    try:
-                        self.memory_pool.release(memory_block['index'])
-                    except Exception:
-                        pass
-
-                if batch_frames is None:
-                    # FIX-ORDER-PRESERVE: 排空所有 pending 任务后再发送哨兵
-                    _drain_all_pending()
-
-                    self.gfpgan_queue.put((None, None, True))
-                    _sentinel_sent = True
-                    _current_sr_item = None  # FIX-INFLIGHT-LOSS: 哨兵已转发
-                    break
-
-                has_valid_faces = (face_data is not None and
-                                   len(face_data) > 0 and
-                                   any(fd.get('crops') for fd in face_data if fd))
-
-                # FIX: 检查 GFPGAN 是否可用（子进程或主进程）
-                _gfpgan_sub_alive = (self.gfpgan_subprocess is not None
-                                     and self.gfpgan_subprocess.process.is_alive())
-                _gfpgan_main_ok = (self.face_enhancer is not None
-                                   and getattr(self.face_enhancer, 'gfpgan', None) is not None)
-
-                _n_faces = (sum(len(fd.get('crops', [])) for fd in face_data)
-                            if face_data else 0)
-
-                if has_valid_faces and (_gfpgan_sub_alive or _gfpgan_main_ok):
-                    # 收集所有 crops
-                    all_crops = []
-                    crops_per_frame = []
-                    for fd in face_data:
-                        crops = fd.get('crops', [])
-                        crops_per_frame.append(len(crops))
-                        all_crops.extend(crops)
-
-                    num_frames = len(face_data) if face_data else 0
-                    _n_faces_this_batch = sum(crops_per_frame)
-                    avg_faces = _n_faces_this_batch / num_frames if num_frames > 0 else 0.0
-
-                    if _gfpgan_sub_alive and all_crops:
-                        print(f'[GFPGAN] 使用子进程TRT处理 {_n_faces_this_batch} 个人脸。当前批次共 {num_frames} 帧，平均每帧 {avg_faces:.2f} 个人脸')
-                        # ── 优化5B: 异步提交 ────────────────────
-                        if self._async_dispatcher is not None:
-                            # ── FIX-SLOT-POOL: 异步提交（Queue 池化重构）──
-                            _slot = None
-                            _submitted = False
-                            task_id = self._next_task_id()      # 单调递增，永不重复
-
-                            if (_shm is not None
-                                    and _n_faces <= SharedMemoryDoubleBuffer.MAX_FACES):
-
-                                # FIX-SLOT-POOL: 非阻塞尝试获取空闲 slot
-                                _slot = _shm.try_acquire_slot()
-                                if _slot is None:
-                                    # 池已耗尽：逐个排出 _pending_tasks 最旧任务以释放 slot。
-                                    # _pop_and_output_head 的 finally 中调用 _release_slot，
-                                    # 把 slot 归还到 _slot_pool，下次 try_acquire 即可成功。
-                                    while _pending_tasks and _slot is None:
-                                        _pop_and_output_head()
-                                        _slot = _shm.try_acquire_slot()
-                                if _slot is None:
-                                    # 所有 pending 已排空仍无 slot（不应发生），
-                                    # 阻塞等待兜底（超时后抛 TimeoutError，外层捕获降级）
-                                    try:
-                                        _slot = _shm.acquire_slot(timeout=30.0)
-                                    except TimeoutError as _te:
-                                        print(f'[GFPGAN] slot 获取超时: {_te}，'
-                                              f'回退 pickle 路径', flush=True)
-                                        _slot = None
-
-                                if _slot is not None:
-                                    # FIX-SLOT-POOL: write_input + put 整体 try/except，
-                                    # 任一失败都归还 slot 到池中，防止泄漏。
-                                    try:
-                                        _shm.write_input(_slot, all_crops)
-                                        self.gfpgan_subprocess.task_queue.put(
-                                            (task_id, _n_faces, _slot),
-                                            timeout=10.0)
-                                        _submitted = True
-                                    except Exception:
-                                        # 提交失败，立即归还 slot 到池
-                                        _release_slot(_slot)
-                                        _slot = None
-                            # ── FIX-SLOT-POOL: shm 路径结束 ──────────────
-
-                            # _submitted 仍为 False: shm 不可用 / 人脸超限 /
-                            # slot 获取失败 / write_input 异常 / put 超时
-                            # → 回退到非共享内存 pickle 路径
-                            if not _submitted:
-                                _slot = None  # 确保 pending 中记录为无槽位
-                                try:
-                                    self.gfpgan_subprocess.task_queue.put(
-                                        (task_id, all_crops), timeout=10.0)
-                                except Exception as _submit_e:
-                                    # 非 shm 提交也失败 → 降级为直通批次（跳过人脸增强）
-                                    print(f'[GFPGAN] 异步提交完全失败: {_submit_e}，'
-                                          f'降级直通', flush=True)
-                                    _pending_tasks.append(
-                                        (None, None, sr_results, None, is_end))
-                                    _current_sr_item = None
-                                    # FIX-EMA-COMMON: 即使降级直通，也更新 EMA
-                                    if self._enable_adaptive_batch and face_data is not None:
-                                        _frames_in_batch = max(1, len(face_data))
-                                        _cur_density = _n_faces / _frames_in_batch
-                                        with self._adaptive_batch_lock:
-                                            self._face_density_ema = (
-                                                (1.0 - self._face_density_alpha) * self._face_density_ema +
-                                                self._face_density_alpha * _cur_density
-                                            )
-                                    continue
-
-                            _pending_tasks.append(
-                                (task_id, face_data, sr_results, _slot, is_end))
-
-                            # FIX-INFLIGHT-LOSS: 已移交 _pending_tasks 管理，
-                            # finally 中由 _pending_tasks 循环负责此批帧
-                            _current_sr_item = None
-
-                            # ── FIX-ADAPTIVE-BATCH: 更新人脸密度 EMA 并调整自适应批处理大小 ──
-                            # 提交后、continue 前立即更新
-                            # 每批 GFPGAN 处理完成后，根据实际人脸数更新密度估计。
-                            # 低密度 → 增大读取批次（SR 处理更多帧/GPU调用，摊薄 kernel launch 开销）
-                            # 高密度 → 减小读取批次（减少单次 SR 占用的显存，为 GFPGAN TRT 留出空间）
-                            if self._enable_adaptive_batch and face_data is not None:
-                                _frames_in_batch = max(1, len(face_data))
-                                _cur_density = _n_faces / _frames_in_batch
-                                with self._adaptive_batch_lock:
-                                    self._face_density_ema = (
-                                        (1.0 - self._face_density_alpha) * self._face_density_ema +
-                                        self._face_density_alpha * _cur_density
-                                    )
-                                    _prev_adaptive = self._adaptive_read_batch_size
-                                    if self._face_density_ema < self._low_face_threshold:
-                                        # 人脸稀疏：GFPGAN 空闲多 → 增大 SR 批次利用空闲 GPU
-                                        _new_bs = self._max_adaptive_batch
-                                    elif self._face_density_ema > self._high_face_threshold:
-                                        # 人脸密集：GFPGAN 是瓶颈 → 减小 SR 批次省显存
-                                        _new_bs = self._min_adaptive_batch
-                                    else:
-                                        _new_bs = self._base_batch_size
-                                    # 不超过 optimal_batch_size（可能已被 OOM 降级）
-                                    _new_bs = min(_new_bs, max(self.optimal_batch_size, self._min_adaptive_batch))
-                                    self._adaptive_read_batch_size = _new_bs
-                            # ── FIX-ADAPTIVE-BATCH 结束 ──────────────────────────────────
-
-                            # 不等结果，继续处理下一个 SR 输出！
-                            continue
-                        else:
-                            # 无 dispatcher（降级同步路径）
-                            all_restored = self.gfpgan_subprocess.infer(all_crops)
-                            restored_by_frame = self._split_restored(all_restored, crops_per_frame, face_data)
-                    elif _gfpgan_main_ok and all_crops:
-                        restored_by_frame, _ = _gfpgan_infer_batch(
-                            face_data, self.face_enhancer, self.device,
-                            None, self.args.gfpgan_weight,
-                            getattr(self.args, 'gfpgan_batch_size', 8), None, None)
-                        all_restored = None
-                        print(f'[GFPGAN] 使用主进程PyTorch处理 {_n_faces_this_batch} 个人脸。当前批次共 {num_frames} 帧，平均每帧 {avg_faces:.2f} 个人脸')
-                    else:
-                        restored_by_frame = [[] for _ in face_data]
-                        all_restored = None
-                        print(f'[GFPGAN] GFPGAN不可用，跳过人脸增强')
-
-                    # # 同步路径组装结果
-                    # if all_restored is not None:
-                    #     restored_by_frame = self._split_restored(all_restored, crops_per_frame, face_data)
-
-                    final_frames = self._assemble_result(
-                        face_data, restored_by_frame, sr_results)
-                else:
-                    if _n_faces > 0:
-                        print(f'[GFPGAN] GFPGAN不可用，{_n_faces} 个人脸未处理')
-                    final_frames = sr_results
-
-                # FIX-EMA-COMMON: 将 EMA 更新移至所有同步路径的公共出口。
-                # 原代码仅在 async dispatcher 分支内更新，导致主进程 PyTorch 路径、
-                # 同步子进程路径、无人脸直通路径均不更新 EMA，始终为 0。
-                # 此处位于 _pending_tasks.append 之前，所有非 async-continue 路径均经过。
-                if self._enable_adaptive_batch and face_data is not None:
-                    _frames_in_batch = max(1, len(face_data))
-                    _cur_density = _n_faces / _frames_in_batch
-                    with self._adaptive_batch_lock:
-                        self._face_density_ema = (
-                            (1.0 - self._face_density_alpha) * self._face_density_ema +
-                            self._face_density_alpha * _cur_density
-                        )
-                        _prev_adaptive = self._adaptive_read_batch_size
-                        if self._face_density_ema < self._low_face_threshold:
-                            _new_bs = self._max_adaptive_batch
-                        elif self._face_density_ema > self._high_face_threshold:
-                            _new_bs = self._min_adaptive_batch
-                        else:
-                            _new_bs = self._base_batch_size
-                        _new_bs = min(_new_bs, max(self.optimal_batch_size, self._min_adaptive_batch))
-                        self._adaptive_read_batch_size = _new_bs
-
-                # FIX-ORDER-PRESERVE: 同步完成/无人脸批次统一进入 _pending_tasks 排队
-                _pending_tasks.append((None, None, final_frames, None, is_end))
-                _current_sr_item = None  # FIX-INFLIGHT-LOSS: 已移交 _pending_tasks 管理
-
-        finally:
-            # ── FIX-INFLIGHT-LOSS: 处理从 sr_queue 取出但未完成转发的项 ──────
-            # 场景：sr_queue.get() 成功后，GFPGAN 推理异常 / self.running=False
-            #       导致 gfpgan_queue.put() 从未执行，该批帧丢失。
-            # 策略：降级转发 sr_results（跳过人脸增强），保帧优先于保质量。
-            if _current_sr_item is not None:
-                try:
-                    _ci_batch, _, _ci_mem, _ci_sr, _ci_is_end = _current_sr_item
-                    # 释放可能尚未释放的 memory_pool 槽位
-                    if _ci_mem is not None:
+                except Exception as e:
+                    print(f"GFPGAN处理错误: {e}")
+                    import traceback; traceback.print_exc()
+                    if 'memory_block' in locals() and memory_block is not None:
                         try:
-                            self.memory_pool.release(_ci_mem['index'])
-                        except Exception:
-                            pass
-                    if _ci_batch is not None and _ci_sr is not None:
-                        _ci_count = len(_ci_sr) if isinstance(_ci_sr, list) else 0
-                        print(f'[GFPGAN] finally: 发现未转发的 SR 项 '
-                              f'({_ci_count} 帧)，降级发送（跳过人脸增强）',
-                              flush=True)
-                        self.gfpgan_queue.put(
-                            (_ci_sr, None, _ci_is_end), timeout=5.0)
-                    elif _ci_batch is None:
-                        # batch_frames 为 None 的哨兵项，put 未成功就异常了
-                        print(f'[GFPGAN] finally: 发现未转发的哨兵项，补发',
-                              flush=True)
-                        self.gfpgan_queue.put((None, None, True), timeout=5.0)
-                        _sentinel_sent = True
-                except Exception as _ci_e:
-                    print(f'[GFPGAN] finally: 处理残留 SR 项失败: {_ci_e}',
-                          flush=True)
-                _current_sr_item = None
-            # ── FIX-INFLIGHT-LOSS 结束 ───────────────────────────────────
-
-            # 清理所有 in-flight 任务（FIX-ORDER-PRESERVE: 包括直通批次）
-            for _tid, _fd, _sr, _slot, _is_end in _pending_tasks:
-                try:
-                    if _tid is None:
-                        # FIX-ORDER-PRESERVE: 直通批次，_sr 已是 final_frames
-                        self.gfpgan_queue.put((_sr, None, _is_end), timeout=5.0)
-                    elif self._async_dispatcher is not None:
-                        all_restored = self._async_dispatcher.wait_result(
-                            _tid, timeout=30.0, slot=_slot)
-                        final = self._assemble_result(_fd, all_restored, _sr)
-                        self.gfpgan_queue.put((final, None, _is_end), timeout=5.0)
-                    else:
-                        # 无 dispatcher，降级输出 sr_results
-                        self.gfpgan_queue.put((_sr, None, _is_end), timeout=5.0)
-                except Exception:
-                    try:
-                        # 降级：异步批次发 sr_results，直通批次 _sr 本身就是 final
-                        self.gfpgan_queue.put((_sr, None, _is_end), timeout=5.0)
-                    except Exception:
-                        pass
-                finally:
-                    # FIX-SLOT-TRACKING: finally 中也释放每个槽位
-                    _release_slot(_slot)
-
-            _pending_tasks.clear()   # FIX-SLOT-TRACKING: 显式清空，防止悬挂引用
-
+                            self.memory_pool.release(memory_block['index'])
+                        except Exception: pass
+        finally:
             if not _sentinel_sent:
                 try:
-                    self.gfpgan_queue.put((None, None, True), timeout=5.0)
+                    for _ in range(3):
+                        try:
+                            self.gfpgan_queue.put((None, None, True), timeout=5.0)
+                            break
+                        except queue.Full:
+                            continue
                 except Exception:
                     pass
-    
-    
-    @staticmethod
-    def _split_restored(all_restored, crops_per_frame, face_data):
-        """将扁平化的 restored 列表按帧切分"""
-        restored_by_frame = []
-        idx = 0
-        for count in crops_per_frame:
-            if all_restored is not None and count > 0:
-                restored_by_frame.append(all_restored[idx:idx + count])
-            else:
-                restored_by_frame.append([])
-            idx += count
-        return restored_by_frame
-
-    def _assemble_result(self, face_data, restored_or_list, sr_results):
-        """将 GFPGAN 结果（restored_by_frame 或 flat list）与 SR 结果组装"""
-        if restored_or_list is None or not face_data:
-            return sr_results
-
-        # 如果是 flat list（从异步 dispatcher 来），先切分
-        if (isinstance(restored_or_list, list) and
-                len(restored_or_list) > 0 and
-                not isinstance(restored_or_list[0], list)):
-            crops_per_frame = [len(fd.get('crops', [])) for fd in face_data]
-            restored_by_frame = self._split_restored(
-                restored_or_list, crops_per_frame, face_data)
-        else:
-            restored_by_frame = restored_or_list
-
-        if not restored_by_frame or all(
-                r is None or len(r) == 0 for r in restored_by_frame):
-            return sr_results
-
-        try:
-            future = self.paste_executor.submit(
-                _paste_faces_batch, face_data, restored_by_frame,
-                sr_results, self.face_enhancer)
-            return future.result(timeout=60)
-        except Exception:
-            return sr_results
-
-    def _next_task_id(self) -> int:
-        """FIX-TASK-ID: 单调递增 task_id，替代 id() 避免内存地址复用导致结果错配"""
-        with self._task_id_lock:
-            self._task_id_counter += 1
-            return self._task_id_counter
-
+                
     def close(self):
-        """清理资源，发送哨兵唤醒所有线程，强制关闭"""
+        """清理资源"""
         print("[Pipeline] 正在停止流水线...", flush=True)
         self.running = False
-
-        # FIX-ASYNC-GFPGAN (优化5B): 先关闭 dispatcher
-        if self._async_dispatcher is not None:
-            self._async_dispatcher.close()
-            self._async_dispatcher = None
         
-        # 1. 向所有队列发送 None 哨兵，唤醒可能阻塞的线程
         for q_name, q in [('frame', self.frame_queue), ('detect', self.detect_queue),
                           ('sr', self.sr_queue), ('gfpgan', self.gfpgan_queue)]:
             try:
                 q.put(None, timeout=1.0)
-            except queue.Full:
-                pass  # 队列满时忽略，继续尝试其他队列
-            except Exception:
+            except (queue.Full, Exception):
                 pass
         print("[Pipeline] 已发送停止信号到所有队列", flush=True)
         
-        # 2. 关闭子进程
         if self.gfpgan_subprocess:
             print("[Pipeline] 正在关闭GFPGAN子进程...", flush=True)
             self.gfpgan_subprocess.close()
             print("[Pipeline] GFPGAN子进程已关闭", flush=True)
         
-        # 3. 关闭线程池，等待任务完成（超时后不再等待）
         self.detect_executor.shutdown(wait=False)
         self.paste_executor.shutdown(wait=False)
         
-        # 4. 等待所有后台线程结束（带超时）
         thread_names = ['_read_thread', '_detect_thread', '_sr_thread', '_gfpgan_thread']
         for name in thread_names:
             thread = getattr(self, name, None)
             if thread and thread.is_alive():
-                print(f"[Pipeline] 等待线程 {name} 结束...", flush=True)
                 thread.join(timeout=5.0)
-                # 若仍未结束，标记为 daemon 让 Python 退出时自动终止
                 if thread.is_alive():
                     print(f"[Pipeline] 线程 {name} 未响应，已放弃等待", flush=True)
                     if not thread.is_alive():
@@ -4165,12 +3082,12 @@ class DeepPipelineOptimizer:
         """写入帧处理"""
         written_count = 0
         end_sentinel_count = 0
-        received_end_sentinel = False  # 初始化标志变量
+        received_end_sentinel = False
         
         try:
             while self.running:
                 try:
-                    item = self.gfpgan_queue.get(timeout=10.0)   # 增加超时，避免死等
+                    item = self.gfpgan_queue.get(timeout=10.0)
                     
                     if item is None:
                         end_sentinel_count += 1
@@ -4188,26 +3105,25 @@ class DeepPipelineOptimizer:
                             continue
                         continue
                     
-                    # 写入帧
                     for frame in final_frames:
-                        # FIX-DEADLOCK-4: 检测 FFmpeg 后台写入器是否已经崩溃
                         if getattr(writer, '_broken', False):
                             print("\n[致命错误] FFmpeg 后台写入进程已崩溃!", flush=True)
-                            self.running = False  # 立即阻断整条流水线
+                            self.running = False
                             break
-                            
                         writer.write_frame(frame)
                         written_count += 1
                     
-                    # 如果写入中途崩溃，立刻跳出大循环
                     if getattr(writer, '_broken', False):
                         break
                     
-                    # 更新进度
+                    if memory_block is not None:
+                        try:
+                            self.memory_pool.release(memory_block['index'])
+                        except Exception: pass
+                    
                     pbar.update(len(final_frames))
                     self.meter.update(len(final_frames))
                     
-                    # 每批次都更新 postfix（不受 batch_size 整除影响）
                     current_fps = self.meter.fps()
                     eta = self.meter.eta(total_frames)
                     avg_ms = np.mean(self.timing[-10:]) * 1000 if self.timing else 0
@@ -4220,44 +3136,32 @@ class DeepPipelineOptimizer:
                         queue_sizes=f"F:{self.frame_queue.qsize()}/D:{self.detect_queue.qsize()}/S:{self.sr_queue.qsize()}/G:{self.gfpgan_queue.qsize()}"
                     )
 
-                    # 动态检测GPU内存压力
                     if torch.cuda.is_available():
                         allocated = torch.cuda.memory_allocated() / 1024**3
                         reserved = torch.cuda.memory_reserved() / 1024**3
                         if allocated > 0.9 * reserved:
                             print(f'\n[资源警告] GPU内存压力过高: {allocated:.2f}GB / {reserved:.2f}GB')
                     
-                    # 每跨越 20 帧输出一次详细日志（跨越检测，不受 batch_size 整除影响）
+                    # 每跨越 20 帧输出一次详细日志
                     if written_count // 20 > (written_count - len(final_frames)) // 20:
                         # FIX-DET-THRESHOLD + FIX-ADAPTIVE-BATCH: 增加过滤计数和密度信息
                         _density_str = f' | 密度EMA={self._face_density_ema:.1f}' if self._enable_adaptive_batch else ''
                         _filtered_str = f' | 过滤{self._face_filtered_total}' if self._face_filtered_total > 0 else ''
-                        _adaptive_str = f' | 自适应arbs={self._adaptive_read_batch_size}' if self._enable_adaptive_batch else ''
-                        print(f"[性能监控] 帧{written_count}/{total_frames} | fps={current_fps:.1f} | eta={eta:.0f}s | bs={self.optimal_batch_size} | ms={avg_ms:.0f} | 队列 F:{self.frame_queue.qsize()}/D:{self.detect_queue.qsize()}/S:{self.sr_queue.qsize()}/G:{self.gfpgan_queue.qsize()} | 人脸 {self._face_count_total}张/{self._face_frames_total}帧{_filtered_str}{_density_str}{_adaptive_str}")
+                        _adaptive_str = f' | 自适应bs={self._adaptive_read_batch_size}' if self._enable_adaptive_batch else ''
+                        print(f"\n[性能监控] 帧{written_count}/{total_frames} | fps={current_fps:.1f} | eta={eta:.0f}s | bs={self.optimal_batch_size} | ms={avg_ms:.0f} | 队列 F:{self.frame_queue.qsize()}/D:{self.detect_queue.qsize()}/S:{self.sr_queue.qsize()}/G:{self.gfpgan_queue.qsize()} | 人脸 {self._face_count_total}张/{self._face_frames_total}帧{_filtered_str}{_density_str}{_adaptive_str}")
                     
                 except queue.Empty:
-                    # FIX-EXIT-HANG: 退出判断只检查 gfpgan_queue（_write_frames 直接消费的队列）。
-                    # sr_queue 由 _process_gfpgan 消费，可能残留 finally 安全哨兵，
-                    # _write_frames 永远不会去消费它，检查它会导致死循环。
                     if received_end_sentinel and self.gfpgan_queue.qsize() == 0:
                         print(f"[Pipeline] 收到哨兵且 gfpgan_queue 已清空，退出。"
                               f"已写入 {written_count}/{total_frames} 帧", flush=True)
                         break
-                    # 所有帧已写入 + 收到结束信号 → 无需再等待上游队列
                     if written_count >= total_frames and received_end_sentinel:
                         print(f"[Pipeline] 所有帧已写入且收到结束信号，退出。"
                               f"已写入 {written_count}/{total_frames} 帧", flush=True)
                         break
-                    # 新增：所有帧已写入 + 所有上游队列为空 → 强制退出
-                    if (written_count >= total_frames
-                            and self.sr_queue.qsize() == 0
-                            and self.gfpgan_queue.qsize() == 0):
-                        print(f"[Pipeline] 所有帧已写入且上游队列清空，强制退出", flush=True)
-                        break
                     continue
                 except Exception as e:
                     print(f"写入帧错误: {e}")
-                    # FIX: 增加 memory_block is not None 判断，防止处理哨兵时抛出异常导致泄漏
                     if 'memory_block' in locals() and memory_block is not None:  
                         try:
                             self.memory_pool.release(memory_block['index'])
@@ -4265,9 +3169,6 @@ class DeepPipelineOptimizer:
                             pass
         finally:
             print(f"[Pipeline] 写入线程退出，已写入 {written_count}/{total_frames} 帧", flush=True)
-            # 注意：不要在这里调用 self.close()！
-            # close() 应该在 main_optimized 的 finally 中由主线程统一调用
-            # 否则会导致递归关闭和流水线提前终止
 
 
 def main_optimized(args):
@@ -4496,7 +3397,7 @@ def main_optimized(args):
     
     if _early_gfpgan_subprocess is not None and use_gfpgan_subprocess and gfpgan_ready:
         args._early_gfpgan_subprocess = _early_gfpgan_subprocess
-        print(f'[优化架构] GFPGAN 子进程已绑定到流水线（模式: {gfpgan_mode}）')
+        print(f'\n[优化架构] GFPGAN 子进程已绑定到流水线（模式: {gfpgan_mode}）')
     else:
         args._early_gfpgan_subprocess = None
         if args.face_enhance:
@@ -4550,7 +3451,7 @@ def main_optimized(args):
             # FIX-ADAPTIVE-BATCH: 打印最终密度和自适应状态
             if pipeline._enable_adaptive_batch:
                 print(f"[性能统计] 最终人脸密度EMA: {pipeline._face_density_ema:.2f} 人脸/帧, "
-                      f"最终自适应arbs: {pipeline._adaptive_read_batch_size}")
+                      f"最终自适应bs: {pipeline._adaptive_read_batch_size}")
 
 
 def main():
@@ -4630,7 +3531,7 @@ def main():
     # FIX-ADAPTIVE-BATCH: 处理 --no-adaptive-batch 覆盖
     if args.no_adaptive_batch:
         args.adaptive_batch = False
-
+    
     print("Real-ESRGAN Video Enhancement v6.3 - 架构优化版")
     print("主要优化特性:")
     print("1. 深度流水线架构（4级并行处理）")
@@ -4642,21 +3543,6 @@ def main():
     print("6. 人脸检测置信度过滤（减少无效 GFPGAN 推理）")
     print("7. 自适应批处理（根据人脸密度动态调整）")
     print("8. SR H2D 预取重叠（利用空闲 GPU 内存总线）")
-    # ── FIX-T4-FP16: T4 GPU + GFPGAN TRT 自动禁用 FP16 防止溢出噪斑 ────
-    if args.gfpgan_trt and torch.cuda.is_available():
-        # try:
-        #     props = torch.cuda.get_device_properties(0)
-        #     # 识别 T4 级别 GPU（名称含 T4 或 计算能力 SM 7.5）
-        #     is_t4_level = "t4" in props.name.lower() or (props.major == 7 and props.minor == 5)
-        #     if is_t4_level and not args.no_fp16:
-        #         args.no_fp16 = True
-        #         print("\n[T4/GFPGAN-TRT] 为防止 FP16 溢出噪斑，已自动禁用半精度并启用 FP32 推理。")
-        # except Exception:
-        #     pass
-        # 实测 A10 GPU 存在同样的问题，禁用所有 GPU 的 GFPGAN-TRT + FP16 组合
-        args.no_fp16 = True
-        print("\n[GFPGAN-TRT] 为防止 FP16 溢出噪斑，已自动禁用半精度并启用 FP32 推理。")
-    # ────────────────────────────────────────────────────────────────────
     print()
     
     main_optimized(args)
