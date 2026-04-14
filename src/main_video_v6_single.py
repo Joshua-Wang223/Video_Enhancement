@@ -694,7 +694,7 @@ def _build_parser() -> argparse.ArgumentParser:
     g = parser.add_argument_group("TRT Engine 缓存（IFRNet / ESRGan 共用）")
     g.add_argument("--trt-cache-dir", metavar="DIR",
                    help="TRT Engine 缓存目录（覆盖配置 paths.trt_cache_dir；"
-                        "未指定时从配置读取；配置为空时自动使用 base_dir/.trt_cache）")
+                        "未指定时从配置读取；配置为空时自动使用 _BASE_DIR/.trt_cache）")
 
     return parser
 
@@ -743,7 +743,7 @@ def _print_startup_info(config: Config, args: argparse.Namespace, mode: str) -> 
     ))
     use_trt_any = ifr('use_tensorrt', False) or esr('use_tensorrt', False)
     if use_trt_any:
-        _tcd = config.get("paths", "trt_cache_dir", default="") or f"(自动: {base_dir}/.trt_cache)"
+        _tcd = config.get("paths", "trt_cache_dir", default="") or f"(自动: {_BASE_DIR}/.trt_cache)"
         print(f"\n  TRT Engine 缓存目录: {_tcd}")
     print("─" * 70 + "\n")
 

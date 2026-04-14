@@ -444,7 +444,7 @@ class IFRNetProcessor:
     def _cleanup_temp_files(self):
         """清理临时目录（分段和中间处理文件）。"""
         import shutil as _shutil
-        print("\n🧹 清理临时文件...")
+        print("\n🧹 清理 IFRNet 插帧临时文件...")
         try:
             if self.segment_dir and self.segment_dir.exists():
                 _shutil.rmtree(self.segment_dir)

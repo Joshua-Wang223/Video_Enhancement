@@ -201,7 +201,30 @@ class TensorRTAccelerator:
             except OSError:
                 pass
             raise RuntimeError('[TensorRT] _load_engine: deserialize_cuda_engine returned None')
+
+        # [FIX-TRT-CTX-OOM] create_execution_context() 在 GPU 显存不足时
+        # 返回 None 而非抛出 Python 异常（与 deserialize_cuda_engine 行为一致）。
+        # 典型场景：interpolate_then_upscale 模式下，前序 IFRNet 步骤的
+        # PyTorch 缓存分配器残留大量显存，导致 TRT 无法分配 context 所需的
+        # 激活内存（通常为数 GB 量级）。
+        # 若不检测，后续 infer() 中 self._context.set_tensor_address() /
+        # execute_async_v3() 会在 NoneType 上调用 → AttributeError 崩溃。
         self._context = self._engine.create_execution_context()
+        if self._context is None:
+            print('[TensorRT] ⚠️  create_execution_context() 失败'
+                  '（GPU 显存不足），回退 PyTorch 推理路径。')
+            print('[TensorRT] 提示: 前序处理步骤可能占用了大量显存。'
+                  '可尝试减小 --batch-size 或移除 --use-tensorrt。')
+            # 释放已加载的 engine，归还显存
+            self._engine = None
+            self._trt_ok = False
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            return  # 不抛异常，__init__ 中 self._trt_ok 保持 False，自动走 PyTorch 路径
+
+        # ── 区分 TRT 版本，预先解析 tensor 名称 / binding 信息 ──────────────────
+        # TRT 10.x: 使用 num_io_tensors + get_tensor_name + get_tensor_mode
+        # TRT 8.x : 使用 num_bindings + get_binding_shape（旧接口）
         self._use_new_api = hasattr(self._engine, 'num_io_tensors')
         self._input_name = None
         self._output_name = None

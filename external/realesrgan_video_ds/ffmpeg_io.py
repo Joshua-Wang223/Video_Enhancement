@@ -17,7 +17,7 @@ import re
 import numpy as np
 import ffmpeg
 
-from utils import get_video_meta_info
+from realesrgan_utils import get_video_meta_info
 
 
 class FFmpegReader:

@@ -419,7 +419,7 @@ class FFmpegWriter:
         """
         test_cmd = [
             ffmpeg_bin, '-y',
-            '-f', 'lavfi', '-i', 'nullsrc=s=64x64:d=0.04:r=25',  # 1 帧
+            '-f', 'lavfi', '-i', 'nullsrc=s =64x64:d=0.04:r=25',  # 1 帧
             '-frames:v', '1',
             '-c:v', codec,
             '-f', 'null', '-',
@@ -1521,7 +1521,27 @@ class TensorRTAccelerator:
             except OSError:
                 pass
             raise RuntimeError('[TensorRT] _load_engine: deserialize_cuda_engine returned None')
+
+        # [FIX-TRT-CTX-OOM] create_execution_context() 在 GPU 显存不足时
+        # 返回 None 而非抛出 Python 异常（与 deserialize_cuda_engine 行为一致）。
+        # 典型场景：interpolate_then_upscale 模式下，前序 IFRNet 步骤的
+        # PyTorch 缓存分配器残留大量显存，导致 TRT 无法分配 context 所需的
+        # 激活内存（通常为数 GB 量级）。
+        # 若不检测，后续 infer() 中 self._context.set_tensor_address() /
+        # execute_async_v3() 会在 NoneType 上调用 → AttributeError 崩溃。
         self._context = self._engine.create_execution_context()
+        if self._context is None:
+            print('[TensorRT] ⚠️  create_execution_context() 失败'
+                  '（GPU 显存不足），回退 PyTorch 推理路径。')
+            print('[TensorRT] 提示: 前序处理步骤可能占用了大量显存。'
+                  '可尝试减小 --batch-size 或移除 --use-tensorrt。')
+            # 释放已加载的 engine，归还显存
+            self._engine = None
+            self._trt_ok = False
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            return  # 不抛异常，__init__ 中 self._trt_ok 保持 False，自动走 PyTorch 路径
+
         self._use_new_api  = hasattr(self._engine, 'num_io_tensors')
         self._input_name   = None
         self._output_name  = None
@@ -2166,7 +2186,18 @@ class GFPGANSubprocess:
                             raise RuntimeError('deserialize returned None')
                         self._context = self._engine.create_execution_context()
                         if self._context is None:
-                            raise RuntimeError('create_execution_context returned None')
+                            # raise RuntimeError('create_execution_context returned None')
+                            print('[GFPGAN-TensorRT] ⚠️  create_execution_context() 失败'
+                                  '（GPU 显存不足），回退 PyTorch 推理路径。')
+                            print('[GFPGAN-TensorRT] 提示: 前序处理步骤可能占用了大量显存。'
+                                  '可尝试减小 --gfpgan-batch-size 或移除 --gfpgan-trt。')
+                            # 释放已加载的 engine，归还显存
+                            self._engine = None
+                            self._trt_ok = False
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                            return  # 不抛异常，__init__ 中 self._trt_ok 保持 False，自动走 PyTorch 路径
+
                         try:
                             torch.cuda.synchronize(self.device)
                         except Exception as _ce:
@@ -4471,6 +4502,9 @@ def main_optimized(args):
     
     out_h = int(reader.height * args.outscale)
     out_w = int(reader.width * args.outscale)
+    output_dir = os.path.dirname(args.output)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
     writer = FFmpegWriter(args, reader.audio, out_h, out_w, args.output, reader.fps)
     
     pbar = tqdm(total=reader.nb_frames, unit='frame', desc='[优化流水线]',
@@ -4537,6 +4571,40 @@ def main_optimized(args):
         end_time = time.time()
         total_time = end_time - start_time
         
+        # ── 生成性能报告（如果指定了 --report）─────────────────────
+        if getattr(args, 'report', None) and pipeline.timing:
+            import json
+            report_path = args.report
+            os.makedirs(os.path.dirname(report_path) or '.', exist_ok=True)
+            elapsed = total_time
+            report = {
+                'input': args.input,
+                'output': args.output,
+                'model': args.model_name,
+                'outscale': args.outscale,
+                'batch_size': args.batch_size,
+                'fp16': not args.no_fp16,
+                'trt': trt_accel is not None and trt_accel.available,
+                'nvdec': getattr(args, 'use_hwaccel', True),
+                'nvenc': getattr(args, 'video_codec', 'libx264') in ('h264_nvenc', 'hevc_nvenc'),
+                'face_enhance': args.face_enhance,
+                'frame_count': reader.nb_frames,
+                'elapsed_s': round(elapsed, 2),
+                'avg_fps': round(reader.nb_frames / elapsed, 2) if elapsed > 0 else 0,
+                'infer_latency_ms': {
+                    'mean': round(float(np.mean(pipeline.timing)) * 1000, 2),
+                    'p95': round(float(np.percentile(pipeline.timing, 95)) * 1000, 2),
+                    'max': round(float(np.max(pipeline.timing)) * 1000, 2),
+                },
+                'gfpgan_mode': gfpgan_mode,
+                'face_filtered': pipeline._face_filtered_total,
+                'adaptive_batch': pipeline._enable_adaptive_batch,
+            }
+            with open(report_path, 'w', encoding='utf-8') as f:
+                json.dump(report, f, ensure_ascii=False, indent=2)
+            print(f'[Info] 性能报告已保存: {report_path}')
+        # ──────────────────────────────────────────────────────────
+
         if pipeline.timing:
             avg_time = np.mean(pipeline.timing) * 1000
             actual_fps = reader.nb_frames / total_time if total_time > 0 else 0
@@ -4625,7 +4693,64 @@ def main():
                         help='libx264/libx265 preset')
     parser.add_argument('--ffmpeg-bin', type=str, default='ffmpeg', help='FFmpeg 二进制路径')
     
+    # 性能报告
+    parser.add_argument('--report', type=str, default=None,
+                        help='输出 JSON 性能报告路径（如 report.json）')
+
+    # 高优先级覆盖参数
+    parser.add_argument('--no-tensorrt', dest='no_tensorrt', action='store_true', default=False,
+                        help='强制禁用 TensorRT（覆盖 --use-tensorrt 或外部 config）')
+    parser.add_argument('--use-compile', dest='use_compile_force', action='store_true', default=False,
+                        help='强制启用 torch.compile（覆盖 --no-compile 或 config）')
+    parser.add_argument('--use-cuda-graph', dest='use_cuda_graph_force', action='store_true', default=False,
+                        help='强制启用 CUDA Graph（覆盖 --no-cuda-graph 或 config）')
+    
     args = parser.parse_args()
+
+    # 处理硬件加速开关
+    if args.no_hwaccel:
+        args.use_hwaccel = False
+
+    # 派生 use_compile / use_cuda_graph（用于后续仲裁）
+    args.use_compile = not getattr(args, 'no_compile', False)
+    args.use_cuda_graph = not getattr(args, 'no_cuda_graph', False)
+
+    # 高优先级覆盖参数处理
+    _override_msgs = []
+    if args.no_tensorrt and args.use_tensorrt:
+        args.use_tensorrt = False
+        _override_msgs.append('--no-tensorrt    覆盖了  --use-tensorrt  → TensorRT 已禁用')
+    elif args.no_tensorrt:
+        args.use_tensorrt = False
+    if args.use_compile_force:
+        args.use_compile = True
+        if args.no_compile:
+            _override_msgs.append('--use-compile    覆盖了  --no-compile   → torch.compile 已启用')
+    if args.use_cuda_graph_force:
+        args.use_cuda_graph = True
+        if args.no_cuda_graph:
+            _override_msgs.append('--use-cuda-graph 覆盖了  --no-cuda-graph → CUDA Graph 已启用')
+    if _override_msgs:
+        print('[CLI覆盖] 以下设置已被高优先级参数覆盖：')
+        for msg in _override_msgs:
+            print(f'          · {msg}')
+        print()
+
+    # 冲突仲裁：TRT > compile > CUDA Graph
+    if args.use_compile and args.use_tensorrt:
+        print('[Warning] --use-tensorrt 与 torch.compile 互斥，TRT 优先，compile 已自动禁用。')
+        args.use_compile = False
+    if args.use_cuda_graph:
+        if args.use_tensorrt:
+            print('[Warning] CUDA Graph 与 TRT 互斥，TRT 优先，CUDA Graph 已自动禁用。')
+            args.use_cuda_graph = False
+        elif args.use_compile:
+            print('[Info] torch.compile 已启用（内含 cudagraphs），CUDA Graph 已自动禁用。')
+            args.use_cuda_graph = False
+
+    # 更新对应的 --no-xxx 标志以保持一致性（可选）
+    args.no_compile = not args.use_compile
+    args.no_cuda_graph = not args.use_cuda_graph
 
     # FIX-ADAPTIVE-BATCH: 处理 --no-adaptive-batch 覆盖
     if args.no_adaptive_batch:

@@ -881,8 +881,12 @@ class IFRNetVideoProcessor:
     # M4: TensorRT 封装（可选）
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _build_trt_engine(self, input_shape: Tuple[int, int, int, int], cache_dir: str):
-        """构建或加载 TRT Engine（单对帧推理形状）。"""
+    def _build_trt_engine(self, input_shape: Tuple[int, int, int, int], cache_dir: str,
+                          _rebuild_attempt: bool = False):
+        """构建或加载 TRT Engine（单对帧推理形状）。
+
+        包含 GPU SM 标记与构建进度心跳，确保跨架构缓存自动重建。
+        """
         try:
             import tensorrt as trt
         except ImportError:
@@ -892,22 +896,51 @@ class IFRNetVideoProcessor:
 
         os.makedirs(cache_dir, exist_ok=True)
         B, C, H, W = input_shape
-        tag      = f'ifrnet_B{B}_H{H}_W{W}_fp{"16" if self.use_fp16 else "32"}'
-        trt_path = os.path.join(cache_dir, f'{tag}.trt')
 
+        # ── 生成当前 GPU 的 SM 标记（防止跨架构缓存复用）─────────────────
+        _sm_tag = ''
+        if torch.cuda.is_available():
+            _props = torch.cuda.get_device_properties(0)
+            import re as _re_sm
+            _gpu_slug = _re_sm.sub(r'[^a-z0-9]', '', _props.name.lower())[:16]
+            _sm_tag = f'_sm{_props.major}{_props.minor}_{_gpu_slug}'
+        # ──────────────────────────────────────────────────────────────────
+
+        tag      = f'ifrnet_B{B}_H{H}_W{W}_fp{"16" if self.use_fp16 else "32"}{_sm_tag}'
+        trt_path = os.path.join(cache_dir, f'{tag}.trt')
+        onnx_path = os.path.join(cache_dir, f'{tag}.onnx')
+
+        # ── 加载阶段：若缓存存在，先校验文件名中的 SM 标记 ───────────────
         if os.path.exists(trt_path):
-            print(f'[TensorRT] 加载缓存 Engine: {trt_path}')
-        else:
+            if _sm_tag and _sm_tag not in os.path.basename(trt_path):
+                print(f'[TensorRT] 缓存文件缺少当前 GPU 标记 {_sm_tag}，'
+                      f'可能是旧版本或跨 GPU 遗留，将删除并重建: {trt_path}')
+                try:
+                    os.remove(trt_path)
+                except OSError:
+                    pass
+                # 也尝试删除对应的 onnx 缓存（如有）
+                if os.path.exists(onnx_path):
+                    try:
+                        os.remove(onnx_path)
+                    except OSError:
+                        pass
+                # 继续执行构建流程
+            else:
+                print(f'[TensorRT] 加载缓存 Engine: {trt_path}')
+                # 直接跳到引擎加载部分
+                pass
+        # ──────────────────────────────────────────────────────────────────
+
+        # 如果文件不存在（或刚被删除），执行构建
+        if not os.path.exists(trt_path):
             print(f'[TensorRT] 构建 Engine (shape={input_shape}) ...')
-            onnx_path = os.path.join(cache_dir, f'{tag}.onnx')
-            # [FIX-ONNX] inference() 使用 3 个输入：img0, img1, embt（无需 imgt_approx）
+            # 导出 ONNX
             dummy0 = torch.randn(*input_shape, device=self.device)
             dummy1 = torch.randn(*input_shape, device=self.device)
             embt   = torch.full((B,), 0.5, dtype=torch.float32, device=self.device).view(B, 1, 1, 1)
             if self.use_fp16:
-                dummy0, dummy1, embt = (
-                    dummy0.half(), dummy1.half(), embt.half()
-                )
+                dummy0, dummy1, embt = dummy0.half(), dummy1.half(), embt.half()
             # [FIX-TRT] torch.compile 包装的模型导出时需解包 _orig_mod，
             # 否则权重名带 _orig_mod. 前缀导致 TRT parser 解析失败。
             # [FIX-ONNX-EXPORT] Model.forward() 是训练接口，签名为 (img0,img1,embt,imgt,flow=None)，
@@ -967,7 +1000,37 @@ class IFRNetVideoProcessor:
             if self.use_fp16 and builder.platform_has_fast_fp16:
                 config.set_flag(trt.BuilderFlag.FP16)
 
+            # 预估构建时间（参照 Real‑ESRGAN 脚本）
+            _gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'unknown'
+            _sm_code = _props.major * 10 + _props.minor if torch.cuda.is_available() else 0
+            _time_hint = {
+                75: '约需 20~30 分钟（T4/RTX20系 SM7.5）',
+                80: '约需 10~20 分钟（A100/A30 SM8.0）',
+                86: '约需 5~15 分钟（A10/RTX30系 SM8.6）',
+                89: '约需 5~10 分钟（RTX40系 SM8.9）',
+                90: '约需 3~8 分钟（H100 SM9.0）',
+            }.get(_sm_code, f'约需 5~20 分钟（{_gpu_name} SM{_props.major}.{_props.minor}）')
+            print(f'[TensorRT] {_time_hint}')
+
+            # 启动心跳线程，每 300 秒报告进度
+            _build_start = time.time()
+            _build_done = threading.Event()
+            def _heartbeat():
+                _last = time.time()
+                while not _build_done.wait(timeout=5):
+                    if time.time() - _last >= 300:
+                        elapsed = time.time() - _build_start
+                        print(f'[TensorRT] 编译中... {elapsed:.0f}s（仍在运行，请耐心等待）', flush=True)
+                        _last = time.time()
+            _hb_thread = threading.Thread(target=_heartbeat, daemon=True)
+            _hb_thread.start()
+
             serialized = builder.build_serialized_network(network, config)
+            _build_done.set()
+            _build_elapsed = time.time() - _build_start
+            del config, parser, network, builder
+            import gc; gc.collect()
+
             if serialized is None:
                 print('[TensorRT] Engine 构建失败，回退 PyTorch 路径。')
                 self.use_tensorrt = False
@@ -975,36 +1038,95 @@ class IFRNetVideoProcessor:
 
             with open(trt_path, 'wb') as f:
                 f.write(serialized)
-            print(f'[TensorRT] Engine 已缓存: {trt_path}')
+            print(f'[TensorRT] Engine 已缓存（用时 {_build_elapsed:.0f}s）: {trt_path}')
 
-        # 加载 Engine
+        # ── 加载 Engine（含 deserialize / context 双重 None 防御）─────────
         try:
             if not hasattr(self, '_trt_logger'):
                 self._trt_logger = trt.Logger(trt.Logger.WARNING)
             logger  = self._trt_logger
             runtime = trt.Runtime(logger)
             with open(trt_path, 'rb') as f:
-                self._trt_engine  = runtime.deserialize_cuda_engine(f.read())
+                self._trt_engine = runtime.deserialize_cuda_engine(f.read())
+
+            # ── [FIX-TRT-DESER] deserialize_cuda_engine 防御 ────────────────
+            # deserialize_cuda_engine 在以下场景静默返回 None（不抛异常）：
+            #   · GPU compute capability 不匹配（如 T4 → A10 迁移）
+            #   · TRT 版本升级（8.x → 10.x），序列化格式不兼容
+            #   · .trt 文件损坏（不完整写入 / 磁盘错误）
+            # 若不检测，下方 create_execution_context() 在 NoneType 上调用 →
+            #   AttributeError: 'NoneType' object has no attribute 'create_execution_context'
+            #
+            # 处理策略：
+            #   首次失败 → 删除过期缓存 + 删除 ONNX + 递归重建（_rebuild_attempt=True）
+            #   重建后仍失败 → 放弃 TRT，graceful 回退 PyTorch 路径
+            if self._trt_engine is None:
+                if _rebuild_attempt:
+                    print('[TensorRT] ⚠️  重建后 Engine 仍反序列化失败，'
+                          '回退 PyTorch 推理路径。')
+                    self.use_tensorrt = False
+                    self._trt_ok = False
+                    return
+                print(f'[TensorRT] Engine 反序列化失败（GPU 不兼容或 TRT 版本升级），'
+                      f'删除过期缓存并重新构建: {trt_path}')
+                try:
+                    os.remove(trt_path)
+                except OSError:
+                    pass
+                # 同步删除对应 ONNX（可能与旧 Engine 不匹配），重建时会重新导出
+                if os.path.exists(onnx_path):
+                    try:
+                        os.remove(onnx_path)
+                    except OSError:
+                        pass
+                # 递归调用：_rebuild_attempt=True 防止无限递归
+                return self._build_trt_engine(input_shape, cache_dir,
+                                              _rebuild_attempt=True)
+
+            # ── [FIX-TRT-CTX-OOM] create_execution_context 防御 ────────────
+            # create_execution_context() 在 GPU 显存不足时返回 None（不抛异常）。
+            # 典型场景：upscale_then_interpolate 模式下，前序 ESRGan 步骤
+            # 占用大量 GPU 显存（模型权重 + GFPGAN + 缓存分配器残留），
+            # 导致 IFRNet TRT context 无法分配所需的激活内存。
             self._trt_context = self._trt_engine.create_execution_context()
+            if self._trt_context is None:
+                print('[TensorRT] ⚠️  create_execution_context() 失败'
+                      '（GPU 显存不足），回退 PyTorch 推理路径。')
+                print('[TensorRT] 提示: 前序处理步骤可能占用了大量显存。'
+                      '可尝试减小 --batch-size-ifrnet 或使用 --no-tensorrt-ifrnet。')
+                # 主动释放已加载的 engine，归还显存
+                self._trt_engine = None
+                self.use_tensorrt = False
+                self._trt_ok = False
+                # 尝试回收显存，为 PyTorch 推理路径腾出空间
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                return
+
             # [FIX-TRT] 动态查询 engine 的实际 tensor 名，不硬编码
             n = self._trt_engine.num_io_tensors
             inputs, outputs = [], []
             for i in range(n):
                 name = self._trt_engine.get_tensor_name(i)
                 mode = self._trt_engine.get_tensor_mode(name)
-                import tensorrt as _trt
-                if mode == _trt.TensorIOMode.INPUT:
+                if mode == trt.TensorIOMode.INPUT:
                     inputs.append(name)
                 else:
                     outputs.append(name)
-            self._trt_input_names  = inputs   # e.g. ['img0','img1','embt','imgt_approx']
-            self._trt_output_names = outputs  # e.g. ['add_25']
+            self._trt_input_names  = inputs   # e.g. ['img0','img1','embt']
+            self._trt_output_names = outputs  # e.g. ['output']
             print(f'[TensorRT] inputs={inputs} outputs={outputs}')
-            self._trt_ok      = True
+            self._trt_ok = True
             print('[TensorRT] Engine 已激活，TRT 推理就绪。')
         except Exception as e:
+            # 加载失败（如架构不匹配、文件损坏），删除缓存并标记不可用
             print(f'[TensorRT] Engine 加载失败: {e}，回退 PyTorch。')
+            try:
+                os.remove(trt_path)
+            except OSError:
+                pass
             self.use_tensorrt = False
+            self._trt_ok = False
 
     # ──────────────────────────────────────────────────────────────────────────
     # CUDA Graph 推理（v4 B5 修复，完整保留）
@@ -1609,6 +1731,12 @@ class IFRNetVideoProcessor:
 
         # M4: TRT 初始化（如需要）
         if self.use_tensorrt:
+            # [FIX-TRT-CTX-OOM] 在双步模式（upscale_then_interpolate）下，
+            # 前序 ESRGan 步骤可能在 PyTorch 缓存分配器中残留大量显存。
+            # 主动清理，为 TRT execution context 腾出空间。
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
             meta = _probe_video(input_path)
             # [FIX-TRT-PAD-DIMS] 必须用 padding 后的尺寸（对齐到 MODEL_STRIDE=32）构建 TRT Engine。
             #

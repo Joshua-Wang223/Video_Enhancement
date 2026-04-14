@@ -18,7 +18,7 @@ import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils import ThroughputMeter, _get_pinned_pool
+from realesrgan_utils import ThroughputMeter, _get_pinned_pool
 from face_utils import _detect_faces_batch, _paste_faces_batch, _make_detect_helper
 from async_dispatcher import AsyncGFPGANDispatcher
 from gfpgan_subprocess import SharedMemoryDoubleBuffer
@@ -329,7 +329,7 @@ class DeepPipelineOptimizer:
         self._write_frames(writer, pbar, total_frames)
 
         # 终止所有流水线线程
-        print("[Pipeline] _write_frames 已退出，通知所有流水线线程终止...", flush=True)
+        # print("[Pipeline] _write_frames 已退出，通知所有流水线线程终止...", flush=True)
         self.running = False
 
         for q_name, q in [('frame', self.frame_queue),
@@ -347,8 +347,8 @@ class DeepPipelineOptimizer:
             if t.is_alive():
                 print(f"[Pipeline] 警告: {name} 线程未在 {_JOIN_TIMEOUT:.0f}s 内退出",
                       flush=True)
-            else:
-                print(f"[Pipeline] {name} 线程已退出", flush=True)
+            # else:
+            #     print(f"[Pipeline] {name} 线程已退出", flush=True)
 
     def _read_frames(self, reader):
         """读取视频帧到队列"""

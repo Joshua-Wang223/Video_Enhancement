@@ -15,7 +15,6 @@ class Config:
     
     # 默认配置 —— 与 config/default_config.json 保持完全一致
     # （JSON 优先；此处作为纯代码环境的兜底，字段齐全则避免 KeyError）
-    # ⚠️  变更记录：realesrgan.fp32 已移除，改用 realesrgan.use_fp16（与 ifrnet 对齐）
     DEFAULT_CONFIG = {
         "processing": {
             "mode":                 "interpolate_then_upscale",
@@ -69,26 +68,29 @@ class Config:
                 # fp32 已移除；使用 use_fp16 控制精度（与 ifrnet 保持一致）
                 "use_fp16":         True,
                 "face_enhance":     False,
-                # v5+ 推理优化（与 ifrnet 保持一致）
+                # v6 推理优化（默认值与底层 main.py argparse 对齐）
                 "batch_size":       12,
-                "prefetch_factor":  36,
-                "use_compile":      False,
+                "prefetch_factor":  48,
+                "use_compile":      True,
                 "use_cuda_graph":   True,
-                "use_tensorrt":     True,
+                "use_tensorrt":     False,
+                "gfpgan_trt":       False,
                 # v6 face_enhance 精细控制
                 "gfpgan_model":      "1.4",
-                "gfpgan_weight":     0.5,
-                "gfpgan_batch_size": 12,
-                # use_gfpgan_trt：GFPGAN 独立 TRT 加速（--gfpgan-trt）
-                # 不可与 use_tensorrt 同时为 True（Myelin 内存分配器冲突）
-                "use_gfpgan_trt":    False,
+                "gfpgan_weight":     0.7,
+                "gfpgan_batch_size": 4,
+                "face_det_threshold": 0.7,
+                "adaptive_batch":    True,
                 # v5 硬件解/编码
                 "use_hwaccel":    True,
-                "video_codec":    "libx264",   # 已废弃，保留兼容旧 config
-                "codec":          "libx264",
+                "video_codec":    "libx264",   # 底层 argparse 使用的字段名
+                "codec":          "libx264",   # 兼容旧配置，处理器会映射到 video_codec
+                "x264_preset":    "medium",
                 "crf":            23,
                 "ffmpeg_bin":     "ffmpeg",
-                # 性能报告
+                # v6 预览与报告
+                "preview":         False,
+                "preview_interval": 30,
                 "report_json":    None,
             },
         },
