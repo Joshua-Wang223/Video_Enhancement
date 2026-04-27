@@ -324,7 +324,7 @@ class HardwareCapability:
             except Exception:
                 pass
         # 回退：libx264 无损
-        return 'libx264', ['-qp', '0', '-preset', 'ultrafast']
+        return 'libx264', ['-qp', '0', '-preset', 'medium']
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -651,6 +651,7 @@ class FFmpegWriter:
         codec:  str = 'libx264',
         extra_codec_args: Optional[List[str]] = None,
         crf:    int = 23,   # U6: 默认 23（原 18）
+        preset: str = None,          # 新增
         audio_src: Optional[str] = None,
         ffmpeg_bin: str = 'ffmpeg',
     ):
@@ -658,16 +659,23 @@ class FFmpegWriter:
         self._queue: queue.Queue = queue.Queue(maxsize=128)
 
         pix_fmt = 'yuv420p'
+
+        # 确定 preset 默认值
+        if preset is None:
+            if 'nvenc' in codec:
+                preset = 'p4'
+            else:
+                preset = 'medium'
+
         if 'nvenc' in codec:
-            quality_args = ['-rc:v', 'vbr', '-cq:v', str(crf), '-b:v', '0']
+            # NVENC CQ 模式，增加 -preset
+            quality_args = ['-preset', preset, '-rc:v', 'vbr', '-cq:v', str(crf), '-b:v', '0']
         elif codec == 'libx265':
-            # [FIX-NUMA] 容器内 set_mempolicy 受限，禁用 NUMA 线程池，
-            # 消除 "set_mempolicy: Operation not permitted" 刷屏
-            # 并防止线程池初始化异常导致的竖向条纹画面瑕疵。
-            quality_args = ['-crf', str(crf),
+            # libx265 同时支持 -preset 和 x265-params
+            quality_args = ['-preset', preset, '-crf', str(crf),
                             '-x265-params', 'pools=none']
-        else:
-            quality_args = ['-crf', str(crf)]
+        else:  # libx264 等其他软件编码器
+            quality_args = ['-preset', preset, '-crf', str(crf)]
 
         cmd = [
             ffmpeg_bin, '-y',
@@ -806,6 +814,7 @@ class IFRNetVideoProcessor:
         use_hwaccel:      bool = True,
         codec:            str = 'libx264',
         crf:              int = 23,   # U6: 默认 23
+        x264_preset:      str = 'medium',   # 新增，软件编码默认 medium
         keep_audio:       bool = True,
         ffmpeg_bin:       str = 'ffmpeg',
         report_json:      Optional[str] = None,
@@ -823,6 +832,7 @@ class IFRNetVideoProcessor:
         self.use_hwaccel     = use_hwaccel
         self.codec           = codec
         self.crf             = crf
+        self.x264_preset     = x264_preset
         self.keep_audio      = keep_audio
         self.ffmpeg_bin      = ffmpeg_bin
         self.report_json     = report_json
@@ -1677,6 +1687,7 @@ class IFRNetVideoProcessor:
                 codec      = use_codec,
                 extra_codec_args = use_extra,
                 crf        = self.crf,
+                preset     = self.x264_preset,      # 新增
                 audio_src  = audio_src,
                 ffmpeg_bin = self.ffmpeg_bin,
             )
@@ -1965,6 +1976,7 @@ class IFRNetVideoProcessor:
             output_path, W, H, new_fps,
             codec      = final_codec,
             crf        = self.crf,
+            preset     = self.x264_preset,
             audio_src  = audio_src,
             ffmpeg_bin = self.ffmpeg_bin,
         )
@@ -2107,6 +2119,7 @@ def _ifrnet_segment_worker(
     use_cuda_graph:   bool,
     use_hwaccel:      bool,
     crf:              int,
+    x264_preset:      str,
     ffmpeg_bin:       str,
     error_q:          mp.Queue,
     result_q:         mp.Queue,    # [FIX-TMP] 帧数据 + __DONE__ 共用同一队列
@@ -2153,6 +2166,7 @@ def _ifrnet_segment_worker(
             use_hwaccel    = use_hwaccel,
             codec          = 'libx264',  # [FIX-TMP] codec 不再用于 Worker
             crf            = crf,
+            x264_preset    = x264_preset,
             keep_audio     = False,
             ffmpeg_bin     = ffmpeg_bin,
             num_process_per_gpu = 1,
@@ -2233,6 +2247,10 @@ def main():
                         help='输出编码器（有 NVENC 时自动升级）')
     parser.add_argument('--crf',      type=int, default=23,   # U6: 默认 23
                         help='编码质量（越小越好，18~28 常用，NVENC 同映射为 CQ 值）')
+    parser.add_argument('--x264-preset', type=str, default='medium',
+                        choices=['ultrafast', 'superfast', 'veryfast', 'faster', 'fast',
+                                 'medium', 'slow', 'slower', 'veryslow'],
+                        help='输出编码器预设（libx264/libx265 有效，NVENC 自动使用 p4）')
     parser.add_argument('--no-audio', action='store_true')
     parser.add_argument('--ffmpeg-bin', type=str, default='ffmpeg')
     # 调试
@@ -2329,7 +2347,8 @@ def main():
     _lossless_c, _lossless_e = HardwareCapability.lossless_encoder()
     print(f'  编码器: {args.codec} → 实际: {HardwareCapability.best_encoder(args.codec)} | '
           f'CRF: {args.crf}')
-    print(f'  中间段无损编码: {_lossless_c} {" ".join(_lossless_e)}')
+    print(f'  最终输出编码: {args.codec} | CRF: {args.crf} | Preset: {args.x264_preset}')
+    print(f'  中间段无损编码(备用): {_lossless_c} {" ".join(_lossless_e)}')
     if args.use_tensorrt:
         _tcd = args.trt_cache_dir or f'(自动: {base_dir}/.trt_cache)'
         print(f'  TRT 缓存: {_tcd}')
@@ -2348,6 +2367,7 @@ def main():
         use_hwaccel         = not args.no_hwaccel,
         codec               = args.codec,
         crf                 = args.crf,
+        x264_preset         = args.x264_preset,
         keep_audio          = not args.no_audio,
         ffmpeg_bin          = args.ffmpeg_bin,
         report_json         = args.report,
