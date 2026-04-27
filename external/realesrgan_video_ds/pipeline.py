@@ -245,16 +245,26 @@ class DeepPipelineOptimizer:
         self._sr_thread = None
         self._gfpgan_thread = None
 
+        # 上游 reader 句柄（由 optimize_pipeline 填充，供监控/看门狗使用）
+        self.reader = None
+
     def optimize_pipeline(self, reader, writer, pbar, total_frames):
         """运行优化的深度流水线"""
+        self.reader = reader  # 保存引用，供 _write_frames 显示 prefetch 水位
         print("[优化架构] 启动深度流水线处理...")
-        print(f"[优化架构] 队列深度: F{self.frame_queue.maxsize}/D{self.detect_queue.maxsize}/S{self.sr_queue.maxsize}/G{self.gfpgan_queue.maxsize}")
+        print(f"[优化架构] 队列深度: "
+              f"P{reader.get_queue_capacity() if reader is not None else '?'}"
+              f"/F{self.frame_queue.maxsize}"
+              f"/D{self.detect_queue.maxsize}"
+              f"/S{self.sr_queue.maxsize}"
+              f"/G{self.gfpgan_queue.maxsize}")
         print(f"[优化架构] 内存池: {self.memory_pool.max_batches}批次")
         print(f"[优化架构] 最优batch_size: {self.optimal_batch_size}")
-        print(f"[优化架构] 人脸检测置信度阈值: {self.face_det_threshold}")
-        if self._enable_adaptive_batch:
-            print(f"[优化架构] 自适应批处理: 开启 (范围 {self._min_adaptive_batch}~{self._max_adaptive_batch}, "
-                  f"低密度阈值={self._low_face_threshold}, 高密度阈值={self._high_face_threshold})")
+        if self.face_enhancer is not None:
+            print(f"[优化架构] 人脸检测置信度阈值: {self.face_det_threshold}")
+            if self._enable_adaptive_batch:
+                print(f"[优化架构] 自适应批处理: 开启 (范围 {self._min_adaptive_batch}~{self._max_adaptive_batch}, "
+                      f"低密度阈值={self._low_face_threshold}, 高密度阈值={self._high_face_threshold})")
         else:
             print(f"[优化架构] 自适应批处理: 关闭")
 
@@ -329,7 +339,6 @@ class DeepPipelineOptimizer:
         self._write_frames(writer, pbar, total_frames)
 
         # 终止所有流水线线程
-        # print("[Pipeline] _write_frames 已退出，通知所有流水线线程终止...", flush=True)
         self.running = False
 
         for q_name, q in [('frame', self.frame_queue),
@@ -347,51 +356,206 @@ class DeepPipelineOptimizer:
             if t.is_alive():
                 print(f"[Pipeline] 警告: {name} 线程未在 {_JOIN_TIMEOUT:.0f}s 内退出",
                       flush=True)
-            # else:
-            #     print(f"[Pipeline] {name} 线程已退出", flush=True)
+
+    def _get_reader_state(self):
+        """获取上游 reader 的当前水位/状态。返回 (p_size, p_cap, alive, eof_sent, produced)"""
+        if self.reader is None:
+            return (-1, 0, False, False, -1)
+        try:
+            p_size = self.reader.get_queue_size()
+            p_cap = self.reader.get_queue_capacity()
+            alive = self.reader.is_reader_alive()
+            eof_sent = self.reader.is_eof_sent()
+            produced = self.reader.get_frames_produced() if hasattr(
+                self.reader, 'get_frames_produced') else -1
+            return (p_size, p_cap, alive, eof_sent, produced)
+        except Exception:
+            return (-1, 0, False, False, -1)
+
+    def _queue_status_str(self) -> str:
+        """统一的队列状态字符串，含 prefetch"""
+        p_size, p_cap, alive, eof_sent, _ = self._get_reader_state()
+        state = 'alive' if alive else ('eof' if eof_sent else 'DEAD')
+        return (f"P:{p_size}/{p_cap}[{state}]/"
+                f"F:{self.frame_queue.qsize()}/"
+                f"D:{self.detect_queue.qsize()}/"
+                f"S:{self.sr_queue.qsize()}/"
+                f"G:{self.gfpgan_queue.qsize()}")
+
+    def _dump_all_queues(self):
+        import sys, queue, collections
+        seen = set()
+        lines = []
+        def visit(obj, path, depth=0):
+            if depth > 3 or id(obj) in seen:
+                return
+            seen.add(id(obj))
+            if isinstance(obj, (queue.Queue, queue.LifoQueue, queue.PriorityQueue)):
+                try:
+                    lines.append(f"  {path}: {obj.qsize()}/{obj.maxsize}  [{type(obj).__name__}]")
+                except Exception as e:
+                    lines.append(f"  {path}: <err {e}>")
+                return
+            if isinstance(obj, collections.deque):
+                lines.append(f"  {path}: len={len(obj)} maxlen={obj.maxlen}  [deque]")
+                return
+            if hasattr(obj, '__dict__'):
+                for k, v in vars(obj).items():
+                    if k.startswith('_'):
+                        continue
+                    visit(v, f"{path}.{k}", depth+1)
+        visit(self, "self")
+
+        # 额外补上 reader 的 prefetch 队列
+        p_size, p_cap, alive, eof_sent, produced = self._get_reader_state()
+        state = 'alive' if alive else ('eof' if eof_sent else 'DEAD')
+        lines.append(f"  self.reader._frame_queue: {p_size}/{p_cap}  "
+                     f"[Queue, state={state}, produced={produced}]")
+
+        sys.stderr.write("[QDUMP-FULL]\n" + "\n".join(lines) + "\n")
+        sys.stderr.flush()
+
+    def _dump_all_threads_stack(self):
+        """打印所有线程的栈，用于死锁现场诊断"""
+        import sys, traceback, threading
+        try:
+            for tid, frame in sys._current_frames().items():
+                name = next((t.name for t in threading.enumerate()
+                             if t.ident == tid), str(tid))
+                sys.stderr.write(f"\n--- Thread {name} ({tid}) ---\n")
+                traceback.print_stack(frame, file=sys.stderr)
+            sys.stderr.flush()
+        except Exception as e:
+            print(f"[Pipeline] dump 线程栈失败: {e}", flush=True)
 
     def _read_frames(self, reader):
-        """读取视频帧到队列"""
+        """读取视频帧到队列（修复版：
+        1) 只 catch Exception，不再吞 BaseException；
+        2) 连续 FRAME_TIMEOUT 看门狗 + reader 探活；
+        3) finally 无条件发送哨兵；
+        4) ★ 不再在 finally 中设置 self.running = False ★
+           —— 让 sentinel 正常沿流水线传播，避免下游在队列里的帧被丢弃。
+        """
+        import traceback
+        frames_read = 0
         batch_frames = []
+        consecutive_timeouts = 0
+        # 约 60s 没拿到任何帧 → 判定 reader 死锁
+        MAX_CONSECUTIVE_TIMEOUTS = 30   # get_frame() timeout 是 2s，30 次 ≈ 60s
+        _reader_dead_reported = False
+
         try:
             while self.running:
                 try:
                     img = reader.get_frame()
-                    if img is reader.FRAME_TIMEOUT:
-                        continue
-                    if img is None:
-                        if batch_frames:
-                            while self.running:
-                                try:
-                                    self.frame_queue.put((batch_frames, True), timeout=1.0)
-                                    break
-                                except queue.Full:
-                                    continue
+                except Exception as e:
+                    print(f"[Reader] ❌ reader.get_frame() 抛异常 "
+                          f"@frame={frames_read}: {type(e).__name__}: {e}",
+                          flush=True)
+                    traceback.print_exc()
+                    break
+
+                # 超时哨兵：队列暂时为空
+                if img is reader.FRAME_TIMEOUT:
+                    consecutive_timeouts += 1
+
+                    # 探活：如果 reader 线程已经死了却没送 EOF → 主动兜底
+                    if hasattr(reader, 'is_reader_alive') and not reader.is_reader_alive():
+                        if hasattr(reader, 'is_eof_sent') and reader.is_eof_sent():
+                            # 预计下一次 get 就能拿到 None，继续循环即可
+                            continue
+                        if not _reader_dead_reported:
+                            print(f"[Reader] ⚠️ reader 线程已死亡但未送 EOF "
+                                  f"@frame={frames_read}，强制收尾",
+                                  flush=True)
+                            _reader_dead_reported = True
                         break
 
-                    batch_frames.append(img)
+                    # 超时看门狗
+                    if consecutive_timeouts >= MAX_CONSECUTIVE_TIMEOUTS:
+                        print(f"[Reader] ❌ 连续 {consecutive_timeouts} 次 FRAME_TIMEOUT "
+                              f"(~{consecutive_timeouts*2}s) 无帧 "
+                              f"@frame={frames_read}，判定 reader 死锁，主动终止",
+                              flush=True)
+                        # 再次打印上游状态
+                        if hasattr(reader, 'is_reader_alive'):
+                            print(f"[Reader]   reader 线程存活: "
+                                  f"{reader.is_reader_alive()}", flush=True)
+                        break
 
-                    _current_bs = (self._adaptive_read_batch_size
-                                   if self._enable_adaptive_batch
-                                   else self.optimal_batch_size)
+                    # 定期轻量心跳，帮助定位
+                    if consecutive_timeouts % 10 == 0:
+                        print(f"[Reader] FRAME_TIMEOUT 已累计 {consecutive_timeouts} 次 "
+                              f"(~{consecutive_timeouts*2}s) @frame={frames_read}，"
+                              f"等待上游...", flush=True)
+                    continue
 
-                    if len(batch_frames) >= _current_bs:
-                        while self.running:
+                # 收到真正的数据，重置超时计数
+                consecutive_timeouts = 0
+
+                # EOF
+                if img is None:
+                    print(f"[Reader] EOF reached at frame {frames_read}", flush=True)
+                    if batch_frames:
+                        put_ok = False
+                        for _ in range(30):            # 给末批更多耐心（30s）
+                            if not self.running:
+                                break
                             try:
-                                self.frame_queue.put((batch_frames.copy(), False), timeout=1.0)
+                                self.frame_queue.put((batch_frames, True), timeout=1.0)
+                                put_ok = True
                                 break
                             except queue.Full:
                                 continue
-                        batch_frames = []
-
-                except Exception as e:
-                    print(f"读取帧错误: {e}")
+                        if not put_ok:
+                            print(f"[Reader] 警告: 最后一批 {len(batch_frames)} 帧未能入队",
+                                  flush=True)
                     break
+
+                frames_read += 1
+                batch_frames.append(img)
+
+                _current_bs = (self._adaptive_read_batch_size
+                               if self._enable_adaptive_batch
+                               else self.optimal_batch_size)
+
+                if len(batch_frames) >= _current_bs:
+                    while self.running:
+                        try:
+                            self.frame_queue.put((batch_frames.copy(), False), timeout=1.0)
+                            break
+                        except queue.Full:
+                            continue
+                    batch_frames = []
+
+        except Exception as e:
+            print(f"[Reader] ❌ _read_frames 异常 @frame={frames_read}: "
+                  f"{type(e).__name__}: {e}", flush=True)
+            traceback.print_exc()
         finally:
-            try:
-                self.frame_queue.put((None, True), timeout=3.0)
-            except Exception:
-                pass
+            print(f"[Reader] 线程退出，frames_read={frames_read}, "
+                  f"running={self.running}", flush=True)
+            # 关键：发送终止哨兵，避免下游干等
+            # ★ 给足耐心（最多 60s），因为此时 F/D 队列可能仍然接近满
+            _sent = False
+            for _ in range(60):
+                try:
+                    self.frame_queue.put((None, True), timeout=1.0)
+                    _sent = True
+                    break
+                except queue.Full:
+                    continue
+                except Exception:
+                    break
+            if not _sent:
+                print(f"[Reader] ❌ 致命: 终止哨兵未能送入 frame_queue，"
+                      f"下游可能需要靠超时退出", flush=True)
+            else:
+                print(f"[Reader] ✓ 终止哨兵已送达 frame_queue", flush=True)
+
+            # ★★★ 关键修复：不再设置 self.running = False ★★★
+            # 下游线程必须继续运行以消化 F/D/S/G 队列中已积压的帧，
+            # 然后依靠哨兵自然退出。self.running=False 只应由 close() 触发。
 
     def _detect_faces(self):
         """人脸检测处理"""
@@ -1109,9 +1273,14 @@ class DeepPipelineOptimizer:
         print("[Pipeline] 所有流水线线程已关闭", flush=True)
 
     def _write_frames(self, writer, pbar, total_frames):
+        """写帧 + 全流水线死锁看门狗（含 prefetch 监控）"""
         written_count = 0
         end_sentinel_count = 0
         received_end_sentinel = False
+
+        # 全流水线空转看门狗
+        _idle_since = None
+        IDLE_DEADLOCK_TIMEOUT = 120.0  # 120s 全空且无哨兵 → 强制退出并 dump 栈
 
         try:
             while self.running:
@@ -1121,7 +1290,8 @@ class DeepPipelineOptimizer:
                     if item is None:
                         end_sentinel_count += 1
                         received_end_sentinel = True
-                        print(f"[Pipeline] 写入线程收到第{end_sentinel_count}个结束哨兵，队列积压: S:{self.sr_queue.qsize()}/G:{self.gfpgan_queue.qsize()}", flush=True)
+                        print(f"[Pipeline] 写入线程收到第{end_sentinel_count}个结束哨兵，"
+                              f"队列积压: {self._queue_status_str()}", flush=True)
                         continue
 
                     final_frames, memory_block, is_end = item
@@ -1130,9 +1300,13 @@ class DeepPipelineOptimizer:
                         if is_end:
                             end_sentinel_count += 1
                             received_end_sentinel = True
-                            print(f"[Pipeline] 写入线程收到结束信号，队列积压: S:{self.sr_queue.qsize()}/G:{self.gfpgan_queue.qsize()}", flush=True)
+                            print(f"[Pipeline] 写入线程收到结束信号，"
+                                  f"队列积压: {self._queue_status_str()}", flush=True)
                             continue
                         continue
+
+                    # 收到有效数据，重置空转计时
+                    _idle_since = None
 
                     for frame in final_frames:
                         if getattr(writer, '_broken', False):
@@ -1152,27 +1326,55 @@ class DeepPipelineOptimizer:
                     eta = self.meter.eta(total_frames)
                     avg_ms = np.mean(self.timing[-10:]) * 1000 if self.timing else 0
 
+                    # 读取 reader / prefetch 水位
+                    p_size, p_cap, reader_alive, reader_eof, _produced = (
+                        self._get_reader_state())
+                    reader_state = ('alive' if reader_alive
+                                    else ('eof' if reader_eof else 'DEAD'))
+
                     pbar.set_postfix(
                         fps=f'{current_fps:.1f}',
                         eta=f'{eta:.0f}s',
                         bs=self.optimal_batch_size,
                         ms=f'{avg_ms:.0f}',
-                        queue_sizes=f"F:{self.frame_queue.qsize()}/D:{self.detect_queue.qsize()}/S:{self.sr_queue.qsize()}/G:{self.gfpgan_queue.qsize()}"
+                        queue_sizes=(f"P:{p_size}/{p_cap}[{reader_state}]/"
+                                     f"F:{self.frame_queue.qsize()}/"
+                                     f"D:{self.detect_queue.qsize()}/"
+                                     f"S:{self.sr_queue.qsize()}/"
+                                     f"G:{self.gfpgan_queue.qsize()}")
                     )
 
                     if torch.cuda.is_available():
                         allocated = torch.cuda.memory_allocated() / 1024 ** 3
                         reserved = torch.cuda.memory_reserved() / 1024 ** 3
                         if allocated > 0.9 * reserved:
-                            print(f'\n[资源警告] GPU内存压力过高: {allocated:.2f}GB / {reserved:.2f}GB')
+                            print(f'\n[资源警告] GPU内存压力过高: '
+                                  f'{allocated:.2f}GB / {reserved:.2f}GB')
 
                     if written_count // 20 > (written_count - len(final_frames)) // 20:
-                        _density_str = f' | 密度EMA={self._face_density_ema:.1f}' if self._enable_adaptive_batch else ''
-                        _filtered_str = f' | 过滤{self._face_filtered_total}' if self._face_filtered_total > 0 else ''
-                        _adaptive_str = f' | 自适应arbs={self._adaptive_read_batch_size}' if self._enable_adaptive_batch else ''
-                        print(f"[性能监控] 帧{written_count}/{total_frames} | fps={current_fps:.1f} | eta={eta:.0f}s | bs={self.optimal_batch_size} | ms={avg_ms:.0f} | 队列 F:{self.frame_queue.qsize()}/D:{self.detect_queue.qsize()}/S:{self.sr_queue.qsize()}/G:{self.gfpgan_queue.qsize()} | 人脸 {self._face_count_total}张/{self._face_frames_total}帧{_filtered_str}{_density_str}{_adaptive_str}")
+                        monitor_msg = (f"[性能监控] 帧{written_count}/{total_frames} | "
+                                       f"fps={current_fps:.1f} | eta={eta:.0f}s | "
+                                       f"bs={self.optimal_batch_size} | ms={avg_ms:.0f} | "
+                                       f"队列 P:{p_size}/{p_cap}[{reader_state}]/"
+                                       f"F:{self.frame_queue.qsize()}/"
+                                       f"D:{self.detect_queue.qsize()}/"
+                                       f"S:{self.sr_queue.qsize()}/"
+                                       f"G:{self.gfpgan_queue.qsize()}")
+
+                        if self.face_enhancer is not None:
+                            monitor_msg += (f" | 人脸 {self._face_count_total}张"
+                                            f"/{self._face_frames_total}帧")
+                            if self._face_filtered_total > 0:
+                                monitor_msg += f" | 过滤{self._face_filtered_total}"
+                            if self._enable_adaptive_batch:
+                                monitor_msg += f" | 密度EMA={self._face_density_ema:.1f}"
+                                monitor_msg += f" | 自适应arbs={self._adaptive_read_batch_size}"
+                        print(monitor_msg, flush=True)
+
+                        # self._dump_all_queues()
 
                 except queue.Empty:
+                    # 正常终止条件
                     if received_end_sentinel and self.gfpgan_queue.qsize() == 0:
                         print(f"[Pipeline] 收到哨兵且 gfpgan_queue 已清空，退出。"
                               f"已写入 {written_count}/{total_frames} 帧", flush=True)
@@ -1184,8 +1386,55 @@ class DeepPipelineOptimizer:
                     if (written_count >= total_frames
                             and self.sr_queue.qsize() == 0
                             and self.gfpgan_queue.qsize() == 0):
-                        print(f"[Pipeline] 所有帧已写入且上游队列清空，强制退出", flush=True)
+                        print(f"[Pipeline] 所有帧已写入且上游队列清空，强制退出",
+                              flush=True)
                         break
+
+                    # 全流水线空转死锁看门狗（含 prefetch）
+                    p_size, p_cap, reader_alive, reader_eof, _produced = (
+                        self._get_reader_state())
+                    reader_state = ('alive' if reader_alive
+                                    else ('eof' if reader_eof else 'DEAD'))
+
+                    all_q_empty = (
+                        (p_size == 0 or p_size == -1) and
+                        self.frame_queue.qsize() == 0 and
+                        self.detect_queue.qsize() == 0 and
+                        self.sr_queue.qsize() == 0 and
+                        self.gfpgan_queue.qsize() == 0
+                    )
+                    if all_q_empty and not received_end_sentinel:
+                        if _idle_since is None:
+                            _idle_since = time.time()
+                            print(f"[Pipeline][看门狗] 检测到全流水线空转 "
+                                  f"(P:{p_size}/{p_cap}[{reader_state}])，"
+                                  f"开始计时（阈值 {IDLE_DEADLOCK_TIMEOUT:.0f}s）；"
+                                  f"已写入 {written_count}/{total_frames}",
+                                  flush=True)
+                        elif time.time() - _idle_since > IDLE_DEADLOCK_TIMEOUT:
+                            print(f"[Pipeline][看门狗] ⚠️ 全流水线空转超过 "
+                                  f"{IDLE_DEADLOCK_TIMEOUT:.0f}s 无进展，"
+                                  f"判定上游死锁。"
+                                  f"P:{p_size}/{p_cap}[{reader_state}] "
+                                  f"produced={_produced}；"
+                                  f"已写入 {written_count}/{total_frames} 帧，"
+                                  f"强制退出。", flush=True)
+                            # dump 所有线程栈 + 队列
+                            print(f"[Pipeline][看门狗] 打印所有队列水位：",
+                                  flush=True)
+                            self._dump_all_queues()
+                            print(f"[Pipeline][看门狗] 打印所有线程调用栈：",
+                                  flush=True)
+                            self._dump_all_threads_stack()
+                            # 尝试让上游线程自行收尾
+                            self.running = False
+                            try:
+                                self.frame_queue.put((None, True), timeout=1.0)
+                            except Exception:
+                                pass
+                            break
+                    else:
+                        _idle_since = None
                     continue
                 except Exception as e:
                     print(f"写入帧错误: {e}")
@@ -1195,4 +1444,5 @@ class DeepPipelineOptimizer:
                         except Exception:
                             pass
         finally:
-            print(f"[Pipeline] 写入线程退出，已写入 {written_count}/{total_frames} 帧", flush=True)
+            print(f"[Pipeline] 写入线程退出，已写入 {written_count}/{total_frames} 帧 "
+                  f"(最终队列: {self._queue_status_str()})", flush=True)

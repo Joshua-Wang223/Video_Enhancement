@@ -202,10 +202,10 @@ SUPPORTED_ESRGAN_MODELS = [
 def _print_banner():
     """打印启动横幅。"""
     print()
-    print("╔══════════════════════════════════════════════════════════════╗")
-    print("║    🎬  视频增强流水线 (优化版) v{:<18s} ║".format(VERSION))
-    print("║    IFRNet + Real-ESRGAN  ·  realesrgan_video_ds v6.4       ║")
-    print("╚══════════════════════════════════════════════════════════════╝")
+    print("═══════════════════════════════════════════════════════════════════")
+    print("    🎬  视频增强流水线 (优化版) v{:<18s}".format(VERSION))
+    print("    IFRNet + Real-ESRGAN  ·  realesrgan_video_ds v6.4")
+    print("═══════════════════════════════════════════════════════════════════")
     print()
 
 
@@ -549,9 +549,9 @@ def _run_postprocess_stage(output_path: str,
 def _print_completion(output_path: str, elapsed: float, env_info: dict):
     """打印成功完成横幅。"""
     print()
-    print("╔══════════════════════════════════════════════════════════════╗")
-    print("║                   🎉  处理完成！                            ║")
-    print("╚══════════════════════════════════════════════════════════════╝")
+    print("═══════════════════════════════════════════════════════════════════")
+    print("                   🎉  处理完成！")
+    print("═══════════════════════════════════════════════════════════════════")
     print(f"   📤 输出文件: {output_path}")
     print(f"   ⏱️  总用时  : {_fmt_time(elapsed)}")
     if os.path.exists(output_path):
@@ -625,6 +625,8 @@ def _apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
         config.set("models", "ifrnet", "crf",            value=args.crf_ifrnet)
     if args.codec_ifrnet:
         config.set("models", "ifrnet", "codec",          value=args.codec_ifrnet)
+    if args.x264_preset_ifrnet:
+        config.set("models", "ifrnet", "x264_preset",    value=args.x264_preset_ifrnet)
     if args.no_audio_ifrnet:
         config.set("models", "ifrnet", "keep_audio",     value=False)
     if args.report_ifrnet:
@@ -893,7 +895,7 @@ def _process_single(
 
     if mode == "interpolate_then_upscale":
         # Step 1: IFRNet
-        _print_stage(2, "Step 1/2 — IFRNet 插帧", "🎞️")
+        _print_stage(1, "Step 1/2 — IFRNet 插帧", "🎞️")
         try:
             step1_segs = ifrnet_proc.process_video_segments(actual_input)
         except KeyboardInterrupt:
@@ -916,7 +918,7 @@ def _process_single(
 
     elif mode == "upscale_then_interpolate":
         # Step 1: ESRGan
-        _print_stage(2, "Step 1/2 — Real-ESRGAN 超分（优化版）", "🎨")
+        _print_stage(1, "Step 1/2 — Real-ESRGAN 超分（优化版）", "🎨")
         try:
             step1_segs = esrgan_proc.process_video_segments(actual_input)
         except KeyboardInterrupt:
@@ -1186,6 +1188,10 @@ ESRGan 模型选项 (--esrgan-model):
                    help="IFRNet 分段输出 CRF（0~51，默认 23）")
     g.add_argument("--codec-ifrnet", metavar="CODEC",
                    help="IFRNet 分段输出编码器（默认 libx264，有 NVENC 时自动升级）")
+    g.add_argument("--x264-preset-ifrnet", metavar="PRESET",
+               choices=["ultrafast", "superfast", "veryfast", "faster", "fast",
+                        "medium", "slow", "slower", "veryslow"],
+               help="IFRNet 编码预设（libx264/libx265 有效，NVENC 自动使用 p4）")
     g.add_argument("--report-ifrnet", metavar="PATH",
                    help="IFRNet JSON 性能报告输出路径")
     g.add_argument("--preview-ifrnet", action="store_true",

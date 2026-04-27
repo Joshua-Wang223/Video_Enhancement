@@ -172,18 +172,11 @@ models_ifrnet = os.path.join(base_dir, 'models_IFRNet', 'checkpoints')
 sys.path.insert(0, os.path.join(base_dir, 'external', 'IFRNet'))
 sys.path.insert(0, models_ifrnet)
 
-from models.IFRNet_S import Model  # noqa: E402
-_ifrnet_s_mod = sys.modules['models.IFRNet_S']
-
 # [FIX-CUDA-GRAPH-WARP] ───────────────────────────────────────────────────────
-# 根本原因：utils.warp 每次调用都用 torch.arange（CPU）+ .to(img) 动态生成坐标
-# 网格，触发 cudaMemcpy(Host→Device)。CUDA Graph 捕获期间该操作被严格禁止
-# （cudaErrorStreamCaptureUnsupported）。Warmup 3 次在捕获流外运行故不报错，
-# 但进入 torch.cuda.graph 上下文后同一调用再次触发 H2D 复制 → 崩溃。
-#
-# 修复：将 models.IFRNet_S 模块命名空间中的 warp 替换为带 GPU 缓存的版本。
-# 首次调用（Warmup 期间）为给定 (B, H, W, device, dtype) 在 GPU 上预分配网格；
-# 此后（含捕获期间）直接复用已有 tensor，不产生任何新的 CUDA malloc / H2D 复制。
+# utils.warp 每次调用都会在 CPU 上用 torch.arange 动态生成坐标网格并触发
+# H2D 复制，CUDA Graph 捕获期间会崩溃。下面的 _cached_warp 在 GPU 上缓存
+# 坐标网格，捕获期间不产生任何新的 malloc / H2D 复制。
+# ─────────────────────────────────────────────────────────────────────────────
 import torch.nn.functional as _F_warp
 
 _warp_grid_cache: dict = {}
@@ -192,21 +185,36 @@ def _cached_warp(img: 'torch.Tensor', flow: 'torch.Tensor') -> 'torch.Tensor':
     B, _C, H, W = img.shape
     key = (B, H, W, str(img.device), img.dtype)
     if key not in _warp_grid_cache:
-        # 直接在 GPU 上构建，避免任何 CPU→GPU 传输
         xs = torch.arange(0, W, device=img.device, dtype=img.dtype)
         ys = torch.arange(0, H, device=img.device, dtype=img.dtype)
-        grid_y, grid_x = torch.meshgrid(ys, xs, indexing='ij')          # [H, W]
-        grid = torch.stack([grid_x, grid_y], dim=0)                      # [2, H, W]
-        _warp_grid_cache[key] = grid.unsqueeze(0).expand(B, -1, -1, -1) # [B, 2, H, W]
-    base_grid = _warp_grid_cache[key]                                    # 已在 GPU，无复制
-    vgrid = base_grid + flow                                              # [B, 2, H, W]
+        grid_y, grid_x = torch.meshgrid(ys, xs, indexing='ij')
+        grid = torch.stack([grid_x, grid_y], dim=0)
+        _warp_grid_cache[key] = grid.unsqueeze(0).expand(B, -1, -1, -1)
+    base_grid = _warp_grid_cache[key]
+    vgrid = base_grid + flow
     vgrid_x = 2.0 * vgrid[:, 0:1] / max(W - 1, 1) - 1.0
     vgrid_y = 2.0 * vgrid[:, 1:2] / max(H - 1, 1) - 1.0
-    vgrid_scaled = torch.cat([vgrid_x, vgrid_y], dim=1).permute(0, 2, 3, 1)  # [B, H, W, 2]
+    vgrid_scaled = torch.cat([vgrid_x, vgrid_y], dim=1).permute(0, 2, 3, 1)
     return _F_warp.grid_sample(img, vgrid_scaled,
                                mode='bilinear', padding_mode='border', align_corners=True)
 
-_ifrnet_s_mod.warp = _cached_warp   # 替换模块命名空间中的引用
+# ── 按模型名动态导入对应变体 ─────────────────────────────────────────────────
+MODEL_MODULE_MAP: Dict[str, str] = {
+    'IFRNet_Vimeo90K':   'models.IFRNet',
+    'IFRNet_S_Vimeo90K': 'models.IFRNet_S',
+    'IFRNet_L_Vimeo90K': 'models.IFRNet_L',
+}
+
+def _load_ifrnet_module(model_name: str):
+    """按模型名动态导入对应变体的 Model 类，并把其 warp 替换为 CUDA-Graph 安全版本。"""
+    import importlib
+    module_name = MODEL_MODULE_MAP.get(model_name, 'models.IFRNet_S')
+    mod = importlib.import_module(module_name)
+    mod.warp = _cached_warp  # 三个变体都调用 warp，统一替换
+    return mod.Model, mod
+
+# 先按 S 版占位初始化；main() 里解析完 --model 后会再次重新绑定
+Model, _ifrnet_s_mod = _load_ifrnet_module('IFRNet_S_Vimeo90K')
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2292,6 +2300,10 @@ def main():
     if not os.path.exists(model_path):
         print(f'错误: 模型不存在 - {model_path}')
         sys.exit(1)
+
+    # 根据 --model 选择对应的模型变体
+    global Model
+    Model, _ = _load_ifrnet_module(args.model)
 
     # 打印启动信息
     print('=' * 65)

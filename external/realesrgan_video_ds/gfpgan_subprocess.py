@@ -478,6 +478,7 @@ class GFPGANSubprocess:
         from basicsr.utils import img2tensor, tensor2img
         from torchvision.transforms.functional import normalize as _tv_normalize
         import contextlib
+        import time
 
         cuda_context_dead = False
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -823,7 +824,7 @@ class GFPGANSubprocess:
 
         if gfpgan_trt_accel is not None and getattr(gfpgan_trt_accel, '_cuda_context_dead', False):
             print('[GFPGANSubprocess] TRT warmup 失败导致 CUDA context 损坏', flush=True)
-            import time
+            # import time
             time.sleep(0.5)
             import os as _os
             _os._exit(0)

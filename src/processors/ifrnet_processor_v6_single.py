@@ -102,6 +102,7 @@ class IFRNetProcessor:
         self.use_hwaccel = config.get("models", "ifrnet", "use_hwaccel", default=True)
         self.codec       = config.get("models", "ifrnet", "codec",       default="libx264")
         self.crf         = config.get("models", "ifrnet", "crf",         default=23)
+        self.x264_preset = config.get("models", "ifrnet", "x264_preset", default="medium")
         self.keep_audio  = config.get("models", "ifrnet", "keep_audio",  default=True)
         self.ffmpeg_bin  = config.get("models", "ifrnet", "ffmpeg_bin",  default="ffmpeg")
         self.report_json = config.get("models", "ifrnet", "report_json", default=None)
@@ -410,6 +411,7 @@ class IFRNetProcessor:
                 use_hwaccel    = self.use_hwaccel,
                 codec          = self.codec,
                 crf            = self.crf,
+                x264_preset    = self.x264_preset,
                 keep_audio     = self.keep_audio,
                 ffmpeg_bin     = self.ffmpeg_bin,
                 report_json    = self.report_json,
@@ -585,6 +587,11 @@ def main():
                         help="分段输出视频质量 CRF（0~51，默认 23）")
     parser.add_argument("--codec",      type=str,
                         help="分段输出编码器（默认 libx264；有 NVENC 时自动升级）")
+    parser.add_argument('--x264-preset', type=str,
+                        default=None,
+                        choices=['ultrafast', 'superfast', 'veryfast', 'faster', 'fast',
+                                 'medium', 'slow', 'slower', 'veryslow'],
+                        help='编码预设（默认 medium，NVENC 自动使用 p4）')
     parser.add_argument("--ffmpeg-bin", type=str,
                         help="ffmpeg 可执行文件路径（默认 ffmpeg）")
 
@@ -693,6 +700,8 @@ def main():
         config.set("models", "ifrnet", "crf",         value=args.crf)
     if args.codec:
         config.set("models", "ifrnet", "codec",       value=args.codec)
+    if args.x264_preset is not None:
+        config.set("models", "ifrnet", "x264_preset", value=args.x264_preset)
     if args.ffmpeg_bin:
         config.set("models", "ifrnet", "ffmpeg_bin",  value=args.ffmpeg_bin)
 

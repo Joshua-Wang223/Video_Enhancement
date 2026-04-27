@@ -273,9 +273,10 @@ def main_optimized(args):
     # =========================================================================
 
     print("[优化架构] 修复版: 改进 GFPGAN TRT 就绪判断")
-    print(f"[优化架构] 人脸检测置信度阈值: {getattr(args, 'face_det_threshold', 0.5)}")
-    if getattr(args, 'adaptive_batch', True):
-        print(f"[优化架构] 自适应批处理: 已启用")
+    if args.face_enhance:
+        print(f"[优化架构] 人脸检测置信度阈值: {getattr(args, 'face_det_threshold', 0.5)}")
+        if getattr(args, 'adaptive_batch', True):
+            print(f"[优化架构] 自适应批处理: 已启用")
     print("[优化架构] 阶段 0: 准备环境（不初始化 CUDA）...")
 
     cuda_available = torch.backends.cuda.is_built() and torch.cuda.device_count() > 0

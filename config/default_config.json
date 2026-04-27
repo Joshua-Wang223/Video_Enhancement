@@ -78,6 +78,8 @@
       "// codec_alt":           "libx265",
       "// crf_note":            "IFRNet 分段输出质量（0-51，越小越好；23=默认均衡，18=近无损）",
       "crf":                    23,
+      "// x264_preset_note":   "libx264/libx265 编码预设（NVENC 时自动调整为 p4）",
+      "x264_preset":           "medium",
       "keep_audio":             true,
       "ffmpeg_bin":             "ffmpeg",
 
@@ -111,9 +113,9 @@
 
       "// ---- v6 推理优化参数（与底层 main.py argparse 默认值对齐）----": "",
       "// batch_size_note":    "SR 批处理大小；T4/16G 建议 6~8，A10/24G 建议 8~12",
-      "batch_size":            12,
+      "batch_size":            24,
       "// prefetch_factor_note": "读帧预取队列深度；建议 >= batch_size*2",
-      "prefetch_factor":       48,
+      "prefetch_factor":       96,
       "// use_compile_note":   "torch.compile reduce-overhead；首次约 1-3 分钟；与 TRT 互斥；需 PyTorch 2.0+；默认开启（与底层 --no-compile 反向）",
       "use_compile":           true,
       "// use_cuda_graph_note": "手动 CUDA Graph；use_compile=true 时自动禁用（由 compile 接管）；默认开启",

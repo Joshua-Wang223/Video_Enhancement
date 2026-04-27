@@ -452,12 +452,16 @@ class RealESRGANVideoProcessor:
             ns.fps          = None          # 保持原帧率
 
             # ── face_enhance 精细控制参数 ──────────────────────────────────
-            ns.gfpgan_model        = self.gfpgan_model
-            ns.gfpgan_weight       = self.gfpgan_weight
-            ns.gfpgan_batch_size   = self.gfpgan_batch_size
-            ns.face_det_threshold  = self.face_det_threshold
-            ns.adaptive_batch      = self.adaptive_batch
-            ns.gfpgan_trt          = self.gfpgan_trt
+            if self.face_enhance:
+                ns.gfpgan_model        = self.gfpgan_model
+                ns.gfpgan_weight       = self.gfpgan_weight
+                ns.gfpgan_batch_size   = self.gfpgan_batch_size
+                ns.face_det_threshold  = self.face_det_threshold
+                ns.adaptive_batch      = self.adaptive_batch
+                ns.gfpgan_trt          = self.gfpgan_trt
+            else:
+                ns.gfpgan_trt          = False
+                ns.adaptive_batch      = False
 
             # ── 推理优化参数 ───────────────────────────────────────────────
             ns.batch_size      = self.batch_size
