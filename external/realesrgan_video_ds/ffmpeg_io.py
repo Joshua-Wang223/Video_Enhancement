@@ -25,7 +25,7 @@ class FFmpegReader:
 
     FRAME_TIMEOUT = object()  # 超时哨兵，与真正的 EOF None 区分
 
-    def __init__(self, input_path, ffmpeg_bin='ffmpeg', prefetch_factor=16, use_hwaccel=True):
+    def __init__(self, input_path, ffmpeg_bin='ffmpeg', prefetch_factor=16, use_hwaccel=True, quiet=True):
         self.input_path = input_path
         self.ffmpeg_bin = ffmpeg_bin
         self.prefetch_factor = prefetch_factor
@@ -55,9 +55,16 @@ class FFmpegReader:
         self._frames_produced = 0
         self._last_error = None
 
+        self._quiet = quiet
+
         self._thread = threading.Thread(target=self._read_loop, daemon=True,
                                         name='ffmpeg_reader_loop')
         self._thread.start()
+
+    def _vlog(self, *args, **kwargs):
+        """受静默模式控制的日志打印（仅在 --no-quiet 时输出）"""
+        if not self._quiet:
+            print(*args, **kwargs)
 
     # ----------------------------------------------------------------------
     # 内部：stderr drain 线程
@@ -102,8 +109,8 @@ class FFmpegReader:
             try:
                 self._frame_queue.put(None, timeout=1.0)
                 self._eof_sent = True
-                print(f"[FFmpegReader] EOF 已发送到下游（frames_produced={self._frames_produced}）",
-                      flush=True)
+                self._vlog(f"[FFmpegReader] EOF 已发送到下游（frames_produced={self._frames_produced}）",
+                           flush=True)
                 return
             except queue.Full:
                 retries += 1
@@ -176,8 +183,8 @@ class FFmpegReader:
                 # 正常 EOF
                 if not in_bytes:
                     rc = process.poll()
-                    print(f"[FFmpegReader] stdout EOF @frame={self._frames_produced}, "
-                          f"ffmpeg_rc={rc}", flush=True)
+                    self._vlog(f"[FFmpegReader] stdout EOF @frame={self._frames_produced}, "
+                               f"ffmpeg_rc={rc}", flush=True)
                     if rc is not None and rc != 0:
                         # 异常退出：打诊断
                         tail = self._get_stderr_tail(40)
@@ -296,8 +303,8 @@ class FFmpegReader:
                     print(f"[FFmpegReader] ffmpeg stderr:\n{tail}", flush=True)
             else:
                 # 正常结束：只留一行摘要，不再刷屏
-                print(f"[FFmpegReader] ffmpeg 正常结束 rc={rc_final}, "
-                      f"frames_produced={self._frames_produced}", flush=True)
+                self._vlog(f"[FFmpegReader] ffmpeg 正常结束 rc={rc_final}, "
+                           f"frames_produced={self._frames_produced}", flush=True)
 
             # 3) 关键：无论如何把 EOF 送到下游
             self._send_eof_guaranteed()
@@ -306,9 +313,9 @@ class FFmpegReader:
             if stderr_thread is not None and stderr_thread.is_alive():
                 stderr_thread.join(timeout=1.0)
 
-            print(f"[FFmpegReader] _read_loop 退出 "
-                  f"(frames_produced={self._frames_produced}, "
-                  f"last_error={self._last_error})", flush=True)
+            self._vlog(f"[FFmpegReader] _read_loop 退出 "
+                       f"(frames_produced={self._frames_produced}, "
+                       f"last_error={self._last_error})", flush=True)
 
     # ----------------------------------------------------------------------
     # 消费者接口
@@ -373,6 +380,7 @@ class FFmpegWriter:
         self._frames_written_to_pipe = 0
         self._bytes_written_to_pipe = 0
 
+        self._quiet = getattr(args, 'quiet', True)
         self._process = None
         self._init_ffmpeg_process()
 
@@ -383,6 +391,11 @@ class FFmpegWriter:
 
         self._thread = threading.Thread(target=self._write_loop, daemon=True)
         self._thread.start()
+
+    def _vlog(self, *args, **kwargs):
+        """受静默模式控制的日志打印（仅在 --no-quiet 时输出）"""
+        if not self._quiet:
+            print(*args, **kwargs)
 
     def _stderr_reader_loop(self):
         try:
@@ -505,6 +518,15 @@ class FFmpegWriter:
         elif video_codec == 'libx265':
             cmd_args += [
                 '-vcodec', video_codec,
+                '-pix_fmt', 'yuv420p',
+                '-crf', str(crf),
+                '-preset', x264_preset,
+            ]
+        elif video_codec == 'copy':
+            # 管道输入只能是原始流，无法 copy 到 mp4，直接回退
+            print("[FFmpegWriter] 警告：copy 模式不适用于管道原始输入，自动改用 libx264")
+            cmd_args += [
+                '-vcodec', 'libx264',
                 '-pix_fmt', 'yuv420p',
                 '-crf', str(crf),
                 '-preset', x264_preset,
@@ -827,7 +849,7 @@ class FFmpegWriter:
             return False
 
     def close(self):
-        print("[FFmpegWriter] 阶段1/5: 等待写入线程完成...", flush=True)
+        self._vlog("[FFmpegWriter] 阶段1/5: 等待写入线程完成...", flush=True)
 
         if not self._broken:
             for _ in range(3):
@@ -874,11 +896,11 @@ class FFmpegWriter:
                     except Exception:
                         pass
 
-        print("[FFmpegWriter] 阶段2/5: 写入线程已结束", flush=True)
+        self._vlog("[FFmpegWriter] 阶段2/5: 写入线程已结束", flush=True)
         self._running = False
 
         if self._process and self._process.poll() is None:
-            print("[FFmpegWriter] 阶段3/5: 等待 FFmpeg 完成编码...", flush=True)
+            self._vlog("[FFmpegWriter] 阶段3/5: 等待 FFmpeg 完成编码...", flush=True)
 
             if self._process.stdin and not self._process.stdin.closed:
                 try:
@@ -889,7 +911,7 @@ class FFmpegWriter:
 
             try:
                 self._process.wait(timeout=300)
-                print("[FFmpegWriter] 阶段4/5: FFmpeg 编码完成", flush=True)
+                self._vlog("[FFmpegWriter] 阶段4/5: FFmpeg 编码完成", flush=True)
             except subprocess.TimeoutExpired:
                 print("[FFmpegWriter] FFmpeg 编码超时（>300s），强制终止", flush=True)
                 try:
@@ -900,7 +922,7 @@ class FFmpegWriter:
         else:
             print("[FFmpegWriter] 阶段3-4/5: FFmpeg 进程已终止", flush=True)
 
-        print("[FFmpegWriter] 阶段5/5: 清理完成", flush=True)
+        self._vlog("[FFmpegWriter] 阶段5/5: 清理完成", flush=True)
 
         # FIX-AUDIO-SEPARATE: 视频写入完成后，单独 mux 音轨
         _tmp = getattr(self, '_tmp_video_path', None)

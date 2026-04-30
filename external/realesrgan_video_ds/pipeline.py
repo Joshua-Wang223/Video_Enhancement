@@ -203,11 +203,11 @@ class DeepPipelineOptimizer:
 
         if _prestarted is not None:
             if hasattr(_prestarted, 'process') and _prestarted.process.is_alive():
-                print('[优化架构] 使用预启动 GFPGAN 子进程（FIX-EARLY-SPAWN）')
+                self._vlog('[优化架构] 使用预启动 GFPGAN 子进程（FIX-EARLY-SPAWN）')
                 self.gfpgan_subprocess = _prestarted
                 args._early_gfpgan_subprocess = None
             else:
-                print('[优化架构] 预启动 GFPGAN 子进程已死亡，关闭并回退')
+                self._vlog('[优化架构] 预启动 GFPGAN 子进程已死亡，关闭并回退')
                 try:
                     _prestarted.close()
                 except Exception as e:
@@ -219,7 +219,7 @@ class DeepPipelineOptimizer:
                 getattr(args, 'gfpgan_trt', False) and
                 face_enhancer is not None):
             if not getattr(args, '_gfpgan_trt_failed', False):
-                print('[优化架构] 启用子进程GFPGAN TRT加速（非预启动路径）')
+                self._vlog('[优化架构] 启用子进程GFPGAN TRT加速（非预启动路径）')
                 try:
                     from gfpgan_subprocess import GFPGANSubprocess
                     self.gfpgan_subprocess = GFPGANSubprocess(
@@ -248,28 +248,36 @@ class DeepPipelineOptimizer:
         # 上游 reader 句柄（由 optimize_pipeline 填充，供监控/看门狗使用）
         self.reader = None
 
+        # 静默模式：从 args 读取，默认开启
+        self._quiet = getattr(args, 'quiet', True)
+
+    def _vlog(self, *args, **kwargs):
+        """受静默模式控制的日志打印（仅在 --no-quiet 时输出）"""
+        if not self._quiet:
+            print(*args, **kwargs)
+
     def optimize_pipeline(self, reader, writer, pbar, total_frames):
         """运行优化的深度流水线"""
         self.reader = reader  # 保存引用，供 _write_frames 显示 prefetch 水位
-        print("[优化架构] 启动深度流水线处理...")
-        print(f"[优化架构] 队列深度: "
+        self._vlog("[优化架构] 启动深度流水线处理...")
+        self._vlog(f"[优化架构] 队列深度: "
               f"P{reader.get_queue_capacity() if reader is not None else '?'}"
               f"/F{self.frame_queue.maxsize}"
               f"/D{self.detect_queue.maxsize}"
               f"/S{self.sr_queue.maxsize}"
               f"/G{self.gfpgan_queue.maxsize}")
-        print(f"[优化架构] 内存池: {self.memory_pool.max_batches}批次")
-        print(f"[优化架构] 最优batch_size: {self.optimal_batch_size}")
+        self._vlog(f"[优化架构] 内存池: {self.memory_pool.max_batches}批次")
+        self._vlog(f"[优化架构] 最优batch_size: {self.optimal_batch_size}")
         if self.face_enhancer is not None:
-            print(f"[优化架构] 人脸检测置信度阈值: {self.face_det_threshold}")
+            self._vlog(f"[优化架构] 人脸检测置信度阈值: {self.face_det_threshold}")
             if self._enable_adaptive_batch:
-                print(f"[优化架构] 自适应批处理: 开启 (范围 {self._min_adaptive_batch}~{self._max_adaptive_batch}, "
+                self._vlog(f"[优化架构] 自适应批处理: 开启 (范围 {self._min_adaptive_batch}~{self._max_adaptive_batch}, "
                       f"低密度阈值={self._low_face_threshold}, 高密度阈值={self._high_face_threshold})")
         else:
-            print(f"[优化架构] 自适应批处理: 关闭")
+            self._vlog(f"[优化架构] 自适应批处理: 关闭")
 
         if self.gfpgan_subprocess is not None:
-            print('[优化架构] 等待 GFPGAN Inference 进程初始化（加载 .trt + warmup）...')
+            self._vlog('[优化架构] 等待 GFPGAN Inference 进程初始化（加载 .trt + warmup）...')
             max_elapsed = 2700
             deadline = time.time() + max_elapsed
             ready = False
@@ -301,17 +309,17 @@ class DeepPipelineOptimizer:
                 now = time.time()
                 if now - _last_report >= _report_every:
                     elapsed = now - (deadline - max_elapsed)
-                    print(f'[优化架构] 等待中... {elapsed:.0f}s（Inference 进程初始化中）', flush=True)
+                    self._vlog(f'[优化架构] 等待中... {elapsed:.0f}s（Inference 进程初始化中）', flush=True)
                     _last_report = now
             if ready:
-                print('[优化架构] GFPGAN 子进程已就绪，启动流水线')
+                self._vlog('[优化架构] GFPGAN 子进程已就绪，启动流水线')
                 _shm = getattr(self.gfpgan_subprocess, 'shm_buf', None)
                 self._async_dispatcher = AsyncGFPGANDispatcher(
                     self.gfpgan_subprocess, shm_buf=_shm)
-                print('[优化架构] AsyncGFPGANDispatcher 已创建'
+                self._vlog('[优化架构] AsyncGFPGANDispatcher 已创建'
                       f' (shm={"是" if _shm else "否"})')
             else:
-                print('[优化架构] GFPGAN 子进程未就绪，回退 PyTorch 路径')
+                self._vlog('[优化架构] GFPGAN 子进程未就绪，回退 PyTorch 路径')
                 self.gfpgan_subprocess = None
 
         # 启动读取线程
@@ -485,7 +493,7 @@ class DeepPipelineOptimizer:
 
                     # 定期轻量心跳，帮助定位
                     if consecutive_timeouts % 10 == 0:
-                        print(f"[Reader] FRAME_TIMEOUT 已累计 {consecutive_timeouts} 次 "
+                        self._vlog(f"[Reader] FRAME_TIMEOUT 已累计 {consecutive_timeouts} 次 "
                               f"(~{consecutive_timeouts*2}s) @frame={frames_read}，"
                               f"等待上游...", flush=True)
                     continue
@@ -495,7 +503,7 @@ class DeepPipelineOptimizer:
 
                 # EOF
                 if img is None:
-                    print(f"[Reader] EOF reached at frame {frames_read}", flush=True)
+                    self._vlog(f"[Reader] EOF reached at frame {frames_read}", flush=True)
                     if batch_frames:
                         put_ok = False
                         for _ in range(30):            # 给末批更多耐心（30s）
@@ -533,7 +541,7 @@ class DeepPipelineOptimizer:
                   f"{type(e).__name__}: {e}", flush=True)
             traceback.print_exc()
         finally:
-            print(f"[Reader] 线程退出，frames_read={frames_read}, "
+            self._vlog(f"[Reader] 线程退出，frames_read={frames_read}, "
                   f"running={self.running}", flush=True)
             # 关键：发送终止哨兵，避免下游干等
             # ★ 给足耐心（最多 60s），因为此时 F/D 队列可能仍然接近满
@@ -551,7 +559,7 @@ class DeepPipelineOptimizer:
                 print(f"[Reader] ❌ 致命: 终止哨兵未能送入 frame_queue，"
                       f"下游可能需要靠超时退出", flush=True)
             else:
-                print(f"[Reader] ✓ 终止哨兵已送达 frame_queue", flush=True)
+                self._vlog(f"[Reader] ✓ 终止哨兵已送达 frame_queue", flush=True)
 
             # ★★★ 关键修复：不再设置 self.running = False ★★★
             # 下游线程必须继续运行以消化 F/D/S/G 队列中已积压的帧，
@@ -731,7 +739,7 @@ class DeepPipelineOptimizer:
 
                         if not _first_batch_done and self.gfpgan_subprocess is not None:
                             _first_batch_done = True
-                            print('[优化架构] 第一个 SR 批次完成，触发 GFPGAN TRT post-SR 验证...', flush=True)
+                            self._vlog('[优化架构] 第一个 SR 批次完成，触发 GFPGAN TRT post-SR 验证...', flush=True)
                             torch.cuda.synchronize()
                             torch.cuda.empty_cache()
 
@@ -1020,7 +1028,7 @@ class DeepPipelineOptimizer:
                     avg_faces = _n_faces_this_batch / num_frames if num_frames > 0 else 0.0
 
                     if _gfpgan_sub_alive and all_crops:
-                        print(f'[GFPGAN] 使用子进程TRT处理 {_n_faces_this_batch} 个人脸。当前批次共 {num_frames} 帧，平均每帧 {avg_faces:.2f} 个人脸')
+                        self._vlog(f'[GFPGAN] 使用子进程TRT处理 {_n_faces_this_batch} 个人脸。当前批次共 {num_frames} 帧，平均每帧 {avg_faces:.2f} 个人脸')
                         if self._async_dispatcher is not None:
                             _slot = None
                             _submitted = False
@@ -1105,7 +1113,7 @@ class DeepPipelineOptimizer:
                             None, self.args.gfpgan_weight,
                             getattr(self.args, 'gfpgan_batch_size', 8), None, None)
                         all_restored = None
-                        print(f'[GFPGAN] 使用主进程PyTorch处理 {_n_faces_this_batch} 个人脸。当前批次共 {num_frames} 帧，平均每帧 {avg_faces:.2f} 个人脸')
+                        self._vlog(f'[GFPGAN] 使用主进程PyTorch处理 {_n_faces_this_batch} 个人脸。当前批次共 {num_frames} 帧，平均每帧 {avg_faces:.2f} 个人脸')
                     else:
                         restored_by_frame = [[] for _ in face_data]
                         all_restored = None
@@ -1235,7 +1243,7 @@ class DeepPipelineOptimizer:
             return self._task_id_counter
 
     def close(self):
-        print("[Pipeline] 正在停止流水线...", flush=True)
+        self._vlog("[Pipeline] 正在停止流水线...", flush=True)
         self.running = False
 
         if self._async_dispatcher is not None:
@@ -1250,12 +1258,12 @@ class DeepPipelineOptimizer:
                 pass
             except Exception:
                 pass
-        print("[Pipeline] 已发送停止信号到所有队列", flush=True)
+        self._vlog("[Pipeline] 已发送停止信号到所有队列", flush=True)
 
         if self.gfpgan_subprocess:
-            print("[Pipeline] 正在关闭GFPGAN子进程...", flush=True)
+            self._vlog("[Pipeline] 正在关闭GFPGAN子进程...", flush=True)
             self.gfpgan_subprocess.close()
-            print("[Pipeline] GFPGAN子进程已关闭", flush=True)
+            self._vlog("[Pipeline] GFPGAN子进程已关闭", flush=True)
 
         self.detect_executor.shutdown(wait=False)
         self.paste_executor.shutdown(wait=False)
@@ -1264,13 +1272,13 @@ class DeepPipelineOptimizer:
         for name in thread_names:
             thread = getattr(self, name, None)
             if thread and thread.is_alive():
-                print(f"[Pipeline] 等待线程 {name} 结束...", flush=True)
+                self._vlog(f"[Pipeline] 等待线程 {name} 结束...", flush=True)
                 thread.join(timeout=5.0)
                 if thread.is_alive():
                     print(f"[Pipeline] 线程 {name} 未响应，已放弃等待", flush=True)
                     if not thread.is_alive():
                         thread.daemon = True
-        print("[Pipeline] 所有流水线线程已关闭", flush=True)
+        self._vlog("[Pipeline] 所有流水线线程已关闭", flush=True)
 
     def _write_frames(self, writer, pbar, total_frames):
         """写帧 + 全流水线死锁看门狗（含 prefetch 监控）"""
@@ -1300,7 +1308,7 @@ class DeepPipelineOptimizer:
                         if is_end:
                             end_sentinel_count += 1
                             received_end_sentinel = True
-                            print(f"[Pipeline] 写入线程收到结束信号，"
+                            self._vlog(f"[Pipeline] 写入线程收到结束信号，"
                                   f"队列积压: {self._queue_status_str()}", flush=True)
                             continue
                         continue
@@ -1332,17 +1340,33 @@ class DeepPipelineOptimizer:
                     reader_state = ('alive' if reader_alive
                                     else ('eof' if reader_eof else 'DEAD'))
 
-                    pbar.set_postfix(
-                        fps=f'{current_fps:.1f}',
-                        eta=f'{eta:.0f}s',
-                        bs=self.optimal_batch_size,
-                        ms=f'{avg_ms:.0f}',
-                        queue_sizes=(f"P:{p_size}/{p_cap}[{reader_state}]/"
-                                     f"F:{self.frame_queue.qsize()}/"
-                                     f"D:{self.detect_queue.qsize()}/"
-                                     f"S:{self.sr_queue.qsize()}/"
-                                     f"G:{self.gfpgan_queue.qsize()}")
-                    )
+                    postfix = {
+                        'fps': f'{current_fps:.1f}',
+                        'eta': f'{eta:.0f}s',
+                        'bs': self.optimal_batch_size,
+                        'ms': f'{avg_ms:.0f}',
+                    }
+                    if not self._quiet:
+                        postfix['queue_sizes'] = (
+                            f"P:{p_size}/{p_cap}[{reader_state}]/"
+                            f"F:{self.frame_queue.qsize()}/"
+                            f"D:{self.detect_queue.qsize()}/"
+                            f"S:{self.sr_queue.qsize()}/"           # 注意修正为 self.sr_queue
+                            f"G:{self.gfpgan_queue.qsize()}"
+                        )
+                    pbar.set_postfix(postfix)
+
+                    # pbar.set_postfix(
+                    #     fps=f'{current_fps:.1f}',
+                    #     eta=f'{eta:.0f}s',
+                    #     bs=self.optimal_batch_size,
+                    #     ms=f'{avg_ms:.0f}',
+                    #     queue_sizes=(f"P:{p_size}/{p_cap}[{reader_state}]/"
+                    #                  f"F:{self.frame_queue.qsize()}/"
+                    #                  f"D:{self.detect_queue.qsize()}/"
+                    #                  f"S:{self.sr_queue.qsize()}/"
+                    #                  f"G:{self.gfpgan_queue.qsize()}")
+                    # )
 
                     if torch.cuda.is_available():
                         allocated = torch.cuda.memory_allocated() / 1024 ** 3
@@ -1369,9 +1393,10 @@ class DeepPipelineOptimizer:
                             if self._enable_adaptive_batch:
                                 monitor_msg += f" | 密度EMA={self._face_density_ema:.1f}"
                                 monitor_msg += f" | 自适应arbs={self._adaptive_read_batch_size}"
-                        print(monitor_msg, flush=True)
+                                
+                    self._vlog(monitor_msg, flush=True)
 
-                        # self._dump_all_queues()
+                    # self._dump_all_queues()
 
                 except queue.Empty:
                     # 正常终止条件
@@ -1386,7 +1411,7 @@ class DeepPipelineOptimizer:
                     if (written_count >= total_frames
                             and self.sr_queue.qsize() == 0
                             and self.gfpgan_queue.qsize() == 0):
-                        print(f"[Pipeline] 所有帧已写入且上游队列清空，强制退出",
+                        self._vlog(f"[Pipeline] 所有帧已写入且上游队列清空，强制退出",
                               flush=True)
                         break
 
@@ -1406,7 +1431,7 @@ class DeepPipelineOptimizer:
                     if all_q_empty and not received_end_sentinel:
                         if _idle_since is None:
                             _idle_since = time.time()
-                            print(f"[Pipeline][看门狗] 检测到全流水线空转 "
+                            self._vlog(f"[Pipeline][看门狗] 检测到全流水线空转 "
                                   f"(P:{p_size}/{p_cap}[{reader_state}])，"
                                   f"开始计时（阈值 {IDLE_DEADLOCK_TIMEOUT:.0f}s）；"
                                   f"已写入 {written_count}/{total_frames}",
@@ -1444,5 +1469,5 @@ class DeepPipelineOptimizer:
                         except Exception:
                             pass
         finally:
-            print(f"[Pipeline] 写入线程退出，已写入 {written_count}/{total_frames} 帧 "
+            self._vlog(f"[Pipeline] 写入线程退出，已写入 {written_count}/{total_frames} 帧 "
                   f"(最终队列: {self._queue_status_str()})", flush=True)

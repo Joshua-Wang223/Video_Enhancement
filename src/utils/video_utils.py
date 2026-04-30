@@ -731,7 +731,7 @@ def split_video_by_time(input_video: str, output_dir: str,
         shutil.copy2(input_video, segment_file)
         return [segment_file]
     
-    print(f"🔪 分割为 {num_segments} 段...")
+    print(f"🔪 分割为 {num_segments} 段，只 copy 视频流，不重新编码...")
     
     segment_files = []
     segment_pattern = os.path.join(output_dir, "segment_%03d.mp4")
@@ -767,138 +767,6 @@ def split_video_by_time(input_video: str, output_dir: str,
         return []
 
 
-# def merge_videos(video_files: List[str], output_path: str, 
-#                  audio_path: Optional[str] = None,
-#                  config: Optional[Dict[str, Any]] = None) -> bool:
-#     """
-#     合并视频文件
-    
-#     Args:
-#         video_files: 视频文件列表
-#         output_path: 输出路径
-#         audio_path: 音频文件路径（可选）
-#         config: 输出编码配置字典（如 codec, crf, preset 等参数）
-    
-#     Returns:
-#         是否成功
-#     """
-#     if not video_files:
-#         print("❌ 没有视频文件需要合并")
-#         return False
-    
-#     print(f"🔗 合并 {len(video_files)} 个视频片段...")
-    
-#     # 创建文件列表
-#     list_file = output_path + ".list.txt"
-#     with open(list_file, 'w') as f:
-#         for video in video_files:
-#             f.write(f"file '{os.path.abspath(video)}'\n")
-    
-#     try:
-#         # 构建基础命令
-#         cmd = [
-#             'ffmpeg',
-#             '-f', 'concat',
-#             '-safe', '0',
-#             '-i', list_file,
-#         ]
-        
-#         # 如果提供了输出编码配置
-#         if config:  # 直接检查 config 是否不为空
-#             # 使用配置中的编码参数
-#             video_codec = config.get('codec', 'libx264')
-#             preset = config.get('preset', 'medium')
-#             crf = config.get('crf', 18)
-#             pix_fmt = config.get('pix_fmt', 'yuv420p')
-            
-#             # 添加视频编码参数
-#             cmd.extend([
-#                 '-c:v', video_codec,
-#                 '-preset', preset,
-#                 '-crf', str(crf),
-#                 '-pix_fmt', pix_fmt
-#             ])
-            
-#             # 如果有音频，设置音频编码参数
-#             if audio_path and os.path.exists(audio_path):
-#                 cmd.extend(['-i', audio_path])
-#                 audio_codec = config.get('audio_codec', 'aac')
-
-#                 if audio_codec == 'copy':
-#                     cmd.extend(['-c:a', 'copy'])
-#                 else:
-#                     audio_bitrate = config.get('audio_bitrate', '192k')
-#                     cmd.extend([
-#                         '-c:a', audio_codec,
-#                         '-b:a', audio_bitrate,
-#                     ])
-
-#                 cmd.extend([
-#                     '-map', '0:v:0',
-#                     '-map', '1:a:0'
-#                 ])
-#             else:
-#                 # 如果没有音频文件，只映射视频
-#                 cmd.extend(['-map', '0:v:0'])
-#                 # 如果输入视频有音频，也复制音频流
-#                 cmd.extend(['-c:a', 'copy'])
-                
-#         else:
-#             # 如果没有配置参数，使用默认行为（复制流）
-#             cmd.extend(['-c', 'copy'])
-#             cmd.extend(['-vsync', 'passthrough'])
-            
-#             # 如果有音频，添加音频
-#             if audio_path and os.path.exists(audio_path):
-#                 cmd.extend(['-i', audio_path])
-#                 cmd.extend(['-c:a', 'aac', '-b:a', '192k'])
-#                 cmd.extend(['-map', '0:v', '-map', '1:a'])
-#             else:
-#                 # 如果没有音频文件，只映射视频
-#                 cmd.extend(['-map', '0:v:0'])
-#                 # 如果输入视频有音频，也复制音频流
-#                 cmd.extend(['-c:a', 'copy'])
-        
-#         # 添加输出路径
-#         cmd.extend(['-y', output_path])
-        
-#         # 打印命令以便调试
-#         print(f"📋 合并命令: {' '.join(cmd)}")
-        
-#         # 执行合并
-#         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        
-#         if result.returncode != 0:
-#             print(f"❌ 合并失败，错误信息:")
-#             print(result.stderr)
-#             # if os.path.exists(list_file):
-#             #     os.remove(list_file)
-#             return False
-        
-#         # 删除临时文件列表
-#         os.remove(list_file)
-        
-#         # 验证输出文件
-#         if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-#             print(f"✅ 视频合并完成: {output_path}")
-            
-#             # 输出文件信息
-#             try:
-#                 info = VideoInfo(output_path)
-#                 print(f"📊 输出文件信息: {info}")
-#             except:
-#                 print("⚠️  无法获取输出文件详细信息")
-            
-#             return True
-#         else:
-#             print(f"❌ 合并完成但输出文件无效")
-#             return False
-        
-#     except Exception as e:
-#         print(f"❌ 合并过程中发生异常: {e}")
-#         # if os.path.exists(list_file):
-#         #     os.remove(list_file)
-#         return False
 def merge_videos(
     video_files: List[str],
     output_path: str,
@@ -1250,16 +1118,11 @@ def merge_videos_by_codec(
         for file in input_paths:
             # Windows 路径兼容：使用绝对路径并替换反斜杠
             abs_path = file.resolve().as_posix()
-            f.write(f"file '{abs_path}'\n")
+            # 转义单引号：在单引号字符串中，' 需要写成 '\''
+            escaped_path = abs_path.replace("'", "'\\''")
+            f.write(f"file '{escaped_path}'\n")
 
     # ---------- 构建 ffmpeg 命令 ----------
-    # ffmpeg_cmd = [
-    #     'ffmpeg',
-    #     '-y',
-    #     '-f', 'concat',
-    #     '-safe', '0',
-    #     '-i', str(list_path)
-    # ]
     ffmpeg_cmd = ['ffmpeg']
     ffmpeg_cmd += ['-y'] if overwrite else ['-n']
     ffmpeg_cmd += [
@@ -1309,8 +1172,12 @@ def merge_videos_by_codec(
     ffmpeg_cmd += params['extra_args'] + [str(output_path)]
 
     # ---------- 执行 ----------
+    _merge_stderr = ""
     try:
-        subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True, timeout=timeout)
+        _result = subprocess.run(
+            ffmpeg_cmd, check=True, capture_output=True, text=True, timeout=timeout
+        )
+        _merge_stderr = _result.stderr  # rc=0 时保留 stderr 供后续诊断
     except subprocess.TimeoutExpired:
         raise FFmpegError("FFmpeg 进程超时")
     except subprocess.CalledProcessError as e:
@@ -1332,6 +1199,63 @@ def merge_videos_by_codec(
             list_path.unlink(missing_ok=True)
         except OSError:
             pass
+
+    # ---------- 输出校验 ----------
+    # rc=0 并不保证输出文件完整：ffmpeg 在某些静默错误下（如 BSF 畸形 packet、
+    # timescale 问题）会以 rc=0 退出但写出损坏文件（无视频流或空视频轨）。
+    # 用 ffprobe 主动验证视频流存在且 duration > 0，及早发现并报告问题。
+    _out_str = str(output_path)
+
+    def _probe_stream(path: str, stream_sel: str, entry: str) -> str:
+        """返回 ffprobe 指定条目的值字符串，失败返回空字符串。"""
+        try:
+            r = subprocess.run(
+                ["ffprobe", "-v", "error",
+                 "-select_streams", stream_sel,
+                 "-show_entries", f"stream={entry}",
+                 "-of", "csv=p=0", path],
+                capture_output=True, text=True, timeout=30,
+            )
+            return r.stdout.strip() if r.returncode == 0 else ""
+        except Exception:
+            return ""
+
+    # 验证视频流：codec_type=video 且 duration > 0
+    _v_info = _probe_stream(_out_str, "v:0", "codec_type,duration")
+    _has_video = (
+        _v_info
+        and "video" in _v_info.lower()
+        and not all(p.strip() in ("N/A", "0", "0.000000", "")
+                    for p in _v_info.split(",")[1:])
+    )
+
+    if not _has_video:
+        # 打印 ffmpeg stderr 以便诊断（即使 rc=0 也可能有有用警告）
+        if _merge_stderr:
+            _warn_lines = [l for l in _merge_stderr.splitlines()
+                           if any(k in l.lower() for k in
+                                  ("warning", "error", "invalid", "dts", "pts",
+                                   "moov", "track", "stream", "codec"))]
+            if _warn_lines:
+                logger.warning("ffmpeg 合并 stderr（rc=0）:\n" +
+                               "\n".join(_warn_lines[-20:]))
+        raise FFmpegError(
+            f"合并输出文件缺少有效视频流: {output_path}\n"
+            f"ffprobe v:0 返回: {_v_info!r}\n"
+            f"完整 ffmpeg 命令: {' '.join(ffmpeg_cmd)}\n"
+            f"诊断：请检查输入分段是否均包含有效视频帧"
+            + (f"\nffmpeg stderr 末尾:\n{_merge_stderr[-800:]}"
+               if _merge_stderr else "")
+        )
+
+    # 有外部音频时同样验证音频流
+    if audio_path:
+        _a_info = _probe_stream(_out_str, "a:0", "codec_type")
+        if not _a_info or "audio" not in _a_info.lower():
+            logger.warning(
+                f"合并输出文件缺少音频流（视频正常）: {output_path}\n"
+                f"ffprobe a:0 返回: {_a_info!r}"
+            )
 
     return True
 

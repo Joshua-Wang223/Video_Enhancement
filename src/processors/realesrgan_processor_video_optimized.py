@@ -385,12 +385,16 @@ class RealESRGANVideoProcessor:
             if duration:
                 print(f"   📊 片段时长: {format_time(duration)}")
 
+            start_time = time.time()
+
             success = self._run_esrgan_video(input_path, output_path, segment_idx)
+
+            elapsed = time.time() - start_time
 
             if success:
                 if verify_video_integrity(output_path):
                     out_duration = get_video_duration(output_path)
-                    print(f"   ✅ 处理完成: {format_time(out_duration)}")
+                    print(f"   ✅ 处理完成: 输出时长 {format_time(out_duration)} | 耗时 {format_time(elapsed)}")
                     return True
                 else:
                     print("   ❌ 输出文件验证失败")
@@ -537,13 +541,13 @@ class RealESRGANVideoProcessor:
             if ns.report:
                 print(f"   📊 性能报告: {ns.report}")
 
-            start_time = time.time()
+            # start_time = time.time()
             main_optimized(ns)
-            elapsed = time.time() - start_time
+            # elapsed = time.time() - start_time
 
             # main_optimized 直接写入 args.output
             if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                print(f"   ✅ 处理完成 ({format_time(elapsed)})")
+                # print(f"   ✅ ESRGAN推理完成 (耗时{format_time(elapsed)})")
                 return True
             else:
                 print(f"   ❌ 输出文件未生成: {output_path}")
@@ -564,10 +568,10 @@ class RealESRGANVideoProcessor:
         try:
             if self.segment_dir and self.segment_dir.exists():
                 shutil.rmtree(self.segment_dir)
-                print("✅ 已删除分段文件")
+                # print("✅ 已删除分段文件")
             if self.processed_dir and self.processed_dir.exists():
                 shutil.rmtree(self.processed_dir)
-                print("✅ 已删除处理文件")
+                # print("✅ 已删除处理文件")
         except Exception as e:
             print(f"⚠️  清理失败: {e}")
 

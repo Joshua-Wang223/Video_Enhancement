@@ -180,6 +180,12 @@ def main_optimized(args):
     #          确保任何调用方（CLI 或外部模块）都得到一致的处理结果
     # =========================================================================
 
+    # 静默模式标志与辅助打印函数
+    quiet = getattr(args, 'quiet', True)
+    def vlog(*_a, **_k):
+        if not quiet:
+            print(*_a, **_k)
+
     # 0. 硬件加速开关处理
     if getattr(args, 'no_hwaccel', False):
         args.use_hwaccel = False
@@ -253,31 +259,36 @@ def main_optimized(args):
         args.report = f"{out_base}_report.json"
         print(f"[自动报告] 使用默认报告路径: {args.report}")
 
-    # 8. 打印版本及特性横幅（仅在 CLI 调用时打印，但放在这里也无妨）
-    print("Real-ESRGAN Video Enhancement v6.4 - 架构优化版")
-    print("主要优化特性:")
-    print("1. 深度流水线架构（4级并行处理）")
-    print("2. GPU内存池优化（避免频繁分配释放）")
-    print("3. 异步计算模式（多CUDA流并行）")
-    print("4. 多级缓冲队列（深度缓冲减少等待）")
-    print("5. 优化线程池配置（提高并发效率）")
-    print("6. 人脸检测置信度过滤（减少无效 GFPGAN 推理）")
-    print("7. 自适应批处理（根据人脸密度动态调整）")
-    print("8. SR H2D 预取重叠（利用空闲 GPU 内存总线）")
-    if getattr(args, 'preview', False):
-        print(f"9. 实时预览已请求（间隔 {getattr(args, 'preview_interval', 30)} 帧，按 q 退出）")
-    print()
+    # 8. 打印版本及特性横幅
+    if quiet:
+        print("Real-ESRGAN Video Enhancement v6.4 - 架构优化版")
+        if getattr(args, 'preview', False):
+            print(f"[预览] 实时预览已请求（间隔 {getattr(args, 'preview_interval', 30)} 帧，按 q 退出）")
+    else:
+        print("Real-ESRGAN Video Enhancement v6.4 - 架构优化版")
+        print("主要优化特性:")
+        print("1. 深度流水线架构（4级并行处理）")
+        print("2. GPU内存池优化（避免频繁分配释放）")
+        print("3. 异步计算模式（多CUDA流并行）")
+        print("4. 多级缓冲队列（深度缓冲减少等待）")
+        print("5. 优化线程池配置（提高并发效率）")
+        print("6. 人脸检测置信度过滤（减少无效 GFPGAN 推理）")
+        print("7. 自适应批处理（根据人脸密度动态调整）")
+        print("8. SR H2D 预取重叠（利用空闲 GPU 内存总线）")
+        if getattr(args, 'preview', False):
+            print(f"9. 实时预览已请求（间隔 {getattr(args, 'preview_interval', 30)} 帧，按 q 退出）")
+        print()
 
     # =========================================================================
     # 原有 main_optimized 核心逻辑开始
     # =========================================================================
 
-    print("[优化架构] 修复版: 改进 GFPGAN TRT 就绪判断")
+    vlog("[优化架构] 修复版: 改进 GFPGAN TRT 就绪判断")
     if args.face_enhance:
-        print(f"[优化架构] 人脸检测置信度阈值: {getattr(args, 'face_det_threshold', 0.5)}")
+        vlog(f"[优化架构] 人脸检测置信度阈值: {getattr(args, 'face_det_threshold', 0.5)}")
         if getattr(args, 'adaptive_batch', True):
-            print(f"[优化架构] 自适应批处理: 已启用")
-    print("[优化架构] 阶段 0: 准备环境（不初始化 CUDA）...")
+            vlog(f"[优化架构] 自适应批处理: 已启用")
+    vlog("[优化架构] 阶段 0: 准备环境（不初始化 CUDA）...")
 
     cuda_available = torch.backends.cuda.is_built() and torch.cuda.device_count() > 0
     if not cuda_available:
@@ -285,8 +296,8 @@ def main_optimized(args):
         device = torch.device('cpu')
     else:
         device = torch.device('cuda')
-        print(f"[优化架构] CUDA 编译支持: 是")
-        print(f"[优化架构] 延迟 CUDA Runtime 初始化直到 GFPGAN 子进程就绪")
+        vlog(f"[优化架构] CUDA 编译支持: 是")
+        vlog(f"[优化架构] 延迟 CUDA Runtime 初始化直到 GFPGAN 子进程就绪")
 
     _early_gfpgan_subprocess = None
     gfpgan_ready = False
@@ -297,7 +308,7 @@ def main_optimized(args):
         if not cuda_available:
             print("[优化架构] 警告: CUDA 不可用，跳过 GFPGAN TRT")
         else:
-            print("[优化架构] 阶段 1: 预启动 GFPGAN 子进程（GPU 干净状态）...")
+            vlog("[优化架构] 阶段 1: 预启动 GFPGAN 子进程（GPU 干净状态）...")
             _model_paths_early = {
                 '1.3': 'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.3.pth',
                 '1.4': 'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth',
@@ -314,7 +325,7 @@ def main_optimized(args):
             if torch.cuda.is_initialized():
                 torch.cuda.empty_cache()
 
-            print('[优化架构] 启动 GFPGAN 子进程...')
+            vlog('[优化架构] 启动 GFPGAN 子进程...')
             _early_gfpgan_subprocess = GFPGANSubprocess(
                 model_path=_model_path_early, device=device,
                 gfpgan_weight=args.gfpgan_weight, gfpgan_batch_size=args.gfpgan_batch_size,
@@ -323,7 +334,7 @@ def main_optimized(args):
                 gfpgan_model=args.gfpgan_model,
             )
 
-            print('[优化架构] 等待 GFPGAN 子进程完成初始化...')
+            vlog('[优化架构] 等待 GFPGAN 子进程完成初始化...')
             max_wait = 5400
             deadline = time.time() + max_wait
             _poll_interval = 3
@@ -346,7 +357,7 @@ def main_optimized(args):
                         gfpgan_ready = False
                         gfpgan_mode = "failed_trt_warmup"
                         break
-                    print('[优化架构] GFPGAN 子进程 signaled ready 且进程稳定')
+                    vlog('[优化架构] GFPGAN 子进程 signaled ready 且进程稳定')
                     gfpgan_ready = True
                     use_gfpgan_subprocess = True
                     gfpgan_mode = "subprocess_trt"
@@ -365,9 +376,9 @@ def main_optimized(args):
                     _early_gfpgan_subprocess = None
                 gfpgan_mode = "main_pytorch_fallback"
             else:
-                print('[优化架构] GFPGAN 子进程准备就绪')
+                vlog('[优化架构] GFPGAN 子进程准备就绪')
 
-    print("[优化架构] 阶段 2: 初始化主进程 CUDA 并加载 RealESRGAN...")
+    vlog("[优化架构] 阶段 2: 初始化主进程 CUDA 并加载 RealESRGAN...")
 
     if cuda_available:
         try:
@@ -378,7 +389,7 @@ def main_optimized(args):
             torch.cuda.empty_cache()
             mem_allocated = torch.cuda.memory_allocated() / 1024 ** 3
             mem_reserved = torch.cuda.memory_reserved() / 1024 ** 3
-            print(f"[优化架构] 当前显存: 已分配 {mem_allocated:.2f}GB, 预留 {mem_reserved:.2f}GB")
+            vlog(f"[优化架构] 当前显存: 已分配 {mem_allocated:.2f}GB, 预留 {mem_reserved:.2f}GB")
         except Exception as e:
             print(f"[优化架构] CUDA 初始化失败: {e}")
             cuda_available = False
@@ -409,7 +420,7 @@ def main_optimized(args):
     face_enhancer = None
     if args.face_enhance and GFPGANer is not None:
         if use_gfpgan_subprocess and gfpgan_ready and _early_gfpgan_subprocess is not None:
-            print("[优化架构] GFPGAN 由子进程处理，主进程创建 detect helper...")
+            vlog("[优化架构] GFPGAN 由子进程处理，主进程创建 detect helper...")
             try:
                 from facexlib.utils.face_restoration_helper import FaceRestoreHelper
 
@@ -426,14 +437,14 @@ def main_optimized(args):
                         self.model_path = None
 
                 face_enhancer = DummyGFPGANer(device, args.outscale)
-                print("[优化架构] Detect helper 创建成功（GFPGAN 推理由子进程处理）")
+                vlog("[优化架构] Detect helper 创建成功（GFPGAN 推理由子进程处理）")
             except Exception as e:
                 print(f"[优化架构] Detect helper 创建失败: {e}")
                 face_enhancer = None
                 use_gfpgan_subprocess = False
                 gfpgan_ready = False
         else:
-            print("[优化架构] 加载GFPGAN主进程模型...")
+            vlog("[优化架构] 加载GFPGAN主进程模型...")
             try:
                 model_paths = {
                     '1.3': 'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.3.pth',
@@ -464,11 +475,12 @@ def main_optimized(args):
                 face_enhancer = None
                 gfpgan_mode = "disabled"
 
-    print("[优化架构] 阶段 3: 创建视频读写器...")
+    vlog("[优化架构] 阶段 3: 创建视频读写器...")
     reader = FFmpegReader(
         args.input, ffmpeg_bin=getattr(args, 'ffmpeg_bin', 'ffmpeg'),
         prefetch_factor=getattr(args, 'prefetch_factor', 48),
         use_hwaccel=getattr(args, 'use_hwaccel', True),
+        quiet=quiet,
     )
 
     out_h = int(reader.height * args.outscale)
@@ -521,13 +533,13 @@ def main_optimized(args):
 
     if _early_gfpgan_subprocess is not None and use_gfpgan_subprocess and gfpgan_ready:
         args._early_gfpgan_subprocess = _early_gfpgan_subprocess
-        print(f'[优化架构] GFPGAN 子进程已绑定到流水线（模式: {gfpgan_mode}）')
+        vlog(f'[优化架构] GFPGAN 子进程已绑定到流水线（模式: {gfpgan_mode}）')
     else:
         args._early_gfpgan_subprocess = None
         if args.face_enhance:
-            print(f'[优化架构] GFPGAN 使用主进程模式: {gfpgan_mode}')
+            vlog(f'[优化架构] GFPGAN 使用主进程模式: {gfpgan_mode}')
 
-    print("[优化架构] 阶段 4: 启动优化流水线...")
+    vlog("[优化架构] 阶段 4: 启动优化流水线...")
     pipeline = DeepPipelineOptimizer(upsampler, face_enhancer, args, device, trt_accel=trt_accel,
                                      input_h=reader.height, input_w=reader.width)
 
@@ -541,9 +553,8 @@ def main_optimized(args):
         import traceback
         traceback.print_exc()
     finally:
-        print("\n[优化架构] ===========================================")
-        print("[优化架构] 视频推理完成，正在清理资源...")
-        print("[优化架构] ===========================================\n")
+        print("\n[优化架构] 视频推理完成，正在清理资源...")
+        vlog("[优化架构] ===========================================")
 
         # print("[优化架构] 步骤1/4: 关闭流水线线程...")
         pipeline.close()
@@ -603,13 +614,14 @@ def main_optimized(args):
             actual_fps = reader.nb_frames / total_time if total_time > 0 else 0
             print(f"\n[性能统计] 总时间: {total_time:.1f}秒 | 平均: {avg_time:.1f}ms | FPS: {actual_fps:.2f}")
             print(f"[性能统计] GFPGAN 模式: {gfpgan_mode}")
-            if pipeline._face_filtered_total > 0:
-                print(f"[性能统计] 人脸检测: 保留 {pipeline._face_count_total} 个, "
-                      f"过滤 {pipeline._face_filtered_total} 个 "
-                      f"(阈值={pipeline.face_det_threshold})")
-            if pipeline._enable_adaptive_batch:
-                print(f"[性能统计] 最终人脸密度EMA: {pipeline._face_density_ema:.2f} 人脸/帧, "
-                      f"最终自适应arbs: {pipeline._adaptive_read_batch_size}")
+            if args.face_enhance:
+                if pipeline._face_filtered_total > 0:
+                    print(f"[性能统计] 人脸检测: 保留 {pipeline._face_count_total} 个, "
+                          f"过滤 {pipeline._face_filtered_total} 个 "
+                          f"(阈值={pipeline.face_det_threshold})")
+                if pipeline._enable_adaptive_batch:
+                    print(f"[性能统计] 最终人脸密度EMA: {pipeline._face_density_ema:.2f} 人脸/帧, "
+                          f"最终自适应arbs: {pipeline._adaptive_read_batch_size}")
 
 
 def main():
@@ -690,6 +702,10 @@ def main():
                         help='启用实时预览窗口（显示最终输出结果，按 q 键提前退出）')
     parser.add_argument('--preview-interval', type=int, default=30,
                         help='预览帧间隔（每多少帧刷新一次窗口）')
+
+    # 静默模式
+    parser.add_argument('--quiet', action=argparse.BooleanOptionalAction, default=True,
+                        help='静默模式（默认开启），仅显示关键信息；--no-quiet 开启详细日志')
 
     args = parser.parse_args()
 

@@ -342,8 +342,13 @@ def _print_startup_info(config: Config, args: argparse.Namespace, mode: str) -> 
     print(f"     batch_size : {ifr('batch_size', 4)}"
           f" (上限 {ifr('max_batch_size', 8)})"
           f"  |  NVDEC: {ifr('use_hwaccel', True)}")
-    print(f"     编码器     : {ifr('codec', 'libx264')}"
-          f" | CRF: {ifr('crf', 23)}")
+
+    if getattr(args, "codec_ifrnet", None) == 'copy':
+        print(f"     编码器     : copy")
+    else:
+        print(f"     编码器     : {ifr('codec', 'libx264')}"
+              f" | CRF: {ifr('crf', 21)}"
+              f" | preset: {ifr('x264_preset', 'medium')}")
 
     # ── Real-ESRGAN ──────────────────────────────────────────────────────────
     print()
@@ -360,9 +365,13 @@ def _print_startup_info(config: Config, args: argparse.Namespace, mode: str) -> 
     print(f"     batch_size : {esr('batch_size', 6)}"
           f"  |  prefetch: {esr('prefetch_factor', 48)}"
           f"  |  NVDEC: {esr('use_hwaccel', True)}")
-    print(f"     编码器     : {esr('codec', 'libx264')}"
-          f" | CRF: {esr('crf', 23)}"
-          f" | preset: {esr('x264_preset', 'medium')}")
+
+    if getattr(args, "codec_esrgan", None) == 'copy':
+        print(f"     编码器     : copy")
+    else:
+        print(f"     编码器     : {esr('codec', 'libx264')}"
+              f" | CRF: {esr('crf', 21)}"
+              f" | preset: {esr('x264_preset', 'medium')}")
 
     # face_enhance
     face_on = esr("face_enhance", False)
@@ -391,10 +400,30 @@ def _print_startup_info(config: Config, args: argparse.Namespace, mode: str) -> 
         print(f"\n  预去噪阶段    : 关闭")
 
     # 最终合并输出
-    _oc = config.get("output", "codec",  default="")
-    _ocrf = config.get("output", "crf",  default="")
-    _op = config.get("output", "preset", default="")
-    if _oc or _ocrf or _op:
+    _use_copy = config.get("output", "use_copy", default=True)
+    if _use_copy:
+        # --output-codec/crf/preset 均未在 CLI 指定 → stream copy
+        # 显示第二阶段处理器的编码参数（决定实际画质的是第二阶段）
+        if mode == "upscale_then_interpolate":
+            _2nd_codec  = ifr("codec",       "libx264")
+            _2nd_crf    = ifr("crf",         23)
+            _2nd_preset = ifr("x264_preset", "medium")
+            _2nd_label  = "IFRNet"
+        else:  # interpolate_then_upscale / skip_*
+            _2nd_codec  = esr("codec",       "libx264")
+            _2nd_crf    = esr("crf",         23)
+            _2nd_preset = esr("x264_preset", "medium")
+            _2nd_label  = "ESRGan"
+        _norm_skip = getattr(args, "skip_seg_normalize", False)
+        _norm_note = "已禁用 --skip-seg-normalize" if _norm_skip else "含 FIX-C extradata 归一化"
+        print(f"  最终合并输出  : -c:v copy ({_norm_note})"
+              f"（继承 {_2nd_label}: {_2nd_codec}"
+              f" | CRF: {_2nd_crf}"
+              f" | preset: {_2nd_preset}）")
+    else:
+        _oc   = config.get("output", "codec",  default="")
+        _ocrf = config.get("output", "crf",    default="")
+        _op   = config.get("output", "preset", default="")
         print(f"  最终合并输出  : codec={_oc or '默认'}"
               f" | CRF={_ocrf or '默认'}"
               f" | preset={_op or '默认'}")
@@ -405,8 +434,10 @@ def _print_startup_info(config: Config, args: argparse.Namespace, mode: str) -> 
     if _preview:
         print(f"  实时预览      : 启用 (间隔 {esr('preview_interval', 30)} 帧)")
     if _report:
-        print(f"  性能报告      : {_report}")
-
+        print(f"  性能报告(ESR) : {_report}")
+    _main_report = config.get("output", "report_path", default="")
+    if _main_report:
+        print(f"  流水线报告    : {_main_report}")
     print("─" * 70 + "\n")
 
 
@@ -566,6 +597,147 @@ def _print_completion(output_path: str, elapsed: float, env_info: dict):
             pass
     print()
 
+
+
+# =============================================================================
+# 最终报告写出                                                  [--report]
+# =============================================================================
+
+def _write_final_report(
+    report_path:  str,
+    input_video:  str,
+    output_video: str,
+    mode:         str,
+    elapsed:      float,
+    success:      bool,
+    env_info:     dict,
+    args:         argparse.Namespace,
+    extra:        Optional[dict] = None,
+) -> None:
+    """
+    将本次流水线运行摘要写入 JSON 文件（由 --report 指定路径）。
+
+    字段说明
+    --------
+    version             脚本版本
+    timestamp           写入时间（ISO-8601）
+    success             是否成功
+    input / output      输入 / 输出路径
+    mode                处理模式
+    elapsed_seconds     总耗时（秒）
+    elapsed_human       格式化耗时
+    input_size_mb / output_size_mb / size_ratio
+    input_duration_s / output_duration_s
+    gpu_peak_memory_gb  GPU 峰值显存（GB）
+    env                 运行环境（Python / PyTorch / GPU）
+    params              本次运行的关键 CLI 参数快照
+    extra               调用方附加的额外 kv（如批量索引）
+    """
+    import json
+    import datetime
+
+    report: dict = {
+        "version":        VERSION,
+        "timestamp":      datetime.datetime.now().isoformat(timespec="seconds"),
+        "success":        success,
+        "input":          input_video,
+        "output":         output_video,
+        "mode":           mode,
+        "elapsed_seconds": round(elapsed, 2),
+        "elapsed_human":   _fmt_time(elapsed),
+    }
+
+    # ── 文件大小 / 时长 ───────────────────────────────────────────────────────
+    try:
+        report["input_size_mb"] = round(
+            Path(input_video).stat().st_size / (1024 * 1024), 2)
+    except Exception:
+        report["input_size_mb"] = None
+
+    if success and os.path.exists(output_video):
+        try:
+            out_sz = Path(output_video).stat().st_size / (1024 * 1024)
+            report["output_size_mb"] = round(out_sz, 2)
+            in_sz = report["input_size_mb"] or 0
+            report["size_ratio"] = round(out_sz / in_sz, 3) if in_sz else None
+        except Exception:
+            report["output_size_mb"] = None
+            report["size_ratio"]     = None
+    else:
+        report["output_size_mb"] = None
+        report["size_ratio"]     = None
+
+    try:
+        report["input_duration_s"] = round(
+            get_video_duration(input_video) or 0, 3)
+    except Exception:
+        report["input_duration_s"] = None
+
+    if success and os.path.exists(output_video):
+        try:
+            report["output_duration_s"] = round(
+                get_video_duration(output_video) or 0, 3)
+        except Exception:
+            report["output_duration_s"] = None
+    else:
+        report["output_duration_s"] = None
+
+    # ── GPU 峰值显存 ──────────────────────────────────────────────────────────
+    report["gpu_peak_memory_gb"] = None
+    if env_info.get("cuda_available"):
+        try:
+            import torch
+            report["gpu_peak_memory_gb"] = round(
+                torch.cuda.max_memory_allocated() / (1024 ** 3), 3)
+        except Exception:
+            pass
+
+    # ── 运行环境 ──────────────────────────────────────────────────────────────
+    report["env"] = {
+        "python":        env_info.get("python_version"),
+        "torch":         env_info.get("torch_version"),
+        "gpu_name":      env_info.get("gpu_name"),
+        "gpu_memory_gb": env_info.get("gpu_memory_gb"),
+        "ffmpeg":        env_info.get("ffmpeg_available"),
+    }
+
+    # ── 关键 CLI 参数快照 ─────────────────────────────────────────────────────
+    _snap_keys = [
+        "mode", "interpolation_factor", "upscale_factor", "segment_duration",
+        "skip_interpolate", "skip_upscale",
+        "batch_size_ifrnet", "max_batch_size_ifrnet",
+        "no_fp16_ifrnet", "no_compile_ifrnet", "no_cuda_graph_ifrnet",
+        "use_tensorrt_ifrnet", "no_tensorrt_ifrnet",
+        "batch_size_esrgan", "prefetch_factor_esrgan",
+        "no_fp16_esrgan", "no_compile_esrgan", "no_cuda_graph_esrgan",
+        "use_tensorrt_esrgan", "no_tensorrt_esrgan",
+        "tile_size", "tile_pad", "pre_pad", "denoise_strength",
+        "face_enhance", "gfpgan_model", "gfpgan_weight",
+        "gfpgan_batch_size", "face_det_threshold",
+        "no_adaptive_batch_esrgan", "gfpgan_trt",
+        "output_codec", "output_crf", "output_preset",
+        "denoise", "denoise_model", "denoise_strength_pre",
+        "auto_cleanup", "keep_intermediate",
+    ]
+    report["params"] = {
+        k: getattr(args, k, None)
+        for k in _snap_keys
+        if hasattr(args, k)
+    }
+
+    # ── 附加字段（如批量索引）────────────────────────────────────────────────
+    if extra:
+        report["extra"] = extra
+
+    # ── 写出 JSON ─────────────────────────────────────────────────────────────
+    try:
+        out_p = Path(report_path)
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_p, "w", encoding="utf-8") as fp:
+            json.dump(report, fp, ensure_ascii=False, indent=2)
+        print(f"   📄 流水线报告已写出: {report_path}")
+    except Exception as e:
+        print(f"   ⚠️  报告写出失败: {e}")
 
 def _print_failure_hints(elapsed: float):
     """打印失败恢复提示。"""
@@ -737,17 +909,226 @@ def _apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
         config.set("models", "realesrgan", "preview_interval", value=args.preview_interval_esrgan)
 
     # ── 最终合并输出参数 ─────────────────────────────────────────────────────
+    # ── 最終合并输出参数：copy-by-default ──────────────────────────────────
+    # 记录三个输出参数是否有任意一个在 CLI 中被显式指定。
+    # 若均未指定，最终合并阶段自动使用 -c:v copy，不重新编码。
+    _output_cli_any = False
     if args.output_codec:
         config.set("output", "codec",  value=args.output_codec)
+        _output_cli_any = True
     if args.output_crf is not None:
         config.set("output", "crf",    value=args.output_crf)
+        _output_cli_any = True
     if args.output_preset:
         config.set("output", "preset", value=args.output_preset)
+        _output_cli_any = True
+    # 写入 use_copy 标志供合并步骤读取
+    config.set("output", "use_copy", value=(not _output_cli_any))
+
+    # ── 最终报告输出路径（--report）──────────────────────────────────────
+    if getattr(args, "report", None):
+        config.set("output", "report_path", value=args.report)
 
     # ── TRT 缓存目录（全局，IFRNet 与 ESRGan 共享）────────────────────────
     if args.trt_cache_dir:
         config.set("paths", "trt_cache_dir", value=args.trt_cache_dir)
 
+
+
+# =============================================================================
+# FIX-C: 合并前分段 extradata 归一化                                    [FIX-C]
+# =============================================================================
+
+def _get_seg_codec(seg_path: str) -> str:
+    """
+    用 ffprobe 检测视频分段的编解码器名称，返回小写规范名：
+      "h264" | "hevc" | "vp9" | "av1" | "" (无法检测)
+    """
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error",
+             "-select_streams", "v:0",
+             "-show_entries", "stream=codec_name",
+             "-of", "csv=p=0", str(seg_path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        raw = r.stdout.strip().lower() if r.returncode == 0 else ""
+    except Exception:
+        raw = ""
+
+    if "264" in raw or raw == "avc":
+        return "h264"
+    if "265" in raw or "hevc" in raw:
+        return "hevc"
+    return raw  # vp9 / av1 / mpeg4 / "" 等原样返回
+
+
+def _normalize_segs_for_copy(
+    seg_paths: list,
+    codec_hint: str = "",
+) -> list:
+    """
+    FIX-C: copy 合并前对所有分段执行零损耗 remux 归一化，统一 MP4 时间基，
+    修复独立 ffmpeg 子进程编码时各分段 timescale 微差导致的
+    concat demuxer AVERROR_EXIT(254) 问题。
+
+    处理步骤（仅对 H.264 / H.265）：
+      1. -video_track_timescale 90000 — 统一 MP4 时间基为 90 kHz
+
+    注意：不使用 -bsf:v dump_extra（该 BSF 专为 Annex B 格式设计，
+    用于 MP4/AVCC 时会产生畸形 packet 导致视频流静默丢失）。
+
+    其他编码格式（VP9 / AV1 / ProRes 等）无此 timescale 问题，直接跳过。
+
+    参数
+    ----
+    seg_paths   : 待处理的分段路径列表（Path 或 str）
+    codec_hint  : 已知编解码器名称（可省略，会自动检测）
+
+    Returns
+    -------
+    归一化后的路径列表（原地替换，路径对象不变）
+    """
+    import subprocess
+    from pathlib import Path as _Path
+
+    if not seg_paths:
+        return seg_paths
+
+    # ── 确定编解码器 ──────────────────────────────────────────────────────────
+    codec = codec_hint.lower() if codec_hint else ""
+    if codec:
+        # 规范化 hint（h264_nvenc → h264，hevc_nvenc → hevc 等）
+        if "264" in codec or codec == "avc":
+            codec = "h264"
+        elif "265" in codec or "hevc" in codec:
+            codec = "hevc"
+    else:
+        codec = _get_seg_codec(str(seg_paths[0]))
+
+    # ── 只处理 H.264 / H.265 ─────────────────────────────────────────────────
+    if codec not in ("h264", "hevc"):
+        if codec:
+            print(f"   ℹ️  [FIX-C] 编解码器 '{codec}' 无需 timescale 归一化，跳过")
+        else:
+            print("   ⚠️  [FIX-C] 无法检测编解码器，跳过归一化（若合并失败请检查分段文件）")
+        return seg_paths
+
+    print(f"   🔧 [FIX-C] 对 {len(seg_paths)} 个分段执行 timescale 归一化"
+          f"（codec={codec}, timescale=90000）...")
+
+    def _has_decodable_video(path: _Path) -> bool:
+        """
+        验证文件中存在视频流，且该流包含可解码帧（duration > 0）。
+
+        仅检查容器元数据"流存在"不够——某些写法会写入 duration=0 的空
+        视频轨（元数据存在但无有效帧）；ffprobe 能看到流，但 ffmpeg concat
+        读不出任何视频帧，最终输出只有音频。必须同时验证 duration。
+        """
+        try:
+            r2 = subprocess.run(
+                ["ffprobe", "-v", "error",
+                 "-select_streams", "v:0",
+                 "-show_entries", "stream=codec_type,duration",
+                 "-of", "csv=p=0", str(path)],
+                capture_output=True, text=True, timeout=30,
+            )
+            if r2.returncode != 0 or not r2.stdout.strip():
+                return False
+            line = r2.stdout.strip().split("\n")[0]
+            parts = line.split(",")
+            if not parts or "video" not in parts[0].lower():
+                return False
+            if len(parts) >= 2:
+                dur_str = parts[1].strip()
+                if dur_str in ("N/A", "0", "0.000000", ""):
+                    return False
+            return True
+        except Exception:
+            return False
+
+    normalized: list = []
+    ok_count   = 0
+    fail_count = 0
+
+    for seg in seg_paths:
+        seg_p = _Path(str(seg))
+        tmp_p = seg_p.with_suffix(".fixc_tmp.mp4")
+
+        try:
+            # FIX-C-CMD: 仅做 timescale 归一化，不使用任何 BSF。
+            #
+            # ❌ 之前 -bsf:v dump_extra 的根本问题：
+            #   dump_extra 是为 Annex B 格式 H.264（MPEG-TS/裸流）设计，
+            #   其作用是把 SPS/PPS extradata 注入每个 IDR 帧 packet 前缀。
+            #   MP4 使用 AVCC 格式（length-prefixed NAL）。在 AVCC→AVCC
+            #   copy remux 上应用 dump_extra，ffmpeg 会把 Annex B 风格的
+            #   extradata 插入 AVCC packet 头部，产生格式畸形的 packet。
+            #   结果（取决于 ffmpeg 版本）：rc=0 但视频流无有效帧，或整个
+            #   视频轨被静默丢弃——这就是合并输出"只有音频"的直接原因。
+            #
+            # ✅ 真实根因是 timescale 不一致，不是 extradata 不一致：
+            #   独立 ffmpeg 子进程编码时，各分段 MP4 timescale 可能存在
+            #   微差；concat demuxer 遇到跳变时触发 AVERROR_EXIT(254)。
+            #   NVENC 以相同参数编码的分段 SPS/PPS 本就一致，无需 BSF。
+            #   仅用 -video_track_timescale 90000 统一时间基即可。
+            cmd = [
+                "ffmpeg", "-y", "-i", str(seg_p),
+                "-map", "0:v:0",   # 显式映射，防止隐式映射歧义
+                "-map", "0:a?",    # ? = 无音频流时静默跳过
+                "-c:v", "copy",
+                "-c:a", "copy",
+                # FIX-C-TS: 统一 MP4 时间基为 90 kHz
+                "-video_track_timescale", "90000",
+                str(tmp_p),
+            ]
+            r = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=300,
+            )
+
+            # FIX-C-VERIFY: 三重校验 —— rc=0 + 文件非空 + 视频帧可解码
+            # 必须用 ffprobe 主动验证 duration，不能只检查流元数据是否
+            # 存在（空视频轨可通过元数据检查但 duration=0，无法播放）。
+            tmp_ok = (
+                r.returncode == 0
+                and tmp_p.exists()
+                and tmp_p.stat().st_size > 4096
+                and _has_decodable_video(tmp_p)
+            )
+
+            if tmp_ok:
+                seg_p.unlink()
+                tmp_p.rename(seg_p)
+                normalized.append(seg)
+                ok_count += 1
+            else:
+                _stderr = r.stderr[-600:] if r.stderr else "(无输出)"
+                _reason = (
+                    f"rc={r.returncode}" if r.returncode != 0
+                    else "视频帧校验失败（duration=0 或流不存在）"
+                )
+                print(f"   ⚠️  [FIX-C] {seg_p.name} 归一化失败"
+                      f"（{_reason}），使用原始文件\n"
+                      f"       ffmpeg stderr: {_stderr}")
+                if tmp_p.exists():
+                    tmp_p.unlink()
+                normalized.append(seg)
+                fail_count += 1
+        except Exception as exc:
+            print(f"   ⚠️  [FIX-C] {seg_p.name} 归一化异常: {exc}，使用原始文件")
+            if tmp_p.exists():
+                tmp_p.unlink()
+            normalized.append(seg)
+            fail_count += 1
+
+    if fail_count == 0:
+        print(f"   ✅ [FIX-C] 全部 {len(seg_paths)} 个分段归一化完成")
+    else:
+        print(f"   ⚠️  [FIX-C] {ok_count}/{len(seg_paths)} 个分段归一化成功"
+              f"，{fail_count} 个失败（已保留原始文件，合并可能仍会失败）")
+
+    return normalized
 
 # =============================================================================
 # 单文件处理
@@ -847,12 +1228,25 @@ def _process_single(
         except KeyboardInterrupt:
             print("\n\n⚠️  用户中断（Ctrl+C），断点已保存。")
             return False
+        _elapsed_sk = time.time() - t0
         if success:
             _run_postprocess_stage(output_video, input_video,
                                    denoised_path, args, env_info)
-            _print_completion(output_video, time.time() - t0, env_info)
+            _print_completion(output_video, _elapsed_sk, env_info)
         else:
-            _print_failure_hints(time.time() - t0)
+            _print_failure_hints(_elapsed_sk)
+        _rpt = config.get("output", "report_path", default="")
+        if _rpt:
+            _write_final_report(
+                report_path=_rpt,
+                input_video=input_video,
+                output_video=output_video,
+                mode="skip_interpolate",
+                elapsed=_elapsed_sk,
+                success=success,
+                env_info=env_info,
+                args=args,
+            )
         return success
 
     # ── 3b. 单步模式 —— 仅插帧 ───────────────────────────────────────────────
@@ -871,12 +1265,25 @@ def _process_single(
         except KeyboardInterrupt:
             print("\n\n⚠️  用户中断（Ctrl+C），断点已保存。")
             return False
+        _elapsed_sk = time.time() - t0
         if success:
             _run_postprocess_stage(output_video, input_video,
                                    denoised_path, args, env_info)
-            _print_completion(output_video, time.time() - t0, env_info)
+            _print_completion(output_video, _elapsed_sk, env_info)
         else:
-            _print_failure_hints(time.time() - t0)
+            _print_failure_hints(_elapsed_sk)
+        _rpt = config.get("output", "report_path", default="")
+        if _rpt:
+            _write_final_report(
+                report_path=_rpt,
+                input_video=input_video,
+                output_video=output_video,
+                mode="skip_upscale",
+                elapsed=_elapsed_sk,
+                success=success,
+                env_info=env_info,
+                args=args,
+            )
         return success
 
     # ── 3c. 双步模式 —— 创建处理器 ───────────────────────────────────────────
@@ -952,23 +1359,46 @@ def _process_single(
     # ── 4. 合并最终分段（含音频无损回写）──────────────────────────────────────
     print(f"\n🔗 合并 {len(final_segs)} 个最终分段 → {output_video}")
     output_config = config.get_section("output", {})
+    # copy-by-default：三个输出参数均未在 CLI 中指定时，直接 stream copy
+    _use_copy = config.get("output", "use_copy", default=True)
+    if _use_copy:
+        print("   ℹ️  未指定 --output-codec/crf/preset，最终合并使用 -c:v copy（不重新编码）")
+        _merge_cfg = {**output_config, "codec": "copy"}
+    else:
+        _merge_cfg = output_config
+
+    # ── FIX-C: copy 合并前对分段执行 extradata 归一化 ────────────────────────
+    # 消除 NVENC/libx264 多次独立编码导致的 SPS/PPS 不一致与 MP4 时间基差异，
+    # 确保 -c:v copy concat 不因 extradata mismatch 触发 AVERROR_EXIT(254)。
+    # 仅在 use_copy=True 且未指定 --skip-seg-normalize 时执行。
+    # 对 VP9/AV1 等编码自动跳过（不依赖 extradata 机制）。
+    if _use_copy and not getattr(args, "skip_seg_normalize", False):
+        # 从 config 提取最后一个处理阶段的编码器名称，避免重复 ffprobe
+        if mode == "upscale_then_interpolate":
+            _last_codec = config.get("models", "ifrnet",     "codec", default="")
+        else:
+            _last_codec = config.get("models", "realesrgan", "codec", default="")
+        final_segs = _normalize_segs_for_copy(final_segs, codec_hint=_last_codec)
+
     success = merge_videos_by_codec(
         final_segs, output_video,
         audio_path=audio_path,
-        config=output_config,
+        config=_merge_cfg,
     )
 
+    elapsed = time.time() - t0
+    _report_path = config.get("output", "report_path", default="")
+
     if success:
-        elapsed = time.time() - t0
         print(f"\n✅ 全流程完成！总耗时: {format_time(elapsed)}")
         print(f"📤 输出: {output_video}")
         if os.path.exists(output_video):
             print(f"   文件大小: {os.path.getsize(output_video)/1024/1024:.1f} MB")
-            
+
         # 5. 后处理
         _run_postprocess_stage(output_video, input_video,
                                denoised_path, args, env_info)
-        _print_completion(output_video, time.time() - t0, env_info)
+        _print_completion(output_video, elapsed, env_info)
 
         # 自动清理临时分段文件
         if config.get("processing", "auto_cleanup_temp", default=False):
@@ -978,10 +1408,23 @@ def _process_single(
                     proc._cleanup_temp_files()
                 except Exception:
                     pass
-            print("   ✅ 清理完成")
+            print("\n   ✅ 清理完成")
     else:
         print("❌ 最终合并失败")
-        _print_failure_hints(time.time() - t0)
+        _print_failure_hints(elapsed)
+
+    # ── 写出最终流水线报告（成功或失败均写）──────────────────────────────
+    if _report_path:
+        _write_final_report(
+            report_path=_report_path,
+            input_video=input_video,
+            output_video=output_video,
+            mode=mode,
+            elapsed=elapsed,
+            success=success,
+            env_info=env_info,
+            args=args,
+        )
 
     return success
 
@@ -1320,8 +1763,14 @@ ESRGan 模型选项 (--esrgan-model):
                    help="全流程结束后自动删除所有临时分段文件")
     g.add_argument("--keep-intermediate", action="store_true",
                    help="保留去噪等中间文件（调试用）")
+    g.add_argument("--skip-seg-normalize", action="store_true",
+                   help="跳过合并前的分段 extradata 归一化（FIX-C）；"
+                        "调试用，或已确认分段 extradata 完全一致时可跳过以节省时间")
     g.add_argument("--dry-run", action="store_true",
                    help="仅打印配置和环境信息，不实际处理")
+    g.add_argument("--report", metavar="PATH",
+                   help="流水线完成后将整体运行摘要写入指定 JSON 文件 "
+                        "（含耗时 / 大小 / GPU峰值显存 / 参数快照；成功或失败均写出）")
     g.add_argument("--version", "-V", action="version",
                    version=f"%(prog)s {VERSION}")
 
