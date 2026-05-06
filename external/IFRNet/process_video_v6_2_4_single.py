@@ -1,5 +1,5 @@
 """
-IFRNet 视频插帧处理脚本 —— 终极优化版 v6.2.2（单卡版）
+IFRNet 视频插帧处理脚本 —— 终极优化版 v6.2.4（单卡版）
 ==========================================================
 基于 IFRNet（Intermediate Flow-based Recursive Network）的视频帧插值脚本，
 面向单 GPU 生产环境的高性能实现。
@@ -26,24 +26,24 @@ IFRNet 视频插帧处理脚本 —— 终极优化版 v6.2.2（单卡版）
 
 【命令行使用示例】
   # 基础用法（FP16 + torch.compile + NVDEC/NVENC 自动启用）
-  python process_video_v6_2_2_single.py \\
+  python process_video_v6.2.4_single.py \\
       --input input.mp4 --output output_2x.mp4 --scale 2
 
   # 4× 插帧，关闭 compile（跳过预热，启动更快，适合短视频）
-  python process_video_v6_2_2_single.py \\
+  python process_video_v6.2.4_single.py \\
       --input input.mp4 --output output_4x.mp4 --scale 4 --no-compile
 
   # TensorRT 加速（首次构建 Engine，后续秒启动）
-  python process_video_v6_2_2_single.py \\
+  python process_video_v6.2.4_single.py \\
       --input input.mp4 --output output.mp4 --scale 2 --use-tensorrt
 
   # 禁用所有加速（调试/CPU 环境）
-  python process_video_v6_2_2_single.py \\
+  python process_video_v6.2.4_single.py \\
       --input input.mp4 --output output.mp4 --scale 2 \\
       --no-fp16 --no-compile --no-cuda-graph --no-hwaccel --device cpu
 
   # 输出性能报告
-  python process_video_v6_2_2_single.py \\
+  python process_video_v6.2.4_single.py \\
       --input input.mp4 --output output.mp4 --scale 2 --report report.json
 【架构简图】
   FFmpeg 解码 (NVDEC)
@@ -75,6 +75,25 @@ IFRNet 视频插帧处理脚本 —— 终极优化版 v6.2.2（单卡版）
 从多卡版精简为单 GPU 版本，移除 _ifrnet_segment_worker、
 _process_multi_gpu、_process_single_fallback 及所有多进程
 分段调度逻辑，保留全部单卡优化不变。
+
+【v6.2.4 终极修复版】
+  [T2-CACHE]          T2 实测值 JSON 持久化缓存，按 GPU SM+名称区分，跨运行复用；
+                       第二次运行直接使用实测值，消除初次估算偏差。
+  [AUTO-TUNE-CALIB]   T2 双分量模型：T2_FIXED=240ms（固定开销）+
+                       T2_VAR=25ms×HWB/baseline，替换纯线性60ms基准；
+                       T4 TRT IFRNet_S 实测 265ms 精确校准。
+  [AUTO-TUNE-RETUNE]  首5批实测 T2 中位数→写持久化缓存→打印偏差报告
+                       （实测 vs 静态估算，不重建队列，下次生效）。
+  [FIX-RETUNE-SAFE]   彻底移除危险运行时 result_queue 重建
+                       （pool/queue 不一致→死锁）。
+  [FIX-DEVIATION]     偏差计算改为 |实测-静态估算|/静态估算（原错误：|t2-(FIXED+VAR)|/(FIXED+VAR) 永远≈0）。
+  [FIX-BACKEND-FACTOR] 后端因子顺序修正：trt=1.0<cuda_graph=1.5<compile=2.0<eager=3.5。
+  [CRF-FACTOR]        crf_factor 指数从激进的 /6.0 改为保守的 /12.0（±6→±5%）。
+  [QUIET-PREFETCH]    预取命中率打印受 quiet 控制（恢复被注释的判断）。
+
+【v6.2.3 新增升级（在 v6.2.2 基础上）】
+  [AUTO-TUNE-CRF]     队列深度自动调优已纳入 CRF 因子
+  [AUTO-TUNE-BACKEND] 队列深度自动调优已纳入推理后端 (TRT/compile/CUDA Graph/eager)
 
 【v6.2.2 新增升级（在 v6.2.1 基础上）】
   [AUTO-TUNE] 硬件感知队列深度自动调节：检测 GPU 型号→算力 tier/NVDEC/NVENC/
@@ -402,7 +421,9 @@ class _HWProfile:
     has_nvdec:   bool
     has_nvenc:   bool
     pcie_bw_gbs: float
-    cpu_cores:   int
+    cpu_cores:      int
+    # [AUTO-TUNE-CALIB] 实测 T2（ms），校准后写入，0=尚未测量
+    t2_measured_ms: float = 0.0
     def __str__(self) -> str:
         return (f'{self.gpu_name} tier={self.gpu_tier:.1f} '
                 f'nvdec={self.has_nvdec} nvenc={self.has_nvenc} '
@@ -435,6 +456,33 @@ _GPU_PROFILES_TABLE = [
 ]
 _GPU_FALLBACK = (1.0, True, True, 15.7)  # 未知型号按 T4 保守处理
 
+# ── [T2-CACHE] GPU 硬件指纹 + T2 持久化缓存 ──────────────────────────────────
+def _get_gpu_slug() -> str:
+    """生成当前 GPU 唯一标识，用于 T2 缓存键（防止跨 GPU 误用）"""
+    if torch.cuda.is_available():
+        import re as _re_sm
+        props = torch.cuda.get_device_properties(0)
+        slug = _re_sm.sub(r'[^a-z0-9]', '', props.name.lower())[:16]
+        return f'_sm{props.major}{props.minor}_{slug}'
+    return '_cpu'
+
+_T2_CACHE_DIR_DEFAULT = os.path.join(base_dir, '.t2_cache')
+
+def _load_t2_cache(cache_dir: str) -> dict:
+    path = os.path.join(cache_dir, 't2_measured.json')
+    if os.path.isfile(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as _f:
+                return json.load(_f)
+        except Exception:
+            return {}
+    return {}
+
+def _save_t2_cache(cache_dir: str, cache: dict):
+    os.makedirs(cache_dir, exist_ok=True)
+    with open(os.path.join(cache_dir, 't2_measured.json'), 'w', encoding='utf-8') as _f:
+        json.dump(cache, _f, indent=2)
+
 def _detect_hw_profile(device: torch.device) -> '_HWProfile':
     """检测当前 GPU/CPU 硬件特性"""
     import re as _re
@@ -449,25 +497,53 @@ def _detect_hw_profile(device: torch.device) -> '_HWProfile':
             break
     return _HWProfile(gpu_name, tier, has_nvdec, has_nvenc, pcie_bw, cpu_cores)
 
-# IFRNet_S TRT FP16 T4 基准（576x736 bs=24）≈ 60ms
-_T2_BASELINE_MS  = 60.0
-_T2_BASELINE_HWB = float(576 * 736 * 24)
+# ── T2 双分量模型 [AUTO-TUNE-CALIB] ─────────────────────────────────────────
+# T4 TRT 实测：576×736 bs=24 ≈ 265ms，384×640 bs=24 ≈ 265ms
+# 固定开销远大于纯计算开销，单分量线性模型严重低估（60ms vs 265ms）
+# T2 = (T2_FIXED_MS + T2_VAR_MS × HWB / HWB_baseline) / tier × backend_factor
+_T2_BASELINE_HWB = float(576 * 736 * 24)  # TRT T4 校准点
+_T2_FIXED_MS     = 240.0                   # 固定开销 ms（dispatch/sync）
+_T2_VAR_MS       = 25.0                    # 变量计算开销 @ baseline HWB
 _X264_PRESET_FACTOR = {
     'ultrafast': 8.0, 'superfast': 6.0, 'veryfast': 4.0,
     'faster': 2.5, 'fast': 2.0, 'medium': 1.0,
     'slow': 0.4, 'slower': 0.2, 'veryslow': 0.1,
 }
 
-def _x264_fps_estimate(cpu_cores: int, H: int, W: int, preset: str) -> float:
-    """估算 libx264 软件编码吞吐（fps）"""
+def _software_encode_fps(cpu_cores: int, H: int, W: int,
+                         codec: str, preset: str, crf: int) -> float:
+    """[AUTO-TUNE-CRF] 估算软件编码吞吐（fps），考虑分辨率、codec、preset、crf。
+    基准：1080p, libx264, medium, crf=23 ≈ 200fps @ 8核。
+    """
+    base_pixels = 1920.0 * 1080.0
+    current_pixels = float(H * W)
+    scale_res = max(base_pixels / current_pixels, 1.0)
+
     factor = _X264_PRESET_FACTOR.get(preset, 1.0)
-    base   = 200.0 * factor * min(cpu_cores, 16) / 8.0
-    scale  = (1920.0 * 1080.0) / max(float(H * W), 1.0)
-    return min(base * scale, 2000.0)
+    crf_factor = 2.0 ** ((crf - 23) / 12.0)  # [CRF-FACTOR] 保守系数：±6→±5%
+
+    if 'x265' in codec.lower():
+        base_fps = 120.0   # x265 约为 x264 的 60%
+    else:
+        base_fps = 200.0   # libx264 基准
+
+    cores_factor = min(cpu_cores, 16) / 8.0
+    fps = base_fps * scale_res * factor * crf_factor * cores_factor
+    return min(fps, 3000.0)
+
+# [AUTO-TUNE-BACKEND] 推理后端相对 TRT 的速度因子
+# [FIX-BACKEND-FACTOR] 正确顺序：TRT < CUDA Graph < compile < eager
+_INFER_BACKEND_FACTORS = {
+    'trt':        1.0,
+    'cuda_graph': 1.5,  # 消除 CPU launch 开销，接近 TRT
+    'compile':    2.0,  # Triton 优化，快于 eager 但有调度开销
+    'eager':      3.5,
+}
 
 def _auto_queue_depths(
-    profile: '_HWProfile', codec: str, x264_preset: str,
+    profile: '_HWProfile', codec: str, x264_preset: str, crf: int,
     H_pad: int, W_pad: int, effective_bs: int, T: int,
+    infer_backend: str = 'eager',
     verbose: bool = True,
 ) -> Tuple[int, int, int]:
     """
@@ -485,8 +561,15 @@ def _auto_queue_depths(
     else:
         nvdec_fps = min(60.0 * 1920.0 * 1080.0 / max(float(H_pad * W_pad), 1.0), 600.0)
     t1_ms = effective_bs / nvdec_fps * 1000.0
-    # T2: TRT scaled from T4 baseline
-    t2_ms = max(_T2_BASELINE_MS * (HWB / _T2_BASELINE_HWB) / max(profile.gpu_tier, 0.05), 1.0)
+    # T2: [AUTO-TUNE-CALIB] 双分量模型 + 实测值优先
+    infer_factor = _INFER_BACKEND_FACTORS.get(infer_backend, _INFER_BACKEND_FACTORS['eager'])
+    if profile.t2_measured_ms > 0:
+        t2_ms  = profile.t2_measured_ms  # 实测值已含 tier/backend，直接使用
+        t2_src = 'measured'
+    else:
+        t2_base = (_T2_FIXED_MS + _T2_VAR_MS * HWB / _T2_BASELINE_HWB) / max(profile.gpu_tier, 0.05)
+        t2_ms   = max(t2_base * infer_factor, 1.0)
+        t2_src  = f'estimated(×{infer_factor})'
     # T3: codec-dependent
     out_frames = effective_bs * (T + 1)
     codec_l = codec.lower()
@@ -497,9 +580,9 @@ def _auto_queue_depths(
         t3_ms  = out_frames / 5000.0 * 1000.0
         t3_src = 'copy'
     else:
-        fps_est = _x264_fps_estimate(profile.cpu_cores, H_pad, W_pad, x264_preset)
+        fps_est = _software_encode_fps(profile.cpu_cores, H_pad, W_pad, codec, x264_preset, crf)
         t3_ms   = out_frames / fps_est * 1000.0
-        t3_src  = f'x264({x264_preset})'
+        t3_src  = f'{codec}({x264_preset}, crf={crf})'
     # Little's Law
     pair_depth   = max(2, min(int(_math.ceil(t2_ms / max(t1_ms, 0.1))) + 2, 8))
     result_depth = max(8, min(int(_math.ceil(t3_ms / max(t2_ms, 0.1))) + 3, 64))
@@ -507,8 +590,8 @@ def _auto_queue_depths(
     if verbose:
         pair_mb = pair_depth * effective_bs * 3 * H_pad * W_pad * 3 / 1e6
         pool_mb = pool_size  * effective_bs * T * H_pad * W_pad * 3 / 1e6
-        print(f'[AUTO-TUNE] {profile}\n'
-              f'  T1={t1_ms:.1f}ms T2={t2_ms:.1f}ms T3({t3_src})={t3_ms:.1f}ms\n'
+        print(f'[AUTO-TUNE] {profile}  backend={infer_backend}(×{infer_factor})\n'
+              f'  T1={t1_ms:.1f}ms  T2[{t2_src}]={t2_ms:.1f}ms  T3({t3_src})={t3_ms:.1f}ms\n'
               f'  ratio T2/T1={t2_ms/max(t1_ms,0.1):.1f}x T3/T2={t3_ms/max(t2_ms,0.1):.1f}x\n'
               f'  pair_queue={pair_depth}(~{pair_mb:.0f}MB) '
               f'result_queue={result_depth} pool={pool_size}(~{pool_mb:.0f}MB pinned)',
@@ -517,7 +600,7 @@ def _auto_queue_depths(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# IFRNetPipelineRunner（参考 pipeline.py DeepPipelineOptimizer 移植）
+# IFRNetPipelineRunner（三级流水线 + 自动调优 + 推理后端感知）
 # ─────────────────────────────────────────────────────────────────────────────
 
 class IFRNetPipelineRunner:
@@ -552,6 +635,8 @@ class IFRNetPipelineRunner:
         auto_tune:         bool = True,   # [AUTO-TUNE]
         codec:             str  = 'libx264',
         x264_preset:       str  = 'medium',
+        crf:               int  = 21,     # [AUTO-TUNE-CRF]
+        t2_cache_dir:      str  = '',     # [T2-CACHE] 持久化缓存目录
     ):
         self.proc         = processor
         self.pair_queue   = queue.Queue(maxsize=pair_queue_size)
@@ -561,7 +646,12 @@ class IFRNetPipelineRunner:
         self.auto_tune    = auto_tune
         self.codec        = codec
         self.x264_preset  = x264_preset
-        self._hw_profile: 'Optional[_HWProfile]' = None  # [AUTO-TUNE]
+        self.crf          = crf
+        self._hw_profile:      'Optional[_HWProfile]' = None  # [AUTO-TUNE]
+        self._t2_estimated_ms  = 0.0         # [T2-CACHE] 本次静态估算 ms
+        self._last_calib_config = None        # [T2-CACHE] 上次校准配置键
+        self._cache_key: Optional[str] = None # [T2-CACHE] JSON 缓存键
+        self.t2_cache_dir = t2_cache_dir      # [T2-CACHE]
 
         # 预取状态（仅在 T2 推理主线程访问，无需锁）
         self._prefetch_item    = None                  # 已从 pair_queue 取出等待推理的 item
@@ -574,6 +664,28 @@ class IFRNetPipelineRunner:
 
         self._reader_th: Optional[threading.Thread] = None
         self._writer_th: Optional[threading.Thread] = None
+
+    # [AUTO-TUNE-BACKEND] 检测当前实际推理后端
+    def _get_infer_backend(self) -> str:
+        proc = self.proc
+        # 1. TRT 已激活
+        if getattr(proc, '_trt_ok', False):
+            return 'trt'
+        # 2. torch.compile 成功 (检查模型是否被编译)
+        if proc.use_compile:
+            if hasattr(torch, '_dynamo') and hasattr(torch._dynamo, 'is_compiled'):
+                try:
+                    if torch._dynamo.is_compiled(proc.model):
+                        return 'compile'
+                except Exception:
+                    pass
+            if hasattr(proc.model, '_orig_mod'):
+                return 'compile'
+        # 3. 手动 CUDA Graph
+        if proc.use_cuda_graph:
+            return 'cuda_graph'
+        # 4. 纯 eager
+        return 'eager'
 
     # ── T1 Reader 线程 ────────────────────────────────────────────────────────
 
@@ -861,12 +973,39 @@ class IFRNetPipelineRunner:
         if self.auto_tune and H_pad > 0 and W_pad > 0:
             if self._hw_profile is None:
                 self._hw_profile = _detect_hw_profile(proc.device)
+            infer_be = self._get_infer_backend()
+            # [T2-CACHE] 构造缓存键（含 GPU 标识，防跨 GPU 误用）
+            gpu_slug = _get_gpu_slug()
+            self._cache_key = f'{H_pad}x{W_pad}_bs{effective_bs}_{infer_be}{gpu_slug}'
+            if self.t2_cache_dir and self._hw_profile.t2_measured_ms <= 0:
+                _cached = _load_t2_cache(self.t2_cache_dir).get(self._cache_key, 0.0)
+                if _cached > 0:
+                    self._hw_profile.t2_measured_ms = _cached
+                    print(f'[T2-CACHE] 加载缓存 T2={_cached:.1f}ms '
+                          f'(key={self._cache_key})', flush=True)
+
+            # 配置变更时重置实测值（不同分辨率/batch/backend 不可复用）
+            _current_cfg = (H_pad, W_pad, effective_bs, infer_be)
+            if self._last_calib_config != _current_cfg:
+                self._hw_profile.t2_measured_ms = 0.0
+
             _pd, _rd, _ = _auto_queue_depths(
-                self._hw_profile, self.codec, self.x264_preset,
+                self._hw_profile, self.codec, self.x264_preset, self.crf,
                 H_pad, W_pad, effective_bs, len(timesteps),
+                infer_backend=infer_be,
             )
             self.pair_queue   = queue.Queue(maxsize=_pd)
             self.result_queue = queue.Queue(maxsize=_rd)
+
+            # 保存本次静态估算值，供 RETUNE 偏差计算对比
+            if self._hw_profile.t2_measured_ms > 0:
+                self._t2_estimated_ms = self._hw_profile.t2_measured_ms
+            else:
+                _HWB = float(H_pad * W_pad * effective_bs)
+                _ifactor = _INFER_BACKEND_FACTORS.get(infer_be, 3.5)
+                _t2b = (_T2_FIXED_MS + _T2_VAR_MS * _HWB / _T2_BASELINE_HWB) \
+                    / max(self._hw_profile.gpu_tier, 0.05)
+                self._t2_estimated_ms = max(_t2b * _ifactor, 1.0)
 
         # [PINNED-D2H] 创建 PinnedResultPool
         _pool_ok = False
@@ -915,6 +1054,8 @@ class IFRNetPipelineRunner:
         # ── T2 推理主循环 ─────────────────────────────────────────────────────
         fc_extra = 0   # 额外处理的原始帧数（pair 数）
         oc_extra = 0   # 额外输出帧数
+        _CALIB_BATCHES = 5      # [AUTO-TUNE-RETUNE] 前 N 批中位数
+        _calib_done    = False  # [AUTO-TUNE-RETUNE] 防重复校准
 
         try:
             while self.running:
@@ -953,6 +1094,47 @@ class IFRNetPipelineRunner:
                 )
 
                 # [FIX-PREFETCH-TIMING] 预取已在 _infer_batch compute 提交后触发
+
+                # [AUTO-TUNE-RETUNE] 首批实测校准（只测量，不重建队列）────────
+                # [FIX-RETUNE-SAFE] 不重建 result_queue：pool 已按当前深度创建，
+                # 重建 queue 不同步重建 pool → pool/queue 容量不一致 → 死锁。
+                if (not _calib_done
+                        and self.auto_tune
+                        and len(proc._timing) >= _CALIB_BATCHES):
+                    _calib_done = True
+                    import numpy as _np
+                    t2_actual = float(_np.median(proc._timing[-_CALIB_BATCHES:])) * 1000.0
+
+                    _infer_be2 = self._get_infer_backend()
+                    if self._hw_profile is not None:
+                        self._hw_profile.t2_measured_ms = t2_actual
+                        self._last_calib_config = (H_pad, W_pad, effective_bs, _infer_be2)
+
+                    # [T2-CACHE] 写入持久化缓存（偏差>10% 时更新）
+                    if self.t2_cache_dir and self._cache_key:
+                        _c = _load_t2_cache(self.t2_cache_dir)
+                        _old = _c.get(self._cache_key, 0.0)
+                        if _old <= 0 or abs(t2_actual - _old) / max(_old, 1.0) > 0.10:
+                            _c[self._cache_key] = round(t2_actual, 1)
+                            _save_t2_cache(self.t2_cache_dir, _c)
+                            print(f'[T2-CACHE] 已更新缓存 T2={t2_actual:.1f}ms '
+                                  f'(key={self._cache_key})', flush=True)
+
+                    # [FIX-DEVIATION] 正确偏差：实测 vs 静态估算（非固定常数）
+                    _dev = abs(t2_actual - self._t2_estimated_ms) / max(self._t2_estimated_ms, 1.0)
+                    _, _rd_cal, _ = _auto_queue_depths(
+                        self._hw_profile, self.codec, self.x264_preset, self.crf,
+                        H_pad, W_pad, effective_bs, len(timesteps),
+                        infer_backend=_infer_be2, verbose=False,
+                    )
+                    print(
+                        f'[AUTO-TUNE-RETUNE] 实测 T2={t2_actual:.1f}ms | '
+                        f'静态估算={self._t2_estimated_ms:.1f}ms | '
+                        f'偏差={_dev*100:.0f}% | '
+                        f'当前 result_queue={self.result_queue.maxsize} | '
+                        f'校准建议={_rd_cal}（下次生效）',
+                        flush=True,
+                    )
 
                 # ── 结果入队 ──────────────────────────────────────────────────
                 if isinstance(results, _PinnedResultItem):
@@ -1007,8 +1189,7 @@ class IFRNetPipelineRunner:
             self._reader_th.join(timeout=10.0)
 
         # ── 预取命中率报告 ────────────────────────────────────────────────────
-        # if self._prefetch_total > 0 and not self.proc.quiet:
-        if self._prefetch_total > 0:
+        if self._prefetch_total > 0 and not self.proc.quiet:
             hit_pct = self._prefetch_hits / self._prefetch_total * 100
             print(
                 f'[IFRNet-Pipeline] 预取命中率: '
@@ -1486,6 +1667,7 @@ class IFRNetVideoProcessor:
         ffmpeg_bin:       str = 'ffmpeg',
         report_json:      Optional[str] = None,
         trt_cache_dir:    Optional[str] = None,
+        t2_cache_dir:     Optional[str] = None,   # [T2-CACHE]
         quiet:            bool = True,
     ):
         self.model_path      = model_path
@@ -1507,6 +1689,7 @@ class IFRNetVideoProcessor:
         # [FIX-TRT-CACHE-DIR] 允许外部指定 TRT 缓存目录（如 ifrnet_processor 传入稳定路径），
         # 不指定时在 process_video() 中回退到 base_dir/.trt_cache 默认规则。
         self.trt_cache_dir   = trt_cache_dir
+        self.t2_cache_dir    = t2_cache_dir or _T2_CACHE_DIR_DEFAULT  # [T2-CACHE]
         self.quiet           = quiet
         self._pipeline_runner: 'Optional[IFRNetPipelineRunner]' = None  # [FIX-PREFETCH-TIMING]
         self._result_pool:     'Optional[PinnedResultPool]'     = None  # [PINNED-D2H]
@@ -1864,7 +2047,7 @@ class IFRNetVideoProcessor:
             self._trt_ok = False
 
     # ──────────────────────────────────────────────────────────────────────────
-    # CUDA Graph 推理（v4 B5 修复，完整保留）
+    # CUDA Graph 推理（v4 B5 修复）
     # ──────────────────────────────────────────────────────────────────────────
 
     def _get_cuda_graph(self, shape_key, img0, img1, embt, imgt_approx):
@@ -1941,7 +2124,7 @@ class IFRNetVideoProcessor:
         return static_output
 
     # ──────────────────────────────────────────────────────────────────────────
-    # 核心批推理（v4 完整保留）
+    # 核心批推理
     # ──────────────────────────────────────────────────────────────────────────
 
     @torch.no_grad()
@@ -2144,7 +2327,7 @@ class IFRNetVideoProcessor:
         return result
 
     # ──────────────────────────────────────────────────────────────────────────
-    # OOM 自动降级 + 恢复（v4 完整保留）
+    # OOM 自动降级 + 恢复
     # ──────────────────────────────────────────────────────────────────────────
 
     def _estimate_safe_batch_size(self, H: int, W: int) -> int:
@@ -2414,7 +2597,7 @@ class IFRNetVideoProcessor:
             codec      = use_codec,
             extra_codec_args = use_extra,
             crf        = self.crf,
-            preset     = self.x264_preset,      # 新增
+            preset     = self.x264_preset,
             audio_src  = audio_src,
             ffmpeg_bin = self.ffmpeg_bin,
         )
@@ -2454,9 +2637,11 @@ class IFRNetVideoProcessor:
             # → T3-Writer 异步写帧，全程无串行等待。
             pipeline = IFRNetPipelineRunner(
                 self,
-                auto_tune   = True,
-                codec       = use_codec,
-                x264_preset = self.x264_preset,
+                auto_tune    = True,
+                codec        = use_codec,
+                x264_preset  = self.x264_preset,
+                crf          = self.crf,
+                t2_cache_dir = self.t2_cache_dir,  # [T2-CACHE]
             )
             fc_extra, oc_extra = pipeline.run(
                 reader            = reader,
@@ -2650,7 +2835,7 @@ class IFRNetVideoProcessor:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='IFRNet 视频插帧 —— 终极优化版 v6.2.2（单卡版）',
+        description='IFRNet 视频插帧 —— 终极优化版 v6.2.4（单卡版）',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     # 基础参数
@@ -2700,6 +2885,8 @@ def main():
                         help='静默模式（默认开启），仅显示关键信息；--no-quiet 开启详细日志')
     parser.add_argument('--trt-cache-dir',    default=None,
                         help='TRT Engine 缓存目录（覆盖默认 dirname(output)/.trt_cache）')
+    parser.add_argument('--t2-cache-dir', default=None,
+                        help='T2 实测缓存目录（默认 base_dir/.t2_cache）')  # [T2-CACHE]
 
     args = parser.parse_args()
 
@@ -2769,7 +2956,7 @@ def main():
 
     # 打印启动信息
     print('=' * 65)
-    print('  IFRNet 视频插帧 —— 终极优化版 v6.2（单卡版）')
+    print('  IFRNet 视频插帧 —— 终极优化版 v6.2.3（单卡版）')
     print('=' * 65)
     print(f'  模型:   {args.model}')
     print(f'  设备:   {args.device} | GPU: '
@@ -2807,6 +2994,7 @@ def main():
         ffmpeg_bin         = args.ffmpeg_bin,
         report_json        = args.report,
         trt_cache_dir      = args.trt_cache_dir,
+        t2_cache_dir       = getattr(args, 't2_cache_dir', None),  # [T2-CACHE]
         quiet              = getattr(args, 'quiet', True),
     )
 

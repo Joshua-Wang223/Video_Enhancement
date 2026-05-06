@@ -182,7 +182,13 @@ class GFPGANSubprocess:
                 import re as _re_coord
                 _gpu_slug_coord = _re_coord.sub(r'[^a-z0-9]', '', _p.name.lower())[:16]
                 _sm_tag = f'_sm{_p.major}{_p.minor}_{_gpu_slug_coord}'
-            tag = (f'gfpgan_{gfpgan_model}_w{gfpgan_weight:.3f}'
+            _GFPGAN_VERSION_TO_NAME = {
+                '1.3': 'GFPGANv1.3',
+                '1.4': 'GFPGANv1.4',
+                'RestoreFormer': 'RestoreFormer',
+            }
+            _gfpgan_mname = _GFPGAN_VERSION_TO_NAME.get(gfpgan_model, gfpgan_model)
+            tag = (f'{_gfpgan_mname}_w{gfpgan_weight:.3f}'
                    f'_B{gfpgan_batch_size}_fp{"16" if use_fp16 else "32"}{_sm_tag}')
             cache_dir = trt_cache_dir or os.path.join(os.getcwd(), '.trt_cache')
             trt_path = os.path.join(cache_dir, f'{tag}.trt')
@@ -262,7 +268,13 @@ class GFPGANSubprocess:
             import re as _re_b
             _gpu_slug_b = _re_b.sub(r'[^a-z0-9]', '', _pb.name.lower())[:16]
             _sm_tag_b = f'_sm{_pb.major}{_pb.minor}_{_gpu_slug_b}'
-        tag = (f'gfpgan_{gfpgan_model}_w{gfpgan_weight:.3f}'
+        _GFPGAN_VERSION_TO_NAME_B = {
+            '1.3': 'GFPGANv1.3',
+            '1.4': 'GFPGANv1.4',
+            'RestoreFormer': 'RestoreFormer',
+        }
+        _gfpgan_mname_b = _GFPGAN_VERSION_TO_NAME_B.get(gfpgan_model, gfpgan_model)
+        tag = (f'{_gfpgan_mname_b}_w{gfpgan_weight:.3f}'
                f'_B{gfpgan_batch_size}_fp{"16" if use_fp16 else "32"}{_sm_tag_b}')
         cache_dir = trt_cache_dir or osp.join(os.getcwd(), '.trt_cache')
         trt_path = osp.join(cache_dir, f'{tag}.trt')
@@ -563,7 +575,7 @@ class GFPGANSubprocess:
                                 _sm_tag_w = f'_sm{_pw.major}{_pw.minor}_{_gpu_slug_w}'
                         except Exception:
                             pass
-                        tag = (f'gfpgan_{gfpgan_version}_w{gfpgan_weight:.3f}'
+                        tag = (f'{name}_w{gfpgan_weight:.3f}'
                                f'_B{max_batch_size}_fp{"16" if use_fp16 else "32"}{_sm_tag_w}')
                         os.makedirs(cache_dir, exist_ok=True)
                         trt_path = osp.join(cache_dir, f'{tag}.trt')

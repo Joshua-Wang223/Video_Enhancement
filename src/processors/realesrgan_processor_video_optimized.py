@@ -1,6 +1,6 @@
 """
-Real-ESRGAN 视频超分处理器 (优化版)
-==========================================
+Real-ESRGAN 视频超分处理器 (优化版 + 多片段复用)
+==================================================
 对接 external/realesrgan_video_ds/main.py (main_optimized)，
 基于 realesrgan_processor_video_v6_single.py 改写。
 
@@ -21,13 +21,13 @@ Real-ESRGAN 视频超分处理器 (优化版)
       ext                  底层脚本不再需要
   - 实现高优先级覆盖仲裁逻辑（复刻底层 main() 行为）
   - 默认值调整：batch_size 12→6, prefetch_factor 24→48, gfpgan_batch_size 12→8
-  - Namespace 字段与底层 main.py argparse 严格对齐：
-      · 编码器字段 ns.codec → ns.video_codec
-      · 新增 ns.report / ns.preview / ns.preview_interval
-      · 移除 ns.alpha_upsampler / ns.ext
-      · 新增 ns.face_det_threshold / ns.adaptive_batch / ns.gfpgan_trt / ns.x264_preset
+  - Namespace 字段与底层 main.py argparse 严格对齐
   - 深度流水线架构（4级并行处理）
   - SR H2D 预取重叠（利用空闲 GPU 内存总线）
+
+【v6.5 新增】多片段复用优化：
+  - 模型/引擎只加载一次，后续片段直接复用
+  - 大幅降低多片段处理的启动开销
 """
 
 import os
@@ -57,7 +57,7 @@ from video_utils import (
 
 
 class RealESRGANVideoProcessor:
-    """Real-ESRGAN 视频超分处理器 (优化版，对接 realesrgan_video_ds)"""
+    """Real-ESRGAN 视频超分处理器 (优化版，对接 realesrgan_video_ds)，支持多片段复用"""
 
     def __init__(self, config):
         """
@@ -142,6 +142,12 @@ class RealESRGANVideoProcessor:
         self.checkpoint_file: Optional[Path] = None
         self.segment_dir:     Optional[Path] = None
         self.processed_dir:   Optional[Path] = None
+
+        # ------ 多片段复用相关 ------
+        self._main_mod = None          # 底层 main 模块
+        self._enhancer = None          # create_video_enhancer 的返回值
+        self._ns = None                # 标准化后的参数命名空间（存一份用于构建 enhancer）
+        self._enhancer_initialized = False
 
     # -------------------------------------------------------------------------
     # 公共接口
@@ -276,6 +282,116 @@ class RealESRGANVideoProcessor:
         return self._process_segments(input_segments, checkpoint)
 
     # -------------------------------------------------------------------------
+    # 多片段复用核心
+    # -------------------------------------------------------------------------
+
+    def _initialize_enhancer(self, first_segment_path: str = None):
+        """一次性加载模型、TRT 引擎、GFPGAN 等，保存在 self._enhancer 中
+
+        Args:
+            first_segment_path: 第一个真实分段的路径，用于 TRT 引擎构建时探测视频尺寸。
+                                 不得为 None（否则 ffprobe 会因 dummy 路径崩溃）。
+        """
+        if self._enhancer_initialized:
+            return
+
+        print("\n🔧 首次初始化增强器（模型/引擎只加载一次，后续片段重用）")
+        _main_py = str(self.esrgan_dir / "main.py")
+        if self._main_mod is None:
+            if not os.path.isfile(_main_py):
+                raise FileNotFoundError(f"底层脚本不存在: {_main_py}")
+            _spec = importlib.util.spec_from_file_location(
+                "realesrgan_video_ds_main", _main_py)
+            if _spec is None or _spec.loader is None:
+                raise ImportError(f"无法加载模块: {_main_py}")
+            self._main_mod = importlib.util.module_from_spec(_spec)
+            _spec.loader.exec_module(self._main_mod)
+
+        # 构建 args namespace（与原来 _run_esrgan_video 完全一致）
+        ns = argparse.Namespace()
+        # FIX-TRT-INIT-INPUT: 使用第一个真实分段路径，让 create_video_enhancer 阶段 4
+        # (TRT 引擎构建) 的 get_video_meta_info() 能正确探测视频尺寸。
+        if not first_segment_path:
+            raise ValueError(
+                "[FIX-TRT-INIT-INPUT] first_segment_path 不能为空；"
+                "必须传入第一个真实分段路径，否则 TRT 引擎构建阶段的 ffprobe 会崩溃。"
+            )
+        ns.input  = first_segment_path
+        ns.output = "dummy_output.mp4"
+        ns.model_name       = self.model_name
+        ns.denoise_strength = self.denoise_strength
+        ns.outscale         = float(self.upscale_factor)
+        ns.suffix           = "init"
+        ns.tile             = self.tile_size
+        ns.tile_pad         = self.tile_pad
+        ns.pre_pad          = self.pre_pad
+        ns.face_enhance     = self.face_enhance
+        ns.no_fp16          = not self.use_fp16
+        ns.fps              = None
+        if self.face_enhance:
+            ns.gfpgan_model        = self.gfpgan_model
+            ns.gfpgan_weight       = self.gfpgan_weight
+            ns.gfpgan_batch_size   = self.gfpgan_batch_size
+            ns.face_det_threshold  = self.face_det_threshold
+            ns.adaptive_batch      = self.adaptive_batch
+            ns.gfpgan_trt          = self.gfpgan_trt
+        else:
+            ns.gfpgan_trt          = False
+            ns.adaptive_batch      = False
+        ns.batch_size      = self.batch_size
+        ns.prefetch_factor = self.prefetch_factor
+        ns.no_compile      = not self.use_compile
+        ns.no_cuda_graph   = not self.use_cuda_graph
+        ns.use_tensorrt    = self.use_tensorrt
+        ns.trt_cache_dir   = self.trt_cache_dir or None
+        ns.use_hwaccel     = self.use_hwaccel
+        ns.video_codec     = self.codec
+        ns.crf             = self.crf
+        ns.x264_preset     = self.x264_preset
+        ns.ffmpeg_bin      = self.ffmpeg_bin
+        ns.preview         = self.preview
+        ns.preview_interval = self.preview_interval
+        ns.report          = self.report_json
+        ns.quiet           = getattr(self.config, 'quiet', True)
+
+        # 复刻 main() 预处理：gfpgan_trt 启用时强制 no_fp16
+        if ns.gfpgan_trt and torch.cuda.is_available():
+            ns.no_fp16 = True
+
+        # 使用 create_video_enhancer 加载所有重型组件
+        self._enhancer = self._main_mod.create_video_enhancer(ns)
+        self._ns = ns
+        self._enhancer_initialized = True
+        print("[优化] 模型、引擎加载完毕，后续片段将直接复用")
+
+    def _process_segment_with_enhancer(self, input_path: str, output_path: str,
+                                       segment_idx: int) -> bool:
+        """使用已加载的 enhancer 处理单个片段"""
+        if not self._enhancer_initialized:
+            self._initialize_enhancer(first_segment_path=input_path)  # FIX-TRT-INIT-INPUT
+
+        # 更新 enhancer 中 args 的 input/output（部分函数可能需要，但实际 run_pipeline_for_video 直接使用传入参数）
+        enhancer = self._enhancer
+        try:
+            print(f"   🎬 处理片段 {segment_idx+1}: {Path(input_path).name}")
+            start = time.time()
+            self._main_mod.run_pipeline_for_video(
+                enhancer, input_path, output_path,
+            )
+            elapsed = time.time() - start
+            if verify_video_integrity(output_path):
+                out_duration = get_video_duration(output_path)
+                print(f"   ✅ 处理完成: 输出时长 {format_time(out_duration)} | 耗时 {format_time(elapsed)}")
+                return True
+            else:
+                print("   ❌ 输出文件验证失败")
+                return False
+        except Exception as e:
+            print(f"   ❌ 处理片段时发生异常: {e}")
+            import traceback; traceback.print_exc()
+            return False
+
+    # -------------------------------------------------------------------------
     # 内部核心方法
     # -------------------------------------------------------------------------
 
@@ -313,6 +429,7 @@ class RealESRGANVideoProcessor:
                            checkpoint: dict) -> List[str]:
         """
         遍历分段列表，跳过已处理项，处理并更新断点。
+        注意：此方法中每次调用 _process_segment_with_enhancer，都会复用同一个 enhancer。
 
         Args:
             segment_files: 分段文件路径列表
@@ -339,7 +456,8 @@ class RealESRGANVideoProcessor:
             print(f"\n🎨 片段 {idx+1}/{len(segment_files)}: {seg_name}")
             out_path = self.processed_dir / f"upscaled_{seg_name}"
 
-            success = self._process_segment(seg_path, str(out_path), segment_idx=idx)
+            # 使用复用模式处理
+            success = self._process_segment_with_enhancer(seg_path, str(out_path), idx)
             if success:
                 processed_files.append(str(out_path))
                 checkpoint["processed_segments"].append(idx)
@@ -563,17 +681,31 @@ class RealESRGANVideoProcessor:
             return False
 
     def _cleanup_temp_files(self):
-        """清理临时目录（分段和中间处理文件）。"""
+        """清理临时目录，同时释放 enhancer（关闭 GFPGAN 子进程等）"""
         print("\n🧹 清理 Real-ESRGAN 超分临时文件...")
         try:
             if self.segment_dir and self.segment_dir.exists():
                 shutil.rmtree(self.segment_dir)
-                # print("✅ 已删除分段文件")
             if self.processed_dir and self.processed_dir.exists():
                 shutil.rmtree(self.processed_dir)
-                # print("✅ 已删除处理文件")
         except Exception as e:
             print(f"⚠️  清理失败: {e}")
+
+    def close_enhancer(self):
+        """手动释放 enhancer 中的资源（GFPGAN 子进程等）"""
+        if self._enhancer:
+            sub = self._enhancer.get('gfpgan_subprocess')
+            if sub is not None:
+                try:
+                    print("[优化] 关闭 GFPGAN 子进程...")
+                    sub.close()
+                except Exception as e:
+                    print(f"[优化] 关闭子进程异常: {e}")
+            self._enhancer = None
+            self._enhancer_initialized = False
+
+    def __del__(self):
+        self.close_enhancer()
 
 
 # =============================================================================

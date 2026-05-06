@@ -1,0 +1,7 @@
+{
+  "IFRNet_S_Vimeo90K_384x640_bs48_trt_sm75_teslat4": 574.5,
+  "IFRNet_S_Vimeo90K_576x736_bs24_trt_sm75_teslat4": 458.8,
+  "IFRNet_S_Vimeo90K_1152x1440_bs24_trt_sm75_teslat4": 8975.8,
+  "IFRNet_S_Vimeo90K_1152x1440_bs4_trt_sm75_teslat4": 1163.9,
+  "IFRNet_S_Vimeo90K_384x640_bs72_trt_sm75_teslat4": 1756.1
+}

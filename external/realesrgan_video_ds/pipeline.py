@@ -195,6 +195,7 @@ class DeepPipelineOptimizer:
 
         self.detect_helper = _make_detect_helper(face_enhancer, device) if face_enhancer else None
 
+        # ----- 支持外部注入的 GFPGAN 子进程（多片段复用）-----
         self.gfpgan_subprocess = None
         try:
             _prestarted = getattr(args, '_early_gfpgan_subprocess', None)
@@ -203,11 +204,11 @@ class DeepPipelineOptimizer:
 
         if _prestarted is not None:
             if hasattr(_prestarted, 'process') and _prestarted.process.is_alive():
-                self._vlog('[优化架构] 使用预启动 GFPGAN 子进程（FIX-EARLY-SPAWN）')
+                self._vlog('[优化架构] 使用外部预启动 GFPGAN 子进程（复用模式）')
                 self.gfpgan_subprocess = _prestarted
-                args._early_gfpgan_subprocess = None
+                args._early_gfpgan_subprocess = None  # 避免重复使用
             else:
-                self._vlog('[优化架构] 预启动 GFPGAN 子进程已死亡，关闭并回退')
+                self._vlog('[优化架构] 外部预启动 GFPGAN 子进程已死亡，关闭并回退')
                 try:
                     _prestarted.close()
                 except Exception as e:

@@ -38,10 +38,11 @@ class TensorRTAccelerator:
 
     def __init__(self, model: torch.nn.Module, device: torch.device,
                  cache_dir: str, input_shape: Tuple[int, int, int, int],
-                 use_fp16: bool = True):
+                 use_fp16: bool = True, model_name: str = 'RealESRGAN'):
         self.device = device
         self.input_shape = input_shape
         self.use_fp16 = use_fp16
+        self.model_name = model_name
         self._engine = None
         self._context = None
         self._trt_ok = False
@@ -63,9 +64,9 @@ class TensorRTAccelerator:
             _sm_tag = f'_sm{_p.major}{_p.minor}_{_gpu_slug_sr}'
 
         B, C, H, W = input_shape
-        tag = f'B{B}_C{C}_H{H}_W{W}_fp{"16" if use_fp16 else "32"}{_sm_tag}'
-        trt_path = os.path.join(cache_dir, f'realesrgan_{tag}.trt')
-        onnx_path = os.path.join(cache_dir, f'realesrgan_{tag}.onnx')
+        tag = f'{model_name}_B{B}_C{C}_H{H}_W{W}_fp{"16" if use_fp16 else "32"}{_sm_tag}'
+        trt_path = os.path.join(cache_dir, f'{tag}.trt')
+        onnx_path = os.path.join(cache_dir, f'{tag}.onnx')
         os.makedirs(cache_dir, exist_ok=True)
 
         if not os.path.exists(trt_path):

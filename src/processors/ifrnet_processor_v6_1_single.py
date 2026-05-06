@@ -17,6 +17,7 @@ IFRNet 视频插帧处理器 v6（单卡版）
   - main() CLI 新增 --preview / --preview-interval
   - _process_segment 打印信息对齐 v6.3.0 版本标记
   - 构造函数新增参数与 default_config.json 完全对齐
+  - [v6.1 优化] 底层 IFRNetVideoProcessor 在循环外构造一次，分段复用，避免重复加载/编译/构建
 """
 
 import os
@@ -127,6 +128,9 @@ class IFRNetProcessor:
         self.checkpoint_file: Optional[Path] = None
         self.segment_dir:     Optional[Path] = None
         self.processed_dir:   Optional[Path] = None
+
+        # [v6.1 新增] 底层 IFRNetVideoProcessor 实例缓存，避免每个分段重新初始化
+        self._video_processor = None
 
     # -------------------------------------------------------------------------
     # 公共接口
@@ -273,6 +277,9 @@ class IFRNetProcessor:
         else:
             print("❌ 视频合并失败")
 
+        # [v6.1 新增] 清理复用的视频处理器，释放可能占用的 GPU 资源
+        self._cleanup_video_processor()
+
         return success
 
     # -------------------------------------------------------------------------
@@ -307,6 +314,58 @@ class IFRNetProcessor:
         if self.checkpoint_file:
             with open(self.checkpoint_file, "w") as f:
                 json.dump(checkpoint, f, indent=2)
+
+    def _get_or_create_video_processor(self):
+        """
+        [v6.1 新增] 获取或创建底层 IFRNetVideoProcessor，全局复用。
+        只在首次调用时进行模型加载、compile 预热、TRT 构建等操作。
+        """
+        if self._video_processor is not None:
+            return self._video_processor
+
+        # 延迟导入，保证只在需要时加载
+        from process_video_v6_3_0_single import IFRNetVideoProcessor
+
+        _trt_cache_dir = None
+        if self.use_tensorrt:
+            _trt_cache_dir = (self.trt_cache_dir or
+                              os.path.join(
+                                  str(self.config.get("paths", "base_dir", default="")),
+                                  '.trt_cache'
+                              ))
+
+        print("   🔧 首次初始化 IFRNetVideoProcessor（模型加载/编译仅此一次）")
+        processor = IFRNetVideoProcessor(
+            model_path     = self.model_path,
+            device         = self.device,
+            batch_size     = self.batch_size,
+            max_batch_size = self.max_batch_size,
+            use_fp16       = self.use_fp16,
+            use_compile    = self.use_compile,
+            use_cuda_graph = self.use_cuda_graph,
+            use_tensorrt   = self.use_tensorrt,
+            use_hwaccel    = self.use_hwaccel,
+            codec          = self.codec,
+            crf            = self.crf,
+            x264_preset    = self.x264_preset,
+            keep_audio     = self.keep_audio,
+            ffmpeg_bin     = self.ffmpeg_bin,
+            report_json    = self.report_json,
+            trt_cache_dir  = _trt_cache_dir,
+        )
+        self._video_processor = processor
+        return processor
+
+    def _cleanup_video_processor(self):
+        """
+        [v6.1 新增] 释放底层 processor 并清空缓存。
+        通常在完整流程结束后调用，释放 GPU 内存等资源。
+        """
+        if self._video_processor is not None:
+            # 如果底层 processor 有显式的清理方法，可以在这里调用
+            # 例如 processor.cleanup() 或 del processor
+            del self._video_processor
+            self._video_processor = None
 
     def _process_segments(self, segment_files: List[str],
                            checkpoint: dict) -> List[str]:
@@ -368,6 +427,7 @@ class IFRNetProcessor:
     def _process_segment(self, segment_path: str, output_path: str) -> bool:
         """
         调用 process_video_v6_3_0_single.IFRNetVideoProcessor 处理单个分段。
+        [v6.1 修改] 复用全局缓存的 processor，避免重复初始化。
 
         Args:
             segment_path: 输入片段路径
@@ -377,9 +437,8 @@ class IFRNetProcessor:
             是否成功
         """
         try:
-            # 导入 v6.3.0 单卡版处理器
-            # from process_video_v6_1_single import IFRNetVideoProcessor
-            from process_video_v6_3_0_single import IFRNetVideoProcessor
+            # [v6.1] 使用缓存的 processor，不再每次新建
+            processor = self._get_or_create_video_processor()
 
             print(f"   🎬 处理片段: {Path(segment_path).name}")
             print(f"   📊 插帧倍数: {self.interpolation_factor}x")
@@ -388,36 +447,6 @@ class IFRNetProcessor:
                   f"compile: {self.use_compile} | "
                   f"CUDA Graph: {self.use_cuda_graph} | "
                   f"TRT: {self.use_tensorrt}")
-
-            # [FIX-TRT-CACHE-DIR] TRT 缓存目录优先级：
-            #   1. config.paths.trt_cache_dir（由 config_manager 自动派生为 base_dir/.trt_cache，
-            #      或用户在 config / CLI --trt-cache-dir 中显式指定）
-            #   2. 兜底：base_dir/.trt_cache（与底层脚本直接调用时的默认行为完全一致）
-            _trt_cache_dir = (self.trt_cache_dir or
-                              os.path.join(
-                                  str(self.config.get("paths", "base_dir", default="")),
-                                  '.trt_cache'
-                              )
-                              ) if self.use_tensorrt else None
-
-            processor = IFRNetVideoProcessor(
-                model_path     = self.model_path,
-                device         = self.device,
-                batch_size     = self.batch_size,
-                max_batch_size = self.max_batch_size,
-                use_fp16       = self.use_fp16,
-                use_compile    = self.use_compile,
-                use_cuda_graph = self.use_cuda_graph,
-                use_tensorrt   = self.use_tensorrt,
-                use_hwaccel    = self.use_hwaccel,
-                codec          = self.codec,
-                crf            = self.crf,
-                x264_preset    = self.x264_preset,
-                keep_audio     = self.keep_audio,
-                ffmpeg_bin     = self.ffmpeg_bin,
-                report_json    = self.report_json,
-                trt_cache_dir = _trt_cache_dir,
-            )
 
             start_time = time.time()
 
@@ -522,6 +551,7 @@ def main():
   · OOM 级联保护（batch_size 减半 → 深度清理 → 显存估算恢复）
   · [v6.1] 异步 D2H（PinnedBufferPool 输出 buffer）
   · [v6.1] 预取线程集成 padding（与 GPU 推理完全并行）
+  · [v6.1 新增] 底层 processor 复用，避免分段重复初始化
 
 模型选项（二选一，model-path 优先）：
   --ifrnet-model IFRNet_S_Vimeo90K   轻量默认（推荐）

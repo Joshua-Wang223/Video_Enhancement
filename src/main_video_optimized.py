@@ -18,7 +18,7 @@
   阶段 4: [可选] 临时 / 中间文件清理
 
 【底层架构】
-  IFRNet     : src/processors/ifrnet_processor_v6_single.py
+  IFRNet     : src/processors/ifrnet_processor_v6_1_single.py
   Real-ESRGAN: src/processors/realesrgan_processor_video_optimized.py
                → external/realesrgan_video_ds/main.py (main_optimized, v6.4)
 
@@ -1155,8 +1155,8 @@ def _process_single(
     Returns:
         是否成功
     """
-    from ifrnet_processor_v6_single           import IFRNetProcessor          # noqa
-    from realesrgan_processor_video_optimized import RealESRGANVideoProcessor  # noqa
+    from ifrnet_processor_v6_1_single           import IFRNetProcessor           # noqa
+    from realesrgan_processor_video_optimized   import RealESRGANVideoProcessor  # noqa
 
     t0         = time.time()
     video_name = Path(input_video).stem
@@ -1500,7 +1500,7 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 底层架构：
-  IFRNet     : src/processors/ifrnet_processor_v6_single.py
+  IFRNet     : src/processors/ifrnet_processor_v6_1_single.py
   Real-ESRGAN: src/processors/realesrgan_processor_video_optimized.py
                → external/realesrgan_video_ds/main.py (main_optimized, v6.4)
 

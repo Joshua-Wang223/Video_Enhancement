@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
-Real-ESRGAN Video Enhancement v6.4 - 架构优化版 (最终修复版)
+Real-ESRGAN Video Enhancement v6.4 - 架构优化版 (最终修复版 + 多片段复用)
 基于v6.2代码重构，实现深度模块化分解。
 保持原有所有功能及CLI参数，保留原有注释及信息提示不变。
 
 新增实时预览功能：
     --preview            启用实时预览窗口（显示最终输出结果，按 q 键提前退出）
     --preview-interval   预览帧间隔（默认 30 帧刷新一次）
+
+新增多片段复用：
+    create_video_enhancer()  一次性初始化模型/引擎，返回可复用组件
+    run_pipeline_for_video() 使用预建 enhancer 快速处理单个视频
 """
 
 import os
@@ -172,9 +176,13 @@ class PreviewWriter:
         return getattr(self.writer, name)
 
 
-def main_optimized(args):
-    """优化版主函数 —— 包含完整的参数标准化与冲突仲裁"""
-
+def create_video_enhancer(args):
+    """
+    一次性初始化所有重型组件，返回可复用的 enhancer 字典。
+    包含：参数标准化、CUDA 初始化、Real-ESRGAN 模型加载、
+          GFPGAN 子进程/主进程模型加载、TensorRT 引擎构建。
+    返回的字典可在后续 run_pipeline_for_video() 中重复使用。
+    """
     # =========================================================================
     # 阶段 -1: 参数标准化、强制覆盖与互斥仲裁
     #          确保任何调用方（CLI 或外部模块）都得到一致的处理结果
@@ -280,7 +288,7 @@ def main_optimized(args):
         print()
 
     # =========================================================================
-    # 原有 main_optimized 核心逻辑开始
+    # 阶段 0: 环境准备
     # =========================================================================
 
     vlog("[优化架构] 修复版: 改进 GFPGAN TRT 就绪判断")
@@ -299,6 +307,9 @@ def main_optimized(args):
         vlog(f"[优化架构] CUDA 编译支持: 是")
         vlog(f"[优化架构] 延迟 CUDA Runtime 初始化直到 GFPGAN 子进程就绪")
 
+    # =========================================================================
+    # 阶段 1: GFPGAN 子进程预启动（如果需要）
+    # =========================================================================
     _early_gfpgan_subprocess = None
     gfpgan_ready = False
     use_gfpgan_subprocess = False
@@ -378,9 +389,11 @@ def main_optimized(args):
             else:
                 vlog('[优化架构] GFPGAN 子进程准备就绪')
 
+    # =========================================================================
+    # 阶段 2: CUDA 初始化（如果尚未完成）并加载 Real-ESRGAN
+    # =========================================================================
     vlog("[优化架构] 阶段 2: 初始化主进程 CUDA 并加载 RealESRGAN...")
-
-    if cuda_available:
+    if cuda_available and not torch.cuda.is_initialized():
         try:
             torch.cuda.init()
             device_name = torch.cuda.get_device_name(0)
@@ -415,8 +428,11 @@ def main_optimized(args):
         print(f"[优化架构] RealESRGAN模型加载失败: {e}")
         import traceback
         traceback.print_exc()
-        return
+        raise
 
+    # =========================================================================
+    # 阶段 3: 创建 face_enhancer（GFPGAN 主进程/子进程处理）
+    # =========================================================================
     face_enhancer = None
     if args.face_enhance and GFPGANer is not None:
         if use_gfpgan_subprocess and gfpgan_ready and _early_gfpgan_subprocess is not None:
@@ -475,40 +491,9 @@ def main_optimized(args):
                 face_enhancer = None
                 gfpgan_mode = "disabled"
 
-    vlog("[优化架构] 阶段 3: 创建视频读写器...")
-    reader = FFmpegReader(
-        args.input, ffmpeg_bin=getattr(args, 'ffmpeg_bin', 'ffmpeg'),
-        prefetch_factor=getattr(args, 'prefetch_factor', 48),
-        use_hwaccel=getattr(args, 'use_hwaccel', True),
-        quiet=quiet,
-    )
-
-    out_h = int(reader.height * args.outscale)
-    out_w = int(reader.width * args.outscale)
-    # 确保输出目录存在
-    output_dir = os.path.dirname(args.output)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-    base_writer = FFmpegWriter(args, reader.audio, out_h, out_w, args.output, reader.fps)
-
-    # 根据预览选项包装 writer
-    preview_enabled = getattr(args, 'preview', False)
-    preview_interval = getattr(args, 'preview_interval', 30)
-    if preview_enabled:
-        writer = PreviewWriter(base_writer, preview_enabled=True, preview_interval=preview_interval)
-        if writer.preview_enabled:
-            print(f"[优化架构] 实时预览已启用（间隔 {preview_interval} 帧，按 q 退出）")
-        else:
-            print("[优化架构] 实时预览已请求但 GUI 不可用，将仅写入文件")
-        # 同步实际状态到 preview_enabled，供后续 report 使用
-        preview_enabled = writer.preview_enabled
-    else:
-        writer = base_writer
-
-    pbar = tqdm(total=reader.nb_frames, unit='frame', desc='[优化流水线]',
-                dynamic_ncols=False, ncols=180,
-                bar_format='{l_bar}{bar:10}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]\n')
-
+    # =========================================================================
+    # 阶段 4: TensorRT 引擎构建（如果需要）
+    # =========================================================================
     trt_accel = None
     if getattr(args, 'use_tensorrt', False) and cuda_available:
         # [FIX-TRT-CTX-OOM] 在双步模式（interpolate_then_upscale）下，
@@ -522,7 +507,8 @@ def main_optimized(args):
         print(f'[优化架构] 初始化 SR TensorRT Engine (shape={sh})...')
         try:
             trt_accel = TensorRTAccelerator(
-                upsampler.model, device, trt_dir, sh, use_fp16=not args.no_fp16)
+                upsampler.model, device, trt_dir, sh, use_fp16=not args.no_fp16,
+                model_name=args.model_name)
             if trt_accel.available:
                 print('[优化架构] SR TensorRT Engine 加载成功')
             else:
@@ -531,6 +517,7 @@ def main_optimized(args):
             print(f'[优化架构] SR TensorRT 初始化异常: {_te}')
             trt_accel = None
 
+    # 保存 GFPGAN 子进程引用（如果存在），后续 run_pipeline_for_video 会使用
     if _early_gfpgan_subprocess is not None and use_gfpgan_subprocess and gfpgan_ready:
         args._early_gfpgan_subprocess = _early_gfpgan_subprocess
         vlog(f'[优化架构] GFPGAN 子进程已绑定到流水线（模式: {gfpgan_mode}）')
@@ -539,7 +526,70 @@ def main_optimized(args):
         if args.face_enhance:
             vlog(f'[优化架构] GFPGAN 使用主进程模式: {gfpgan_mode}')
 
+    # 构建 enhancer 字典
+    enhancer = {
+        'upsampler': upsampler,
+        'face_enhancer': face_enhancer,
+        'trt_accel': trt_accel,
+        'device': device,
+        'args': args,                    # 标准化后的参数
+        'gfpgan_subprocess': _early_gfpgan_subprocess,
+        'gfpgan_mode': gfpgan_mode,
+    }
+    return enhancer
+
+
+def run_pipeline_for_video(enhancer, input_video, output_video):
+    """
+    使用预初始化的 enhancer 处理单个视频文件。
+    负责创建 reader、writer、pipeline 并运行。
+    处理结束后会关闭这些一次性对象，但不会关闭 enhancer 中的重型组件。
+    """
+    upsampler = enhancer['upsampler']
+    face_enhancer = enhancer['face_enhancer']
+    trt_accel = enhancer['trt_accel']
+    device = enhancer['device']
+    args = enhancer['args']
+
+    quiet = getattr(args, 'quiet', True)
+    def vlog(*_a, **_k):
+        if not quiet:
+            print(*_a, **_k)
+
+    vlog("[优化架构] 阶段 3: 创建视频读写器...")
+    reader = FFmpegReader(
+        input_video, ffmpeg_bin=getattr(args, 'ffmpeg_bin', 'ffmpeg'),
+        prefetch_factor=getattr(args, 'prefetch_factor', 48),
+        use_hwaccel=getattr(args, 'use_hwaccel', True),
+        quiet=quiet,
+    )
+    # 确保输出目录存在
+    out_h = int(reader.height * args.outscale)
+    out_w = int(reader.width * args.outscale)
+    output_dir = os.path.dirname(output_video)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    base_writer = FFmpegWriter(args, reader.audio, out_h, out_w, output_video, reader.fps)
+    # 根据预览选项包装 writer
+    preview_enabled = getattr(args, 'preview', False)
+    preview_interval = getattr(args, 'preview_interval', 30)
+    writer = PreviewWriter(base_writer, preview_enabled=preview_enabled, preview_interval=preview_interval)
+    if preview_enabled:
+        if writer.preview_enabled:
+            print(f"[优化架构] 实时预览已启用（间隔 {preview_interval} 帧，按 q 退出）")
+        else:
+            print("[优化架构] 实时预览已请求但 GUI 不可用，将仅写入文件")
+        # 同步实际状态到 preview_enabled，供后续 report 使用
+        preview_enabled = writer.preview_enabled
+    else:
+        writer = base_writer
+
+    pbar = tqdm(total=reader.nb_frames, unit='frame', desc='[优化流水线]',
+                dynamic_ncols=False, ncols=180,
+                bar_format='{l_bar}{bar:10}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]\n')
+
     vlog("[优化架构] 阶段 4: 启动优化流水线...")
+    # 将预启动的子进程注入流水线（DeepPipelineOptimizer 会检查 args._early_gfpgan_subprocess）
     pipeline = DeepPipelineOptimizer(upsampler, face_enhancer, args, device, trt_accel=trt_accel,
                                      input_h=reader.height, input_w=reader.width)
 
@@ -554,23 +604,10 @@ def main_optimized(args):
         traceback.print_exc()
     finally:
         print("\n[优化架构] 视频推理完成，正在清理资源...")
-        vlog("[优化架构] ===========================================")
-
-        # print("[优化架构] 步骤1/4: 关闭流水线线程...")
         pipeline.close()
-        # print("[优化架构] 流水线线程已关闭")
-
-        # print("[优化架构] 步骤2/4: 关闭FFmpeg写入器...")
         writer.close()
-        # print("[优化架构] FFmpeg写入器已关闭")
-
-        # print("[优化架构] 步骤3/4: 关闭视频读取器...")
         reader.close()
-        # print("[优化架构] 视频读取器已关闭")
-
-        # print("[优化架构] 步骤4/4: 关闭进度条...")
         pbar.close()
-
         end_time = time.time()
         total_time = end_time - start_time
 
@@ -581,8 +618,8 @@ def main_optimized(args):
             os.makedirs(os.path.dirname(report_path) or '.', exist_ok=True)
             elapsed = total_time
             report = {
-                'input': args.input,
-                'output': args.output,
+                'input': input_video,
+                'output': output_video,
                 'model': args.model_name,
                 'outscale': args.outscale,
                 'batch_size': args.batch_size,
@@ -599,7 +636,7 @@ def main_optimized(args):
                     'p95': round(float(np.percentile(pipeline.timing, 95)) * 1000, 2),
                     'max': round(float(np.max(pipeline.timing)) * 1000, 2),
                 },
-                'gfpgan_mode': gfpgan_mode,
+                'gfpgan_mode': enhancer.get('gfpgan_mode', 'disabled'),
                 'face_filtered': pipeline._face_filtered_total,
                 'adaptive_batch': pipeline._enable_adaptive_batch,
                 'preview': preview_enabled,
@@ -613,7 +650,7 @@ def main_optimized(args):
             avg_time = np.mean(pipeline.timing) * 1000
             actual_fps = reader.nb_frames / total_time if total_time > 0 else 0
             print(f"\n[性能统计] 总时间: {total_time:.1f}秒 | 平均: {avg_time:.1f}ms | FPS: {actual_fps:.2f}")
-            print(f"[性能统计] GFPGAN 模式: {gfpgan_mode}")
+            print(f"[性能统计] GFPGAN 模式: {enhancer.get('gfpgan_mode', 'disabled')}")
             if args.face_enhance:
                 if pipeline._face_filtered_total > 0:
                     print(f"[性能统计] 人脸检测: 保留 {pipeline._face_count_total} 个, "
@@ -622,6 +659,17 @@ def main_optimized(args):
                 if pipeline._enable_adaptive_batch:
                     print(f"[性能统计] 最终人脸密度EMA: {pipeline._face_density_ema:.2f} 人脸/帧, "
                           f"最终自适应arbs: {pipeline._adaptive_read_batch_size}")
+
+
+def main_optimized(args):
+    """
+    原始入口（保持向后兼容）：一键完成初始化并处理单个视频。
+    等价于：
+        enhancer = create_video_enhancer(args)
+        run_pipeline_for_video(enhancer, args.input, args.output)
+    """
+    enhancer = create_video_enhancer(args)
+    run_pipeline_for_video(enhancer, args.input, args.output)
 
 
 def main():
