@@ -23,7 +23,8 @@ class GFPGANSubprocess:
         if not hasattr(self, 'model_path'):
             model_paths = {'1.3': 'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.3.pth', '1.4': 'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth', 'RestoreFormer': 'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/RestoreFormer.pth'}
             model_url = model_paths.get(gfpgan_model, model_paths['1.4'])
-            model_dir = osp.join(os.path.dirname(os.path.dirname(__file__)), 'models_RealESRGAN', 'GFPGAN')
+            _worker_base_dir = osp.dirname(osp.dirname(osp.dirname(osp.dirname(osp.abspath(__file__)))))
+            model_dir = osp.join(_worker_base_dir, 'models_GFPGAN')
             os.makedirs(model_dir, exist_ok=True)
             from basicsr.utils.download_util import load_file_from_url
             self.model_path = osp.join(model_dir, osp.basename(model_url))

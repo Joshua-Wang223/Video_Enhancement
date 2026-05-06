@@ -23,6 +23,9 @@ except ImportError:
 
 from facexlib.utils.face_restoration_helper import FaceRestoreHelper
 
+# GFPGAN 辅助模型（facexlib 人脸检测/解析）统一存放目录
+from config import gfpgan_weights_dir
+
 
 def _make_detect_helper(face_enhancer, device):
     """
@@ -31,6 +34,7 @@ def _make_detect_helper(face_enhancer, device):
     FIX-DET-CPU: 强制在 CPU 上运行人脸检测。
     """
     upscale_factor = getattr(face_enhancer.face_helper, 'upscale_factor', 1)
+    os.makedirs(gfpgan_weights_dir, exist_ok=True)
     return FaceRestoreHelper(
         upscale_factor=upscale_factor,
         face_size=512,
@@ -39,6 +43,7 @@ def _make_detect_helper(face_enhancer, device):
         save_ext='png',
         use_parse=True,
         device=torch.device('cpu'),  # 强制 CPU
+        model_rootpath=gfpgan_weights_dir,
     )
 
 

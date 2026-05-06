@@ -33,6 +33,7 @@ class Config:
             "temp_dir":    "",
             "log_dir":     "",
             "trt_cache_dir": "",  # 留空由 _setup_paths() 自动派生为 base_dir/.trt_cache
+            "models_gfpgan_dir": "",  # 留空由 _setup_paths() 自动派生为 base_dir/models_GFPGAN
         },
         "models": {
             "ifrnet": {
@@ -77,6 +78,7 @@ class Config:
                 "gfpgan_trt":       False,
                 # v6 face_enhance 精细控制
                 "gfpgan_model":      "1.4",
+                "gfpgan_model_path": "",
                 "gfpgan_weight":     0.7,
                 "gfpgan_batch_size": 4,
                 "face_det_threshold": 0.7,
@@ -238,6 +240,28 @@ class Config:
                 / (esrgan_cfg.get("model_name", "realesr-general-x4v3") + ".pth")
             )
             print(f"   ℹ️  RealESRGAN 模型路径已自动派生: {esrgan_cfg['model_path']}")
+
+        # ------------------------------------------------------------------
+        # GFPGAN 存储目录 & 模型路径自动派生
+        # ------------------------------------------------------------------
+        # GFPGAN 模型存放目录（含主生成模型 + facexlib 辅助模型）
+        if not paths.get("models_gfpgan_dir", ""):
+            paths["models_gfpgan_dir"] = str(base_dir / "models_GFPGAN")
+        Path(paths["models_gfpgan_dir"]).mkdir(parents=True, exist_ok=True)
+
+        # GFPGAN 主模型权重路径
+        gfpgan_model_path = esrgan_cfg.get("gfpgan_model_path")
+        if not gfpgan_model_path or not isinstance(gfpgan_model_path, str) or gfpgan_model_path.strip() == "":
+            _gfpgan_version = esrgan_cfg.get("gfpgan_model", "1.4")
+            _gfpgan_filename = {
+                "1.3": "GFPGANv1.3.pth",
+                "1.4": "GFPGANv1.4.pth",
+                "RestoreFormer": "RestoreFormer.pth",
+            }.get(_gfpgan_version, "GFPGANv1.4.pth")
+            esrgan_cfg["gfpgan_model_path"] = str(
+                Path(paths["models_gfpgan_dir"]) / _gfpgan_filename
+            )
+            print(f"   ℹ️  GFPGAN 模型路径已自动派生: {esrgan_cfg['gfpgan_model_path']}")
     
     def get(self, *keys, default=None):
         """

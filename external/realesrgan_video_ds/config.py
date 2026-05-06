@@ -18,6 +18,8 @@ from realesrgan.archs.srvgg_arch import SRVGGNetCompact
 _SCRIPT_DIR = osp.dirname(osp.abspath(__file__))
 base_dir = osp.dirname(osp.dirname(_SCRIPT_DIR))
 models_RealESRGAN = osp.join(base_dir, 'models_RealESRGAN')
+models_GFPGAN = osp.join(base_dir, 'models_GFPGAN')
+gfpgan_weights_dir = osp.join(models_GFPGAN, 'gfpgan', 'weights')
 
 # 模型配置常量
 MODEL_CONFIG = {

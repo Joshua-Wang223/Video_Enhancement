@@ -913,13 +913,19 @@ class IFRNetPipelineRunner:
                         break
 
                 # 批量等待所有 D2H DMA 完成
+                _has_sentinel = False
                 for _item in items:
+                    if _item is self._SENTINEL:
+                        _has_sentinel = True
+                        continue
                     if isinstance(_item, _PinnedResultItem):
                         _item.event.synchronize()
 
-                # 批量写入
+                # 批量写入（跳过 sentinel）
                 _n_pairs_total = 0
                 for _item in items:
+                    if _item is self._SENTINEL:
+                        continue
                     if isinstance(_item, _PinnedResultItem):
                         n_pairs = _item.B
                         _n_pairs_total += n_pairs
@@ -945,6 +951,10 @@ class IFRNetPipelineRunner:
                                 written += 1
                             writer.write(img1_raw_list[i])
                             written += 1
+
+                if _has_sentinel:
+                    received_sentinel = True
+                    break
 
                 if pbar is not None:
                     pbar.update(_n_pairs_total)

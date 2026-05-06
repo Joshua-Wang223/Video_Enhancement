@@ -123,7 +123,7 @@ def main_optimized(args):
             try:
                 model_paths = {'1.3': 'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.3.pth', '1.4': 'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth', 'RestoreFormer': 'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/RestoreFormer.pth'}
                 model_url = model_paths.get(args.gfpgan_model, model_paths['1.4'])
-                model_dir = osp.join(config.MODELS_DIR, 'GFPGAN'); os.makedirs(model_dir, exist_ok=True)
+                model_dir = config.MODELS_GFPGAN_DIR
                 model_path = osp.join(model_dir, osp.basename(model_url))
                 if not osp.exists(model_path): model_path = load_file_from_url(model_url, model_dir, True)
                 face_enhancer = GFPGANer(model_path=model_path, upscale=args.outscale, arch='clean', channel_multiplier=2, bg_upsampler=None, device=device)

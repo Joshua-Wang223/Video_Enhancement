@@ -141,6 +141,10 @@ import traceback
 from pathlib import Path
 from typing import Optional
 
+# [FIX-NVML] 明确禁用 PyTorch 基于 NVML 的 CUDA 检测，
+# 避免因系统 NVML/RM 版本不匹配导致 INTERNAL ASSERT FAILED。
+os.environ.setdefault("PYTORCH_NVML_BASED_CUDA_CHECK", "0")
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 路径设置：确保项目内模块可被导入
 # ─────────────────────────────────────────────────────────────────────────────

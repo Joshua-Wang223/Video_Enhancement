@@ -17,6 +17,11 @@ import os
 import sys
 import time
 import argparse
+
+# [FIX-NVML] 明确禁用 PyTorch 基于 NVML 的 CUDA 检测，
+# 避免因系统 NVML/RM 版本不匹配导致 INTERNAL ASSERT FAILED。
+os.environ.setdefault("PYTORCH_NVML_BASED_CUDA_CHECK", "0")
+
 import numpy as np
 import torch
 
@@ -33,7 +38,7 @@ if _script_dir not in sys.path:
 
 from basicsr.utils.download_util import load_file_from_url
 from realesrgan import RealESRGANer
-from config import MODEL_CONFIG, models_RealESRGAN
+from config import MODEL_CONFIG, models_RealESRGAN, models_GFPGAN, gfpgan_weights_dir
 from realesrgan_utils import get_video_meta_info, _build_upsampler
 from ffmpeg_io import FFmpegReader, FFmpegWriter
 from tensorrt_accel import TensorRTAccelerator
@@ -44,6 +49,25 @@ try:
     from gfpgan import GFPGANer
 except ImportError:
     GFPGANer = None
+
+# ------------------------------------------------------------------
+# 猴补丁：修复 facexlib 中硬编码的 model_rootpath='gfpgan/weights'
+# GFPGANer.__init__ 将 model_rootpath='gfpgan/weights' 传给
+# FaceRestoreHelper，导致下载到 CWD/gfpgan/weights/。
+# 必须在 FaceRestoreHelper 层面拦截，因为下载发生在
+# FaceRestoreHelper.__init__ 内部，GFPGANer 层面补丁为时已晚。
+# ------------------------------------------------------------------
+try:
+    from facexlib.utils.face_restoration_helper import FaceRestoreHelper as _FRH
+    _original_frh_init = _FRH.__init__
+    def _patched_frh_init(self, *args, **kwargs):
+        # 强制使用绝对路径，忽略传入的任何相对路径
+        kwargs['model_rootpath'] = gfpgan_weights_dir
+        os.makedirs(gfpgan_weights_dir, exist_ok=True)
+        _original_frh_init(self, *args, **kwargs)
+    _FRH.__init__ = _patched_frh_init
+except ImportError:
+    pass
 
 from tqdm import tqdm
 
@@ -326,7 +350,7 @@ def create_video_enhancer(args):
                 'RestoreFormer': 'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/RestoreFormer.pth',
             }
             _model_url_early = _model_paths_early.get(args.gfpgan_model, _model_paths_early['1.4'])
-            _model_dir_early = os.path.join(models_RealESRGAN, 'GFPGAN')
+            _model_dir_early = models_GFPGAN
             os.makedirs(_model_dir_early, exist_ok=True)
             _model_filename_early = os.path.basename(_model_url_early)
             _model_path_early = os.path.join(_model_dir_early, _model_filename_early)
@@ -444,10 +468,12 @@ def create_video_enhancer(args):
                     def __init__(self, device, upscale):
                         self.device = device
                         self.upscale = upscale
+                        os.makedirs(gfpgan_weights_dir, exist_ok=True)
                         self.face_helper = FaceRestoreHelper(
                             upscale_factor=upscale, face_size=512, crop_ratio=(1, 1),
                             det_model='retinaface_resnet50', save_ext='png',
                             use_parse=True, device=device,
+                            model_rootpath=gfpgan_weights_dir,
                         )
                         self.gfpgan = None
                         self.model_path = None
@@ -468,7 +494,7 @@ def create_video_enhancer(args):
                     'RestoreFormer': 'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/RestoreFormer.pth'
                 }
                 model_url = model_paths.get(args.gfpgan_model, model_paths['1.4'])
-                model_dir = os.path.join(models_RealESRGAN, 'GFPGAN')
+                model_dir = models_GFPGAN
                 os.makedirs(model_dir, exist_ok=True)
                 model_filename = os.path.basename(model_url)
                 model_path = os.path.join(model_dir, model_filename)

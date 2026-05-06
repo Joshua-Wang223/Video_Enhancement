@@ -70,6 +70,7 @@ warnings.filterwarnings('ignore', category=UserWarning, module='multiprocessing.
 _SCRIPT_DIR       = osp.dirname(osp.abspath(__file__))
 base_dir          = osp.dirname(osp.dirname(_SCRIPT_DIR))
 models_RealESRGAN = osp.join(base_dir, 'models_RealESRGAN')
+models_GFPGAN_DIR = osp.join(base_dir, 'models_GFPGAN')
 
 # 模型配置常量
 MODEL_CONFIG = {
@@ -1934,7 +1935,7 @@ class GFPGANSubprocess:
                     'RestoreFormer': 'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/RestoreFormer.pth'
                 }
                 model_url = model_paths.get(gfpgan_model, model_paths['1.4'])
-                model_dir = osp.join(models_RealESRGAN, 'GFPGAN')
+                model_dir = models_GFPGAN_DIR
                 os.makedirs(model_dir, exist_ok=True)
                 model_filename = osp.basename(model_url)
                 self.model_path = osp.join(model_dir, model_filename)
@@ -4896,7 +4897,7 @@ def main_optimized(args):
                 'RestoreFormer': 'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/RestoreFormer.pth',
             }
             _model_url_early = _model_paths_early.get(args.gfpgan_model, _model_paths_early['1.4'])
-            _model_dir_early = osp.join(models_RealESRGAN, 'GFPGAN')
+            _model_dir_early = models_GFPGAN_DIR
             os.makedirs(_model_dir_early, exist_ok=True)
             _model_filename_early = osp.basename(_model_url_early)
             _model_path_early = osp.join(_model_dir_early, _model_filename_early)
@@ -5030,7 +5031,7 @@ def main_optimized(args):
                     'RestoreFormer': 'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/RestoreFormer.pth'
                 }
                 model_url = model_paths.get(args.gfpgan_model, model_paths['1.4'])
-                model_dir = osp.join(models_RealESRGAN, 'GFPGAN')
+                model_dir = models_GFPGAN_DIR
                 os.makedirs(model_dir, exist_ok=True)
                 model_filename = osp.basename(model_url)
                 model_path = osp.join(model_dir, model_filename)

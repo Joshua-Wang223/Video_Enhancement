@@ -1360,7 +1360,7 @@ class MultiGPUOrchestrator:
             # 优先查找本地模型文件
             _gfpgan_path = osp.join('experiments/pretrained_models', _gfpgan_name + '.pth')
             if not osp.isfile(_gfpgan_path):
-                _gfpgan_path = osp.join('gfpgan/weights', _gfpgan_name + '.pth')
+                _gfpgan_path = osp.join(base_dir, 'models_GFPGAN', 'gfpgan', 'weights', _gfpgan_name + '.pth')
             if not osp.isfile(_gfpgan_path):
                 _gfpgan_path = _gfpgan_url
             gfpgan_model_path = _gfpgan_path
@@ -1699,7 +1699,7 @@ def inference_video_single(args, video_save_path: str, device=None):
 
         _gfpgan_path = osp.join('experiments/pretrained_models', _gfpgan_name + '.pth')
         if not osp.isfile(_gfpgan_path):
-            _gfpgan_path = osp.join('gfpgan/weights', _gfpgan_name + '.pth')
+            _gfpgan_path = osp.join(base_dir, 'models_GFPGAN', 'gfpgan', 'weights', _gfpgan_name + '.pth')
         if not osp.isfile(_gfpgan_path):
             _gfpgan_path = _gfpgan_url
 
@@ -1953,7 +1953,7 @@ def main():
     parser.add_argument('--gfpgan_model',            type=str, default='1.4',
                         choices=['1.3', '1.4', 'RestoreFormer'],
                         help='GFPGAN 模型版本（--face_enhance 时生效）。'
-                             '本地优先查找 experiments/pretrained_models/ 和 gfpgan/weights/，'
+                             '本地优先查找 experiments/pretrained_models/ 和 models_GFPGAN/gfpgan/weights/，'
                              '不存在时自动下载。Default: 1.4')
     parser.add_argument('--gfpgan_weight',           type=float, default=0.5,
                         help='GFPGAN 增强融合权重，0.0=不增强，1.0=完全替换，Default: 0.5')

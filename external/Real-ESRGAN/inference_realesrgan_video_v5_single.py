@@ -1297,7 +1297,7 @@ def inference_video_single(args, video_save_path: str, device=None):
         # 与 inference_gfpgan.py 保持一致：优先查找本地模型文件，不存在再下载
         _gfpgan_path = osp.join('experiments/pretrained_models', _gfpgan_name + '.pth')
         if not osp.isfile(_gfpgan_path):
-            _gfpgan_path = osp.join('gfpgan/weights', _gfpgan_name + '.pth')
+            _gfpgan_path = osp.join(base_dir, 'models_GFPGAN', 'gfpgan', 'weights', _gfpgan_name + '.pth')
         if not osp.isfile(_gfpgan_path):
             # 本地均无，使用 URL 自动下载（GFPGANer.__init__ 会调用 load_file_from_url）
             _gfpgan_path = _gfpgan_url
@@ -1574,7 +1574,7 @@ def main():
                         choices=['1.3', '1.4', 'RestoreFormer'],
                         help='GFPGAN 模型版本（--face_enhance 时生效）。'
                              '1.4=更自然/低质量鲁棒，1.3=与1.4相近，RestoreFormer=Transformer方案。'
-                             '本地优先查找 experiments/pretrained_models/ 和 gfpgan/weights/，'
+                             '本地优先查找 experiments/pretrained_models/ 和 models_GFPGAN/gfpgan/weights/，'
                              '不存在时自动下载。Default: 1.4')
     parser.add_argument('--gfpgan_weight',            type=float, default=0.5,
                         help='GFPGAN 增强融合权重，0.0=不增强，1.0=完全替换，Default: 0.5')

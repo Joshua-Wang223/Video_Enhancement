@@ -12,6 +12,10 @@ import threading
 import concurrent.futures
 from typing import List, Optional, Tuple, Dict, Any
 
+# [FIX-NVML] 明确禁用 PyTorch 基于 NVML 的 CUDA 检测，
+# 避免因系统 NVML/RM 版本不匹配导致 INTERNAL ASSERT FAILED。
+os.environ.setdefault("PYTORCH_NVML_BASED_CUDA_CHECK", "0")
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -254,7 +258,7 @@ class DeepPipelineOptimizer:
 
     def _vlog(self, *args, **kwargs):
         """受静默模式控制的日志打印（仅在 --no-quiet 时输出）"""
-        if not self._quiet:
+        if not getattr(self, '_quiet', True):
             print(*args, **kwargs)
 
     def optimize_pipeline(self, reader, writer, pbar, total_frames):
@@ -613,6 +617,8 @@ class DeepPipelineOptimizer:
                 except queue.Empty:
                     continue
                 except Exception as e:
+                    import traceback
+                    traceback.print_exc()
                     print(f"人脸检测错误: {e}")
         finally:
             if not _sentinel_sent:
@@ -1394,8 +1400,8 @@ class DeepPipelineOptimizer:
                             if self._enable_adaptive_batch:
                                 monitor_msg += f" | 密度EMA={self._face_density_ema:.1f}"
                                 monitor_msg += f" | 自适应arbs={self._adaptive_read_batch_size}"
-                                
-                    self._vlog(monitor_msg, flush=True)
+
+                        self._vlog(monitor_msg, flush=True)
 
                     # self._dump_all_queues()
 

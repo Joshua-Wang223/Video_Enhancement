@@ -9,6 +9,7 @@ from basicsr.archs.rrdbnet_arch import RRDBNet
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.dirname(os.path.dirname(_SCRIPT_DIR))
 MODELS_DIR = os.path.join(BASE_DIR, 'models_RealESRGAN')
+MODELS_GFPGAN_DIR = os.path.join(BASE_DIR, 'models_GFPGAN')
 
 # 已经把 Real-ESRGAN 项目拷贝进本项目
 # _EXT_DIR    = os.path.dirname(_SCRIPT_DIR)

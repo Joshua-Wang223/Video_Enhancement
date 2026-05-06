@@ -23,12 +23,27 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from basicsr.utils.download_util import load_file_from_url
 from basicsr.utils import img2tensor, tensor2img
 from torchvision.transforms.functional import normalize as _tv_normalize
-from config import models_RealESRGAN
+from config import models_RealESRGAN, models_GFPGAN, gfpgan_weights_dir
 
 try:
     from gfpgan import GFPGANer
 except ImportError:
     GFPGANer = None
+
+# ------------------------------------------------------------------
+# 猴补丁：修复 facexlib FaceRestoreHelper 的 model_rootpath
+# 在 FaceRestoreHelper 层面拦截，确保下载到绝对路径。
+# ------------------------------------------------------------------
+try:
+    from facexlib.utils.face_restoration_helper import FaceRestoreHelper as _FRH
+    _original_frh_init = _FRH.__init__
+    def _patched_frh_init(self, *args, **kwargs):
+        kwargs['model_rootpath'] = gfpgan_weights_dir
+        os.makedirs(gfpgan_weights_dir, exist_ok=True)
+        _original_frh_init(self, *args, **kwargs)
+    _FRH.__init__ = _patched_frh_init
+except ImportError:
+    pass
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SharedMemoryDoubleBuffer（优化3：零拷贝 IPC）
@@ -153,7 +168,7 @@ class GFPGANSubprocess:
                     'RestoreFormer': 'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/RestoreFormer.pth'
                 }
                 model_url = model_paths.get(gfpgan_model, model_paths['1.4'])
-                model_dir = os.path.join(models_RealESRGAN, 'GFPGAN')
+                model_dir = models_GFPGAN
                 os.makedirs(model_dir, exist_ok=True)
                 model_filename = os.path.basename(model_url)
                 self.model_path = os.path.join(model_dir, model_filename)
