@@ -109,26 +109,26 @@ class FFmpegReader:
             try:
                 self._frame_queue.put(None, timeout=1.0)
                 self._eof_sent = True
-                self._vlog(f"[FFmpegReader] EOF 已发送到下游（frames_produced={self._frames_produced}）",
+                self._vlog(f"\n[FFmpegReader] EOF 已发送到下游（frames_produced={self._frames_produced}）",
                            flush=True)
                 return
             except queue.Full:
                 retries += 1
                 # pipeline 主动关闭，不再坚持
                 if not self._running:
-                    print(f"[FFmpegReader] 放弃发送 EOF：_running=False",
+                    print(f"\n[FFmpegReader] 放弃发送 EOF：_running=False",
                           flush=True)
                     return
                 if retries % 10 == 0:
-                    print(f"[FFmpegReader] EOF 发送受阻 {retries}s，"
+                    print(f"\n[FFmpegReader] EOF 发送受阻 {retries}s，"
                           f"下游队列持续满（frame_queue={self._frame_queue.qsize()}/"
                           f"{self._frame_queue.maxsize}）", flush=True)
                 if retries >= max_wait_s:
-                    print(f"[FFmpegReader] 放弃发送 EOF：超过 {max_wait_s:.0f}s 仍无法入队",
+                    print(f"\n[FFmpegReader] 放弃发送 EOF：超过 {max_wait_s:.0f}s 仍无法入队",
                           flush=True)
                     return
             except Exception as e:
-                print(f"[FFmpegReader] 发送 EOF 异常: {e}", flush=True)
+                print(f"\n[FFmpegReader] 发送 EOF 异常: {e}", flush=True)
                 return
 
     # ----------------------------------------------------------------------
@@ -166,7 +166,7 @@ class FFmpegReader:
             stderr_thread.start()
 
             frame_size = self.width * self.height * 3
-            print(f"[FFmpegReader] FFmpeg 进程启动（pid={process.pid}, "
+            print(f"\n[FFmpegReader] FFmpeg 进程启动（pid={process.pid}, "
                   f"frame_size={frame_size}B, queue_size={self.prefetch_factor}）",
                   flush=True)
 
@@ -176,19 +176,19 @@ class FFmpegReader:
                     in_bytes = process.stdout.read(frame_size)
                 except Exception as e:
                     self._last_error = f'stdout.read 异常: {e}'
-                    print(f"[FFmpegReader] 致命: stdout.read 异常 "
+                    print(f"\n[FFmpegReader] 致命: stdout.read 异常 "
                           f"@frame={self._frames_produced}: {e}", flush=True)
                     break
 
                 # 正常 EOF
                 if not in_bytes:
                     rc = process.poll()
-                    self._vlog(f"[FFmpegReader] stdout EOF @frame={self._frames_produced}, "
+                    self._vlog(f"\n[FFmpegReader] stdout EOF @frame={self._frames_produced}, "
                                f"ffmpeg_rc={rc}", flush=True)
                     if rc is not None and rc != 0:
                         # 异常退出：打诊断
                         tail = self._get_stderr_tail(40)
-                        print(f"[FFmpegReader] ffmpeg 非零退出 (rc={rc})，stderr 尾部:\n{tail}",
+                        print(f"\n[FFmpegReader] ffmpeg 非零退出 (rc={rc})，stderr 尾部:\n{tail}",
                               flush=True)
                         self._last_error = f'ffmpeg 非零退出 rc={rc}'
                     break
@@ -197,10 +197,10 @@ class FFmpegReader:
                 if len(in_bytes) != frame_size:
                     rc = process.poll()
                     tail = self._get_stderr_tail(40)
-                    print(f"[FFmpegReader] 致命: 短读! 期望={frame_size} "
+                    print(f"\n[FFmpegReader] 致命: 短读! 期望={frame_size} "
                           f"实际={len(in_bytes)} @frame={self._frames_produced} "
                           f"ffmpeg_rc={rc}", flush=True)
-                    print(f"[FFmpegReader] ffmpeg stderr 尾部:\n{tail}",
+                    print(f"\n[FFmpegReader] ffmpeg stderr 尾部:\n{tail}",
                           flush=True)
                     self._last_error = (f'短读 got={len(in_bytes)} '
                                         f'want={frame_size} rc={rc}')
@@ -211,26 +211,31 @@ class FFmpegReader:
                     frame = np.frombuffer(in_bytes, np.uint8).reshape(
                         [self.height, self.width, 3])
                 except Exception as e:
-                    print(f"[FFmpegReader] reshape 失败 "
+                    print(f"\n[FFmpegReader] reshape 失败 "
                           f"@frame={self._frames_produced}: {e}", flush=True)
                     self._last_error = f'reshape 失败: {e}'
                     break
 
-                # 入队（阻塞，但若 ffmpeg 已退出则主动终止，避免死守）
+                # 入队（阻塞等队列有空位）
+                # FIX-READER: ffmpeg 以 rc=0 正常退出后队列仍可能满（下游消费滞后）。
+                # 旧逻辑对 rc=0 也抛 RuntimeError，导致最后若干帧丢失。
+                # 新逻辑：仅 rc≠0（真正的异常退出）才报错退出；rc=0 继续等待入队。
                 while self._running:
                     try:
                         self._frame_queue.put(frame, timeout=1.0)
                         self._frames_produced += 1
                         break
                     except queue.Full:
-                        if process.poll() is not None:
-                            rc = process.returncode
+                        rc = process.poll()
+                        if rc is not None and rc != 0:
+                            # 真正的异常退出：立即终止，避免无限等待
                             tail = self._get_stderr_tail(20)
-                            print(f"[FFmpegReader] ffmpeg 退出但下游满 "
+                            print(f"\n[FFmpegReader] ffmpeg 异常退出但下游满 "
                                   f"@frame={self._frames_produced} "
                                   f"rc={rc}, stderr:\n{tail}", flush=True)
-                            self._last_error = f'下游满时 ffmpeg 退出 rc={rc}'
-                            raise RuntimeError('ffmpeg exited while queue full')
+                            self._last_error = f'下游满时 ffmpeg 异常退出 rc={rc}'
+                            raise RuntimeError('ffmpeg exited with error while queue full')
+                        # rc=0（正常完成）或 rc=None（仍在运行）：继续等空位
                         continue
                 else:
                     # self._running 变为 False
@@ -238,7 +243,7 @@ class FFmpegReader:
 
         except Exception as e:
             import traceback
-            print(f"[FFmpegReader] _read_loop 异常: {e}", flush=True)
+            print(f"\n[FFmpegReader] _read_loop 异常: {e}", flush=True)
             traceback.print_exc()
             self._last_error = f'_read_loop 异常: {e}'
 
@@ -267,12 +272,12 @@ class FFmpegReader:
                         except Exception:
                             pass
                 except Exception as e:
-                    print(f"[FFmpegReader] 终止 ffmpeg 异常: {e}", flush=True)
+                    print(f"\n[FFmpegReader] 终止 ffmpeg 异常: {e}", flush=True)
 
             # # 2) 打印最终 stderr（若尚未打印过）
             # tail = self._get_stderr_tail(40)
             # if tail and tail != '(无 stderr 输出)':
-            #     print(f"[FFmpegReader] 最终 ffmpeg stderr:\n{tail}",
+            #     print(f"\n[FFmpegReader] 最终 ffmpeg stderr:\n{tail}",
             #           flush=True)
 
             # 2) 打印最终 stderr：仅在 ffmpeg 异常退出或 Reader 线程捕获到错误时才打印
@@ -297,13 +302,13 @@ class FFmpegReader:
 
             if abnormal:
                 tail = self._get_stderr_tail(40)
-                print(f"[FFmpegReader] ffmpeg 异常退出 rc={rc_final}, "
+                print(f"\n[FFmpegReader] ffmpeg 异常退出 rc={rc_final}, "
                       f"last_error={self._last_error}", flush=True)
                 if tail and tail != '(无 stderr 输出)':
-                    print(f"[FFmpegReader] ffmpeg stderr:\n{tail}", flush=True)
+                    print(f"\n[FFmpegReader] ffmpeg stderr:\n{tail}", flush=True)
             else:
                 # 正常结束：只留一行摘要，不再刷屏
-                self._vlog(f"[FFmpegReader] ffmpeg 正常结束 rc={rc_final}, "
+                self._vlog(f"\n[FFmpegReader] ffmpeg 正常结束 rc={rc_final}, "
                            f"frames_produced={self._frames_produced}", flush=True)
 
             # 3) 关键：无论如何把 EOF 送到下游
@@ -313,7 +318,7 @@ class FFmpegReader:
             if stderr_thread is not None and stderr_thread.is_alive():
                 stderr_thread.join(timeout=1.0)
 
-            self._vlog(f"[FFmpegReader] _read_loop 退出 "
+            self._vlog(f"\n[FFmpegReader] _read_loop 退出 "
                        f"(frames_produced={self._frames_produced}, "
                        f"last_error={self._last_error})", flush=True)
 

@@ -5069,7 +5069,7 @@ def main_optimized(args):
     
     pbar = tqdm(total=reader.nb_frames, unit='frame', desc='[优化流水线]',
                 dynamic_ncols=False, ncols=180,
-                bar_format='{l_bar}{bar:10}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]\n')
+                bar_format='{l_bar}{bar:10}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]')
     
     trt_accel = None
     if getattr(args, 'use_tensorrt', False) and cuda_available:

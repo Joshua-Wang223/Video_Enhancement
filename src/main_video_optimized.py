@@ -55,6 +55,8 @@
     --preview-esrgan / --preview-interval-esrgan / --x264-preset-esrgan
   共用:
     --trt-cache-dir（IFRNet 与 ESRGan 共享同一 TRT Engine 缓存目录）
+    --quiet-ifrnet   静默 IFRNet 底层输出（如 [FFmpegWriter] 命令行）
+    --quiet-esrgan   静默 ESRGAN 底层输出
 
 【优化版相对 v6 的 ESRGan 侧变更】
   · 底层脚本更换为 realesrgan_video_ds/main.py（深度模块化架构 v6.4）
@@ -66,7 +68,7 @@
       --report-esrgan              JSON 性能报告输出路径
       --preview-esrgan             启用实时预览窗口
       --preview-interval-esrgan    预览帧间隔
-  · 默认值调整：batch_size 12→6, prefetch 24→48, gfpgan_batch 12→8
+  · 默认值请以 config/default_config.json 为准
 
 【IFRNet 侧无变化】
   IFRNet 调用链、参数、覆盖系统与 main_video_v6_single.py 完全一致。
@@ -1227,6 +1229,7 @@ def _process_single(
             print(f"❌ 初始化 RealESRGAN 处理器失败: {e}")
             traceback.print_exc()
             return False
+        proc.quiet = getattr(args, "quiet_esrgan", True)  # 透传静默开关
         try:
             success = proc.process_video(actual_input, output_video)
         except KeyboardInterrupt:
@@ -1260,6 +1263,7 @@ def _process_single(
             proc = IFRNetProcessor(config)
             proc.preview          = _preview_ifr
             proc.preview_interval = _preview_ifr_intv
+            proc.quiet            = getattr(args, "quiet_ifrnet", True)  # 透传静默开关
         except Exception as e:
             print(f"❌ 初始化 IFRNet 处理器失败: {e}")
             traceback.print_exc()
@@ -1295,7 +1299,9 @@ def _process_single(
         ifrnet_proc = IFRNetProcessor(config)
         ifrnet_proc.preview          = _preview_ifr
         ifrnet_proc.preview_interval = _preview_ifr_intv
+        ifrnet_proc.quiet            = getattr(args, "quiet_ifrnet", True)  # 透传静默开关
         esrgan_proc = RealESRGANVideoProcessor(config)
+        esrgan_proc.quiet            = getattr(args, "quiet_esrgan", True)  # 透传静默开关
     except Exception as e:
         print(f"❌ 初始化处理器失败: {e}")
         traceback.print_exc()
@@ -1765,6 +1771,10 @@ ESRGan 模型选项 (--esrgan-model):
     g = parser.add_argument_group("杂项")
     g.add_argument("--auto-cleanup", action="store_true",
                    help="全流程结束后自动删除所有临时分段文件")
+    g.add_argument("--quiet-ifrnet", action=argparse.BooleanOptionalAction, default=True,
+                   help="静默 IFRNet 底层冗余输出（底层 --quiet 参数）；--no-quiet-ifrnet 开启详细日志")
+    g.add_argument("--quiet-esrgan", action=argparse.BooleanOptionalAction, default=True,
+                   help="静默 ESRGAN 底层冗余输出（底层 --quiet 参数）；--no-quiet-esrgan 开启详细日志")
     g.add_argument("--keep-intermediate", action="store_true",
                    help="保留去噪等中间文件（调试用）")
     g.add_argument("--skip-seg-normalize", action="store_true",

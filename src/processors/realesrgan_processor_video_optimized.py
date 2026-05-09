@@ -109,6 +109,8 @@ class RealESRGANVideoProcessor:
         self.report_json       = config.get("models", "realesrgan", "report_json",      default=None)
         self.preview           = config.get("models", "realesrgan", "preview",          default=False)
         self.preview_interval  = config.get("models", "realesrgan", "preview_interval", default=30)
+        # quiet：静默模式，抑制底层 FFmpegWriter 命令行等冗余输出
+        self.quiet             = True
 
         # 高优先级覆盖标志（用于模拟底层 main() 中的仲裁逻辑）
         self.force_no_tensorrt      = config.get("models", "realesrgan", "force_no_tensorrt",      default=False)
@@ -352,7 +354,7 @@ class RealESRGANVideoProcessor:
         ns.preview         = self.preview
         ns.preview_interval = self.preview_interval
         ns.report          = self.report_json
-        ns.quiet           = getattr(self.config, 'quiet', True)
+        ns.quiet           = self.quiet      # 透传静默开关
 
         # 复刻 main() 预处理：gfpgan_trt 启用时强制 no_fp16
         if ns.gfpgan_trt and torch.cuda.is_available():
@@ -607,6 +609,7 @@ class RealESRGANVideoProcessor:
             ns.preview          = self.preview
             ns.preview_interval = self.preview_interval
             ns.report           = self.report_json
+            ns.quiet            = self.quiet   # 透传静默开关
 
             # ── 复刻 main() 中的参数预处理逻辑 ────────────────────────────
             # main() 在调用 main_optimized() 前执行以下预处理：
@@ -857,6 +860,8 @@ def main():
     # ── 杂项 ─────────────────────────────────────────────────────────────────
     parser.add_argument("--auto-cleanup", action="store_true",
                         help="处理完成后自动清理临时文件")
+    parser.add_argument("--quiet", action=argparse.BooleanOptionalAction, default=True,
+                        help="静默模式：抑制底层冗余输出；--no-quiet 开启详细日志")
 
     args = parser.parse_args()
 
@@ -976,6 +981,7 @@ def main():
     if processor.report_json:
         print(f"   性能报告: {processor.report_json}")
 
+    processor.quiet = args.quiet
     success = processor.process_video(args.input, args.output)
     return 0 if success else 1
 

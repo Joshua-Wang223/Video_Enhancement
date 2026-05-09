@@ -612,7 +612,7 @@ def run_pipeline_for_video(enhancer, input_video, output_video):
 
     pbar = tqdm(total=reader.nb_frames, unit='frame', desc='[优化流水线]',
                 dynamic_ncols=False, ncols=180,
-                bar_format='{l_bar}{bar:10}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]\n')
+                bar_format='{l_bar}{bar:10}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]')
 
     vlog("[优化架构] 阶段 4: 启动优化流水线...")
     # 将预启动的子进程注入流水线（DeepPipelineOptimizer 会检查 args._early_gfpgan_subprocess）

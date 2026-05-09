@@ -660,7 +660,7 @@ def _auto_queue_depths(
         t3_src  = f'{codec}({x264_preset}, crf={crf})'
 
     pair_depth   = max(2, min(int(_math.ceil(t2_ms / max(t1_ms, 0.1))) + 2, 8))
-    result_depth = max(8, min(int(_math.ceil(t3_ms / max(t2_ms, 0.1))) + 3, 64))
+    result_depth = max(16, min(int(_math.ceil(t3_ms / max(t2_ms, 0.1))) + 3, 64))
     pool_size    = result_depth + 2
     if verbose:
         pair_mb = pair_depth * effective_bs * 3 * H_pad * W_pad * 3 / 1e6
@@ -1152,10 +1152,25 @@ class IFRNetPipelineRunner:
                 else:
                     out_item = (results, img1_raw, is_end)
 
+                # _t0_full = None
+                # while self.running:
+                #     try:
+                #         self.result_queue.put(out_item, timeout=0.5)
+                #         break
+                #     except queue.Full:
+                #         if _t0_full is None:
+                #             _t0_full = time.time()
+                #         elif time.time() - _t0_full > 3.0:
+                #             print(f'[IFRNet][背压] result_queue 满 '
+                #                   f'{time.time()-_t0_full:.1f}s，GPU 空转等 Writer',
+                #                   flush=True)
+                #             _t0_full = time.time()
+
                 # FIX 非阻塞式 result_queue.put + 提前提交下一批预取
                 try:
                     # 尝试 put_nowait() 放入结果
                     self.result_queue.put_nowait(out_item)
+                    self._try_prefetch_next()
                 except queue.Full:
                     # 队列满时，先启动下一批的 GPU 预取，不让 GPU 闲着
                     self._try_prefetch_next()

@@ -1,7 +1,7 @@
 """
 IFRNet 视频插帧处理器 v6（单卡版）
 =====================================
-对接 process_video_v6_3_0_single.py（IFRNetVideoProcessor），
+对接 process_video_v6_3_3_single.py（IFRNetVideoProcessor），
 保留分段直接对接与断点恢复逻辑，支持 v6.1 全部硬件加速参数：
   - FP16 / torch.compile / CUDA Graph（compile 激活时自动接管 Graph）
   - TensorRT 可选加速（首次构建需缓存 .trt Engine）
@@ -12,10 +12,10 @@ IFRNet 视频插帧处理器 v6（单卡版）
   - preview 帧预览（可选，每隔 preview_interval 帧弹出一帧预览）
 
 【v6 变更说明（相对 v5）】
-  - 对齐底层 process_video_v6_3_0_single.py v6.3.0（含 FIX-D2H / FIX-PAD）
+  - 对齐底层 process_video_v6_3_3_single.py v6.3.3（含 FIX-D2H / FIX-PAD）
   - 新增 preview / preview_interval 参数（透传至底层 process_video）
   - main() CLI 新增 --preview / --preview-interval
-  - _process_segment 打印信息对齐 v6.3.0 版本标记
+  - _process_segment 打印信息对齐 v6.3.3 版本标记
   - 构造函数新增参数与 default_config.json 完全对齐
   - [v6.1 优化] 底层 IFRNetVideoProcessor 在循环外构造一次，分段复用，避免重复加载/编译/构建
 """
@@ -44,7 +44,7 @@ from video_utils import (
 class IFRNetProcessor:
     """IFRNet 插帧处理器 v6（单卡版）"""
 
-    # 支持的模型名称 → 文件名映射（与 process_video_v6_3_0_single.py 保持一致）
+    # 支持的模型名称 → 文件名映射（与 process_video_v6_3_2_single.py 保持一致）
     MODEL_NAME_MAP = {
         "IFRNet_Vimeo90K":   "IFRNet_Vimeo90K.pth",
         "IFRNet_S_Vimeo90K": "IFRNet_S_Vimeo90K.pth",
@@ -108,9 +108,11 @@ class IFRNetProcessor:
         self.ffmpeg_bin  = config.get("models", "ifrnet", "ffmpeg_bin",  default="ffmpeg")
         self.report_json = config.get("models", "ifrnet", "report_json", default=None)
 
-        # v6 新增：preview 参数（透传至底层 process_video）
+        # v6 新增：preview / quiet 参数（透传至底层 process_video）
         self.preview          = False
         self.preview_interval = 30
+        # quiet：静默模式，抑制底层 FFmpegWriter 命令行等冗余输出
+        self.quiet            = True
 
         # TRT Engine 缓存目录（v6+）
         # 优先级：config.paths.trt_cache_dir（由 config_manager 自动派生为 base_dir/.trt_cache，
@@ -146,7 +148,7 @@ class IFRNetProcessor:
         Returns:
             处理后的分段文件路径列表
         """
-        print(f"\n🎬 IFRNet 插帧处理（分段模式）—— v6.3.0")
+        print(f"\n🎬 IFRNet 插帧处理（分段模式）—— v6.3.3")
         print(f"📹 输入: {input_video}")
         print(f"⚡ 插帧倍数: {self.interpolation_factor}x")
         print(f"🖥️  设备: {self.device} | "
@@ -198,7 +200,7 @@ class IFRNetProcessor:
         Returns:
             处理后的分段文件路径列表
         """
-        print(f"\n🎬 IFRNet 插帧处理（接收分段输入）—— v6.3.0")
+        print(f"\n🎬 IFRNet 插帧处理（接收分段输入）—— v6.3.3")
         print(f"📹 输入分段数: {len(input_segments)}")
         print(f"⚡ 插帧倍数: {self.interpolation_factor}x")
 
@@ -223,7 +225,7 @@ class IFRNetProcessor:
         )
 
         print("\n" + "=" * 65)
-        print("🎬 IFRNet 视频插帧处理（完整流程）—— v6.3.0")
+        print("🎬 IFRNet 视频插帧处理（完整流程）—— v6.3.3")
         print(f"📹 输入  : {input_video}")
         print(f"📤 输出  : {output_video}")
         print(f"⚡ 插帧倍数: {self.interpolation_factor}x")
@@ -324,7 +326,7 @@ class IFRNetProcessor:
             return self._video_processor
 
         # 延迟导入，保证只在需要时加载
-        from process_video_v6_3_0_single import IFRNetVideoProcessor
+        from process_video_v6_3_3_single import IFRNetVideoProcessor
 
         _trt_cache_dir = None
         if self.use_tensorrt:
@@ -352,6 +354,7 @@ class IFRNetProcessor:
             ffmpeg_bin     = self.ffmpeg_bin,
             report_json    = self.report_json,
             trt_cache_dir  = _trt_cache_dir,
+            quiet          = self.quiet,   # 透传静默开关
         )
         self._video_processor = processor
         return processor
@@ -426,7 +429,7 @@ class IFRNetProcessor:
 
     def _process_segment(self, segment_path: str, output_path: str) -> bool:
         """
-        调用 process_video_v6_3_0_single.IFRNetVideoProcessor 处理单个分段。
+        调用 process_video_v6_3_3_single.IFRNetVideoProcessor 处理单个分段。
         [v6.1 修改] 复用全局缓存的 processor，避免重复初始化。
 
         Args:
@@ -469,7 +472,7 @@ class IFRNetProcessor:
                 return False
 
         except ImportError as e:
-            print(f"   ❌ 无法导入 process_video_v6_3_0_single: {e}")
+            print(f"   ❌ 无法导入 process_video_v6_3_3_single: {e}")
             return False
         except Exception as e:
             print(f"   ❌ 处理失败: {e}")
@@ -499,7 +502,7 @@ class IFRNetProcessor:
 def main():
     """
     独立调用入口：直接驱动 IFRNetProcessor，
-    底层对接 process_video_v6_3_0_single.IFRNetVideoProcessor。
+    底层对接 process_video_v6_3_3_single.IFRNetVideoProcessor。
 
     示例：
       # 使用默认配置，直接插帧
@@ -542,7 +545,7 @@ def main():
         description="IFRNet 视频插帧处理器 v6（单卡版）—— 独立入口",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-底层脚本：external/IFRNet/process_video_v6_3_0_single.py（v6.3.0）
+底层脚本：external/IFRNet/process_video_v6_3_3_single.py（v6.3.3）
 
 特性：
   · 分段处理 + 断点恢复
@@ -643,6 +646,8 @@ def main():
     # ── 杂项 ─────────────────────────────────────────────────────────────────
     parser.add_argument("--auto-cleanup", action="store_true",
                         help="处理完成后自动清理临时文件")
+    parser.add_argument("--quiet", action=argparse.BooleanOptionalAction, default=True,
+                        help="静默模式：抑制底层冗余输出；--no-quiet 开启详细日志")
 
     args = parser.parse_args()
 
@@ -756,6 +761,7 @@ def main():
     # v6 新增：preview 参数注入
     processor.preview          = args.preview
     processor.preview_interval = args.preview_interval
+    processor.quiet            = args.quiet
 
     print(f"\n🎬 IFRNet v6 独立插帧")
     print(f"   输入   : {args.input}")
