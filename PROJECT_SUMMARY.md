@@ -1,6 +1,6 @@
 # Video Enhancement — 项目技术总结
 
-> **版本**: v2.0.0（优化版）｜IFRNet 后端 **v6.3.3**｜Real-ESRGAN 路径 **`realesrgan_video`（v6.4 深度流水线）**  
+> **版本**: v2.0.0（优化版）｜IFRNet 后端 **v6.3.5**｜Real-ESRGAN 路径 **`realesrgan_video`（v6.4 深度流水线）**  
 > **最后更新**: 2026-05-14
 
 ---
@@ -9,7 +9,7 @@
 
 Video Enhancement 是一套 GPU 侧视频增强流水线，整合：
 
-- **IFRNet（v6.3.3 后端）**：光流插帧，帧率提升 2x–16x；双流深度流水线、可选 TensorRT / CUDA Graph / `torch.compile`。
+- **IFRNet（v6.3.5 后端）**：光流插帧，帧率提升 2x–16x；双流深度流水线、可选 TensorRT / CUDA Graph / `torch.compile`。
 - **Real-ESRGAN（优化处理器 → `external/realesrgan_video`）**：真实场景超分，2x / 4x；深度模块化流水线（读帧→SR→GFPGAN→写帧）、多片段复用模型/TRT。
 
 历史入口 `main_video_v5_single.py`、`external/Real-ESRGAN/inference_realesrgan_video_v5_single.py` 等仍保留作对照；**当前推荐编排**见下文 CLI 真源。
@@ -46,7 +46,7 @@ Video Enhancement 是一套 GPU 侧视频增强流水线，整合：
     │ IFRNet 后端          │       │ realesrgan_video           │
     │ external/IFRNet/    │       │ external/realesrgan_video/ │
     │ process_video_      │       │ main.py（main_optimized）      │
-    │ v6_3_3_single.py    │       │   create_video_enhancer()     │
+    │ v6_3_5_single.py    │       │   create_video_enhancer()     │
     └─────────────────────┘       │   run_pipeline_for_video()    │
                                   │   _HWProfile / PreviewWriter  │
                                   │ pipeline / ffmpeg_io / TRT 等   │
@@ -69,9 +69,9 @@ Video Enhancement 是一套 GPU 侧视频增强流水线，整合：
 | 组件 | 路径 | 说明 |
 |------|------|------|
 | 主入口 | `src/main_video_optimized.py` | 流程编排、`VideoProcessor`、CLI 覆盖配置；FIX-C 归一化、`--report` 流水线报告 |
-| IFRNet 处理器 | `src/processors/ifrnet_processor_v6_1_single.py` | 对接 `process_video_v6_3_3_single.py` |
+| IFRNet 处理器 | `src/processors/ifrnet_processor_v6_1_single.py` | 对接 `process_video_v6_3_5_single.py` |
 | Real-ESRGAN 处理器 | `src/processors/realesrgan_processor_video_optimized.py` | 动态加载并调用 `realesrgan_video/main.py` |
-| IFRNet 后端 | `external/IFRNet/process_video_v6_3_3_single.py` | 当前默认后端版本 |
+| IFRNet 后端 | `external/IFRNet/process_video_v6_3_5_single.py` | 当前默认后端版本 |
 | Real-ESRGAN 深度子项目 | `external/realesrgan_video/` | v6.4 流水线实现；含 HW Profile 探测、PreviewWriter、多片段复用 |
 | 配置 | `src/utils/config_manager.py` | JSON 加载、路径派生、CLI 覆盖 |
 
@@ -137,7 +137,7 @@ Video Enhancement 是一套 GPU 侧视频增强流水线，整合：
 
 | 文件 | 说明 |
 |------|------|
-| `process_video_v6_3_3_single.py` | **当前对接**（v6.3.3） |
+| `process_video_v6_3_5_single.py` | **当前对接**（v6.3.5） |
 | `process_video_v6_3_0_single.py` 等 | 历史 / 对照 |
 
 ### Real-ESRGAN
@@ -170,7 +170,7 @@ main_video_optimized.py
   ├── config_manager.Config
   ├── video_utils
   ├── ifrnet_processor_v6_1_single
-  │     └── external/IFRNet/process_video_v6_3_3_single.py
+  │     └── external/IFRNet/process_video_v6_3_5_single.py
   └── realesrgan_processor_video_optimized
         └── external/realesrgan_video/main.py + pipeline + ffmpeg_io
               ├── basicsr / realesrgan / facexlib / gfpgan（人脸分支）

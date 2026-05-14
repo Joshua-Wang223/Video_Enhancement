@@ -64,10 +64,10 @@ logging           日志级别、是否写入文件/控制台
 
 | 文件 | 状态 | 说明 |
 |------|------|------|
-| `ifrnet_processor_v6_1_single.py` | ★ **当前** | IFRNet 插帧；底层 **`external/IFRNet/process_video_v6_3_3_single.py`（v6.3.3）** |
+| `ifrnet_processor_v6_1_single.py` | ★ **当前** | IFRNet 插帧；底层 **`external/IFRNet/process_video_v6_3_5_single.py`（v6.3.5）** |
 | `realesrgan_processor_video_optimized.py` | ★ **当前** | Real-ESRGAN 视频超分；底层 **`external/realesrgan_video/main.py`**，支持 **`create_video_enhancer` / `run_pipeline_for_video`** 多片段复用 |
 | `realesrgan_processor_video_v6_single.py` | ⚠️ 历史 | 对接 `external/Real-ESRGAN` 下各版 `inference_realesrgan_video_*.py` |
-| `ifrnet_processor_v6_single.py` | ⚠️ 历史 | 对接较早 IFRNet 脚本（如 `process_video_v6_2_2_single.py`），非 v6.3.3 主线 |
+| `ifrnet_processor_v6_single.py` | ⚠️ 历史 | 对接较早 IFRNet 脚本（如 `process_video_v6_2_2_single.py`），非 v6.3.5 主线 |
 | `ifrnet_processor_v5_single.py` | ⚠️ 历史 | IFRNet 处理器 v5 |
 | `realesrgan_processor_video_v5_single.py` | ⚠️ 历史 | Real-ESRGAN 处理器 v5 |
 | `ifrnet_processor_v3.py` | ⚠️ 历史 | IFRNet 处理器 v3 |
@@ -158,7 +158,7 @@ def format_time(seconds) -> str
 
 | 文件 | 状态 | 说明 |
 |------|------|------|
-| `process_video_v6_3_3_single.py` | ★ **当前后端** | 单卡 IFRNet 推理主实现（**v6.3.3**；当前处理器默认对接） |
+| `process_video_v6_3_5_single.py` | ★ **当前后端** | 单卡 IFRNet 推理主实现（**v6.3.5**；当前处理器默认对接） |
 | `process_video_v6_3_2_single.py` | ⚠️ 历史 | v6.3.2 迭代版本 |
 | `process_video_v6_3_1_single.py` | ⚠️ 历史 | v6.3.1 迭代版本 |
 | `process_video_v6_3_0_single.py` | ⚠️ 历史 | v6.3.0（较早迭代，非当前主线） |

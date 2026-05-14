@@ -25,7 +25,7 @@ To skip a stage: `--skip-interpolate` or `--skip-upscale`. Common flags: `--use-
 ```
 src/main_video_optimized.py          # CLI entry, orchestration, VideoProcessor
   ├── src/processors/ifrnet_processor_v6_1_single.py       # IFRNet processor
-  │     └── external/IFRNet/process_video_v6_3_3_single.py #   IFRNet backend (v6.3.3)
+  │     └── external/IFRNet/process_video_v6_3_5_single.py #   IFRNet backend (v6.3.5)
   ├── src/processors/realesrgan_processor_video_optimized.py  # Real-ESRGAN processor
   │     └── external/realesrgan_video/main.py            #   Real-ESRGAN backend (v6.4)
   ├── src/utils/config_manager.py   # Config loading, path derivation, CLI override
@@ -53,7 +53,7 @@ This project has accumulated many versioned scripts. Only these are active:
 |---------|-------------|
 | Main entry | `src/main_video_optimized.py` |
 | IFRNet processor | `src/processors/ifrnet_processor_v6_1_single.py` |
-| IFRNet backend | `external/IFRNet/process_video_v6_3_3_single.py` |
+| IFRNet backend | `external/IFRNet/process_video_v6_3_5_single.py` |
 | Real-ESRGAN processor | `src/processors/realesrgan_processor_video_optimized.py` |
 | Real-ESRGAN backend | `external/realesrgan_video/main.py` |
 | Config manager | `src/utils/config_manager.py` |
@@ -61,9 +61,9 @@ This project has accumulated many versioned scripts. Only these are active:
 
 Everything else in `external/IFRNet/process_video_v*.py`, `external/Real-ESRGAN/inference_realesrgan_video_v*.py`, `src/main_video_v*.py`, `src/processors/*_v[1-5]*.py` is historical or reference-only. Files with `_bak` or ` - Copy` suffix are development backups safe to delete.
 
-## IFRNet backend (v6.3.3)
+## IFRNet backend (v6.3.5)
 
-`external/IFRNet/process_video_v6_3_3_single.py` is a ~2500-line single-GPU script. Key internal architecture:
+`external/IFRNet/process_video_v6_3_5_single.py` is a ~2500-line single-GPU script. Key internal architecture:
 
 - **Three-stage pipeline**: T1 (Reader: NVDEC decode + frame prep → pair_queue), T2 (GPU: IFRNet model inference), T3 (Writer: FFmpeg H.264 encode from result_queue)
 - Uses dual CUDA transfer streams (`stream_h2d` for prefetch, `stream_d2h` for output) with CudaEventPool
@@ -73,7 +73,7 @@ Everything else in `external/IFRNet/process_video_v*.py`, `external/Real-ESRGAN/
 - Adaptive queue tuning post-segment (pair_queue / result_queue sizing)
 - TRT engine cached under `.trt_cache/` with GPU SM-architecture in filename
 
-The multi-GPU variant `process_video_v6_3_3.py` has equivalent code but with multi-GPU distribution.
+The multi-GPU variant `process_video_v6_3_3.py` (historical) has equivalent code but with multi-GPU distribution.
 
 ## Real-ESRGAN backend (v6.4, realesrgan_video)
 

@@ -209,7 +209,7 @@ wget -O models_RealESRGAN/RealESRGANv2-animevideo-xsx2.pth \
 
 ### 2.3 IFRNet 模型配置（`models.ifrnet`）
 
-后端脚本：`external/IFRNet/process_video_v6_3_3_single.py`（IFRNet **v6.3.3**）。默认使用 `model_name` 自动拼接 `base_dir/models_IFRNet/checkpoints/<name>.pth`，也可用 `model_path` 指定绝对路径。
+后端脚本：`external/IFRNet/process_video_v6_3_5_single.py`（IFRNet **v6.3.5**）。默认使用 `model_name` 自动拼接 `base_dir/models_IFRNet/checkpoints/<name>.pth`，也可用 `model_path` 指定绝对路径。
 
 ```json
 {

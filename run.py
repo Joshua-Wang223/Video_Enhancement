@@ -2,7 +2,7 @@
 """
 仓库根目录便捷入口 —— 等价于在 ``src/`` 下执行 ``main_video_optimized.py``。
 
-底层链路：IFRNet（``external/IFRNet/process_video_v6_3_3_single.py``）+
+底层链路：IFRNet（``external/IFRNet/process_video_v6_3_5_single.py``）+
 Real-ESRGAN（``external/realesrgan_video``）。
 
 **用法**
