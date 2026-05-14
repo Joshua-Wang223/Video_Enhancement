@@ -929,6 +929,7 @@ class GPUMonitor:
         current_bs:       int,
         current_pair_q:   int,
         current_result_q: int,
+        codec:            str = '',          # [FIX-NVENC-AWARE] 编码器名称，用于避开 NVENC 误判
     ) -> None:
         """
         打印精细统计报告，并依据以下逻辑给出三项调优建议：
@@ -1007,7 +1008,7 @@ class GPUMonitor:
         # ── [FIX-T3-DETECT] result_queue（T3 输出缓冲）建议 ─────────────────
         # 先判断是否 T3-bottleneck：若是，增大 result_queue 无助于提速，
         # 反而加重 PinnedPool 锁页内存压力，应保持或缩小。
-        if self._is_t3_bottleneck(stats):
+        if self._is_t3_bottleneck(stats, codec=codec):
             if current_result_q > 16:
                 sug_rq = max(16, current_result_q - 8)
                 print(f'[GPU-MONITOR] ⚠️  检测到 T3-bottleneck（编码器是真正瓶颈）：'
@@ -1038,6 +1039,7 @@ class GPUMonitor:
         slot_mb:          float = 0.0,   # [FIX-T3-MEMCAP] 每个 result slot 的 MiB 数
         t2_ms:            float = 0.0,   # [FIX-MAXRQ-DYNAMIC] T2 推理延迟（ms），0=未知
         t3_ms:            float = 0.0,   # [FIX-MAXRQ-DYNAMIC] T3 编码延迟（ms），0=未知
+        codec:            str   = '',    # [FIX-NVENC-AWARE] 编码器名称，用于避开 NVENC 误判
         ) -> Tuple[int, int]:
         """
         [FIX-T3-DETECT / FIX-T3-MEMCAP / FIX-POOL-AUTOSCALE / FIX-MAXRQ-DYNAMIC]
@@ -1063,7 +1065,7 @@ class GPUMonitor:
             pair_q = max(3, current_pair_q - 1)
 
         # [FIX-T3-DETECT] result_queue 建议：T3-bottleneck 时保持或缩小
-        if self._is_t3_bottleneck(stats):
+        if self._is_t3_bottleneck(stats, codec=codec):
             # T3 是真正瓶颈，增大 result_queue 无助于提速，反而增加内存压力
             if current_result_q > 16:
                 result_q = max(16, current_result_q - 8)
@@ -1101,7 +1103,7 @@ class GPUMonitor:
     # ── [FIX-T3-DETECT] T3 瓶颈检测器 ──────────────────────────────────────
 
     @staticmethod
-    def _is_t3_bottleneck(stats: 'GPUStats') -> bool:
+    def _is_t3_bottleneck(stats: 'GPUStats', codec: str = '') -> bool:
         """
         [FIX-T3-DETECT] 判断流水线瓶颈是否在 T3（编码器）而非 T2（推理）。
 
@@ -1116,7 +1118,12 @@ class GPUMonitor:
         仅增加锁页内存压力、拖慢 DMA 带宽。
 
         与 T2-bottleneck 的区分：T2 慢时 GPU 持续均匀高负载（stable_avg 高）。
+
+        [FIX-NVENC-AWARE] NVENC 是独立硬件编码单元，不体现在 CUDA 利用率中；
+        当编码器为 NVENC 时，低 CUDA 利用率是正常现象，不应判定为 T3-bottleneck。
         """
+        if 'nvenc' in codec.lower():
+            return False
         return (
             stats.low_util_frac > 0.60        # GPU 空闲 > 60%
             and stats.stable_p95 > 85.0       # 但 P95 仍然爆发到 85%+（阵发性）
@@ -3791,19 +3798,21 @@ class IFRNetVideoProcessor:
                 current_bs       = self.batch_size,
                 current_pair_q   = _cur_pair_q,
                 current_result_q = _cur_result_q,
+                codec            = self.codec,    # [FIX-NVENC-AWARE] 避免 NVENC 误判
             )
             # [FIX-T3-DETECT] 获取 GPU-MONITOR 的队列建议（含 T3-bottleneck 检测）
             _slot_mb = getattr(self, '_last_pool_slot_mb', 0.0)
             pair_gpu_sug, result_gpu_sug = self._gpu_monitor.get_queue_suggestions(
                 _gpu_stats, _cur_pair_q, _cur_result_q,
                 slot_mb=_slot_mb,           # 传入每 slot 大小，用于 PinnedPool 内存约束
+                codec=self.codec,           # [FIX-NVENC-AWARE] 避免 NVENC 误判
             )
             # 获取 AUTO-TUNE-RETUNE 的建议（如果存在）
             retune_pair_q   = getattr(self, '_retune_pair_q',   None)
             retune_result_q = getattr(self, '_retune_result_q', None)
 
             # [FIX-T3-DETECT] 先检测是否 T3-bottleneck，再决定综合策略
-            _is_t3 = GPUMonitor._is_t3_bottleneck(_gpu_stats)
+            _is_t3 = GPUMonitor._is_t3_bottleneck(_gpu_stats, codec=self.codec)
             if _is_t3:
                 # T3 是真正瓶颈：不增大队列，result_queue 可适当缩小以回收 pinned 内存
                 final_pair_q   = _cur_pair_q
@@ -3816,8 +3825,12 @@ class IFRNetVideoProcessor:
                 # [FIX-T3-REPORT] 增强诊断：实测 vs 理论 T3 fps + 具体编码建议
                 _t3_fps_meas = getattr(self, '_last_t3_fps_measured', 0.0)
                 _H_enc, _W_enc = getattr(self, '_last_encode_hw', (0, 0))
+                _nvenc_already_active = 'nvenc' in self.codec.lower()
                 _t3_fps_est = 0.0
-                if _H_enc > 0 and _W_enc > 0:
+                # [FIX-NVENC-AWARE] _software_encode_fps 估算的是 x264 软编码速度，
+                # 对 NVENC 硬编码毫无意义；当 NVENC 已激活时跳过此估算。
+                if (not _nvenc_already_active
+                        and _H_enc > 0 and _W_enc > 0):
                     _t3_fps_est = _software_encode_fps(
                         os.cpu_count() or 4, _H_enc, _W_enc,
                         self.codec, self.x264_preset, self.crf,
@@ -3832,7 +3845,15 @@ class IFRNetVideoProcessor:
                     _diag_parts.append(f'偏差={_degrade:.1f}×（含热节流因素）')
                 _diag_str = '  [' + '  '.join(_diag_parts) + ']' if _diag_parts else ''
                 _has_nvenc_h264 = HardwareCapability.has_nvenc('h264_nvenc')
-                if _has_nvenc_h264 and _t3_fps_meas > 0:
+                if _nvenc_already_active:
+                    # [FIX-NVENC-AWARE] NVENC 已激活但 T3 仍为瓶颈：
+                    # 瓶颈不在 NVENC 硬件编码器本身，而在 pipe 写入 / CPU 格式转换
+                    _encoder_tip = (
+                        f'NVENC 已激活但 T3 仍为瓶颈（实测 {_t3_fps_meas:.0f} fps）。'
+                        f'可能原因：1) bgr24→yuv420p CPU 格式转换 '
+                        f'2) pipe 写入带宽  3) 非标准分辨率'
+                    )
+                elif _has_nvenc_h264 and _t3_fps_meas > 0:
                     _nvenc_fps = 3000.0
                     if _H_enc > 0 and _W_enc > 0:
                         _nvenc_fps = min(3000.0, 3000.0 * 1920 * 1080 / (_H_enc * _W_enc))
