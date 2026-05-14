@@ -698,39 +698,65 @@ def verify_video_integrity(video_path: str) -> bool:
         return False
 
 
-def split_video_by_time(input_video: str, output_dir: str, 
-                        segment_duration: int = 30) -> List[str]:
+def split_video_by_time(input_video: str, output_dir: str,
+                        segment_duration: int = 30,
+                        reuse_existing: bool = True) -> List[str]:
     """
     按时间分割视频
-    
+
     Args:
         input_video: 输入视频路径
         output_dir: 输出目录
         segment_duration: 每段时长（秒）
-    
+        reuse_existing: 若已有有效分段文件则复用，跳过 ffmpeg 分割
+
     Returns:
         分段文件列表
     """
     os.makedirs(output_dir, exist_ok=True)
-    
+
     # 获取视频时长
     duration = get_video_duration(input_video)
     if duration is None:
         print(f"❌ 无法获取视频时长")
         return []
-    
+
     print(f"📹 视频总时长: {format_time(duration)}")
-    
+
     # 计算分段数
     num_segments = int(duration / segment_duration) + (1 if duration % segment_duration > 0 else 0)
-    
+
     if num_segments <= 1:
         print(f"⏭️  视频时长 < {segment_duration}秒，无需分段")
-        # 复制整个视频
         segment_file = os.path.join(output_dir, "segment_000.mp4")
+        if reuse_existing and os.path.exists(segment_file) and verify_video_integrity(segment_file):
+            print(f"♻️  复用已有分段文件，跳过重复复制")
+            return [segment_file]
         shutil.copy2(input_video, segment_file)
         return [segment_file]
-    
+
+    # 检查是否可复用已有分段
+    if reuse_existing:
+        existing = sorted(Path(output_dir).glob("segment_*.mp4"))
+        if len(existing) == num_segments:
+            valid_files = []
+            all_valid = True
+            for f in existing:
+                fpath = str(f)
+                if verify_video_integrity(fpath):
+                    valid_files.append(fpath)
+                else:
+                    all_valid = False
+                    break
+            if all_valid:
+                print(f"♻️  复用已有分段文件，跳过重复分割")
+                for i, f in enumerate(valid_files):
+                    seg_dur = get_video_duration(f)
+                    print(f"✅ 分段 {i+1}/{num_segments}: {format_time(seg_dur)}")
+                return valid_files
+            else:
+                print("⚠️  已有分段文件不完整，将重新分割")
+
     print(f"🔪 分割为 {num_segments} 段，只 copy 视频流，不重新编码...")
     
     segment_files = []

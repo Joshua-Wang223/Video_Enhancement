@@ -1,28 +1,25 @@
 #!/usr/bin/env python3
+"""
+Real-ESRGAN Video Enhancement - 模型配置模块
+定义所有可用模型及其元数据。
+"""
+
 import os
-import warnings
+import sys
+from os import path as osp
+
+# 添加项目路径
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from basicsr.archs.rrdbnet_arch import RRDBNet
-
-# ── 模型路径计算（修复版）─────────────────────────────────────
-# 当前文件位置: .../Video_Enhancement/external/realesrgan_video/config.py
-# 目标目录:     .../Video_Enhancement/models_RealESRGAN
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-BASE_DIR = os.path.dirname(os.path.dirname(_SCRIPT_DIR))
-MODELS_DIR = os.path.join(BASE_DIR, 'models_RealESRGAN')
-MODELS_GFPGAN_DIR = os.path.join(BASE_DIR, 'models_GFPGAN')
-
-# 已经把 Real-ESRGAN 项目拷贝进本项目
-# _EXT_DIR    = os.path.dirname(_SCRIPT_DIR)
-# _REALESRGAN_PATH = os.path.join(_EXT_DIR, 'Real-ESRGAN')
-# if os.path.isdir(_REALESRGAN_PATH) and _REALESRGAN_PATH not in sys.path:
-#     sys.path.insert(0, _REALESRGAN_PATH)
-
 from realesrgan.archs.srvgg_arch import SRVGGNetCompact
 
-# 提前创建目录，避免下载时权限问题
-os.makedirs(MODELS_DIR, exist_ok=True)
-
-warnings.filterwarnings('ignore', category=UserWarning, module='multiprocessing.resource_tracker')
+# 路径配置
+_SCRIPT_DIR = osp.dirname(osp.abspath(__file__))
+base_dir = osp.dirname(osp.dirname(_SCRIPT_DIR))
+models_RealESRGAN = osp.join(base_dir, 'models_RealESRGAN')
+models_GFPGAN = osp.join(base_dir, 'models_GFPGAN')
+gfpgan_weights_dir = osp.join(models_GFPGAN, 'gfpgan', 'weights')
 
 # 模型配置常量
 MODEL_CONFIG = {

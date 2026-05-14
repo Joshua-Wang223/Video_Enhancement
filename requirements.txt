@@ -51,7 +51,7 @@ torchvision>=0.15.0
 opencv-python>=4.8.0
 Pillow>=10.0.0
 
-# ffmpeg-python：`external/realesrgan_video_ds/ffmpeg_io.py` 等处的 `import ffmpeg`
+# ffmpeg-python：`external/realesrgan_video/ffmpeg_io.py` 等处的 `import ffmpeg`
 ffmpeg-python>=0.2.0
 
 # -----------------------------------------------------------------------------

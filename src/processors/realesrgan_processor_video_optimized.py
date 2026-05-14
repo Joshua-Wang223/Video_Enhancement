@@ -1,11 +1,11 @@
 """
 Real-ESRGAN 视频超分处理器 (优化版 + 多片段复用)
 ==================================================
-对接 external/realesrgan_video_ds/main.py (main_optimized)，
+对接 external/realesrgan_video/main.py (main_optimized)，
 基于 realesrgan_processor_video_v6_single.py 改写。
 
 【相对 v6 版变更说明】
-  - 底层脚本更换为 realesrgan_video_ds/main.py（深度模块化架构 v6.4）
+  - 底层脚本更换为 realesrgan_video/main.py（深度模块化架构 v6.4）
   - 入口函数：run(ns) → main_optimized(ns)
   - 导入方式：importlib 按文件路径加载（避免与 Python 内置 'main' 模块名冲突）
   - 新增参数：
@@ -57,7 +57,7 @@ from video_utils import (
 
 
 class RealESRGANVideoProcessor:
-    """Real-ESRGAN 视频超分处理器 (优化版，对接 realesrgan_video_ds)，支持多片段复用"""
+    """Real-ESRGAN 视频超分处理器 (优化版，对接 realesrgan_video)，支持多片段复用"""
 
     def __init__(self, config):
         """
@@ -67,7 +67,7 @@ class RealESRGANVideoProcessor:
             config: 配置对象（应包含 paths, models.realesrgan, processing 等节）
         """
         self.config     = config
-        self.esrgan_dir = Path(config.get("paths", "base_dir")) / "external" / "realesrgan_video_ds"
+        self.esrgan_dir = Path(config.get("paths", "base_dir")) / "external" / "realesrgan_video"
         self.model_name = config.get("models", "realesrgan", "model_name",
                                      default="realesr-general-x4v3")
         self.model_path = config.get("models", "realesrgan", "model_path", default="")
@@ -87,7 +87,7 @@ class RealESRGANVideoProcessor:
         self.use_fp16         = config.get("models", "realesrgan", "use_fp16",         default=True)
         self.face_enhance     = config.get("models", "realesrgan", "face_enhance",     default=False)
 
-        # 推理优化参数（对齐 realesrgan_video_ds/main.py 默认值）
+        # 推理优化参数（对齐 realesrgan_video/main.py 默认值）
         self.batch_size      = config.get("models", "realesrgan", "batch_size",      default=6)
         self.prefetch_factor = config.get("models", "realesrgan", "prefetch_factor", default=48)
         self.use_compile     = config.get("models", "realesrgan", "use_compile",     default=True)
@@ -99,7 +99,7 @@ class RealESRGANVideoProcessor:
         self.gfpgan_weight     = config.get("models", "realesrgan", "gfpgan_weight",     default=0.5)
         self.gfpgan_batch_size = config.get("models", "realesrgan", "gfpgan_batch_size", default=8)
 
-        # 新增参数（realesrgan_video_ds 特有）
+        # 新增参数（realesrgan_video 特有）
         self.face_det_threshold = config.get("models", "realesrgan", "face_det_threshold", default=0.5)
         self.adaptive_batch     = config.get("models", "realesrgan", "adaptive_batch",     default=True)
         self.gfpgan_trt         = config.get("models", "realesrgan", "gfpgan_trt",         default=False)
@@ -131,8 +131,8 @@ class RealESRGANVideoProcessor:
         # 验证底层脚本目录
         if not self.esrgan_dir.exists():
             raise FileNotFoundError(
-                f"realesrgan_video_ds 目录不存在: {self.esrgan_dir}\n"
-                f"请确认 external/realesrgan_video_ds/ 已正确放置。"
+                f"realesrgan_video 目录不存在: {self.esrgan_dir}\n"
+                f"请确认 external/realesrgan_video/ 已正确放置。"
             )
 
         # 将底层脚本目录加入 Python 路径（其内部模块如 config, utils, ffmpeg_io 等需要）
@@ -144,6 +144,8 @@ class RealESRGANVideoProcessor:
         self.checkpoint_file: Optional[Path] = None
         self.segment_dir:     Optional[Path] = None
         self.processed_dir:   Optional[Path] = None
+        self._checkpoint_save_logged = False    # 首次保存断点时打印路径
+        self._current_input_video: Optional[str] = None  # 当前输入视频，用于断点指纹
 
         # ------ 多片段复用相关 ------
         self._main_mod = None          # 底层 main 模块
@@ -233,6 +235,7 @@ class RealESRGANVideoProcessor:
               f"GFPGAN-TRT: {self.gfpgan_trt}")
 
         video_name = Path(input_video).stem
+        self._current_input_video = input_video
         self._setup_temp_dirs(video_name, prefix="esrgan_video")
         checkpoint = self._load_checkpoint()
 
@@ -303,7 +306,7 @@ class RealESRGANVideoProcessor:
             if not os.path.isfile(_main_py):
                 raise FileNotFoundError(f"底层脚本不存在: {_main_py}")
             _spec = importlib.util.spec_from_file_location(
-                "realesrgan_video_ds_main", _main_py)
+                "realesrgan_video_main", _main_py)
             if _spec is None or _spec.loader is None:
                 raise ImportError(f"无法加载模块: {_main_py}")
             self._main_mod = importlib.util.module_from_spec(_spec)
@@ -377,10 +380,13 @@ class RealESRGANVideoProcessor:
         try:
             print(f"   🎬 处理片段 {segment_idx+1}: {Path(input_path).name}")
             start = time.time()
-            self._main_mod.run_pipeline_for_video(
+            pipeline_ok = self._main_mod.run_pipeline_for_video(
                 enhancer, input_path, output_path,
             )
             elapsed = time.time() - start
+            if not pipeline_ok:
+                print("   ⚠️  流水线未正常完成（用户中断或出错），输出不完整")
+                return False
             if verify_video_integrity(output_path):
                 out_duration = get_video_duration(output_path)
                 print(f"   ✅ 处理完成: 输出时长 {format_time(out_duration)} | 耗时 {format_time(elapsed)}")
@@ -409,21 +415,83 @@ class RealESRGANVideoProcessor:
         self.processed_dir.mkdir(parents=True, exist_ok=True)
 
     def _load_checkpoint(self) -> dict:
-        """加载断点信息；文件不存在或损坏时返回空断点。"""
+        """加载断点信息；文件不存在/损坏/配置不兼容时返回空断点。"""
         if self.checkpoint_file and self.checkpoint_file.exists():
             try:
                 with open(self.checkpoint_file, "r") as f:
                     checkpoint = json.load(f)
+
+                # 校验配置兼容性
+                saved_snapshot = checkpoint.get("config_snapshot", None)
+                if saved_snapshot is None:
+                    print(f"⚠️  断点文件缺少配置快照（旧版本），将从头开始处理")
+                    print(f"   📁 断点文件: {self.checkpoint_file}")
+                    return {"processed_segments": [], "last_segment": -1}
+
+                current_snapshot = self._get_config_snapshot()
+                _fingerprint_keys = {"input_mtime", "input_size"}
+                mismatches = []
+                for key in current_snapshot:
+                    saved_val = saved_snapshot.get(key)
+                    curr_val  = current_snapshot[key]
+                    if saved_val != curr_val:
+                        if key in _fingerprint_keys and saved_val is None:
+                            continue  # 旧断点无指纹，跳过
+                        if key == "input_mtime":
+                            _fmt_saved = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(saved_val)) if saved_val else str(saved_val)
+                            _fmt_curr  = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(curr_val)) if curr_val else str(curr_val)
+                            mismatches.append(
+                                f"     {key}: 断点值={_fmt_saved} → 当前值={_fmt_curr}")
+                        elif key == "input_size":
+                            mismatches.append(
+                                f"     {key}: 断点值={saved_val} 字节 → 当前值={curr_val} 字节")
+                        else:
+                            mismatches.append(
+                                f"     {key}: 断点值={saved_val!r} → 当前值={curr_val!r}")
+
+                if mismatches:
+                    print(f"⚠️  配置参数已变更，断点失效，将从头开始处理:")
+                    for m in mismatches:
+                        print(m)
+                    print(f"   📁 断点文件: {self.checkpoint_file}")
+                    return {"processed_segments": [], "last_segment": -1}
+
                 print(f"📌 发现断点: "
                       f"已完成 {len(checkpoint.get('processed_segments', []))} 个分段")
+                print(f"   📁 断点文件: {self.checkpoint_file}")
                 return checkpoint
             except Exception:
-                pass
+                print(f"⚠️  断点文件损坏，将从头开始处理")
+                print(f"   📁 断点文件: {self.checkpoint_file}")
+        else:
+            if self.checkpoint_file:
+                print(f"🆕 未发现断点文件，将从头开始处理")
+                print(f"   📁 断点文件: {self.checkpoint_file}")
         return {"processed_segments": [], "last_segment": -1}
 
+    def _get_config_snapshot(self) -> dict:
+        """返回影响分段兼容性的关键配置参数快照，用于断点恢复时校验一致性。"""
+        snap = {
+            "segment_duration": self.segment_duration,
+            "upscale_factor":   self.upscale_factor,
+            "codec":            self.codec,
+            "crf":              self.crf,
+            "x264_preset":      self.x264_preset,
+        }
+        if self._current_input_video and os.path.exists(self._current_input_video):
+            st = os.stat(self._current_input_video)
+            snap["input_mtime"] = st.st_mtime
+            snap["input_size"] = st.st_size
+        return snap
+
     def _save_checkpoint(self, checkpoint: dict):
-        """将断点信息持久化到磁盘。"""
+        """将断点信息持久化到磁盘（首次写入时附加配置快照用于兼容性校验）。"""
         if self.checkpoint_file:
+            if "config_snapshot" not in checkpoint:
+                checkpoint["config_snapshot"] = self._get_config_snapshot()
+            if not self._checkpoint_save_logged:
+                print(f"💾 断点已保存至: {self.checkpoint_file}")
+                self._checkpoint_save_logged = True
             with open(self.checkpoint_file, "w") as f:
                 json.dump(checkpoint, f, indent=2)
 
@@ -449,20 +517,29 @@ class RealESRGANVideoProcessor:
 
             # 断点跳过
             if idx in checkpoint["processed_segments"]:
-                print(f"\n⏭️  片段 {idx+1}/{len(segment_files)}: {seg_name} (已处理)")
                 out_path = self.processed_dir / f"upscaled_{seg_name}"
                 if out_path.exists():
+                    print(f"\n⏭️  片段 {idx+1}/{len(segment_files)}: {seg_name} (已处理)")
                     processed_files.append(str(out_path))
                     continue
+                else:
+                    print(f"\n⚠️  片段 {idx+1}/{len(segment_files)}: {seg_name} "
+                          f"(断点标记已完成但输出文件缺失，重新处理)")
 
             print(f"\n🎨 片段 {idx+1}/{len(segment_files)}: {seg_name}")
             out_path = self.processed_dir / f"upscaled_{seg_name}"
 
             # 使用复用模式处理
-            success = self._process_segment_with_enhancer(seg_path, str(out_path), idx)
+            try:
+                success = self._process_segment_with_enhancer(seg_path, str(out_path), idx)
+            except KeyboardInterrupt:
+                print(f"\n⚠️  用户中断，停止处理后续分段"
+                      f"（已完成 {len(processed_files)}/{len(segment_files)} 分段已保留）")
+                raise  # 重新抛出，让外层 main_video_optimized.py 处理
             if success:
                 processed_files.append(str(out_path))
-                checkpoint["processed_segments"].append(idx)
+                if idx not in checkpoint["processed_segments"]:
+                    checkpoint["processed_segments"].append(idx)
                 checkpoint["last_segment"] = idx
                 self._save_checkpoint(checkpoint)
             else:
@@ -489,7 +566,7 @@ class RealESRGANVideoProcessor:
     def _process_segment(self, input_path: str, output_path: str,
                           segment_idx: int) -> bool:
         """
-        处理单个视频片段（调用 realesrgan_video_ds/main.py main_optimized）。
+        处理单个视频片段（调用 realesrgan_video/main.py main_optimized）。
 
         Args:
             input_path:   输入片段路径
@@ -530,7 +607,7 @@ class RealESRGANVideoProcessor:
     def _run_esrgan_video(self, input_path: str, output_path: str,
                            segment_idx: int) -> bool:
         """
-        构建参数命名空间并调用 realesrgan_video_ds/main.py 的 main_optimized()。
+        构建参数命名空间并调用 realesrgan_video/main.py 的 main_optimized()。
 
         由于我们直接调用 main_optimized() 而非 main()，需要在此处复刻 main()
         中的参数预处理逻辑（如 gfpgan_trt 启用时自动禁用 FP16，以及覆盖仲裁）。
@@ -631,10 +708,10 @@ class RealESRGANVideoProcessor:
             if not os.path.isfile(_main_py):
                 raise FileNotFoundError(
                     f"底层脚本不存在: {_main_py}\n"
-                    f"请确认 external/realesrgan_video_ds/main.py 已正确放置。"
+                    f"请确认 external/realesrgan_video/main.py 已正确放置。"
                 )
             _spec = importlib.util.spec_from_file_location(
-                "realesrgan_video_ds_main", _main_py)
+                "realesrgan_video_main", _main_py)
             if _spec is None or _spec.loader is None:
                 raise ImportError(f"无法加载模块: {_main_py}")
             _mod = importlib.util.module_from_spec(_spec)
@@ -675,7 +752,7 @@ class RealESRGANVideoProcessor:
                 return False
 
         except ImportError as e:
-            print(f"   ❌ 无法导入 realesrgan_video_ds/main.py: {e}")
+            print(f"   ❌ 无法导入 realesrgan_video/main.py: {e}")
             return False
         except Exception as e:
             print(f"   ❌ 调用 Real-ESRGAN 失败: {e}")
@@ -718,7 +795,7 @@ class RealESRGANVideoProcessor:
 def main():
     """
     独立调用入口：直接驱动 RealESRGANVideoProcessor，
-    底层对接 realesrgan_video_ds/main.py main_optimized()。
+    底层对接 realesrgan_video/main.py main_optimized()。
 
     示例：
       # 使用默认配置，直接超分
@@ -754,7 +831,7 @@ def main():
         description="Real-ESRGAN 视频超分处理器 (优化版) —— 独立入口",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-底层脚本：external/realesrgan_video_ds/main.py
+底层脚本：external/realesrgan_video/main.py
 
 特性：
   · 分段处理 + 断点恢复

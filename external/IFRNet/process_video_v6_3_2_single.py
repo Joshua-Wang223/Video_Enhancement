@@ -25,7 +25,7 @@ IFRNet 视频插帧处理脚本 —— 终极优化版 v6.3.2（单卡版）
 
   [FIX-T3-MEMCAP]  PinnedPool 雪球效应修复：_auto_queue_depths() 和
                    get_queue_suggestions() 均新增 PinnedPool 内存上限约束
-                   （默认 _MAX_POOL_MB=1024 MiB）；result_queue 不再无限制增大，
+                   （默认 _PINNED_POOL_MAX_MB=2048 MiB）；result_queue 不再无限制增大，
                    防止锁页内存随段数累积至 2 GiB+ 导致 DMA 带宽压力恶化。
 
   [FIX-RETUNE-SKIP] T2 RETUNE 稳定性修复：引入 _CALIB_SKIP=3 跳过段初热身 batch，
@@ -812,10 +812,8 @@ class GPUMonitor:
 
         新增逻辑：
         · T3-bottleneck 时不增大 result_queue（否则 PinnedPool 雪球式积累）。
-        · slot_mb > 0 时对 result_queue 施加 PinnedPool 内存上限约束（1 GiB）。
+        · slot_mb > 0 时对 result_queue 施加 PinnedPool 内存上限约束（2 GiB）。
         """
-        _MAX_POOL_MB = 1024.0   # PinnedPool 内存上限（MiB）
-
         pair_q   = current_pair_q
         result_q = current_result_q
         stable_std   = stats.stable_std
@@ -842,7 +840,7 @@ class GPUMonitor:
 
         # [FIX-T3-MEMCAP] PinnedPool 内存上限约束
         if slot_mb > 0.0:
-            _max_rq_by_mem = max(8, int(_MAX_POOL_MB / slot_mb) - 2)  # -2 留给 pool overhead
+            _max_rq_by_mem = max(8, int(_PINNED_POOL_MAX_MB / slot_mb) - 2)  # -2 留给 pool overhead
             result_q = min(result_q, _max_rq_by_mem)
 
         return pair_q, result_q
@@ -985,6 +983,7 @@ _X264_PRESET_FACTOR = {
 #   · 理论估算（修正前）:  ~2860 fps → 偏差约 19×
 # 乘以此因子后估算 ~157 fps，贴近实测正常（非热节流）状态。
 _CRF0_X264_CALIB_FACTOR: float = 0.055
+_PINNED_POOL_MAX_MB: float = 2048.0
 _MODEL_T2_FACTOR = {
     'IFRNet_S_Vimeo90K': 1.0,      # 基准（最小模型）
     'IFRNet_Vimeo90K':   1.6,      # 中型
@@ -1064,10 +1063,9 @@ def _auto_queue_depths(
     # 每个 result slot 持有 effective_bs * T 帧的 pinned uint8 buffer。
     # 若不加约束，T3 极慢（大 T3/T2 比）时 result_depth 会达到 50+，
     # 导致 PinnedPool 分配 2 GiB+ 锁页内存，反而拖慢 DMA 带宽，形成恶性循环。
-    _MAX_POOL_MB = 1024.0                                      # PinnedPool 上限：1 GiB
     _slot_mb     = effective_bs * T * H_pad * W_pad * 3 / 1e6 # 每 slot 的 MiB
     if _slot_mb > 0.0:
-        _max_result_by_mem = max(8, int(_MAX_POOL_MB / _slot_mb) - 2)
+        _max_result_by_mem = max(8, int(_PINNED_POOL_MAX_MB / _slot_mb) - 2)
         result_depth = min(result_depth, _max_result_by_mem)
 
     pool_size    = result_depth + 2
@@ -3135,7 +3133,7 @@ class IFRNetVideoProcessor:
                 final_result_q = min(final_result_q, 64)
                 # [FIX-T3-MEMCAP] 再次施加内存上限（防御性）
                 if _slot_mb > 0.0:
-                    _max_rq_mem = max(8, int(1024.0 / _slot_mb) - 2)
+                    _max_rq_mem = max(8, int(_PINNED_POOL_MAX_MB / _slot_mb) - 2)
                     final_result_q = min(final_result_q, _max_rq_mem)
 
                 if final_pair_q != _cur_pair_q or final_result_q != _cur_result_q:

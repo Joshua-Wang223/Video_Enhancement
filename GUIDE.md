@@ -2,6 +2,7 @@
 
 > **主入口**：`src/main_video_optimized.py`  
 > **配置真源**：未在命令行覆盖时，默认值以 [`config/default_config.json`](config/default_config.json) 为准（与 README 一致）。
+> **最后更新**: 2026-05-14
 
 ## 目录
 
@@ -13,9 +14,11 @@
 6. [模型选择指南](#6-模型选择指南)
 7. [断点续传](#7-断点续传)
 8. [批量处理](#8-批量处理)
-9. [故障排除](#9-故障排除)
-10. [性能优化建议](#10-性能优化建议)
-11. [附录](#11-附录)
+9. [FIX-C 分段归一化](#9-fix-c-分段归一化)
+10. [流水线报告 --report](#10-流水线报告---report)
+11. [故障排除](#11-故障排除)
+12. [性能优化建议](#12-性能优化建议)
+13. [附录](#13-附录)
 
 ---
 
@@ -238,7 +241,7 @@ wget -O models_RealESRGAN/RealESRGANv2-animevideo-xsx2.pth \
 
 ### 2.4 Real-ESRGAN 模型配置（`models.realesrgan`）
 
-优化版处理器调用 **`external/realesrgan_video_ds`**（深度流水线 `main_optimized`）。`model_name` 为不含后缀的名称（与底层脚本一致）。
+优化版处理器调用 **`external/realesrgan_video`**（深度流水线 `main_optimized`）。`model_name` 为不含后缀的名称（与底层脚本一致）。
 
 ```json
 {
@@ -290,16 +293,18 @@ wget -O models_RealESRGAN/RealESRGANv2-animevideo-xsx2.pth \
 {
   "output": {
     "format": "mp4",
-    "codec": "libx264",          // 最终输出编码器：libx264 / libx265 / libsvtav1
-    "preset": "medium",          // 编码速度预设（影响文件大小）
-    "crf": 23,                   // 最终输出质量（18–23 为高质量）
-    "pix_fmt": "yuv420p",        // 像素格式（yuv420p 兼容性最好）
-    "audio_format": "smart",     // 音频处理：smart（自动）/ aac / copy
-    "audio_codec": "copy",       // 音频编码器
-    "audio_bitrate": "192k"      // 音频码率（audio_format 非 copy 时生效）
+    "codec": "libx264",
+    "preset": "medium",
+    "crf": 23,
+    "pix_fmt": "yuv420p",
+    "audio_format": "smart",
+    "audio_codec": "copy",
+    "audio_bitrate": "192k"
   }
 }
 ```
+
+**copy-by-default 策略**：未在 CLI 指定 `--output-codec/crf/preset` 时，最终合并阶段自动使用 `-c:v copy`（不重新编码），继承第二阶段编码器的输出质量。若任一输出参数在 CLI 中指定，则触发重新编码。
 
 **编码速度预设**（`preset`）：
 
@@ -341,6 +346,8 @@ python src/main_video_optimized.py --help
 | `--upscale-factor` | 2 / 4 |
 | `--trt-cache-dir` | TRT Engine 缓存目录（与配置 `paths.trt_cache_dir` 一致） |
 | `--dry-run` | 仅打印配置与环境，不执行处理 |
+| `--report PATH` | 输出端到端流水线 JSON 报告 |
+| `--skip-seg-normalize` | 跳过合并前分段 timescale 归一化（调试用） |
 
 IFRNet / Real-ESRGAN 细粒度开关（如 `--use-tensorrt-ifrnet`、`--batch-size-esrgan` 等）见 `--help` 分组说明。
 
@@ -357,6 +364,10 @@ python src/main_video_optimized.py -c config/default_config.json -i input.mp4 -o
 # 插帧 / 超分倍数
 python src/main_video_optimized.py -c config/default_config.json -i input.mp4 -o output/out.mp4 \
   --interpolation-factor 4 --upscale-factor 4
+
+# 流水线报告
+python src/main_video_optimized.py -c config/default_config.json -i input.mp4 -o output/out.mp4 \
+  --report pipeline_report.json
 
 # 批量处理
 python src/main_video_optimized.py -c config/default_config.json \
@@ -438,6 +449,8 @@ python src/main_video_optimized.py -c config/default_config.json \
    │   ├─ [直接对接，无需合并] ──────────────── 分段直连优化
    │   ├─ Real-ESRGAN 超分处理每个分段
    │   │   └─ 断点保存 checkpoint.json
+   │   ├─ [FIX-C] timescale 归一化（H.264/H.265）
+   │   │   └─ --skip-seg-normalize 可跳过
    │   └─ merge_videos_by_codec 合并所有分段
    │
    ├─ [模式 2: upscale_then_interpolate]
@@ -445,6 +458,7 @@ python src/main_video_optimized.py -c config/default_config.json \
    │   ├─ Real-ESRGAN 超分处理每个分段
    │   ├─ [直接对接]
    │   ├─ IFRNet 插帧处理每个分段
+   │   ├─ [FIX-C] timescale 归一化
    │   └─ 合并所有分段
    │
    ├─ 添加音频（add_audio_to_video）
@@ -463,10 +477,17 @@ v1 的处理方式：
 
 优化版的处理方式：
 ```
-分段 → 插帧每段 → [直接传递分段列表] → 超分每段 → 最终合并
+分段 → 插帧每段 → [直接传递分段列表] → 超分每段 → [FIX-C 归一化] → 最终合并
 ```
 
 流水线通过 `process_segments_directly(segment_list)` 等接口实现分段直接对接，省去中间合并与二次分段，显著降低磁盘 I/O 与总耗时（参见 README 特性说明）。
+
+### 4.3 FIX-C 合并后验证
+
+最终合并输出后增加 ffprobe 主动验证：
+- 验证视频流存在且 duration > 0
+- 验证音频流存在（当提供外部音频时）
+- 及早发现并报告静默损坏（rc=0 但无视频帧的合并产物）
 
 ---
 
@@ -507,6 +528,7 @@ PyTorch 2.0+ 引入的图编译优化：
 - NVDEC：硬件解码，释放 CPU 资源
 - NVENC：硬件编码，速度比软件编码快 3–10x
 - 需要 NVIDIA GPU 和支持 NVDEC/NVENC 的 FFmpeg（`ffmpeg -hwaccels` 验证）
+- 优化版内置 GPU 硬件型号表（20+ 型号），自动选择最优编码器
 
 ### 5.6 OOM 自动降级
 
@@ -604,9 +626,110 @@ python src/main_video_optimized.py -c config/default_config.json \
 - 所有视频处理完成后统一显示摘要
 - 若 `auto_cleanup_temp: false`，完成后统一询问清理
 
+批量模式下也可使用 `--report` 输出流水线报告，每个视频的 `extra` 字段包含批量索引。
+
 ---
 
-## 9. 故障排除
+## 9. FIX-C 分段归一化
+
+### 问题背景
+
+多个独立 ffmpeg 子进程编码的分段（即使编解码参数完全相同）在 MP4 timescale 上存在微差。这些分段通过 `concat` demuxer 合并时，demuxer 遇到 timescale 跳变会触发 `AVEROR_EXIT(254)`，合并失败。
+
+### 解决方案
+
+`_normalize_segs_for_copy()` 函数在最终合并前对分段进行零损耗 remux 归一化：
+
+1. **自动检测编解码器：** 仅对 H.264 / H.265 分段执行（VP9 / AV1 / ProRes 等自动跳过）
+2. **统一时间基：** 使用 `-video_track_timescale 90000`（90 kHz，MP4 标准）
+3. **三重校验：** 每个分段 remux 后验证（rc=0 + 文件 > 4KB + ffprobe 确认视频帧 duration > 0）
+4. **原地替换：** 成功则覆盖原分段文件，失败保留原始文件
+
+### 与旧方案的区别
+
+> **不再使用 `-bsf:v dump_extra`。**  
+> 该 BSF 专为 Annex B 格式（MPEG-TS / 裸流）设计。在 MP4/AVCC 格式上应用 `dump_extra` 会产生畸形 packet，导致：
+> - ffmpeg rc=0 但视频流被静默丢弃  
+> - 合并输出文件"只有音频"  
+> - 这是早期版本此类问题的根本原因
+
+### CLI 控制
+
+```bash
+# 默认：FIX-C 归一化自动执行
+python src/main_video_optimized.py -i input.mp4 -o output.mp4
+
+# 跳过归一化（调试用，或已确认分段 timescale 一致）
+python src/main_video_optimized.py -i input.mp4 -o output.mp4 \
+    --skip-seg-normalize
+```
+
+### 合并后验证
+
+`merge_videos_by_codec()` 在 ffmpeg rc=0 后增加主动 ffprobe 验证：
+- 验证输出文件包含有效视频流（codec_type=video 且 duration > 0）
+- 验证外部音频流已正确混入
+- 及早发现 rc=0 但视频流丢失的情况
+
+---
+
+## 10. 流水线报告（--report）
+
+### 功能
+
+`--report` 参数输出端到端流水线 JSON 报告，成功或失败均会写出。
+
+### 使用方式
+
+```bash
+python src/main_video_optimized.py -i input.mp4 -o output.mp4 \
+    --report /path/to/report.json
+```
+
+### 报告内容
+
+```json
+{
+  "version":             "2.0.0",
+  "timestamp":           "2026-05-14T12:00:00",
+  "success":             true,
+  "input":               "/path/to/input.mp4",
+  "output":              "/path/to/output.mp4",
+  "mode":                "interpolate_then_upscale",
+  "elapsed_seconds":     1234.56,
+  "elapsed_human":       "20分34秒",
+  "input_size_mb":       150.5,
+  "output_size_mb":      890.2,
+  "size_ratio":          5.914,
+  "input_duration_s":    600.0,
+  "output_duration_s":   600.5,
+  "gpu_peak_memory_gb":  7.824,
+  "env": {
+    "python":            "3.10.12",
+    "torch":             "2.7.0+cu128",
+    "gpu_name":          "NVIDIA RTX 3080",
+    "gpu_memory_gb":     10.0,
+    "ffmpeg":            true
+  },
+  "params": { /* 关键 CLI 参数快照 */ }
+}
+```
+
+### 批量模式
+
+批量模式下，`--report` 会为每个视频写入独立的 `extra.batch_index` 字段。也可以为每个单独的视频写报告。
+
+### 与处理器级报告的区别
+
+| 报告层级 | CLI 参数 | 内容范围 |
+|---------|---------|---------|
+| 流水线报告 | `--report` | 端到端（耗时/大小/GPU峰值/参数快照） |
+| IFRNet 报告 | `--report-ifrnet` | IFRNet 推理延迟/硬件统计 |
+| ESRGan 报告 | `--report-esrgan` | ESRGan 推理延迟/GFPGAN 统计 |
+
+---
+
+## 11. 故障排除
 
 ### CUDA out of memory
 
@@ -676,6 +799,14 @@ ffmpeg -hwaccels 2>&1 | grep cuda
    ```
 3. 确认 FFmpeg 版本支持所需音频编解码器
 
+### "合并后只有音频无视频"
+
+这是旧版 `-bsf:v dump_extra` 问题的特征。优化版已通过 FIX-C 机制修复：
+
+- 改用 `-video_track_timescale 90000` 统一时间基
+- 合并后增加 ffprobe 视频流验证
+- 如果仍遇到，使用 `--skip-seg-normalize` 跳过归一化并报告
+
 ### 模型加载失败
 
 1. 检查模型路径是否正确：
@@ -688,7 +819,7 @@ ffmpeg -hwaccels 2>&1 | grep cuda
 
 ---
 
-## 10. 性能优化建议
+## 12. 性能优化建议
 
 ### 硬件层面
 
@@ -701,7 +832,7 @@ ffmpeg -hwaccels 2>&1 | grep cuda
 - 启用 `use_fp16: true`（最重要，提升约 1.5–2x）
 - 启用 `use_compile: true`（需 PyTorch 2.0+，提升 10–40%）
 - 启用 `use_hwaccel: true`（减少 CPU 编解码负担）
-- `prefetch_factor` 默认见 `default_config.json`（Real-ESRGAN / `realesrgan_video_ds` 读帧预取深度）
+- `prefetch_factor` 默认见 `default_config.json`（Real-ESRGAN / `realesrgan_video` 读帧预取深度）
 
 ### 参数层面
 
@@ -711,6 +842,10 @@ ffmpeg -hwaccels 2>&1 | grep cuda
 | 平衡 | IFRNet_S + upscale=4 + FP16 + compile + preset=medium |
 | 最高质量 | IFRNet_L + upscale=4 + FP16 + compile + crf=15 + preset=slow |
 
+### FIX-C 性能影响
+
+FIX-C 归一化对每个 H.264/H.265 分段执行零损耗 remux（约 1-3 秒/分段），分段数量较多时总体时间可忽略。若确认分段 timescale 已一致，可用 `--skip-seg-normalize` 跳过。
+
 ### 磁盘空间估算
 
 - **临时文件**：原视频大小 × (插帧倍数 + 超分倍数²) × 约 3
@@ -718,7 +853,7 @@ ffmpeg -hwaccels 2>&1 | grep cuda
 
 ---
 
-## 11. 附录
+## 13. 附录
 
 ### 支持的视频格式
 

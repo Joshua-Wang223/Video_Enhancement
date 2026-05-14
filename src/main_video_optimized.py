@@ -20,7 +20,7 @@
 【底层架构】
   IFRNet     : src/processors/ifrnet_processor_v6_1_single.py
   Real-ESRGAN: src/processors/realesrgan_processor_video_optimized.py
-               → external/realesrgan_video_ds/main.py (main_optimized, v6.4)
+               → external/realesrgan_video/main.py (main_optimized, v6.4)
 
 【核心特性（v6 亮点 + 优化版增强）】
   ✓ 全部底层控制参数均可命令行透传（见下方参数列表）
@@ -59,7 +59,7 @@
     --quiet-esrgan   静默 ESRGAN 底层输出
 
 【优化版相对 v6 的 ESRGan 侧变更】
-  · 底层脚本更换为 realesrgan_video_ds/main.py（深度模块化架构 v6.4）
+  · 底层脚本更换为 realesrgan_video/main.py（深度模块化架构 v6.4）
   · 新增 CLI 参数：
       --face-det-threshold         人脸检测置信度阈值
       --no-adaptive-batch-esrgan   禁用自适应批处理
@@ -182,7 +182,7 @@ except ImportError:
 # 全局常量                                                              [V1]
 # =============================================================================
 
-VERSION = "2.0.0"  # 与 realesrgan_video_ds v6.4 架构对齐
+VERSION = "2.0.0"  # 与 realesrgan_video v6.4 架构对齐
 
 _DEFAULT_CFG = str(_BASE_DIR / "config" / "default_config.json")
 
@@ -210,7 +210,7 @@ def _print_banner():
     print()
     print("═══════════════════════════════════════════════════════════════════")
     print("    🎬  视频增强流水线 (优化版) v{:<18s}".format(VERSION))
-    print("    IFRNet + Real-ESRGAN  ·  realesrgan_video_ds v6.4")
+    print("    IFRNet + Real-ESRGAN  ·  realesrgan_video v6.4")
     print("═══════════════════════════════════════════════════════════════════")
     print()
 
@@ -1233,7 +1233,7 @@ def _process_single(
         try:
             success = proc.process_video(actual_input, output_video)
         except KeyboardInterrupt:
-            print("\n\n⚠️  用户中断（Ctrl+C），断点已保存。")
+            print("\n\n⚠️  用户中断（Ctrl+C），当前分段将在下次运行时重新处理。")
             return False
         _elapsed_sk = time.time() - t0
         if success:
@@ -1271,7 +1271,7 @@ def _process_single(
         try:
             success = proc.process_video(actual_input, output_video)
         except KeyboardInterrupt:
-            print("\n\n⚠️  用户中断（Ctrl+C），断点已保存。")
+            print("\n\n⚠️  用户中断（Ctrl+C），当前分段将在下次运行时重新处理。")
             return False
         _elapsed_sk = time.time() - t0
         if success:
@@ -1316,7 +1316,7 @@ def _process_single(
         try:
             step1_segs = ifrnet_proc.process_video_segments(actual_input)
         except KeyboardInterrupt:
-            print("\n\n⚠️  用户中断（Ctrl+C），断点已保存。")
+            print("\n\n⚠️  用户中断（Ctrl+C），当前分段将在下次运行时重新处理。")
             return False
         if not step1_segs:
             print("❌ IFRNet 插帧未产生有效分段，流程终止")
@@ -1330,7 +1330,7 @@ def _process_single(
             final_segs = esrgan_proc.process_segments_directly(
                 step1_segs, video_name)
         except KeyboardInterrupt:
-            print("\n\n⚠️  用户中断（Ctrl+C），断点已保存。")
+            print("\n\n⚠️  用户中断（Ctrl+C），当前分段将在下次运行时重新处理。")
             return False
 
     elif mode == "upscale_then_interpolate":
@@ -1339,7 +1339,7 @@ def _process_single(
         try:
             step1_segs = esrgan_proc.process_video_segments(actual_input)
         except KeyboardInterrupt:
-            print("\n\n⚠️  用户中断（Ctrl+C），断点已保存。")
+            print("\n\n⚠️  用户中断（Ctrl+C），当前分段将在下次运行时重新处理。")
             return False
         if not step1_segs:
             print("❌ Real-ESRGAN 超分未产生有效分段，流程终止")
@@ -1353,7 +1353,7 @@ def _process_single(
             final_segs = ifrnet_proc.process_segments_directly(
                 step1_segs, video_name)
         except KeyboardInterrupt:
-            print("\n\n⚠️  用户中断（Ctrl+C），断点已保存。")
+            print("\n\n⚠️  用户中断（Ctrl+C），当前分段将在下次运行时重新处理。")
             return False
 
     else:
@@ -1512,7 +1512,7 @@ def _build_parser() -> argparse.ArgumentParser:
 底层架构：
   IFRNet     : src/processors/ifrnet_processor_v6_1_single.py
   Real-ESRGAN: src/processors/realesrgan_processor_video_optimized.py
-               → external/realesrgan_video_ds/main.py (main_optimized, v6.4)
+               → external/realesrgan_video/main.py (main_optimized, v6.4)
 
 ESRGan 模型选项 (--esrgan-model):
   realesr-general-x4v3          通用高质量（推荐，支持 --denoise-strength）
@@ -1664,7 +1664,7 @@ ESRGan 模型选项 (--esrgan-model):
                    action="store_true", default=False,
                    help="[覆盖] 强制禁用 IFRNet TensorRT，覆盖 --use-tensorrt-ifrnet / config。")
 
-    # ── Real-ESRGAN 参数（已更新，对齐 realesrgan_video_ds/main.py）──────────
+    # ── Real-ESRGAN 参数（已更新，对齐 realesrgan_video/main.py）──────────
     g = parser.add_argument_group("Real-ESRGAN 参数（优化版）")
     g.add_argument("--esrgan-model", metavar="MODEL_NAME",
                    help="ESRGan 模型名称（覆盖配置；不存在时自动下载）\n"
@@ -1923,8 +1923,7 @@ if __name__ == "__main__":
     try:
         _exit_code = main()
     except KeyboardInterrupt:
-        print("\n\n⚠️  用户中断（Ctrl+C）")
-        print("   断点已保存，下次运行相同参数可从断点恢复。")
+        print("\n\n⚠️  用户中断（Ctrl+C），当前分段将在下次运行时重新处理。")
         _exit_code = 130
     except Exception as _exc:
         print(f"\n❌ 未捕获的异常: {_exc}")

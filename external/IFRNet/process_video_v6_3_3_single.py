@@ -14,12 +14,12 @@ IFRNet 视频插帧处理脚本 —— 终极优化版 v6.3.3（单卡版）
                    · 与 GPU-MONITOR 统一在段完成后计算，日志顺序更直观。
 
   [FIX-MEMCAP-LOG]      PinnedPool 内存上限截断时输出显式 log：
-                   · 原实现在 ADAPTIVE-QUEUE 合并建议时若 PinnedPool 上限（1024 MB）
+                   · 原实现在 ADAPTIVE-QUEUE 合并建议时若 PinnedPool 上限（2048 MB）
                      将建议值静默截断，用户无法得知"GPU-MONITOR 建议 23 但实际用 15"
                      的原因。
                    · 新增截断时打印：
                      [ADAPTIVE-QUEUE] PinnedPool 内存上限截断: result_queue 19 → 15
-                       (slot=58.9 MB × 17 ≈ 1024 MB上限)
+                       (slot=58.9 MB × 17 ≈ 2048 MB上限)
 
   [FIX-RETUNE-DISPLAY]  ADAPTIVE-QUEUE 综合建议打印推导链路：
                    · 原实现只打印最终值，无法追溯 GPU-MONITOR / RETUNE 各自贡献。
@@ -81,7 +81,7 @@ IFRNet 视频插帧处理脚本 —— 终极优化版 v6.3.3（单卡版）
 
   [FIX-T3-MEMCAP]  PinnedPool 雪球效应修复：_auto_queue_depths() 和
                    get_queue_suggestions() 均新增 PinnedPool 内存上限约束
-                   （默认 _MAX_POOL_MB=1024 MiB）；result_queue 不再无限制增大，
+                   （默认 _PINNED_POOL_MAX_MB=2048 MiB）；result_queue 不再无限制增大，
                    防止锁页内存随段数累积至 2 GiB+ 导致 DMA 带宽压力恶化。
 
   [FIX-RETUNE-SKIP] T2 RETUNE 稳定性修复：引入 _CALIB_SKIP=3 跳过段初热身 batch，
@@ -868,10 +868,8 @@ class GPUMonitor:
 
         新增逻辑：
         · T3-bottleneck 时不增大 result_queue（否则 PinnedPool 雪球式积累）。
-        · slot_mb > 0 时对 result_queue 施加 PinnedPool 内存上限约束（1 GiB）。
+        · slot_mb > 0 时对 result_queue 施加 PinnedPool 内存上限约束（2 GiB）。
         """
-        _MAX_POOL_MB = 1024.0   # PinnedPool 内存上限（MiB）
-
         pair_q   = current_pair_q
         result_q = current_result_q
         stable_std   = stats.stable_std
@@ -898,7 +896,7 @@ class GPUMonitor:
 
         # [FIX-T3-MEMCAP] PinnedPool 内存上限约束
         if slot_mb > 0.0:
-            _max_rq_by_mem = max(8, int(_MAX_POOL_MB / slot_mb) - 2)  # -2 留给 pool overhead
+            _max_rq_by_mem = max(8, int(_PINNED_POOL_MAX_MB / slot_mb) - 2)  # -2 留给 pool overhead
             result_q = min(result_q, _max_rq_by_mem)
 
         return pair_q, result_q
@@ -1034,6 +1032,14 @@ _X264_PRESET_FACTOR = {
     'faster': 2.5, 'fast': 2.0, 'medium': 1.0,
     'slow': 0.4, 'slower': 0.2, 'veryslow': 0.1,
 }
+# [FIX-NVENC-PRESET] x264 → NVENC preset 名称映射。
+# NVENC 使用 p1(最快)~p7(最慢) 命名体系，与 x264 的 ultrafast~veryslow 不兼容。
+# 当用户通过 --x264-preset 传入 x264 风格名称 + --codec h264_nvenc 时自动转换。
+_X264_TO_NVENC_PRESET = {
+    'ultrafast': 'p1', 'superfast': 'p1', 'veryfast': 'p2',
+    'faster': 'p3', 'fast': 'p3', 'medium': 'p4',
+    'slow': 'p5', 'slower': 'p6', 'veryslow': 'p7',
+}
 # [FIX-CRF0-CALIB] crf=0（lossless）实测校准因子。
 # 理论模型（crf_factor = 2^((0-23)/12) ≈ 0.264）严重低估 lossless 编码成本：
 #   · lossless 需维持精确像素，内存带宽和预测搜索开销远高于有损编码
@@ -1041,6 +1047,7 @@ _X264_PRESET_FACTOR = {
 #   · 理论估算（修正前）:  ~2860 fps → 偏差约 19×
 # 乘以此因子后估算 ~157 fps，贴近实测正常（非热节流）状态。
 _CRF0_X264_CALIB_FACTOR: float = 0.055
+_PINNED_POOL_MAX_MB: float = 2048.0
 _MODEL_T2_FACTOR = {
     'IFRNet_S_Vimeo90K': 1.0,      # 基准（最小模型）
     'IFRNet_Vimeo90K':   1.6,      # 中型
@@ -1227,10 +1234,9 @@ def _auto_queue_depths(
     # 每个 result slot 持有 effective_bs * T 帧的 pinned uint8 buffer。
     # 若不加约束，T3 极慢（大 T3/T2 比）时 result_depth 会达到 50+，
     # 导致 PinnedPool 分配 2 GiB+ 锁页内存，反而拖慢 DMA 带宽，形成恶性循环。
-    _MAX_POOL_MB = 1024.0                                      # PinnedPool 上限：1 GiB
     _slot_mb     = effective_bs * T * H_pad * W_pad * 3 / 1e6 # 每 slot 的 MiB
     if _slot_mb > 0.0:
-        _max_result_by_mem = max(8, int(_MAX_POOL_MB / _slot_mb) - 2)
+        _max_result_by_mem = max(8, int(_PINNED_POOL_MAX_MB / _slot_mb) - 2)
         result_depth = min(result_depth, _max_result_by_mem)
 
     pool_size    = result_depth + 2
@@ -2016,7 +2022,7 @@ class FFmpegFrameReader:
         width:           int   = -1,
         height:          int   = -1,
         fps_override:    float = 0.0,
-        prefetch:        int   = 8,
+        prefetch:        int   = 128,
         use_hwaccel:     bool  = True,
         ffmpeg_bin:      str   = 'ffmpeg',
         pad_stride:      int   = 0,
@@ -2069,17 +2075,37 @@ class FFmpegFrameReader:
         self._queue  = queue.Queue(maxsize=max(prefetch, 4))
         self._thread = threading.Thread(target=self._read_loop, daemon=True)
         self._thread.start()
+        # Fix: drain stderr to prevent pipe buffer deadlock
+        self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
+        self._stderr_thread.start()
+
+    def _drain_stderr(self):
+        """Consume stderr to prevent pipe buffer deadlock."""
+        try:
+            while True:
+                chunk = self._proc.stderr.read(8192)
+                if not chunk:
+                    break
+        except Exception:
+            pass
 
     def _read_loop(self):
         pad_h, pad_w = self._pad_h, self._pad_w
         do_pad = self.need_pad
+        fb = self._frame_bytes
         try:
             while True:
-                raw = self._proc.stdout.read(self._frame_bytes)
-                if len(raw) < self._frame_bytes:
+                # Read exactly fb bytes (robust against partial pipe reads)
+                buf = bytearray()
+                while len(buf) < fb:
+                    chunk = self._proc.stdout.read(fb - len(buf))
+                    if not chunk:
+                        break
+                    buf.extend(chunk)
+                if len(buf) < fb:
                     break
-                arr = np.frombuffer(raw, dtype=np.uint8).reshape(
-                    self.height, self.width, 3).copy()
+                arr = np.frombuffer(bytes(buf), dtype=np.uint8).reshape(
+                    self.height, self.width, 3)
                 if do_pad:
                     padded = np.pad(arr, ((0, pad_h), (0, pad_w), (0, 0)), mode='edge')
                     self._queue.put((arr, padded))
@@ -2129,12 +2155,19 @@ def _probe_video(video_path: str) -> dict:
         fps = float(Fraction(fps_str))
     except (ValueError, ZeroDivisionError):
         fps = 24.0
-    if 'nb_frames' in vs and vs['nb_frames'] not in ('N/A', ''):
+    nb = 0
+    if 'duration' in vs:
+        dur = float(vs['duration'])
+        if dur > 0:
+            nb = int(dur * fps)
+            # 交叉验证：若 nb_frames 与 duration×fps 偏差 > 5%，警告
+            if 'nb_frames' in vs and vs['nb_frames'] not in ('N/A', ''):
+                nb_meta = int(vs['nb_frames'])
+                if nb_meta > 0 and nb > 0 and abs(nb_meta - nb) / max(nb_meta, nb) > 0.05:
+                    print(f'⚠️  ffprobe元数据 nb_frames={nb_meta} 与 duration×fps={nb} 不一致，'
+                          f'使用后者（分段文件 -c copy 常见）', flush=True)
+    elif 'nb_frames' in vs and vs['nb_frames'] not in ('N/A', ''):
         nb = int(vs['nb_frames'])
-    elif 'duration' in vs:
-        nb = int(float(vs['duration']) * fps)
-    else:
-        nb = 0
     cmd_audio = [
         'ffprobe', '-v', 'error', '-select_streams', 'a:0',
         '-show_entries', 'stream=codec_type', '-of', 'json', video_path,
@@ -2188,6 +2221,10 @@ class FFmpegWriter:
 
         if preset is None:
             preset = 'p4' if 'nvenc' in codec else 'medium'
+        elif 'nvenc' in codec and preset in _X264_TO_NVENC_PRESET:
+            # [FIX-NVENC-PRESET] --x264-preset 传入 ultrafast 等 x264 名称，
+            # 但 nvenc 只认 p1~p7 体系，需自动映射避免 "Unable to parse option value" 错误
+            preset = _X264_TO_NVENC_PRESET[preset]
 
         # [FIX-SLICE-THREAD] 自动探测 CPU / 内存，计算最优软编码并行参数
         _par = _detect_encode_parallelism(n_threads)
@@ -2385,7 +2422,7 @@ class FFmpegWriter:
                     if pending:
                         self._proc.stdin.write(b''.join(pending))
                     break
-                pending.append(item)
+                pending.append(item if isinstance(item, bytes) else item.tobytes())
                 if len(pending) >= self._MAX_BATCH or self._queue.empty():
                     self._proc.stdin.write(b''.join(pending))
                     pending.clear()
@@ -2396,7 +2433,7 @@ class FFmpegWriter:
     def write(self, frame: np.ndarray):
         if self._error is not None:
             raise RuntimeError(f'FFmpegWriter 内部错误: {self._error}') from self._error
-        self._queue.put(frame.tobytes())
+        self._queue.put(frame)
 
     def close(self):
         self._queue.put(self._SENTINEL)
@@ -3203,6 +3240,7 @@ class IFRNetVideoProcessor:
             pbar.update(1)
 
         # ── 主处理 ────────────────────────────────────────────────────────────
+        preview_interrupted = False
         if self.device.type == 'cuda':
             pipeline = IFRNetPipelineRunner(
                 self,
@@ -3244,8 +3282,19 @@ class IFRNetVideoProcessor:
             self._last_encode_hw = (H, W)
             frame_count  += fc_extra
             output_count += oc_extra
+            # 检测提前EOF：读到的帧数明显少于预期
+            if n_seg_est > 0:
+                _actual_frames = frame_count  # 含首帧，已 +fc_extra
+                _shortfall = n_seg_est - _actual_frames
+                if _shortfall > 1:
+                    print(
+                        f'[{worker_label}] ⚠️ 提前EOF！预期 {n_seg_est} 帧，实际读取 {_actual_frames} 帧 '
+                        f'（缺失 {_shortfall} 帧，{_shortfall/n_seg_est*100:.1f}%）',
+                        flush=True,
+                    )
         else:
             # 同步回退路径
+            preview_interrupted = False
             padded_buf = [first_padded]
             raw_buf    = [first]
 
@@ -3287,6 +3336,7 @@ class IFRNetVideoProcessor:
                     import cv2
                     cv2.imshow(f'IFRNet Preview [{worker_label}]', frame)
                     if cv2.waitKey(1) & 0xFF == ord('q'):
+                        preview_interrupted = True
                         break
             if len(raw_buf) > 1:
                 flush_buf()
@@ -3297,9 +3347,22 @@ class IFRNetVideoProcessor:
         writer.close()
         reader.close()
 
+        # 检测提前EOF（同步回退路径）
+        if n_seg_est > 0:
+            _shortfall = n_seg_est - frame_count
+            if _shortfall > 1:
+                print(
+                    f'[{worker_label}] ⚠️ 提前EOF！预期 {n_seg_est} 帧，实际读取 {frame_count} 帧 '
+                    f'（缺失 {_shortfall} 帧，{_shortfall/n_seg_est*100:.1f}%）',
+                    flush=True,
+                )
+
         elapsed = time.time() - t_start
         print(f'[{worker_label}] 完成 | 原始帧={frame_count} → 输出帧={output_count} | '
               f'{frame_count/elapsed:.1f} 原始帧/s（含 warmup/初始化）')
+        if preview_interrupted:
+            print(f'[{worker_label}] ⚠️  用户按 q 提前退出预览，输出不完整')
+            return False, 0, 0
         return True, frame_count, output_count
 
     # ── 对外公开接口 ──────────────────────────────────────────────────────────
@@ -3443,12 +3506,12 @@ class IFRNetVideoProcessor:
                 final_result_q = min(final_result_q, 64)
                 # [FIX-T3-MEMCAP] 施加 PinnedPool 内存上限约束，并显式 log 截断原因
                 if _slot_mb > 0.0:
-                    _max_rq_mem = max(8, int(1024.0 / _slot_mb) - 2)
+                    _max_rq_mem = max(8, int(_PINNED_POOL_MAX_MB / _slot_mb) - 2)
                     if final_result_q > _max_rq_mem:
                         print(
                             f'[ADAPTIVE-QUEUE] PinnedPool 内存上限截断: '
                             f'result_queue {final_result_q} → {_max_rq_mem}'
-                            f'  (slot={_slot_mb:.1f} MB × {_max_rq_mem+2} ≈ 1024 MB上限)'
+                            f'  (slot={_slot_mb:.1f} MB × {_max_rq_mem+2} ≈ {_PINNED_POOL_MAX_MB:.0f} MB上限)'
                         )
                     final_result_q = min(final_result_q, _max_rq_mem)
 

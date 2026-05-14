@@ -1,7 +1,7 @@
 """
 IFRNet 视频插帧处理器 v6（单卡版）
 =====================================
-对接 process_video_v6_3_3_single.py（IFRNetVideoProcessor），
+对接 process_video_v6_3_5_single.py（IFRNetVideoProcessor），
 保留分段直接对接与断点恢复逻辑，支持 v6.1 全部硬件加速参数：
   - FP16 / torch.compile / CUDA Graph（compile 激活时自动接管 Graph）
   - TensorRT 可选加速（首次构建需缓存 .trt Engine）
@@ -12,10 +12,10 @@ IFRNet 视频插帧处理器 v6（单卡版）
   - preview 帧预览（可选，每隔 preview_interval 帧弹出一帧预览）
 
 【v6 变更说明（相对 v5）】
-  - 对齐底层 process_video_v6_3_3_single.py v6.3.3（含 FIX-D2H / FIX-PAD）
+  - 对齐底层 process_video_v6_3_5_single.py v6.3.5（含 FIX-D2H / FIX-PAD）
   - 新增 preview / preview_interval 参数（透传至底层 process_video）
   - main() CLI 新增 --preview / --preview-interval
-  - _process_segment 打印信息对齐 v6.3.3 版本标记
+  - _process_segment 打印信息对齐 v6.3.5 版本标记
   - 构造函数新增参数与 default_config.json 完全对齐
   - [v6.1 优化] 底层 IFRNetVideoProcessor 在循环外构造一次，分段复用，避免重复加载/编译/构建
 """
@@ -130,6 +130,8 @@ class IFRNetProcessor:
         self.checkpoint_file: Optional[Path] = None
         self.segment_dir:     Optional[Path] = None
         self.processed_dir:   Optional[Path] = None
+        self._checkpoint_save_logged = False    # 首次保存断点时打印路径
+        self._current_input_video: Optional[str] = None  # 当前输入视频，用于断点指纹
 
         # [v6.1 新增] 底层 IFRNetVideoProcessor 实例缓存，避免每个分段重新初始化
         self._video_processor = None
@@ -148,7 +150,7 @@ class IFRNetProcessor:
         Returns:
             处理后的分段文件路径列表
         """
-        print(f"\n🎬 IFRNet 插帧处理（分段模式）—— v6.3.3")
+        print(f"\n🎬 IFRNet 插帧处理（分段模式）—— v6.3.5")
         print(f"📹 输入: {input_video}")
         print(f"⚡ 插帧倍数: {self.interpolation_factor}x")
         print(f"🖥️  设备: {self.device} | "
@@ -158,6 +160,7 @@ class IFRNetProcessor:
               f"TRT: {self.use_tensorrt}")
 
         video_name = Path(input_video).stem
+        self._current_input_video = input_video
         self._setup_temp_dirs(video_name, "ifrnet_source")
         checkpoint = self._load_checkpoint()
 
@@ -200,7 +203,7 @@ class IFRNetProcessor:
         Returns:
             处理后的分段文件路径列表
         """
-        print(f"\n🎬 IFRNet 插帧处理（接收分段输入）—— v6.3.3")
+        print(f"\n🎬 IFRNet 插帧处理（接收分段输入）—— v6.3.5")
         print(f"📹 输入分段数: {len(input_segments)}")
         print(f"⚡ 插帧倍数: {self.interpolation_factor}x")
 
@@ -225,7 +228,7 @@ class IFRNetProcessor:
         )
 
         print("\n" + "=" * 65)
-        print("🎬 IFRNet 视频插帧处理（完整流程）—— v6.3.3")
+        print("🎬 IFRNet 视频插帧处理（完整流程）—— v6.3.5")
         print(f"📹 输入  : {input_video}")
         print(f"📤 输出  : {output_video}")
         print(f"⚡ 插帧倍数: {self.interpolation_factor}x")
@@ -300,20 +303,83 @@ class IFRNetProcessor:
         self.processed_dir.mkdir(parents=True, exist_ok=True)
 
     def _load_checkpoint(self) -> dict:
-        """加载断点信息；文件不存在或损坏时返回空断点。"""
+        """加载断点信息；文件不存在/损坏/配置不兼容时返回空断点。"""
         if self.checkpoint_file and self.checkpoint_file.exists():
             try:
                 with open(self.checkpoint_file, "r") as f:
                     checkpoint = json.load(f)
+
+                # 校验配置兼容性
+                saved_snapshot = checkpoint.get("config_snapshot", None)
+                if saved_snapshot is None:
+                    print(f"⚠️  断点文件缺少配置快照（旧版本），将从头开始处理")
+                    print(f"   📁 断点文件: {self.checkpoint_file}")
+                    return {"processed_segments": [], "last_segment": -1}
+
+                current_snapshot = self._get_config_snapshot()
+                _fingerprint_keys = {"input_mtime", "input_size"}
+                mismatches = []
+                for key in current_snapshot:
+                    saved_val = saved_snapshot.get(key)
+                    curr_val  = current_snapshot[key]
+                    if saved_val != curr_val:
+                        if key in _fingerprint_keys and saved_val is None:
+                            continue  # 旧断点无指纹，跳过
+                        # 格式化时间戳
+                        if key == "input_mtime":
+                            _fmt_saved = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(saved_val)) if saved_val else str(saved_val)
+                            _fmt_curr  = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(curr_val)) if curr_val else str(curr_val)
+                            mismatches.append(
+                                f"     {key}: 断点值={_fmt_saved} → 当前值={_fmt_curr}")
+                        elif key == "input_size":
+                            mismatches.append(
+                                f"     {key}: 断点值={saved_val} 字节 → 当前值={curr_val} 字节")
+                        else:
+                            mismatches.append(
+                                f"     {key}: 断点值={saved_val!r} → 当前值={curr_val!r}")
+
+                if mismatches:
+                    print(f"⚠️  配置参数已变更，断点失效，将从头开始处理:")
+                    for m in mismatches:
+                        print(m)
+                    print(f"   📁 断点文件: {self.checkpoint_file}")
+                    return {"processed_segments": [], "last_segment": -1}
+
                 print(f"📌 发现断点: 已完成 {len(checkpoint['processed_segments'])} 个分段")
+                print(f"   📁 断点文件: {self.checkpoint_file}")
                 return checkpoint
             except Exception:
-                pass
+                print(f"⚠️  断点文件损坏，将从头开始处理")
+                print(f"   📁 断点文件: {self.checkpoint_file}")
+        else:
+            if self.checkpoint_file:
+                print(f"🆕 未发现断点文件，将从头开始处理")
+                print(f"   📁 断点文件: {self.checkpoint_file}")
         return {"processed_segments": [], "last_segment": -1}
 
+    def _get_config_snapshot(self) -> dict:
+        """返回影响分段兼容性的关键配置参数快照，用于断点恢复时校验一致性。"""
+        snap = {
+            "segment_duration":    self.segment_duration,
+            "interpolation_factor": self.interpolation_factor,
+            "codec":               self.codec,
+            "crf":                 self.crf,
+            "x264_preset":         self.x264_preset,
+        }
+        if self._current_input_video and os.path.exists(self._current_input_video):
+            st = os.stat(self._current_input_video)
+            snap["input_mtime"] = st.st_mtime
+            snap["input_size"] = st.st_size
+        return snap
+
     def _save_checkpoint(self, checkpoint: dict):
-        """将断点信息持久化到磁盘。"""
+        """将断点信息持久化到磁盘（首次写入时附加配置快照用于兼容性校验）。"""
         if self.checkpoint_file:
+            if "config_snapshot" not in checkpoint:
+                checkpoint["config_snapshot"] = self._get_config_snapshot()
+            if not self._checkpoint_save_logged:
+                print(f"💾 断点已保存至: {self.checkpoint_file}")
+                self._checkpoint_save_logged = True
             with open(self.checkpoint_file, "w") as f:
                 json.dump(checkpoint, f, indent=2)
 
@@ -326,7 +392,7 @@ class IFRNetProcessor:
             return self._video_processor
 
         # 延迟导入，保证只在需要时加载
-        from process_video_v6_3_3_single import IFRNetVideoProcessor
+        from process_video_v6_3_5_single import IFRNetVideoProcessor
 
         _trt_cache_dir = None
         if self.use_tensorrt:
@@ -391,11 +457,14 @@ class IFRNetProcessor:
 
             # 断点跳过
             if i in checkpoint["processed_segments"]:
-                print(f"\n⏭️  片段 {i+1}/{len(segment_files)}: {segment_name} (已处理)")
                 output_file = self.processed_dir / f"interpolated_{segment_name}"
                 if output_file.exists():
+                    print(f"\n⏭️  片段 {i+1}/{len(segment_files)}: {segment_name} (已处理)")
                     processed_files.append(str(output_file))
                     continue
+                else:
+                    print(f"\n⚠️  片段 {i+1}/{len(segment_files)}: {segment_name} "
+                          f"(断点标记已完成但输出文件缺失，重新处理)")
 
             print(f"\n🎬 片段 {i+1}/{len(segment_files)}: {segment_name}")
             output_file = self.processed_dir / f"interpolated_{segment_name}"
@@ -403,7 +472,8 @@ class IFRNetProcessor:
             success = self._process_segment(segment_file, str(output_file))
             if success:
                 processed_files.append(str(output_file))
-                checkpoint["processed_segments"].append(i)
+                if i not in checkpoint["processed_segments"]:
+                    checkpoint["processed_segments"].append(i)
                 checkpoint["last_segment"] = i
                 self._save_checkpoint(checkpoint)
             else:
@@ -429,7 +499,7 @@ class IFRNetProcessor:
 
     def _process_segment(self, segment_path: str, output_path: str) -> bool:
         """
-        调用 process_video_v6_3_3_single.IFRNetVideoProcessor 处理单个分段。
+        调用 process_video_v6_3_5_single.IFRNetVideoProcessor 处理单个分段。
         [v6.1 修改] 复用全局缓存的 processor，避免重复初始化。
 
         Args:
@@ -472,7 +542,7 @@ class IFRNetProcessor:
                 return False
 
         except ImportError as e:
-            print(f"   ❌ 无法导入 process_video_v6_3_3_single: {e}")
+            print(f"   ❌ 无法导入 process_video_v6_3_5_single: {e}")
             return False
         except Exception as e:
             print(f"   ❌ 处理失败: {e}")
@@ -502,7 +572,7 @@ class IFRNetProcessor:
 def main():
     """
     独立调用入口：直接驱动 IFRNetProcessor，
-    底层对接 process_video_v6_3_3_single.IFRNetVideoProcessor。
+    底层对接 process_video_v6_3_5_single.IFRNetVideoProcessor。
 
     示例：
       # 使用默认配置，直接插帧
@@ -545,7 +615,7 @@ def main():
         description="IFRNet 视频插帧处理器 v6（单卡版）—— 独立入口",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-底层脚本：external/IFRNet/process_video_v6_3_3_single.py（v6.3.3）
+底层脚本：external/IFRNet/process_video_v6_3_5_single.py（v6.3.5）
 
 特性：
   · 分段处理 + 断点恢复
