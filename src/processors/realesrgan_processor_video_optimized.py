@@ -141,6 +141,7 @@ class RealESRGANVideoProcessor:
             sys.path.insert(0, _esrgan_ds_str)
 
         # 临时目录句柄（在 _setup_temp_dirs 中初始化）
+        self.temp_base:       Optional[Path] = None
         self.checkpoint_file: Optional[Path] = None
         self.segment_dir:     Optional[Path] = None
         self.processed_dir:   Optional[Path] = None
@@ -405,11 +406,11 @@ class RealESRGANVideoProcessor:
 
     def _setup_temp_dirs(self, video_name: str, prefix: str):
         """创建并记录临时目录路径。"""
-        temp_base = (self.config.get_temp_dir("esrgan_video")
+        self.temp_base = (self.config.get_temp_dir("esrgan_video")
                      / f"{prefix}_{video_name}")
-        self.segment_dir     = temp_base / "segments"
-        self.processed_dir   = temp_base / "processed"
-        self.checkpoint_file = temp_base / "checkpoint.json"
+        self.segment_dir     = self.temp_base / "segments"
+        self.processed_dir   = self.temp_base / "processed"
+        self.checkpoint_file = self.temp_base / "checkpoint.json"
 
         self.segment_dir.mkdir(parents=True, exist_ok=True)
         self.processed_dir.mkdir(parents=True, exist_ok=True)
@@ -558,10 +559,22 @@ class RealESRGANVideoProcessor:
         if processed_files:
             print(f"\n✅ Real-ESRGAN 处理完成: "
                   f"{len(processed_files)}/{len(segment_files)} 个分段")
+            # 全部成功完成 → 自动删除断点文件
+            if len(processed_files) == len(segment_files):
+                self._delete_checkpoint()
         else:
             print("\n❌ 没有成功处理的片段")
 
         return processed_files
+
+    def _delete_checkpoint(self):
+        """全部成功完成后自动删除断点文件，避免下次运行误用。"""
+        if self.checkpoint_file and self.checkpoint_file.exists():
+            try:
+                self.checkpoint_file.unlink()
+                print(f"🗑️  断点文件已自动清理: {self.checkpoint_file}")
+            except Exception as e:
+                print(f"⚠️  断点文件清理失败: {e}")
 
     def _process_segment(self, input_path: str, output_path: str,
                           segment_idx: int) -> bool:
@@ -761,15 +774,14 @@ class RealESRGANVideoProcessor:
             return False
 
     def _cleanup_temp_files(self):
-        """清理临时目录，同时释放 enhancer（关闭 GFPGAN 子进程等）"""
+        """清理整个临时目录（含分段、中间文件、断点文件），同时释放 enhancer"""
         print("\n🧹 清理 Real-ESRGAN 超分临时文件...")
         try:
-            if self.segment_dir and self.segment_dir.exists():
-                shutil.rmtree(self.segment_dir)
-            if self.processed_dir and self.processed_dir.exists():
-                shutil.rmtree(self.processed_dir)
+            if self.temp_base and self.temp_base.exists():
+                shutil.rmtree(self.temp_base)
+                print("   ✅ 已清理临时目录")
         except Exception as e:
-            print(f"⚠️  清理失败: {e}")
+            print(f"   ⚠️  清理失败: {e}")
 
     def close_enhancer(self):
         """手动释放 enhancer 中的资源（GFPGAN 子进程等）"""
