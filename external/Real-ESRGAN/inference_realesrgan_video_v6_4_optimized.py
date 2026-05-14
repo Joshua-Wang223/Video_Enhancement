@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Real-ESRGAN Video Enhancement v6.4 - 架构优化版 (最终修复版)
+Real-ESRGAN Video Enhancement v6.4 - 架构优化版 (最终修复版 + 多片段复用)
 基于v6.2代码重构，实现深度流水线、GPU内存池和异步计算优化
 修复了视频末尾卡死的问题，增强退出机制。
 
@@ -21,6 +21,14 @@ FIX-READ-WATCHDOG: _read_frames 删除 except BaseException，改为超时看门
                    self.running=False，让哨兵沿流水线自然传播
 FIX-WRITE-WATCHDOG: _write_frames 增加全流水线空转看门狗，120s 全空且无哨兵
                     → dump 所有线程栈 + 强制退出，消灭静默死锁
+
+FIX-NVENC-UNIFIED: GPU 硬件型号静态表 + 统一 NVENC 双路径检测 (static table + ffmpeg probe)
+FIX-NVENC-PIPE: NVENC pipe 场景优化 (surfaces=32, rc-lookahead=16, preset 映射)
+FIX-SLICE-THREAD: CPU/内存感知的软编码并行度自动探测
+FIX-BATCH-WRITE: 批量写入减少 syscall，SENTINEL 哨兵机制替代 None
+FIX-LOSSLESS: NVENC/x265 无损编码参数规范化
+FIX-AUDIO-MUX: 内联音轨 mux 支持
+FIX-ERROR-PROPAGATION: 写线程异常传播至调用方
 """
 
 import os
@@ -37,12 +45,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import argparse
+import dataclasses as _dc
 import ffmpeg
 import fractions
 import re
 import traceback
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional as _Opt, Tuple, Dict, Any
 from tqdm import tqdm
+
+# [FIX-NVML] 明确禁用 PyTorch 基于 NVML 的 CUDA 检测，
+# 避免因系统 NVML/RM 版本不匹配导致 INTERNAL ASSERT FAILED。
+os.environ.setdefault("PYTORCH_NVML_BASED_CUDA_CHECK", "0")
 
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -109,6 +122,85 @@ MODEL_CONFIG = {
         SRVGGNetCompact(3, 3, 64, 16, upscale=2, act_type='prelu'), 2,
         ['https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.3.0/RealESRGANv2-animevideo-xsx2.pth'],
     ),
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# [FIX-NVENC-UNIFIED] GPU 硬件型号静态表 + 探测函数
+# ─────────────────────────────────────────────────────────────────────────
+
+@_dc.dataclass
+class _HWProfile:
+    gpu_name:       str
+    gpu_tier:       float
+    has_nvdec:      bool
+    has_nvenc:      bool
+    pcie_bw_gbs:    float
+    cpu_cores:      int
+    t2_measured_ms: float = 0.0
+
+    def __str__(self) -> str:
+        return (f'{self.gpu_name} tier={self.gpu_tier:.1f} '
+                f'nvdec={self.has_nvdec} nvenc={self.has_nvenc} '
+                f'pcie={self.pcie_bw_gbs:.0f}GB/s cpu={self.cpu_cores}c')
+
+_GPU_PROFILES_TABLE = [
+    ('H100|H800',        15.2, True,  False, 63.0),
+    ('L40S',             11.3, True,  True,  31.5),
+    ('A100|A800',         4.8, True,  False, 31.5),
+    ('L40(?!S)',          5.6, True,  True,  31.5),
+    ('A30(?!\\d)',        2.5, True,  False, 31.5),
+    ('A10(?!\\d)',        1.9, True,  True,  31.5),
+    ('V100',              1.7, False, False, 31.5),
+    ('T4(?!\\d)',         1.0, True,  True,  15.7),
+    ('RTX\\s*4090',       3.3, True,  True,  31.5),
+    ('RTX\\s*4080',       2.6, True,  True,  31.5),
+    ('RTX\\s*4070\\s*Ti', 2.2, True,  True,  31.5),
+    ('RTX\\s*4070',       1.9, True,  True,  31.5),
+    ('RTX\\s*4060',       1.4, True,  True,  15.7),
+    ('RTX\\s*3090\\s*Ti', 2.3, True,  True,  31.5),
+    ('RTX\\s*3090',       2.1, True,  True,  15.7),
+    ('RTX\\s*3080\\s*Ti', 1.8, True,  True,  15.7),
+    ('RTX\\s*3080',       1.6, True,  True,  15.7),
+    ('RTX\\s*3070',       1.3, True,  True,  15.7),
+    ('RTX\\s*2080\\s*Ti', 1.1, True,  True,  15.7),
+    ('RTX\\s*2080',       0.9, True,  True,  15.7),
+    ('GTX\\s*1080\\s*Ti', 0.5, True,  True,  15.7),
+    ('GTX\\s*1080',       0.4, True,  True,  15.7),
+]
+_GPU_FALLBACK = (1.0, True, True, 15.7)
+
+
+def _detect_hw_profile(device) -> _HWProfile:
+    """根据 torch GPU 名称匹配静态型号表，返回 _HWProfile。"""
+    import re as _re
+    cpu_cores = os.cpu_count() or 4
+    if device.type != 'cuda':
+        return _HWProfile('CPU', 0.05, False, False, 0.0, cpu_cores)
+    gpu_name = torch.cuda.get_device_name(device)
+    tier, has_nvdec, has_nvenc, pcie_bw = _GPU_FALLBACK
+    for pat, _t, _nd, _ne, _pb in _GPU_PROFILES_TABLE:
+        if _re.search(pat, gpu_name, _re.IGNORECASE):
+            tier, has_nvdec, has_nvenc, pcie_bw = _t, _nd, _ne, _pb
+            break
+    return _HWProfile(gpu_name, tier, has_nvdec, has_nvenc, pcie_bw, cpu_cores)
+
+
+# ── [FIX-NVENC-PIPE] NVENC pipe 模式参数常量 ──────────────────────────────────
+_NVENC_SURFACES_PIPE: int = 32
+_NVENC_LOOKAHEAD_VBR: int = 16
+
+# [FIX-NVENC-PRESET] x264 → NVENC preset 名称映射
+_X264_TO_NVENC_PRESET = {
+    'ultrafast': 'p1',
+    'superfast': 'p2',
+    'veryfast':  'p3',
+    'faster':    'p4',
+    'fast':      'p5',
+    'medium':    'p6',
+    'slow':      'p7',
+    'slower':    'p7',
+    'veryslow':  'p7',
 }
 
 
@@ -246,6 +338,195 @@ def get_video_meta_info(video_path: str) -> dict:
     }
 
 
+# ── [FIX-SLICE-THREAD] 编码并行度自动探测 ──────────────────────────────────────
+def _detect_encode_parallelisms(n_threads_hint: _Opt[int] = None) -> dict:
+    """
+    自动探测 CPU / 内存资源，返回最优软编码并行参数字典。
+    """
+    cpu_logical = os.cpu_count() or 4
+
+    cpu_physical = max(cpu_logical // 2, 1)
+    try:
+        _core_ids: set = set()
+        _cur_pkg       = None
+        with open('/proc/cpuinfo', 'r') as _cpuf:
+            for _line in _cpuf:
+                _line = _line.strip()
+                if _line.startswith('physical id'):
+                    _cur_pkg = _line.split(':', 1)[1].strip()
+                elif _line.startswith('core id') and _cur_pkg is not None:
+                    _core_ids.add((_cur_pkg, _line.split(':', 1)[1].strip()))
+        if _core_ids:
+            cpu_physical = len(_core_ids)
+    except Exception:
+        pass
+
+    mem_avail_gb = 4.0
+    try:
+        with open('/proc/meminfo', 'r') as _memf:
+            for _line in _memf:
+                if _line.startswith('MemAvailable:'):
+                    mem_avail_gb = int(_line.split()[1]) / (1024.0 ** 2)
+                    break
+    except Exception:
+        try:
+            import psutil as _psutil
+            mem_avail_gb = _psutil.virtual_memory().available / (1024.0 ** 3)
+        except ImportError:
+            pass
+
+    if n_threads_hint is not None and n_threads_hint > 0:
+        encode_threads = min(n_threads_hint, 16)
+    else:
+        encode_threads = min(cpu_logical, 16)
+
+    slices_by_cpu  = encode_threads
+    slices_by_mem  = max(2, int(mem_avail_gb / 0.25))
+    slices = max(2, min(slices_by_cpu, slices_by_mem, 16))
+
+    ffmpeg_threads = min(cpu_logical, 8)
+
+    return {
+        'cpu_logical':    cpu_logical,
+        'cpu_physical':   cpu_physical,
+        'mem_avail_gb':   mem_avail_gb,
+        'encode_threads': encode_threads,
+        'slices':         slices,
+        'ffmpeg_threads': ffmpeg_threads,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# M2/M3: 硬件能力探测 — [FIX-NVENC-UNIFIED] 统一 NVENC 双检测路径
+# ─────────────────────────────────────────────────────────────────────────
+
+class HardwareCapability:
+    _nvdec: _Opt[bool] = None
+    _nvenc: Dict[str, bool] = {}
+
+    @classmethod
+    def has_nvdec(cls) -> bool:
+        if cls._nvdec is None:
+            cls._nvdec = cls._probe_nvdec()
+        return cls._nvdec
+
+    @classmethod
+    def has_nvenc(cls, codec: str = 'h264_nvenc') -> bool:
+        if codec not in cls._nvenc:
+            cls._nvenc[codec] = cls._probe_nvenc(codec)
+        return cls._nvenc[codec]
+
+    @staticmethod
+    def _probe_nvdec() -> bool:
+        """[FIX-NDV] 两阶段真实探测：先软件编码 H.264，再用 NVDEC 实际解码。"""
+        try:
+            enc_cmd = [
+                'ffmpeg', '-f', 'lavfi',
+                '-i', 'testsrc=size=64x64:duration=0.04:rate=25',
+                '-vcodec', 'libx264', '-f', 'h264', 'pipe:1', '-loglevel', 'error',
+            ]
+            enc = subprocess.run(enc_cmd, capture_output=True, timeout=10)
+            if enc.returncode != 0 or not enc.stdout:
+                return False
+            dec_cmd = [
+                'ffmpeg', '-hwaccel', 'cuda',
+                '-f', 'h264', '-i', 'pipe:0',
+                '-f', 'rawvideo', '-pix_fmt', 'bgr24',
+                '-frames:v', '1', 'pipe:1', '-loglevel', 'error',
+            ]
+            dec = subprocess.run(dec_cmd, input=enc.stdout, capture_output=True, timeout=10)
+            return dec.returncode == 0 and len(dec.stdout) > 0
+        except Exception:
+            return False
+
+    @staticmethod
+    def _probe_nvenc(codec: str) -> bool:
+        # [FIX-PROBE] 历次修复汇总：lavfi color源 + yuv420p + bf=0 + mindim
+        cmd = [
+            'ffmpeg', '-hide_banner', '-y', '-loglevel', 'error',
+            '-f', 'lavfi', '-i', 'color=c=black:s=256x144:r=1',
+            '-vcodec', codec, '-frames:v', '1',
+            '-pix_fmt', 'yuv420p', '-bf', '0',
+            '-f', 'null', '-',
+        ]
+        try:
+            result = subprocess.run(cmd, capture_output=True, timeout=10)
+            if result.returncode != 0:
+                _err = result.stderr.decode('utf-8', errors='replace').strip()
+                print(
+                    f'  [PROBE-FAIL] {codec} probe 失败 (rc={result.returncode})\n'
+                    f'  手动测试: {" ".join(cmd)}\n'
+                    f'  stderr: {_err or "(空)"}',
+                    flush=True,
+                )
+            return result.returncode == 0
+        except Exception as e:
+            print(
+                f'  [PROBE-FAIL] {codec} probe 异常: {e}\n'
+                f'  手动测试: {" ".join(cmd)}',
+                flush=True,
+            )
+            return False
+
+    @classmethod
+    def best_encoder(cls, preferred: str = 'libx264',
+                     hw_profile=None) -> str:
+        """
+        [FIX-NVENC-UNIFIED] 统一 NVENC 检测路径。
+
+        路径 A（hw_profile 已提供，GPU 型号已知）：
+          1. 直接采信 hw_profile.has_nvenc。
+          2. 若静态表确认可用且 ffmpeg probe 失败，信任静态表。
+          3. 静态表否定时不做 probe，直接回退软件编码。
+
+        路径 B（hw_profile 未提供，GPU 型号未知）：
+          仅凭 ffmpeg 实际 probe 判断。
+        """
+        nvenc_map    = {'libx264': 'h264_nvenc', 'libx265': 'hevc_nvenc'}
+        fallback_map = {'h264_nvenc': 'libx264', 'hevc_nvenc': 'libx265'}
+
+        _NVENC_TRUST_STATIC: bool = True
+
+        def _nvenc_ok(codec_name: str) -> bool:
+            if hw_profile is not None and hasattr(hw_profile, 'has_nvenc'):
+                if not hw_profile.has_nvenc:
+                    return False
+                probe_ok = cls.has_nvenc(codec_name)
+                if not probe_ok:
+                    if _NVENC_TRUST_STATIC:
+                        print(
+                            f'  [FIX-NVENC-UNIFIED] {codec_name} ffmpeg probe 失败，'
+                            f'但静态 GPU 型号表确认硬件存在。信任静态表，继续使用 {codec_name}。'
+                        )
+                        return True
+                    else:
+                        print(
+                            f'  [FIX-NVENC-UNIFIED] {codec_name} ffmpeg probe 失败。'
+                            f'静态表显示硬件存在但 _NVENC_TRUST_STATIC=False，回退软件编码。'
+                        )
+                        return False
+                return True
+
+            return cls.has_nvenc(codec_name)
+
+        if preferred in fallback_map:
+            if _nvenc_ok(preferred):
+                return preferred
+            fallback = fallback_map[preferred]
+            if hw_profile is not None and hasattr(hw_profile, 'has_nvenc') and not hw_profile.has_nvenc:
+                reason = '静态 GPU 型号表标记 has_nvenc=False'
+            elif not cls.has_nvenc(preferred):
+                reason = 'ffmpeg probe 失败（Docker 设备映射可能缺失 /dev/nvidia*）'
+            else:
+                reason = '未知原因'
+            print(f'  [警告] {preferred} 不可用（{reason}），自动回退到 {fallback}')
+            return fallback
+        candidate = nvenc_map.get(preferred, preferred)
+        if candidate != preferred and _nvenc_ok(candidate):
+            return candidate
+        return preferred
+
+
 class FFmpegReader:
     """通过FFmpeg pipe读取视频帧
 
@@ -263,11 +544,12 @@ class FFmpegReader:
     # FIX-PREMATURE-EOF: 超时哨兵，与真正的 EOF None 区分
     FRAME_TIMEOUT = object()
 
-    def __init__(self, input_path, ffmpeg_bin='ffmpeg', prefetch_factor=16, use_hwaccel=True):
+    def __init__(self, input_path, ffmpeg_bin='ffmpeg', prefetch_factor=16, use_hwaccel=True, quiet=True):
         self.input_path = input_path
         self.ffmpeg_bin = ffmpeg_bin
         self.prefetch_factor = prefetch_factor
         self.use_hwaccel = use_hwaccel
+        self._quiet = quiet
 
         # 获取视频元数据
         meta = get_video_meta_info(input_path)
@@ -301,6 +583,11 @@ class FFmpegReader:
         self._thread = threading.Thread(target=self._read_loop, daemon=True,
                                         name='ffmpeg_reader_loop')
         self._thread.start()
+
+    def _vlog(self, *args, **kwargs):
+        """受静默模式控制的日志打印（仅在 --no-quiet 时输出）"""
+        if not self._quiet:
+            print(*args, **kwargs)
 
     # ----------------------------------------------------------------------
     # FIX-READER-DIAG: 内部 stderr drain 线程，防止 ffmpeg 因 stderr pipe 满阻塞
@@ -588,21 +875,24 @@ class FFmpegReader:
 class FFmpegWriter:
     """通过FFmpeg pipe写入视频帧"""
 
-    # 写入超时时间（秒）
-    # FIX-WRITE-TIMEOUT-180S:
-    #   原 30s 在 2560×1440 高分辨率下不足：libx264/h264_nvenc 遇到复杂场景（I帧/
-    #   场景切换）时编码器内部队列短暂饱和，导致 FFmpeg stdin pipe buffer（64KB）
-    #   填满，select() 持续返回 not-ready 超过 30s → 误判管道断裂。
-    #   改为 180s，并在循环内部增加 FFmpeg 存活检测，真正崩溃时仍能在 ≤1s 内发现。
+    _SENTINEL  = object()
+    _MAX_BATCH = 8
+    _STDERR_IGNORE = (
+        'x265 [info]:', 'x265 [warning]:', 'set_mempolicy:',
+        'encoded ', 'Weighted P-Frames', 'consecutive B-frames',
+        'frame I:', 'frame P:', 'frame B:',
+        'using cpu capabilities:', 'slice threads:', 'frame threads:',
+        'x264 [info]:', 'x264 [warning]:',
+        'Initialized NPP', 'NVENC session', 'GPU #',
+    )
+
     WRITE_TIMEOUT = 300.0
-    # 线程终止等待时间
     THREAD_JOIN_TIMEOUT = 5.0
-    # FFmpeg 进程终止等待时间
     PROCESS_TERMINATE_TIMEOUT = 10.0
-    # 每次写入的块大小（64KB，匹配 Linux pipe buffer）
     WRITE_CHUNK_SIZE = 65536
 
-    def __init__(self, args, audio, height, width, output_path, fps):
+    def __init__(self, args, audio, height, width, output_path, fps,
+                 n_threads=None, extra_codec_args=None, audio_src=None):
         self.args = args
         self.audio = audio
         self.height = height
@@ -610,53 +900,53 @@ class FFmpegWriter:
         self.output_path = output_path
         self.fps = fps
 
-        # FIX-FRAME-QUEUE-SIZE: 从256缩小到64，匹配实际流水线深度
-        # 防止长时间帧积压掩盖nvenc stall，让问题更早暴露
-        self._frame_queue = queue.Queue(maxsize=64)
+        self._frame_queue = queue.Queue(maxsize=24)
         self._running = True
-        self._broken = False   # 管道断裂标志
-        self._write_error = None  # 记录写入错误
-        self._stderr_buffer = []  # 缓存 FFmpeg stderr 输出
-        # FIX-DIAG: 记录写入统计
+        self._broken = False
+        self._error = None
+        self._write_error = None
+        self._stderr_buffer = []
         self._frames_written_to_pipe = 0
         self._bytes_written_to_pipe = 0
+        self._n_threads = n_threads
+        self._extra_codec_args = extra_codec_args
+        self._audio_src = audio_src
 
+        self._quiet = getattr(args, 'quiet', True)
         self._process = None
+
+        # [FIX-SLICE-THREAD] 自动探测 CPU / 内存，计算最优软编码并行参数
+        self._encode_par = _detect_encode_parallelisms(n_threads)
+
         self._init_ffmpeg_process()
 
-        # 启动 stderr 后台读取线程，防止 stderr pipe 满导致 FFmpeg 阻塞
         self._stderr_thread = threading.Thread(
-            target=self._stderr_reader_loop, daemon=True,
+            target=self._drain_stderr, daemon=True,
             name='ffmpeg_stderr_reader')
         self._stderr_thread.start()
 
         self._thread = threading.Thread(target=self._write_loop, daemon=True)
         self._thread.start()
 
-    def _stderr_reader_loop(self):
-        """后台线程持续读取 FFmpeg stderr，防止 pipe buffer 满导致 FFmpeg 阻塞
+    def _vlog(self, *args, **kwargs):
+        """受静默模式控制的日志打印（仅在 --no-quiet 时输出）"""
+        if not self._quiet:
+            print(*args, **kwargs)
 
-        FIX-STDERR-BLOCK:
-          原实现 read(4096) 调用底层 os.read() 多次直到凑齐 4096 字节才返回。
-          FFmpeg banner ~2KB → 第一次 os.read() 读 2KB → 还需 2KB → 再次 os.read()
-          → 永久阻塞（FFmpeg 不再主动写 stderr）→ _stderr_buffer 始终为空 →
-          诊断信息全部丢失，且 FFmpeg 一旦写 stderr 时管道积压导致 FFmpeg 本身阻塞。
-          修复：改用 readline()，有换行符即返回，非阻塞地持续消费 stderr。
-        """
+    def _drain_stderr(self):
         try:
             if not self._process or not self._process.stderr:
                 return
-            while True:
-                line = self._process.stderr.readline()  # 按行读，有数据就返回
-                if not line:
-                    break
-                text = line.decode('utf-8', errors='replace')
-                self._stderr_buffer.append(text)
+            for line in self._process.stderr:
+                decoded = line.decode(errors='ignore').rstrip()
+                self._stderr_buffer.append(decoded)
+                if decoded and not any(decoded.lstrip().startswith(p)
+                                       for p in self._STDERR_IGNORE):
+                    print(f'[FFmpeg ERR] {decoded}')
         except Exception:
             pass
 
     def _get_ffmpeg_stderr(self, tail_lines=10):
-        """获取缓存的 FFmpeg stderr 输出（最后 N 行）"""
         if not self._stderr_buffer:
             return '(无 stderr 输出)'
         full = ''.join(self._stderr_buffer)
@@ -665,88 +955,18 @@ class FFmpegWriter:
             lines = lines[-tail_lines:]
         return '\n'.join(lines)
 
-    @staticmethod
-    def _check_nvenc_available(ffmpeg_bin='ffmpeg', codec='h264_nvenc') -> bool:
-        """预检测 NVENC 编码器是否可用。
-        
-        使用 nullsrc 生成 1 帧测试视频，尝试用指定 NVENC 编码器编码。
-        成功 → True；失败（unsupported device / no capable devices）→ False。
-        整个过程 <1s，不写磁盘。
-        """
-        test_cmd = [
-            ffmpeg_bin, '-y',
-            '-f', 'lavfi', '-i', 'nullsrc=s=64x64:d=0.04:r=25',  # 1 帧
-            '-frames:v', '1',
-            '-c:v', codec,
-            '-f', 'null', '-',
-        ]
-        try:
-            result = subprocess.run(
-                test_cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                timeout=10,
-            )
-            stderr_text = result.stderr.decode('utf-8', errors='replace').lower()
-            if result.returncode != 0:
-                # 检查是否是 NVENC 特有错误
-                nvenc_errors = [
-                    'openencodesessionex failed',
-                    'no capable devices found',
-                    'unsupported device',
-                    'cannot load libnvidia-encode',
-                    'nvenc',
-                ]
-                is_nvenc_error = any(kw in stderr_text for kw in nvenc_errors)
-                if is_nvenc_error:
-                    print(f'[FFmpegWriter] NVENC 预检测失败: {codec} 不可用', flush=True)
-                    # 打印关键 stderr 行
-                    for line in stderr_text.split('\n'):
-                        line = line.strip()
-                        if any(kw in line for kw in nvenc_errors):
-                            print(f'[FFmpegWriter]   {line}', flush=True)
-                    return False
-                else:
-                    # 非 NVENC 错误（可能是 lavfi 问题），保守地认为可用
-                    print(f'[FFmpegWriter] NVENC 预检测返回 rc={result.returncode}，'
-                          f'但非 NVENC 特有错误，继续使用', flush=True)
-                    return True
-            return True
-        except subprocess.TimeoutExpired:
-            print(f'[FFmpegWriter] NVENC 预检测超时（>10s），假定可用', flush=True)
-            return True
-        except FileNotFoundError:
-            print(f'[FFmpegWriter] FFmpeg 未找到: {ffmpeg_bin}', flush=True)
-            return True  # 让后续正式启动时报错
-        except Exception as e:
-            print(f'[FFmpegWriter] NVENC 预检测异常: {e}，假定可用', flush=True)
-            return True
-
     def _init_ffmpeg_process(self):
-        """初始化FFmpeg进程 - FIX-MANUAL-CMD: 手动构造命令行，绕过 ffmpeg-python 参数排序问题"""
-
-        # 获取用户指定的编码器
         video_codec = getattr(self.args, 'video_codec', 'libx264')
         crf = getattr(self.args, 'crf', 23)
         x264_preset = getattr(self.args, 'x264_preset', 'medium')
 
-        # ── FIX-NVENC-PRECHECK: NVENC 预检测 + 自动降级 ──────────────
-        if video_codec in ('h264_nvenc', 'hevc_nvenc'):
-            _ffbin = getattr(self.args, 'ffmpeg_bin', 'ffmpeg')
-            print(f'[FFmpegWriter] 预检测 {video_codec} 可用性...', flush=True)
-            if not self._check_nvenc_available(_ffbin, video_codec):
-                _fallback = 'libx264' if 'h264' in video_codec else 'libx265'
-                print(f'[FFmpegWriter] {video_codec} 不可用，自动降级到 {_fallback}',
-                      flush=True)
-                video_codec = _fallback
-                self.args.video_codec = _fallback
-            else:
-                print(f'[FFmpegWriter] {video_codec} 预检测通过', flush=True)
+        # [FIX-NVENC-UNIFIED] 统一 NVENC 检测：静态 GPU 型号表 + ffmpeg probe 双路径
+        _hw_profile = getattr(self.args, '_hw_profile', None)
+        video_codec = HardwareCapability.best_encoder(video_codec, hw_profile=_hw_profile)
+        self.args.video_codec = video_codec
 
-        # FIX-AUDIO-SEPARATE: 始终写无音轨临时文件，close() 后单独 mux 音轨
         _base, _ext = os.path.splitext(self.output_path)
         self._tmp_video_path = f'{_base}.tmp_novid{_ext}'
-        # 确保输出目录存在
         output_dir = os.path.dirname(self.output_path)
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
@@ -754,10 +974,29 @@ class FFmpegWriter:
         if tmp_dir:
             os.makedirs(tmp_dir, exist_ok=True)
 
-        # ── 手动构造命令行 ────────────────────────────────────────────
+        # [FIX-SLICE-THREAD] 读取自动探测的并行参数
+        _par = getattr(self, '_encode_par', _detect_encode_parallelisms(self._n_threads))
+        _et  = _par['encode_threads']
+        _s   = _par['slices']
+        _ft  = _par['ffmpeg_threads']
+
+        # x265 frame-threads：默认 min(4, cpu_logical//2)
+        _x265_ft = max(2, min(4, _par['cpu_logical'] // 2))
+        _x265_pool = _et
+
+        # [FIX-PRESET] NVENC preset 映射：x264 名称 → p1~p7 体系
+        if video_codec in ('h264_nvenc', 'hevc_nvenc'):
+            if x264_preset in _X264_TO_NVENC_PRESET:
+                nvenc_preset = _X264_TO_NVENC_PRESET[x264_preset]
+            else:
+                nvenc_preset = x264_preset
+        else:
+            nvenc_preset = x264_preset
+
         cmd_args = [
             getattr(self.args, 'ffmpeg_bin', 'ffmpeg'),
             '-y',
+            '-threads', str(_ft),
             '-f', 'rawvideo',
             '-pix_fmt', 'rgb24',
             '-s', f'{self.width}x{self.height}',
@@ -765,34 +1004,134 @@ class FFmpegWriter:
             '-i', 'pipe:',
         ]
 
-        if video_codec in ('h264_nvenc', 'hevc_nvenc'):
+        # [FIX-AUDIO-MUX] audio_src 内联音轨
+        if self._audio_src and os.path.exists(self._audio_src):
             cmd_args += [
-                '-vcodec', video_codec,
-                '-pix_fmt', 'yuv420p',
-                '-preset', 'p4',
-                '-cq', str(crf),
-                '-surfaces', '4',
-                '-delay', '0',
-                '-rc-lookahead', '0',
-                '-bf', '0',
-            ]
-        elif video_codec == 'libx265':
-            cmd_args += [
-                '-vcodec', video_codec,
-                '-pix_fmt', 'yuv420p',
-                '-crf', str(crf),
-                '-preset', x264_preset,
-            ]
-        else:
-            cmd_args += [
-                '-vcodec', 'libx264',
-                '-pix_fmt', 'yuv420p',
-                '-crf', str(crf),
-                '-preset', x264_preset,
+                '-i', self._audio_src,
+                '-c:a', 'copy',
+                '-map', '0:v',
+                '-map', '1:a?',
             ]
 
-        cmd_args += ['-an']
-        cmd_args += [self._tmp_video_path]
+        # [FIX-EXTRA-CODEC-ARGS] extra_codec_args 完全替换 quality_args
+        if self._extra_codec_args:
+            cmd_args += ['-vcodec', video_codec, '-pix_fmt', 'yuv420p'] + self._extra_codec_args
+        else:
+            if video_codec in ('h264_nvenc', 'hevc_nvenc'):
+                if crf == 0:
+                    # [FIX-LOSSLESS] NVENC 无损：常量 QP=0
+                    quality_args = [
+                        '-preset', nvenc_preset,
+                        '-qp', '0', '-b:v', '0',
+                        '-bf', '0',
+                        '-surfaces', str(_NVENC_SURFACES_PIPE),
+                        '-delay', '0',
+                    ]
+                else:
+                    # [FIX-NVENC-PIPE] NVENC VBR（cq）模式 pipe 场景优化
+                    quality_args = [
+                        '-preset', nvenc_preset,
+                        '-rc:v', 'vbr', '-cq:v', str(crf), '-b:v', '0',
+                        '-bf', '0',
+                        '-rc-lookahead', str(_NVENC_LOOKAHEAD_VBR),
+                        '-surfaces', str(_NVENC_SURFACES_PIPE),
+                    ]
+                cmd_args += ['-vcodec', video_codec, '-pix_fmt', 'yuv420p'] + quality_args
+            elif video_codec == 'libx265':
+                if crf == 0:
+                    cmd_args += [
+                        '-vcodec', video_codec,
+                        '-pix_fmt', 'yuv420p',
+                        '-preset', nvenc_preset,
+                        '-x265-params',
+                        f'lossless=1:pools={_x265_pool}:frame-threads={_x265_ft}',
+                    ]
+                else:
+                    cmd_args += [
+                        '-vcodec', video_codec,
+                        '-pix_fmt', 'yuv420p',
+                        '-preset', nvenc_preset,
+                        '-crf', str(crf),
+                        '-x265-params',
+                        f'pools={_x265_pool}:frame-threads={_x265_ft}',
+                    ]
+            elif video_codec == 'copy':
+                print("[FFmpegWriter] 警告：copy 模式不适用于管道原始输入，自动改用 libx264")
+                if crf == 0:
+                    cmd_args += [
+                        '-vcodec', 'libx264',
+                        '-pix_fmt', 'yuv420p',
+                        '-preset', nvenc_preset,
+                        '-qp', '0',
+                        '-x264-params', f'threads={_et}:slices={_s}',
+                    ]
+                else:
+                    cmd_args += [
+                        '-vcodec', 'libx264',
+                        '-pix_fmt', 'yuv420p',
+                        '-preset', nvenc_preset,
+                        '-crf', str(crf),
+                        '-x264-params', f'threads={_et}:slices={_s}',
+                    ]
+            else:
+                if crf == 0:
+                    cmd_args += [
+                        '-vcodec', 'libx264',
+                        '-pix_fmt', 'yuv420p',
+                        '-preset', nvenc_preset,
+                        '-qp', '0',
+                        '-x264-params', f'threads={_et}:slices={_s}',
+                    ]
+                else:
+                    cmd_args += [
+                        '-vcodec', 'libx264',
+                        '-pix_fmt', 'yuv420p',
+                        '-preset', nvenc_preset,
+                        '-crf', str(crf),
+                        '-x264-params', f'threads={_et}:slices={_s}',
+                    ]
+
+        # [FIX-AUDIO-MUX] 使用 audio_src 内联音轨时跳过 -an
+        if not self._audio_src or not os.path.exists(self._audio_src or ''):
+            cmd_args += ['-an']
+
+        cmd_args += ['-loglevel', 'error', self._tmp_video_path]
+
+        # [FIX-SLICE-THREAD / FIX-NVENC-PIPE] 打印编码参数摘要
+        if 'nvenc' in video_codec:
+            if crf == 0:
+                _enc_info = (
+                    f'[FIX-NVENC-PIPE] NVENC 无损(QP=0): '
+                    f'preset={nvenc_preset}  bf=0  '
+                    f'surfaces={_NVENC_SURFACES_PIPE}  delay=0  '
+                    f'ffmpeg_threads={_ft}'
+                )
+            else:
+                _enc_info = (
+                    f'[FIX-NVENC-PIPE] NVENC VBR(cq={crf}): '
+                    f'preset={nvenc_preset}  bf=0  '
+                    f'rc-lookahead={_NVENC_LOOKAHEAD_VBR}  '
+                    f'surfaces={_NVENC_SURFACES_PIPE}  '
+                    f'ffmpeg_threads={_ft}'
+                )
+            print(f'   {_enc_info}', flush=True)
+        else:
+            _codec_l = video_codec.lower()
+            if 'x265' in _codec_l:
+                _thread_info = (
+                    f'[FIX-SLICE-THREAD] 软编码并行: '
+                    f'cpu={_par["cpu_logical"]}逻辑/{_par["cpu_physical"]}物理  '
+                    f'mem_avail={_par["mem_avail_gb"]:.1f}GiB  '
+                    f'encode_threads={_et}(frame-threads={_x265_ft})  ffmpeg_threads={_ft}'
+                )
+            else:
+                _thread_info = (
+                    f'[FIX-SLICE-THREAD] 软编码并行: '
+                    f'cpu={_par["cpu_logical"]}逻辑/{_par["cpu_physical"]}物理  '
+                    f'mem_avail={_par["mem_avail_gb"]:.1f}GiB  '
+                    f'encode_threads={_et}  slices={_s}  ffmpeg_threads={_ft}'
+                )
+            print(f'   {_thread_info}', flush=True)
 
         print(f"[FFmpegWriter] 命令: {' '.join(cmd_args)}", flush=True)
 
@@ -803,7 +1142,6 @@ class FFmpegWriter:
             stderr=subprocess.PIPE,
         )
 
-        # FIX-PIPE-SZ: 尝试扩大管道缓冲区
         try:
             import fcntl
             fcntl.fcntl(self._process.stdin.fileno(), fcntl.F_SETPIPE_SZ, 4 * 1024 * 1024)
@@ -811,7 +1149,6 @@ class FFmpegWriter:
             pass
         except Exception as _e:
             print(f"[FFmpegWriter] 管道缓冲区扩大失败（使用默认 64KB）: {_e}", flush=True)
-            pass
 
         time.sleep(0.5)
         if self._process.poll() is not None:
@@ -905,7 +1242,7 @@ class FFmpegWriter:
                         self._write_error = f'OSError: {e}'
                     return False
 
-            self._frames_written_to_pipe += 1
+            # 注意：_frames_written_to_pipe 由 _write_batch_with_stall_check 统一更新
             return True
 
         except (BrokenPipeError, OSError) as e:
@@ -916,40 +1253,61 @@ class FFmpegWriter:
             return False
 
     def _write_loop(self):
-        """后台写入帧的线程 - 增强版 v3（FIX-NVENC-STALL）"""
-        consecutive_errors = 0
-        max_consecutive_errors = 3
+        """
+        [FIX-BATCH-WRITE] 写线程主循环：
+          · 攒够 _MAX_BATCH（8）帧后批量写入，减少 syscall 约 8×
+          · 超时 0.2s 自动刷出，防止帧饥饿
+          · 用 _SENTINEL 哨兵替代 None 作为结束信号
+          · 保留完整的 stall / NVENC 死亡检测 / 重试容错逻辑
+        """
+        pending: list = []
         _vc = getattr(self.args, 'video_codec', 'libx264')
         if _vc in ('h264_nvenc', 'hevc_nvenc'):
-            MAX_NVENC_STALL_S = 600.0
-            NVENC_RETRY_SLEEP = 20.0
-            SINGLE_WRITE_TIMEOUT = 300.0
+            _single_timeout = 300.0
+            _max_stall_s   = 600.0
+            _retry_sleep   = 20.0
         else:
-            MAX_NVENC_STALL_S = 180.0
-            NVENC_RETRY_SLEEP = 5.0
-            SINGLE_WRITE_TIMEOUT = 60.0
+            _single_timeout = 60.0
+            _max_stall_s   = 180.0
+            _retry_sleep   = 5.0
+        _max_consecutive_err = 3
 
-        while self._running:
-            try:
-                frame = self._frame_queue.get(timeout=1.0)
-            except queue.Empty:
-                if self._process and self._process.poll() is not None:
-                    rc = self._process.returncode
-                    stderr_text = self._get_ffmpeg_stderr(tail_lines=10)
-                    print(f"[FFmpegWriter] FFmpeg 进程意外退出 "
-                          f"(returncode={rc})", flush=True)
-                    print(f"[FFmpegWriter] 最后的 stderr:\n{stderr_text}", flush=True)
-                    self._broken = True
+        def _flush():
+            nonlocal pending
+            if not pending:
+                return
+            data = b''.join(pending)
+            n    = len(pending)
+            pending = []
+            self._write_batch_with_stall_check(
+                data, n,
+                _single_timeout, _max_stall_s, _retry_sleep, _max_consecutive_err,
+            )
+
+        try:
+            while self._running:
+                try:
+                    frame = self._frame_queue.get(timeout=0.2)
+                except queue.Empty:
+                    _flush()
+                    if self._broken:
+                        return
+                    if self._process and self._process.poll() is not None:
+                        rc = self._process.returncode
+                        stderr_text = self._get_ffmpeg_stderr(tail_lines=10)
+                        print(f"[FFmpegWriter] FFmpeg 进程意外退出 "
+                              f"(returncode={rc})", flush=True)
+                        print(f"[FFmpegWriter] 最后的 stderr:\n{stderr_text}", flush=True)
+                        self._broken = True
+                        break
+                    continue
+
+                if frame is self._SENTINEL:
+                    _flush()
                     break
-                continue
 
-            if frame is None:
-                break
-
-            try:
-                if self._process and self._process.stdin:
+                try:
                     frame_bytes = frame.tobytes()
-
                     _expected_bytes = self.width * self.height * 3
                     if len(frame_bytes) != _expected_bytes:
                         print(
@@ -963,95 +1321,134 @@ class FFmpegWriter:
                         self._broken = True
                         return
 
-                    stall_elapsed = 0.0
-                    wrote_ok = False
-                    while True:
-                        if not self._running:
-                            return
-
-                        if self._write_with_timeout(frame_bytes, timeout=SINGLE_WRITE_TIMEOUT):
-                            consecutive_errors = 0
-                            wrote_ok = True
-
-                            if self._frames_written_to_pipe <= 5:
-                                _early_stderr = ''.join(self._stderr_buffer).lower()
-                                _nvenc_dead = any(kw in _early_stderr for kw in (
-                                    'openencodesessionex failed',
-                                    'no capable devices found',
-                                    'error while opening encoder',
-                                ))
-                                if _nvenc_dead:
-                                    print(f'[FFmpegWriter] [首帧 stderr 检测] 编码器初始化失败，'
-                                          f'标记管道断裂', flush=True)
-                                    _full_stderr = self._get_ffmpeg_stderr(tail_lines=10)
-                                    print(f'[FFmpegWriter] FFmpeg stderr:\n{_full_stderr}',
-                                          flush=True)
-                                    self._broken = True
-                                    return
-
-                            break
-
-                        err_detail = self._write_error or '(未知错误)'
-                        ffmpeg_alive = (self._process.poll() is None)
-
-                        if not ffmpeg_alive:
-                            consecutive_errors += 1
-                            print(f"[FFmpegWriter] 写入失败（FFmpeg 已退出）"
-                                  f" ({consecutive_errors}/{max_consecutive_errors})"
-                                  f" | {err_detail}", flush=True)
-                            if consecutive_errors >= max_consecutive_errors:
-                                stderr_text = self._get_ffmpeg_stderr(tail_lines=20)
-                                if stderr_text:
-                                    print(f"[FFmpegWriter] FFmpeg stderr (共{len(self._stderr_buffer)}行):\n{stderr_text}",
-                                      flush=True)
-                                    print("[FFmpegWriter] FFmpeg 已退出，标记管道断裂", flush=True)
-
-                                self._broken = True
-                                return
-                            break
-
-                        stall_elapsed += SINGLE_WRITE_TIMEOUT
-                        if stall_elapsed >= MAX_NVENC_STALL_S:
-                            if _vc in ('h264_nvenc', 'hevc_nvenc'):
-                                _suggestion = (f'建议改用 --video-codec libx264 避免 '
-                                               f'SR+GFPGAN 与 {_vc} 的 GPU 资源竞争。')
-                            else:
-                                _suggestion = (f'编码器 {_vc} stdin 阻塞超过 '
-                                               f'{MAX_NVENC_STALL_S:.0f}s，'
-                                               f'请检查磁盘空间或增大 --crf 降低码率。')
-                            print(f'[FFmpegWriter] stall 超过 {MAX_NVENC_STALL_S:.0f}s，'
-                                  f'放弃写入。{_suggestion}',
+                    if self._frames_written_to_pipe <= 5:
+                        _early_stderr = ''.join(self._stderr_buffer).lower()
+                        _nvenc_dead = any(kw in _early_stderr for kw in (
+                            'openencodesessionex failed',
+                            'no capable devices found',
+                            'error while opening encoder',
+                        ))
+                        if _nvenc_dead:
+                            print(f'[FFmpegWriter] [首帧 stderr 检测] 编码器初始化失败，'
+                                  f'标记管道断裂', flush=True)
+                            _full_stderr = self._get_ffmpeg_stderr(tail_lines=10)
+                            print(f'[FFmpegWriter] FFmpeg stderr:\n{_full_stderr}',
                                   flush=True)
-                            stderr_text = self._get_ffmpeg_stderr(tail_lines=20)
-                            if stderr_text:
-                                print(f'[FFmpegWriter] FFmpeg stderr (共{len(self._stderr_buffer)}行):\n{stderr_text}',
-                                  flush=True)
-
                             self._broken = True
                             return
 
-                        if stall_elapsed <= self.WRITE_TIMEOUT + 0.1:
-                            _early_stderr = self._get_ffmpeg_stderr(tail_lines=5)
-                            if _early_stderr:
-                                print(f'[FFmpegWriter] stall 首次发生，FFmpeg stderr:\n{_early_stderr}',
-                                      flush=True)
-                        print(f'[FFmpegWriter] stdin 暂时阻塞（已等待 {stall_elapsed:.0f}s'
-                              f' / {MAX_NVENC_STALL_S:.0f}s），'
-                              f'{NVENC_RETRY_SLEEP:.0f}s 后重试同一帧...',
-                              flush=True)
-                        time.sleep(NVENC_RETRY_SLEEP)
+                    pending.append(frame_bytes)
+                except (BrokenPipeError, OSError) as e:
+                    print(f"[FFmpegWriter] 管道断裂: {e}", flush=True)
+                    self._broken = True
+                    break
+                except Exception as e:
+                    print(f"[FFmpegWriter] 处理帧异常: {e}", flush=True)
+                    self._broken = True
+                    break
 
-            except (BrokenPipeError, OSError) as e:
-                print(f"[FFmpegWriter] 管道断裂: {e}", flush=True)
+                if len(pending) >= self._MAX_BATCH:
+                    _flush()
+                    if self._broken:
+                        return
+
+        except Exception as e:
+            self._error = e
+            print(f"[FFmpegWriter] _write_loop 未捕获异常: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            self._broken = True
+            return
+
+        if not self._broken and pending:
+            self._write_batch_with_stall_check(
+                b''.join(pending), len(pending),
+                _single_timeout, _max_stall_s, _retry_sleep, _max_consecutive_err,
+            )
+
+    def _write_batch_with_stall_check(
+        self,
+        data: bytes,
+        n_frames: int,
+        single_write_timeout: float,
+        max_stall_s: float,
+        retry_sleep: float,
+        max_consecutive_errors: int,
+    ) -> bool:
+        """
+        [FIX-BATCH-WRITE] 批量写入 data（多帧 bytes 拼接），带 stall 检测和重试逻辑。
+
+        用于 NVENC 场景下 SR+GFPGAN 与硬件编码器同 GPU 资源竞争导致的 pipe 阻塞。
+        保留原 _write_loop 中全套容错逻辑：FFmpeg 退出检测、stall 超时判断、
+        首 stall 首次报告、诊断提示。
+        """
+        stall_elapsed = 0.0
+        consecutive_errors = 0
+        stall_first_reported = False
+        _vc = getattr(self.args, 'video_codec', 'libx264')
+
+        while True:
+            if not self._running:
+                return False
+
+            if self._write_with_timeout(data, timeout=single_write_timeout):
+                self._frames_written_to_pipe += n_frames
+                return True
+
+            err_detail = self._write_error or '(未知错误)'
+            ffmpeg_alive = (self._process.poll() is None)
+
+            if not ffmpeg_alive:
+                consecutive_errors += 1
+                print(f"[FFmpegWriter] 写入失败（FFmpeg 已退出）"
+                      f" ({consecutive_errors}/{max_consecutive_errors})"
+                      f" | {err_detail}", flush=True)
+                if consecutive_errors >= max_consecutive_errors:
+                    stderr_text = self._get_ffmpeg_stderr(tail_lines=20)
+                    if stderr_text:
+                        print(f"[FFmpegWriter] FFmpeg stderr (共{len(self._stderr_buffer)}行):\n{stderr_text}",
+                              flush=True)
+                        print("[FFmpegWriter] FFmpeg 已退出，标记管道断裂", flush=True)
+                    self._broken = True
+                    return False
+                return False
+
+            stall_elapsed += single_write_timeout
+            if stall_elapsed >= max_stall_s:
+                if _vc in ('h264_nvenc', 'hevc_nvenc'):
+                    _suggestion = (f'建议改用 --video-codec libx264 避免 '
+                                   f'SR+GFPGAN 与 {_vc} 的 GPU 资源竞争。')
+                else:
+                    _suggestion = (f'编码器 {_vc} stdin 阻塞超过 '
+                                   f'{max_stall_s:.0f}s，'
+                                   f'请检查磁盘空间或增大 --crf 降低码率。')
+                print(f'[FFmpegWriter] stall 超过 {max_stall_s:.0f}s，'
+                      f'放弃写入。{_suggestion}',
+                      flush=True)
+                stderr_text = self._get_ffmpeg_stderr(tail_lines=20)
+                if stderr_text:
+                    print(f'[FFmpegWriter] FFmpeg stderr (共{len(self._stderr_buffer)}行):\n{stderr_text}',
+                          flush=True)
                 self._broken = True
-                break
-            except Exception as e:
-                print(f"[FFmpegWriter] 写入错误: {e}", flush=True)
-                self._broken = True
-                break
-    
+                return False
+
+            if not stall_first_reported:
+                stall_first_reported = True
+                _early_stderr = self._get_ffmpeg_stderr(tail_lines=5)
+                if _early_stderr:
+                    print(f'[FFmpegWriter] stall 首次发生，FFmpeg stderr:\n{_early_stderr}',
+                          flush=True)
+            print(f'[FFmpegWriter] stdin 暂时阻塞（已等待 {stall_elapsed:.0f}s'
+                  f' / {max_stall_s:.0f}s），'
+                  f'{retry_sleep:.0f}s 后重试同一批...',
+                  flush=True)
+            time.sleep(retry_sleep)
+
     def write_frame(self, frame):
-        """写入一帧"""
+        # [FIX-ERROR-PROPAGATION] 写线程异常 → 调用方 raise，避免静默失败
+        if self._error is not None:
+            raise RuntimeError(f'FFmpegWriter 内部写错误: {self._error}') from self._error
+
         if not self._running or self._broken:
             return False
 
@@ -1106,13 +1503,13 @@ class FFmpegWriter:
             return False
 
     def close(self):
-        """关闭写入器 - 增强版"""
-        print("[FFmpegWriter] 阶段1/5: 等待写入线程完成...", flush=True)
+        self._vlog("[FFmpegWriter] 阶段1/5: 等待写入线程完成...", flush=True)
 
         if not self._broken:
             for _ in range(3):
                 try:
-                    self._frame_queue.put(None, timeout=2.0)
+                    self._frame_queue.put(self._SENTINEL, timeout=2.0)
+                    break  # 成功入队则退出
                 except queue.Full:
                     print("[FFmpegWriter] 警告: 队列已满，无法发送结束信号", flush=True)
                     self._broken = True
@@ -1154,11 +1551,11 @@ class FFmpegWriter:
                     except Exception:
                         pass
 
-        print("[FFmpegWriter] 阶段2/5: 写入线程已结束", flush=True)
+        self._vlog("[FFmpegWriter] 阶段2/5: 写入线程已结束", flush=True)
         self._running = False
 
         if self._process and self._process.poll() is None:
-            print("[FFmpegWriter] 阶段3/5: 等待 FFmpeg 完成编码...", flush=True)
+            self._vlog("[FFmpegWriter] 阶段3/5: 等待 FFmpeg 完成编码...", flush=True)
 
             if self._process.stdin and not self._process.stdin.closed:
                 try:
@@ -1169,7 +1566,7 @@ class FFmpegWriter:
 
             try:
                 self._process.wait(timeout=300)
-                print("[FFmpegWriter] 阶段4/5: FFmpeg 编码完成", flush=True)
+                self._vlog("[FFmpegWriter] 阶段4/5: FFmpeg 编码完成", flush=True)
             except subprocess.TimeoutExpired:
                 print("[FFmpegWriter] FFmpeg 编码超时（>300s），强制终止", flush=True)
                 try:
@@ -1180,7 +1577,7 @@ class FFmpegWriter:
         else:
             print("[FFmpegWriter] 阶段3-4/5: FFmpeg 进程已终止", flush=True)
 
-        print("[FFmpegWriter] 阶段5/5: 清理完成", flush=True)
+        self._vlog("[FFmpegWriter] 阶段5/5: 清理完成", flush=True)
 
         # FIX-AUDIO-SEPARATE: 视频写入完成后，单独 mux 音轨
         _tmp = getattr(self, '_tmp_video_path', None)
@@ -1233,6 +1630,7 @@ class FFmpegWriter:
                         print(f'[FFmpegWriter] 音轨合并异常: {_e}', flush=True)
                         _tmp = None
             elif _src is None:
+                # 无音轨模式：直接重命名临时文件
                 try:
                     os.rename(_tmp, self.output_path)
                     _tmp = None
@@ -1240,8 +1638,9 @@ class FFmpegWriter:
                 except Exception as _e:
                     print(f'[FFmpegWriter] rename 失败: {_e}', flush=True)
                     _tmp = None
-        elif _tmp and (self._broken or self.audio is None):
+        elif _tmp and (self._broken or self.audio is None) and os.path.exists(_tmp):
             if os.path.exists(_tmp):
+                # 破损或无音频情况，直接重命名（可能无视频流，但保留）
                 try:
                     os.rename(_tmp, self.output_path)
                     print(f'[FFmpegWriter] 无音轨输出: {self.output_path}', flush=True)
@@ -1654,7 +2053,7 @@ class TensorRTAccelerator:
 
     def __init__(self, model: torch.nn.Module, device: torch.device,
                  cache_dir: str, input_shape: Tuple[int, int, int, int],
-                 use_fp16: bool = True):
+                 use_fp16: bool = True, model_name: str = 'realesrgan'):
         self.device      = device
         self.input_shape = input_shape
         self.use_fp16    = use_fp16
@@ -1679,7 +2078,7 @@ class TensorRTAccelerator:
             _sm_tag = f'_sm{_p.major}{_p.minor}_{_gpu_slug_sr}'
 
         B, C, H, W = input_shape
-        tag       = f'B{B}_C{C}_H{H}_W{W}_fp{"16" if use_fp16 else "32"}{_sm_tag}'
+        tag       = f'{model_name}_B{B}_C{C}_H{H}_W{W}_fp{"16" if use_fp16 else "32"}{_sm_tag}'
         trt_path  = osp.join(cache_dir, f'realesrgan_{tag}.trt')
         onnx_path = osp.join(cache_dir, f'realesrgan_{tag}.onnx')
         os.makedirs(cache_dir, exist_ok=True)
@@ -4861,16 +5260,136 @@ class DeepPipelineOptimizer:
             # 否则会导致递归关闭和流水线提前终止
 
 
+class PreviewWriter:
+    """
+    包装 FFmpegWriter，在写入帧时提供实时预览功能。
+    支持按 'q' 键提前退出（通过抛出 KeyboardInterrupt 实现）。
+    """
+    def __init__(self, writer, preview_enabled=False, preview_interval=30):
+        self.writer = writer
+        self.preview_enabled = preview_enabled
+        self.preview_interval = preview_interval
+        self.frame_counter = 0
+        self.exit_requested = False
+
+        if preview_enabled:
+            self.preview_enabled = self._check_gui_available_robust()
+            if not self.preview_enabled:
+                print('[Preview] GUI 环境不可用，预览功能已自动禁用。')
+
+    def _check_gui_available_robust(self) -> bool:
+        """在独立子进程中测试 GUI 可用性，防止 Qt abort 杀死主进程。"""
+        try:
+            import subprocess as _sp
+
+            if sys.platform.startswith('linux') and not os.environ.get('DISPLAY'):
+                print('[Preview] 未检测到 DISPLAY 环境变量，GUI 不可用。')
+                return False
+
+            test_code = (
+                "import sys, os\n"
+                "try:\n"
+                "    import cv2, numpy as np\n"
+                "    cv2.namedWindow('__test__', cv2.WINDOW_NORMAL)\n"
+                "    cv2.imshow('__test__', np.zeros((10,10,3), dtype=np.uint8))\n"
+                "    cv2.waitKey(1)\n"
+                "    cv2.destroyWindow('__test__')\n"
+                "    cv2.waitKey(1)\n"
+                "    print('GUI_OK')\n"
+                "except Exception as e:\n"
+                "    print('GUI_FAIL:' + str(e))\n"
+                "    sys.exit(1)\n"
+            )
+
+            result = _sp.run(
+                [sys.executable, '-c', test_code],
+                capture_output=True, text=True, timeout=15,
+            )
+
+            if result.returncode == 0 and 'GUI_OK' in result.stdout:
+                return True
+
+            hint = ''
+            if result.returncode < 0:
+                import signal
+                try:
+                    sig_name = signal.Signals(-result.returncode).name
+                except (ValueError, AttributeError):
+                    sig_name = str(-result.returncode)
+                hint = f'子进程被信号 {sig_name} 终止（Qt/X11 abort）'
+            elif 'GUI_FAIL' in result.stdout:
+                hint = result.stdout.strip()
+            else:
+                hint = (result.stderr.strip() or '未知错误')[-300:]
+
+            print(f'[Preview] GUI 检测失败: {hint}')
+            return False
+
+        except Exception as e:
+            print(f'[Preview] GUI 检测异常: {e}')
+            return False
+
+    def _show_preview(self, frame: np.ndarray) -> bool:
+        """显示一帧，返回 True 表示用户按 'q' 请求退出"""
+        if not self.preview_enabled:
+            return False
+        try:
+            import cv2
+            cv2.imshow('RealESRGAN Preview', frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                return True
+            return False
+        except Exception as e:
+            print(f'[Preview] 显示帧时出错，预览功能已自动禁用: {e}')
+            self.preview_enabled = False
+            try:
+                cv2.destroyAllWindows()
+            except Exception:
+                pass
+            return False
+
+    def write_frame(self, frame: np.ndarray):
+        self.writer.write_frame(frame)
+
+        if self.preview_enabled and not self.exit_requested:
+            self.frame_counter += 1
+            if self.frame_counter % self.preview_interval == 0:
+                if self._show_preview(frame):
+                    self.exit_requested = True
+                    try:
+                        import cv2
+                        cv2.destroyAllWindows()
+                    except Exception:
+                        pass
+                    print('\n[Preview] 预览窗口已关闭，处理继续进行...')
+
+    def close(self):
+        self.writer.close()
+        if self.preview_enabled:
+            try:
+                import cv2
+                cv2.destroyAllWindows()
+            except Exception:
+                pass
+
+    def __getattr__(self, name):
+        return getattr(self.writer, name)
+
+
 def main_optimized(args):
     """优化版主函数"""
-    
-    print("[优化架构] 修复版: 改进 GFPGAN TRT 就绪判断")
-    # FIX-DET-THRESHOLD: 打印检测阈值配置
-    print(f"[优化架构] 人脸检测置信度阈值: {getattr(args, 'face_det_threshold', 0.5)}")
-    # FIX-ADAPTIVE-BATCH: 打印自适应批处理配置
-    if getattr(args, 'adaptive_batch', True):
-        print(f"[优化架构] 自适应批处理: 已启用")
-    print("[优化架构] 阶段 0: 准备环境（不初始化 CUDA）...")
+    # 静默模式标志与辅助打印函数
+    quiet = getattr(args, 'quiet', True)
+    def vlog(*_a, **_k):
+        if not quiet:
+            print(*_a, **_k)
+
+    vlog("[优化架构] 修复版: 改进 GFPGAN TRT 就绪判断")
+    if args.face_enhance:
+        vlog(f"[优化架构] 人脸检测置信度阈值: {getattr(args, 'face_det_threshold', 0.5)}")
+        if getattr(args, 'adaptive_batch', True):
+            vlog(f"[优化架构] 自适应批处理: 已启用")
+    vlog("[优化架构] 阶段 0: 准备环境（不初始化 CUDA）...")
     
     cuda_available = torch.backends.cuda.is_built() and torch.cuda.device_count() > 0
     if not cuda_available:
@@ -4967,15 +5486,19 @@ def main_optimized(args):
             torch.cuda.init()
             device_name = torch.cuda.get_device_name(0)
             device_mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
-            print(f"[优化架构] 主进程 CUDA 初始化完成: {device_name} ({device_mem:.1f}GB)")
+            vlog(f"[优化架构] 主进程 CUDA 初始化完成: {device_name} ({device_mem:.1f}GB)")
             torch.cuda.empty_cache()
             mem_allocated = torch.cuda.memory_allocated() / 1024**3
             mem_reserved = torch.cuda.memory_reserved() / 1024**3
-            print(f"[优化架构] 当前显存: 已分配 {mem_allocated:.2f}GB, 预留 {mem_reserved:.2f}GB")
+            vlog(f"[优化架构] 当前显存: 已分配 {mem_allocated:.2f}GB, 预留 {mem_reserved:.2f}GB")
         except Exception as e:
             print(f"[优化架构] CUDA 初始化失败: {e}")
             cuda_available = False
             device = torch.device('cpu')
+
+    # [FIX-NVENC-UNIFIED] CUDA 初始化后探测 GPU 硬件型号（静态表）
+    args._hw_profile = _detect_hw_profile(device)
+    vlog(f'[FIX-NVENC-UNIFIED] HW Profile: {args._hw_profile}')
     
     print(f"[优化架构] 加载模型: {args.model_name}")
     use_half = not args.no_fp16
@@ -5053,20 +5576,37 @@ def main_optimized(args):
                 face_enhancer = None
                 gfpgan_mode = "disabled"
     
-    print("[优化架构] 阶段 3: 创建视频读写器...")
+    # [FIX-NVENC-UNIFIED] 统一 NVENC 检测前移：在 reader 创建前确定实际编码器
+    _video_codec = getattr(args, 'video_codec', 'libx264')
+    args.video_codec = HardwareCapability.best_encoder(_video_codec, hw_profile=args._hw_profile)
+    if 'nvenc' in args.video_codec:
+        print(f'\n[GPU0] NVENC 编码已激活: {args.video_codec}', flush=True)
+
+    vlog("[优化架构] 阶段 3: 创建视频读写器...")
     reader = FFmpegReader(
         args.input, ffmpeg_bin=getattr(args, 'ffmpeg_bin', 'ffmpeg'),
         prefetch_factor=getattr(args, 'prefetch_factor', 48),
         use_hwaccel=getattr(args, 'use_hwaccel', True),
+        quiet=quiet,
     )
-    
+
     out_h = int(reader.height * args.outscale)
     out_w = int(reader.width * args.outscale)
     output_dir = os.path.dirname(args.output)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
-    writer = FFmpegWriter(args, reader.audio, out_h, out_w, args.output, reader.fps)
-    
+    base_writer = FFmpegWriter(args, reader.audio, out_h, out_w, args.output, reader.fps)
+    # 根据预览选项包装 writer
+    preview_enabled = getattr(args, 'preview', False)
+    preview_interval = getattr(args, 'preview_interval', 30)
+    writer = PreviewWriter(base_writer, preview_enabled=preview_enabled, preview_interval=preview_interval)
+    if preview_enabled:
+        if writer.preview_enabled:
+            print(f"[优化架构] 实时预览已启用（间隔 {preview_interval} 帧，按 q 退出）")
+        else:
+            print("[优化架构] 实时预览已请求但 GUI 不可用，将仅写入文件")
+        preview_enabled = writer.preview_enabled
+
     pbar = tqdm(total=reader.nb_frames, unit='frame', desc='[优化流水线]',
                 dynamic_ncols=False, ncols=180,
                 bar_format='{l_bar}{bar:10}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]')
@@ -5079,7 +5619,8 @@ def main_optimized(args):
         print(f'[优化架构] 初始化 SR TensorRT Engine (shape={sh})...')
         try:
             trt_accel = TensorRTAccelerator(
-                upsampler.model, device, trt_dir, sh, use_fp16=not args.no_fp16)
+                upsampler.model, device, trt_dir, sh, use_fp16=not args.no_fp16,
+                model_name=args.model_name)
             if trt_accel.available:
                 print('[优化架构] SR TensorRT Engine 加载成功')
             else:
@@ -5109,23 +5650,13 @@ def main_optimized(args):
         print(f"流水线错误: {e}")
         import traceback; traceback.print_exc()
     finally:
-        print("\n[优化架构] ===========================================")
-        print("[优化架构] 视频推理完成，正在清理资源...")
-        print("[优化架构] ===========================================\n")
-        
-        print("[优化架构] 步骤1/4: 关闭流水线线程...")
+        vlog("\n[优化架构] 视频推理完成，正在清理资源...")
         pipeline.close()
-        print("[优化架构] 流水线线程已关闭")
-        
-        print("[优化架构] 步骤2/4: 关闭FFmpeg写入器...")
+        vlog("[优化架构] 流水线线程已关闭")
         writer.close()
-        print("[优化架构] FFmpeg写入器已关闭")
-        
-        print("[优化架构] 步骤3/4: 关闭视频读取器...")
+        vlog("[优化架构] FFmpeg写入器已关闭")
         reader.close()
-        print("[优化架构] 视频读取器已关闭")
-        
-        print("[优化架构] 步骤4/4: 关闭进度条...")
+        vlog("[优化架构] 视频读取器已关闭")
         pbar.close()
         
         end_time = time.time()
@@ -5159,6 +5690,7 @@ def main_optimized(args):
                 'gfpgan_mode': gfpgan_mode,
                 'face_filtered': pipeline._face_filtered_total,
                 'adaptive_batch': pipeline._enable_adaptive_batch,
+                'preview': preview_enabled,
             }
             with open(report_path, 'w', encoding='utf-8') as f:
                 json.dump(report, f, ensure_ascii=False, indent=2)
@@ -5253,9 +5785,9 @@ def main():
                         help='libx264/libx265 preset')
     parser.add_argument('--ffmpeg-bin', type=str, default='ffmpeg', help='FFmpeg 二进制路径')
     
-    # 性能报告
-    parser.add_argument('--report', type=str, default=None,
-                        help='输出 JSON 性能报告路径（如 report.json）')
+    # 性能报告（支持可选参数自动生成路径）
+    parser.add_argument('--report', nargs='?', const='__AUTO__', default=None,
+                        help='输出 JSON 性能报告路径。若仅使用 --report 不指定路径，则自动根据输出文件名生成（如 output_report.json）')
 
     # 高优先级覆盖参数
     parser.add_argument('--no-tensorrt', dest='no_tensorrt', action='store_true', default=False,
@@ -5264,7 +5796,17 @@ def main():
                         help='强制启用 torch.compile（覆盖 --no-compile 或 config）')
     parser.add_argument('--use-cuda-graph', dest='use_cuda_graph_force', action='store_true', default=False,
                         help='强制启用 CUDA Graph（覆盖 --no-cuda-graph 或 config）')
-    
+
+    # 预览参数
+    parser.add_argument('--preview', action='store_true',
+                        help='启用实时预览窗口（显示最终输出结果，按 q 键提前退出）')
+    parser.add_argument('--preview-interval', type=int, default=30,
+                        help='预览帧间隔（每多少帧刷新一次窗口）')
+
+    # 静默模式
+    parser.add_argument('--quiet', action=argparse.BooleanOptionalAction, default=True,
+                        help='静默模式（默认开启），仅显示关键信息；--no-quiet 开启详细日志')
+
     args = parser.parse_args()
 
     # 处理硬件加速开关
@@ -5291,7 +5833,7 @@ def main():
         if args.no_cuda_graph:
             _override_msgs.append('--use-cuda-graph 覆盖了  --no-cuda-graph → CUDA Graph 已启用')
     if _override_msgs:
-        print('[CLI覆盖] 以下设置已被高优先级参数覆盖：')
+        print('[参数覆盖] 以下设置已被高优先级参数调整：')
         for msg in _override_msgs:
             print(f'          · {msg}')
         print()
@@ -5308,7 +5850,7 @@ def main():
             print('[Info] torch.compile 已启用（内含 cudagraphs），CUDA Graph 已自动禁用。')
             args.use_cuda_graph = False
 
-    # 更新对应的 --no-xxx 标志以保持一致性（可选）
+    # 更新对应的 --no-xxx 标志以保持一致性
     args.no_compile = not args.use_compile
     args.no_cuda_graph = not args.use_cuda_graph
 
@@ -5316,38 +5858,37 @@ def main():
     if args.no_adaptive_batch:
         args.adaptive_batch = False
 
-    print("Real-ESRGAN Video Enhancement v6.4 - 架构优化版")
-    print("主要优化特性:")
-    print("1. 深度流水线架构（4级并行处理）")
-    print("2. GPU内存池优化（避免频繁分配释放）")
-    print("3. 异步计算模式（多CUDA流并行）")
-    print("4. 多级缓冲队列（深度缓冲减少等待）")
-    print("5. 优化线程池配置（提高并发效率）")
-    # FIX-DET-THRESHOLD + FIX-ADAPTIVE-BATCH + FIX-GPU-PREFETCH: 新增优化特性
-    print("6. 人脸检测置信度过滤（减少无效 GFPGAN 推理）")
-    print("7. 自适应批处理（根据人脸密度动态调整）")
-    print("8. SR H2D 预取重叠（利用空闲 GPU 内存总线）")
-    # FIX-READER-DIAG + FIX-READ-WATCHDOG + FIX-WRITE-WATCHDOG: 死锁诊断增强
-    print("9. FFmpegReader 四路径诊断 + EOF 保证送达 + 探活接口")
-    print("10. _read_frames 超时看门狗（~60s 无帧 → 主动终止）")
-    print("11. _write_frames 全流水线空转看门狗（120s → dump 栈 + 强制退出）")
-    # ── FIX-T4-FP16: T4 GPU + GFPGAN TRT 自动禁用 FP16 防止溢出噪斑 ────
+    # GFPGAN-TRT 启用时自动禁用 FP16（防止溢出噪斑，实测 A10 GPU 存在此问题）
     if args.gfpgan_trt and torch.cuda.is_available():
-        # try:
-        #     props = torch.cuda.get_device_properties(0)
-        #     # 识别 T4 级别 GPU（名称含 T4 或 计算能力 SM 7.5）
-        #     is_t4_level = "t4" in props.name.lower() or (props.major == 7 and props.minor == 5)
-        #     if is_t4_level and not args.no_fp16:
-        #         args.no_fp16 = True
-        #         print("\n[T4/GFPGAN-TRT] 为防止 FP16 溢出噪斑，已自动禁用半精度并启用 FP32 推理。")
-        # except Exception:
-        #     pass
-        # 实测 A10 GPU 存在同样的问题，禁用所有 GPU 的 GFPGAN-TRT + FP16 组合
         args.no_fp16 = True
         print("\n[GFPGAN-TRT] 为防止 FP16 溢出噪斑，已自动禁用半精度并启用 FP32 推理。")
-    # ────────────────────────────────────────────────────────────────────
+
+    # 自动生成报告路径（如果 --report 未指定具体路径）
+    if getattr(args, 'report', None) == '__AUTO__':
+        out_base = os.path.splitext(args.output)[0]
+        args.report = f"{out_base}_report.json"
+        print(f"[自动报告] 使用默认报告路径: {args.report}")
+
+    quiet = getattr(args, 'quiet', True)
+    if quiet:
+        print("Real-ESRGAN Video Enhancement v6.4 - 架构优化版")
+        if getattr(args, 'preview', False):
+            print(f"[预览] 实时预览已请求（间隔 {getattr(args, 'preview_interval', 30)} 帧，按 q 退出）")
+    else:
+        print("Real-ESRGAN Video Enhancement v6.4 - 架构优化版")
+        print("主要优化特性:")
+        print("1. 深度流水线架构（4级并行处理）")
+        print("2. GPU内存池优化（避免频繁分配释放）")
+        print("3. 异步计算模式（多CUDA流并行）")
+        print("4. 多级缓冲队列（深度缓冲减少等待）")
+        print("5. 优化线程池配置（提高并发效率）")
+        print("6. 人脸检测置信度过滤（减少无效 GFPGAN 推理）")
+        print("7. 自适应批处理（根据人脸密度动态调整）")
+        print("8. SR H2D 预取重叠（利用空闲 GPU 内存总线）")
+        if getattr(args, 'preview', False):
+            print(f"9. 实时预览已请求（间隔 {getattr(args, 'preview_interval', 30)} 帧，按 q 退出）")
     print()
-    
+
     main_optimized(args)
 
 
