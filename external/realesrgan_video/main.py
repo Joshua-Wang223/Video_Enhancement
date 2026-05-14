@@ -778,6 +778,8 @@ def run_pipeline_for_video(enhancer, input_video, output_video):
     if interrupted:
         raise KeyboardInterrupt
 
+    return True
+
 
 def main_optimized(args):
     """

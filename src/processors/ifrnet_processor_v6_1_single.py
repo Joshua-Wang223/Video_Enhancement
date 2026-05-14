@@ -477,8 +477,8 @@ class IFRNetProcessor:
                 checkpoint["last_segment"] = i
                 self._save_checkpoint(checkpoint)
             else:
-                print(f"⚠️  片段 {i+1} 处理失败，跳过")
-                continue
+                print(f"⚠️  片段 {i+1} 处理失败，终止后续处理")
+                break
 
             # 估算剩余时间
             elapsed   = time.time() - start_time
