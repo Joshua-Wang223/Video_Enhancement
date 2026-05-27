@@ -1,8 +1,47 @@
 ﻿"""
-IFRNet 视频插帧处理脚本 —— 终极优化版 v6.3.4（单卡版）
-==========================================================
+IFRNet 视频插帧处理脚本 —— 四级回退统一编码版 v6.4.3（单卡版）
+============================================================
 基于 IFRNet（Intermediate Flow-based Recursive Network）的视频帧插值脚本，
-面向单 GPU 生产环境的高性能实现。
+面向单 GPU 生产环境的极致性能实现。
+
+【v6.4.3 新增修复（基于 v6.3.5）】
+  [FIX-T3-V643] 四级回退统一编码体系：
+               · NVENCEncoder 跨平台改造: CDLL + 运行时 API 版本探测 + Linux CUDA ctx
+               · 新增 PinnedRingBuffer: N 槽预分配 pinned memory 环形缓冲（Level 2/3）
+               · FFmpegWriter.write_direct(): memoryview 零拷贝写 pipe
+               · Level 1 (最优):  NVENC SDK GPU 直通 → FFmpegMuxer (GPU→NV12→H.264 ES)
+               · Level 2 (次优):  Pinned Ring Buffer + FFmpeg NVENC 硬件编码
+               · Level 3 (兜底):  Pinned Ring Buffer + FFmpeg 软编码
+               · Level 4 (最后):  标准 PinnedResultPool + FFmpegWriter (v6.3.5 原路径)
+               · _infer_loop + _writer_loop: 三级数据协议统一 (5-tuple / RING / PinnedResultItem)
+               · 新增 _rgb_to_nv12_gpu: GPU 侧 RGB→YUV420 颜色空间转换
+               · FFmpegWriter → FFmpegMuxer: 仅做比特流封装（-c:v copy），不再编码
+
+【v6.3.5 新增修复（基于 v6.3.4）】
+  [FIX-POOL-LEAK]     PinnedResultPool 跨段泄漏修复（后 3 段速度减半问题）：
+                   · 根因：段结束后 PinnedResultPool 持有的 pinned 内存未显式释放，
+                     Python GC 不会立即回收 cudaHostAlloc 分配的锁页内存，导致各
+                     段 Pool 叠加累积（944MB → 1557MB → 1935MB → 1982MB+），
+                     DMA 带宽被竞争，D2H 传输变慢，result_queue 长期满载，
+                     GPU P50 利用率从 88% 跌至 8%，吞吐量减半（83fps → 41fps）。
+                   · 修复：新增 PinnedResultPool.free() 方法，显式 del 全部 pinned
+                     buffer；在 _infer_loop finally 块中调用，确保每段结束后立即
+                     解除锁页内存占用；同时触发 gc.collect() 加速 Python 对象回收。
+
+  [FIX-MAXRQ-DYNAMIC] result_queue 上限改为三轴动态计算（替代静态 _PINNED_POOL_MAX_MB）：
+                   · 根因：_PINNED_POOL_MAX_MB 为 GPU-tier 静态常量（T4=2048MB），
+                     无法反映实际 RAM 余量、分辨率变化、T3/T2 速度比等动态因素；
+                     换机（RAM ≠ 32GB）或换分辨率时上限或过保守或过激进。
+                   · 新增 _compute_max_result_queue(slot_mb, mem_avail_gb, T2_ms, T3_ms)
+                     三轴联合约束：
+                     轴1 RAM 上限  = mem_avail × 6% / slot_size（主要约束）
+                     轴2 T3/T2 下限= T3_ms/T2_ms × 0.22（最小解耦需求，libx264 流式系数）
+                     轴3 绝对上限  = 48（防估算失控保险）
+                     结果 = max(floor_by_t3, min(cap_by_ram, 48))
+                   · 替换 _auto_queue_depths / get_queue_suggestions /
+                     ADAPTIVE-QUEUE 三处 _PINNED_POOL_MAX_MB 硬编码引用。
+                   · _PINNED_POOL_MAX_MB 保留为模块级常量（PinnedPool 构建阶段
+                     的参考值），不再用于运行时队列约束。
 
 【v6.3.4 新增修复（基于 v6.3.3）】
   [FIX-BATCHCAP]     跨段 batch_size 误降修复（Segment 2+ bs 32→7 问题）：
@@ -341,14 +380,35 @@ class HardwareCapability:
 
     @staticmethod
     def _probe_nvenc(codec: str) -> bool:
+        # [FIX-PROBE] 历次修复汇总（根因均由 stderr 诊断确认）：
+        #   LAVFI  : color 源去掉 d=0.1（0帧问题）→ 无限源 + -frames:v 1 截帧
+        #   PIXFMT : FFmpeg 5.0+ color 源默认 yuv444p → 显式 -pix_fmt yuv420p
+        #   BFRAME : 单帧编码触发 B 帧 lookahead 报错 → -bf 0
+        #   MINDIM : h264_nvenc 宽≥145px / hevc_nvenc 宽≥129px → 256×144
+        cmd = [
+            'ffmpeg', '-hide_banner', '-y', '-loglevel', 'error',
+            '-f', 'lavfi', '-i', 'color=c=black:s=256x144:r=1',
+            '-vcodec', codec, '-frames:v', '1',
+            '-pix_fmt', 'yuv420p', '-bf', '0',
+            '-f', 'null', '-',
+        ]
         try:
-            cmd = [
-                'ffmpeg', '-f', 'lavfi', '-i', 'color=c=black:s=64x64:d=0.1:r=1',
-                '-vcodec', codec, '-frames:v', '1',
-                '-f', 'null', '-', '-loglevel', 'error',
-            ]
-            return subprocess.run(cmd, capture_output=True, timeout=10).returncode == 0
-        except Exception:
+            result = subprocess.run(cmd, capture_output=True, timeout=10)
+            if result.returncode != 0:
+                _err = result.stderr.decode('utf-8', errors='replace').strip()
+                print(
+                    f'  [PROBE-FAIL] {codec} probe 失败 (rc={result.returncode})\n'
+                    f'  手动测试: {" ".join(cmd)}\n'
+                    f'  stderr: {_err or "(空)"}',
+                    flush=True,
+                )
+            return result.returncode == 0
+        except Exception as e:
+            print(
+                f'  [PROBE-FAIL] {codec} probe 异常: {e}\n'
+                f'  手动测试: {" ".join(cmd)}',
+                flush=True,
+            )
             return False
 
     @classmethod
@@ -357,10 +417,18 @@ class HardwareCapability:
         """
         [FIX-NVENC-UNIFIED] 统一 NVENC 检测路径。
 
-        优先级：
-        1. hw_profile.has_nvenc（静态 GPU 型号表，与 AUTO-TUNE 一致，Docker 环境可靠）
-        2. HardwareCapability.has_nvenc()（ffmpeg 实际 probe，Docker 无 /dev/nvidia*
-           设备映射时可能失败，作为回退保底）
+        优先级（按 hw_profile 是否提供分两条路径）：
+
+        路径 A（hw_profile 已提供，GPU 型号已知）：
+          1. 直接采信 hw_profile.has_nvenc（静态 GPU 型号表，与 AUTO-TUNE 一致）。
+          2. 若静态表确认可用且 ffmpeg probe 失败（Docker 设备映射缺失常见场景），
+             打印明确警告后仍信任静态表——probe 失败不等于硬件不可用。
+             可将 _NVENC_TRUST_STATIC = False 改为强制要求 probe 通过。
+          3. 静态表否定（has_nvenc=False）时不做 probe，直接回退软件编码。
+
+        路径 B（hw_profile 未提供，GPU 型号未知）：
+          仅凭 ffmpeg 实际 probe 判断，probe 失败即回退软件编码。
+          此路径适用于无法识别 GPU 型号的环境（非 NVIDIA GPU 等）。
 
         两套检测结果在 Docker 未映射 NVENC 设备时会不一致：AUTO-TUNE 显示 nvenc=True
         但 ffmpeg probe 失败，导致实际使用 libx264 引发 T3 瓶颈。本修复确保两者一致。
@@ -368,28 +436,1192 @@ class HardwareCapability:
         nvenc_map    = {'libx264': 'h264_nvenc', 'libx265': 'hevc_nvenc'}
         fallback_map = {'h264_nvenc': 'libx264', 'hevc_nvenc': 'libx265'}
 
+        # [FIX-NVENC-TRUST-STATIC] 当 probe 失败但静态表确认可用时，是否信任静态表。
+        # True（默认）：信任静态表，适用于 Docker 设备映射缺失但硬件真实存在的场景。
+        # False：强制要求 probe 通过，适用于需要 100% 运行时验证的严格环境。
+        _NVENC_TRUST_STATIC: bool = True
+
         def _nvenc_ok(codec_name: str) -> bool:
-            # [FIX-NVENC-DOCKER] ffmpeg 实际 probe 是硬件可用性的唯一权威依据。
-            # 静态表（hw_profile.has_nvenc）仅用于 AUTO-TUNE T3 性能估算，
-            # 不能替代实际编码器能力检测：Docker 缺少 /dev/nvidia* 映射时
-            # 静态表显示"GPU 支持 NVENC"但 ffmpeg 无法访问，盲目升级会编码失败。
-            if not cls.has_nvenc(codec_name):
-                return False
-            # ffmpeg probe 通过 + hw_profile 确认（可选，仅作双重校验）
+            # [FIX-NVENC-UNIFIED] 路径 A：hw_profile 已知时优先信任静态 GPU 型号表。
+            # 这与 docstring 描述的优先级一致，解决了原实现 probe-first 导致
+            # Docker 环境中 hw_profile.has_nvenc=True 被静默忽略的问题。
             if hw_profile is not None and hasattr(hw_profile, 'has_nvenc'):
-                return hw_profile.has_nvenc
-            return True
+                if not hw_profile.has_nvenc:
+                    # 静态表明确否定：不做 probe，直接返回 False
+                    return False
+                # 静态表确认可用：尝试 probe 做二次验证
+                probe_ok = cls.has_nvenc(codec_name)
+                if not probe_ok:
+                    # [FIX-NVENC-PROBE-WARN] probe 失败但静态表确认硬件存在。
+                    # 常见于 Docker 容器 /dev/nvidia* 设备映射不完整，
+                    # nvidia-smi 可见 GPU 但 ffmpeg 无法访问 NVENC 编码器。
+                    # 根据 _NVENC_TRUST_STATIC 决定是否信任静态表。
+                    if _NVENC_TRUST_STATIC:
+                        print(
+                            f'  [FIX-NVENC-UNIFIED] {codec_name} ffmpeg probe 失败，'
+                            f'但静态 GPU 型号表确认硬件存在（hw_profile.has_nvenc=True）。\n'
+                            f'  信任静态表，继续使用 {codec_name}（Docker 设备映射不完整时正常）。\n'
+                            f'  若实际编码报错，可在代码中将 _NVENC_TRUST_STATIC 改为 False。'
+                        )
+                        return True
+                    else:
+                        print(
+                            f'  [FIX-NVENC-UNIFIED] {codec_name} ffmpeg probe 失败。'
+                            f'静态表显示硬件存在但 _NVENC_TRUST_STATIC=False，回退软件编码。'
+                        )
+                        return False
+                return True  # 静态表 + probe 双重确认
+
+            # [FIX-NVENC-UNIFIED] 路径 B：hw_profile 未知，仅凭 ffmpeg probe 判断。
+            return cls.has_nvenc(codec_name)
 
         if preferred in fallback_map:
             if _nvenc_ok(preferred):
                 return preferred
             fallback = fallback_map[preferred]
-            print(f'  [警告] {preferred} 不可用，自动回退到 {fallback}')
+            # [FIX-NVENC-WARN] 明确说明回退原因（probe 失败 or 静态表否定 or 无 profile）
+            if hw_profile is not None and hasattr(hw_profile, 'has_nvenc') and not hw_profile.has_nvenc:
+                reason = '静态 GPU 型号表标记 has_nvenc=False'
+            elif not cls.has_nvenc(preferred):
+                reason = 'ffmpeg probe 失败（Docker 设备映射可能缺失 /dev/nvidia*）'
+            else:
+                reason = '未知原因'
+            print(f'  [警告] {preferred} 不可用（{reason}），自动回退到 {fallback}')
             return fallback
         candidate = nvenc_map.get(preferred, preferred)
         if candidate != preferred and _nvenc_ok(candidate):
             return candidate
         return preferred
+
+    @classmethod
+    def lossless_encoder(cls) -> Tuple[str, List[str]]:
+        """
+        返回 (codec, extra_args) 用于无损中间段编码。
+        优先 nvenc lossless（-rc constqp -qp 0），否则 libx264 lossless。
+
+        与 best_encoder 的区别：best_encoder 只探测 NVENC 是否可用（VBR 编码），
+        lossless_encoder 额外测试 constqp（常量 QP）模式——部分 GPU/driver 组合
+        虽支持 NVENC VBR 但不支持 constqp 无损。
+        """
+        if cls.has_nvenc('h264_nvenc'):
+            try:
+                cmd = [
+                    'ffmpeg', '-hide_banner', '-y', '-loglevel', 'error',
+                    '-f', 'lavfi', '-i', 'color=c=black:s=256x144:r=1',
+                    '-vcodec', 'h264_nvenc',
+                    '-rc', 'constqp', '-qp', '0',
+                    '-pix_fmt', 'yuv420p', '-bf', '0',
+                    '-frames:v', '1', '-f', 'null', '-',
+                ]
+                if subprocess.run(cmd, capture_output=True, timeout=10).returncode == 0:
+                    return 'h264_nvenc', ['-rc', 'constqp', '-qp', '0']
+            except Exception:
+                pass
+        return 'libx264', ['-qp', '0', '-preset', 'medium']
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [FIX-T3-V643] NVENC GPU 直通编码器
+# ─────────────────────────────────────────────────────────────────────────────
+
+import ctypes
+from ctypes import (c_uint8, c_uint16, c_uint32, c_int32, c_int, c_uint64, c_void_p,
+                     c_char, c_size_t, c_double, Structure, POINTER, byref,
+                     sizeof, cast, pointer, c_bool)
+import os
+import threading
+
+# ==============================================================================
+# NVENC GUID 结构体 (16 bytes)
+# ==============================================================================
+
+class _NvGuid(Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("Data1", c_uint32),
+        ("Data2", c_uint16),
+        ("Data3", c_uint16),
+        ("Data4", c_uint8 * 8),
+    ]
+
+    def __eq__(self, other):
+        if not isinstance(other, _NvGuid):
+            return False
+        return (self.Data1 == other.Data1 and self.Data2 == other.Data2
+                and self.Data3 == other.Data3 and bytes(self.Data4) == bytes(other.Data4))
+
+    def __hash__(self):
+        return hash((self.Data1, self.Data2, self.Data3, bytes(self.Data4)))
+
+# ==============================================================================
+# NVENC 预定义 GUID 常量
+# ==============================================================================
+
+NV_ENC_CODEC_H264_GUID = _NvGuid(0x6b9c211b, 0x3fdd, 0x4a5a,
+    (0x8d, 0x2e, 0x05, 0x0a, 0xbb, 0xb9, 0x1c, 0x6a))
+
+NV_ENC_PRESET_P1_GUID = _NvGuid(0xfc9a8d6c, 0xa4e8, 0x4f03,
+    (0xaa, 0xce, 0x91, 0x97, 0x6a, 0xc2, 0x74, 0x10))
+NV_ENC_PRESET_P2_GUID = _NvGuid(0x711784c6, 0x34a6, 0x47e0,
+    (0xaa, 0x06, 0x60, 0x9c, 0x72, 0xdb, 0x0c, 0x8a))
+NV_ENC_PRESET_P3_GUID = _NvGuid(0xc678451b, 0x1b4f, 0x4b64,
+    (0xbc, 0x03, 0x10, 0xbb, 0x22, 0xc3, 0x54, 0x63))
+NV_ENC_PRESET_P4_GUID = _NvGuid(0xec59fb72, 0x14fb, 0x4e28,
+    (0xbc, 0x04, 0xa1, 0x59, 0xd2, 0x6c, 0x01, 0xc5))
+NV_ENC_PRESET_P5_GUID = _NvGuid(0xb0b9e4da, 0xb52e, 0x4edb,
+    (0xa1, 0xcb, 0xd4, 0x70, 0x36, 0x48, 0x32, 0x95))
+NV_ENC_PRESET_P6_GUID = _NvGuid(0x74c1e37a, 0x4b74, 0x4905,
+    (0xb0, 0xe9, 0x00, 0x61, 0x15, 0x53, 0xb6, 0x3a))
+NV_ENC_PRESET_P7_GUID = _NvGuid(0x5b7e7d04, 0xb7df, 0x4488,
+    (0x82, 0x4e, 0x55, 0xbf, 0x41, 0x8a, 0x18, 0x29))
+
+NV_ENC_H264_PROFILE_HIGH_GUID = _NvGuid(0x1a1a5a20, 0xf787, 0x4e5b,
+    (0x9a, 0xab, 0x58, 0x76, 0xfa, 0x7a, 0xdc, 0x0f))
+
+_PRESET_GUID_MAP = {
+    "p1": NV_ENC_PRESET_P1_GUID, "p2": NV_ENC_PRESET_P2_GUID,
+    "p3": NV_ENC_PRESET_P3_GUID, "p4": NV_ENC_PRESET_P4_GUID,
+    "p5": NV_ENC_PRESET_P5_GUID, "p6": NV_ENC_PRESET_P6_GUID,
+    "p7": NV_ENC_PRESET_P7_GUID,
+}
+
+# ==============================================================================
+# NVENC API 常量
+# ==============================================================================
+
+# [FIX-NVENC-SDK13] SDK 13.0 struct version formula (verified against nv-codec-headers SDK 13.0.0):
+#   NVENCAPI_VERSION = NVENCAPI_MAJOR | (NVENCAPI_MINOR << 24) = 13 | (0 << 24) = 0x0d
+#   NVENCAPI_STRUCT_VERSION(ver) = NVENCAPI_VERSION | (ver << 16) | (0x7 << 28) | (0x80000000 if bit31 else 0)
+#   低字节是 NVENCAPI_VERSION (0x0d)，不是 sizeof(struct)。这是 SDK 12+ 的正确公式。
+_NVENCAPI_VERSION_FALLBACK = (13 << 4) | 0  # 13.0 = 0xD0
+
+def NVENCAPI_STRUCT_VERSION(struct_or_size, api_ver=None):
+    """保留兼容旧代码。"""
+    if api_ver is None:
+        api_ver = _NVENCAPI_VERSION_FALLBACK
+    if isinstance(struct_or_size, int):
+        size = struct_or_size
+    else:
+        size = sizeof(struct_or_size)
+    return size | (api_ver << 16) | (0x7 << 28)
+
+# SDK 13.0 struct version helper: NVENCAPI_VERSION | (ver << 16) | (0x7 << 28) | (bit31 ? 1<<31 : 0)
+# NVENCAPI_VERSION = NVENCAPI_MAJOR | (NVENCAPI_MINOR << 24) = 13 | (0 << 24) = 0x0d
+# This is the CORRECT formula per nv-codec-headers SDK 13.0, NOT sizeof-based.
+_NVENCAPI_VERSION = 0x0d  # SDK 13.0
+
+def _sdk13_ver(ver, bit31=False):
+    v = _NVENCAPI_VERSION | (ver << 16) | (0x7 << 28)
+    if bit31:
+        v |= (1 << 31)
+    return v
+NV_ENC_CREATE_INPUT_BUFFER_VER = _sdk13_ver(2)           # NVENCAPI_STRUCT_VERSION(2) = 0x7002000d
+NV_ENC_LOCK_INPUT_BUFFER_VER = _sdk13_ver(1)             # NVENCAPI_STRUCT_VERSION(1) = 0x7001000d
+NV_ENC_CREATE_BITSTREAM_BUFFER_VER = _sdk13_ver(1)       # NVENCAPI_STRUCT_VERSION(1) = 0x7001000d
+
+# func_table = 64 指针槽, sizeof(c_void_p) * 64 = 512 (64-bit)
+_FUNC_TABLE_SIZE = sizeof(c_void_p) * 64
+
+# 静态结构体版本常量 — 依赖 struct 定义，在 struct 定义完成后赋值 (#NVENC_STRUCT_VERS)
+NV_ENC_PRESET_CONFIG_VER     = 0  # placeholder
+NV_ENC_CONFIG_VER            = 0
+NV_ENC_INITIALIZE_PARAMS_VER = 0
+NV_ENC_PIC_PARAMS_VER        = 0
+NV_ENC_LOCK_BITSTREAM_VER    = 0
+NV_ENC_REGISTER_RESOURCE_VER = 0
+NV_ENC_MAP_INPUT_RESOURCE_VER = 0
+
+NV_ENC_SUCCESS = 0
+
+# NV_ENC_DEVICE_TYPE enum per nv-codec-headers SDK 13.0:
+#   DIRECTX=0, CUDA=1, OPENGL=2
+NV_ENC_DEVICE_TYPE_CUDA = 1
+NV_ENC_BUFFER_FORMAT_NV12 = 1
+NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR = 2
+NV_ENC_INPUT_IMAGE = 0
+NV_ENC_PIC_STRUCT_FRAME = 1
+
+# ==============================================================================
+# NVENC API 结构体定义
+# ==============================================================================
+
+class _NvEncOpenEncodeSessionExParams(Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("version",    c_uint32),
+        ("deviceType", c_uint32),
+        ("device",     c_void_p),
+        ("reserved",   c_void_p),
+        ("apiVersion", c_uint32),
+        ("reserved1",  c_uint8 * 253 * 4),
+        ("reserved2",  c_void_p * 64),
+    ]
+
+class _NvEncInitializeParams(Structure):
+    """SDK 13.0 NV_ENC_INITIALIZE_PARAMS — sizeof=1800 bytes (C dump verified)"""
+    _pack_ = 1
+    _fields_ = [
+        ("version",                 c_uint32),        # offset 0
+        ("encodeGUID",              _NvGuid),         # offset 4 (16 bytes)
+        ("presetGUID",              _NvGuid),         # offset 20 (16 bytes)
+        ("encodeWidth",             c_uint32),        # offset 36
+        ("encodeHeight",            c_uint32),        # offset 40
+        ("darWidth",                c_uint32),        # offset 44
+        ("darHeight",               c_uint32),        # offset 48
+        ("frameRateNum",            c_uint32),        # offset 52
+        ("frameRateDen",            c_uint32),        # offset 56
+        ("enableEncodeAsync",       c_uint32),        # offset 60
+        ("enablePTD",               c_uint32),        # offset 64
+        ("bitfield",                c_uint32),        # offset 68
+        ("privDataSize",            c_uint32),        # offset 72
+        ("reserved_76",             c_uint32),        # offset 76
+        ("privData",                c_void_p),        # offset 80
+        ("encodeConfig",            c_void_p),        # offset 88 ★
+        ("maxEncodeWidth",          c_uint32),        # offset 96
+        ("maxEncodeHeight",         c_uint32),        # offset 100
+        ("maxMEHintCountsPerBlock", c_uint8 * 32),    # offset 104
+        ("tuningInfo",              c_uint32),        # offset 136
+        ("bufferFormat",            c_uint32),        # offset 140
+        ("numStateBuffers",         c_uint32),        # offset 144
+        ("outputStatsLevel",        c_uint32),        # offset 148
+        ("reserved1",               c_uint8 * 1136),  # offset 152 (284×4)
+        ("reserved2",               c_void_p * 64),   # offset 1288 (64×8=512)
+    ]
+
+class _NvEncConfigH264VUIParameters(Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("overscanInfoPresentFlag", c_uint32),
+        ("videoSignalTypePresentFlag", c_uint32),
+        ("videoFormat", c_uint32),
+        ("videoFullRangeFlag", c_uint32),
+        ("colourDescriptionPresentFlag", c_uint32),
+        ("colourPrimaries", c_uint32),
+        ("transferCharacteristics", c_uint32),
+        ("matrixCoefficients", c_uint32),
+        ("chromaSampleLocationFlag", c_uint32),
+        ("chromaSampleLocationTop", c_uint32),
+        ("chromaSampleLocationBottom", c_uint32),
+        ("bitstreamRestrictionFlag", c_uint32),
+        ("reserved", c_uint32 * 16),
+    ]
+
+class _NvEncConfigH264(Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("enableTemporalSVC",         c_uint32),
+        ("enableTemporalSVC_1",       c_uint32),
+        ("profileLevel",              c_uint32),
+        ("reserved1",                 c_uint32 * 14),
+        ("maxNumRefFramesInDPB",      c_uint32),
+        ("reserved2",                 c_uint32 * 3),
+        ("idrPeriod",                 c_uint32),
+        ("repeatSPSPPS",              c_uint32),
+        ("reserved10",                c_uint32 * 4),
+        ("vuiParameters",             _NvEncConfigH264VUIParameters),
+        ("reserved12",                c_uint32 * 222),
+    ]
+
+class _NvEncConfigHevc(Structure):
+    _pack_ = 1
+    _fields_ = [("reserved", c_uint32 * 288)]
+
+class _NvEncConfigH264MeOnly(Structure):
+    _pack_ = 1
+    _fields_ = [("reserved", c_uint32 * 248)]
+
+class _NvEncConfigHevcMeOnly(Structure):
+    _pack_ = 1
+    _fields_ = [("reserved", c_uint32 * 248)]
+
+class _NvEncConfig(Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("version",         c_uint32),
+        ("profileGUID",     _NvGuid),
+        ("gopLength",       c_uint32),
+        ("frameIntervalP",  c_uint32),
+        ("frameFieldMode",  c_uint32),
+        ("enablePTD",       c_uint32),
+        ("frameFieldMode_1",c_uint32),
+        ("reserved3",       c_uint32 * 53),
+        ("mvPrecision",     c_uint32),
+        ("reserved4",       c_uint32 * 27),
+        ("enableTemporalAQ",c_uint32),
+        ("reserved5",       c_uint32 * 171),
+        ("encodeCodecConfig", _NvEncConfigH264),
+        ("reserved7",      c_uint32 * 252),
+    ]
+
+class _NvEncPresetConfig(Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("version",       c_uint32),
+        ("presetConfig",  _NvEncConfig),
+        ("reserved",      c_uint32 * 256),
+    ]
+
+class _NvEncRegisterResource(Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("version",          c_uint32),
+        ("resourceType",     c_uint32),
+        ("width",            c_uint32),
+        ("height",           c_uint32),
+        ("pitch",            c_uint32),
+        ("subResourceIndex", c_uint32),
+        ("bufferFormat",     c_uint32),
+        ("bufferUsage",      c_uint32),
+        ("pInputFencePoint", c_void_p),
+        ("pOutputFencePoint",c_void_p),
+        ("reserved",         c_uint32 * 248),
+        ("registeredResource", c_void_p),
+    ]
+
+class _NvEncMapInputResource(Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("version",            c_uint32),
+        ("subResourceIndex",   c_uint32),
+        ("reserved",           c_uint32 * 62),
+        ("registeredResource", c_void_p),
+        ("mappedResource",     c_void_p),
+        ("reserved1",          c_uint32 * 62),
+    ]
+
+class _NvEncPicParamsH264(Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("reserved",        c_uint32 * 4),
+        ("refFrameFlag",    c_uint32),
+        ("reserved1",       c_uint32 * 257),
+    ]
+
+class _NvEncPicParams(Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("version",           c_uint32),
+        ("inputWidth",        c_uint32),
+        ("inputHeight",       c_uint32),
+        ("inputPitch",        c_uint32),
+        ("inputBuffer",       c_void_p),
+        ("inputTimeStamp",    c_uint64),
+        ("pictureStruct",     c_uint32),
+        ("encodePicFlags",    c_uint32),
+        ("frameIdx",          c_uint32),
+        ("inputFencePoint",   c_void_p),
+        ("outputFencePoint",  c_void_p),
+        ("inputDuration",     c_uint64),
+        ("reserved",          c_uint32 * 8),
+        ("codecPicParams",    _NvEncPicParamsH264),
+        ("reserved1",         c_uint32 * 272),
+    ]
+
+class _NvEncLockBitstream(Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("version",           c_uint32),
+        ("doNotWait",         c_uint32),
+        ("reserved",          c_uint32 * 30),
+        ("outputBitstream",   c_void_p),
+        ("sliceOffsets",      c_uint32 * 16),
+        ("reserved1",         c_uint32 * 246),
+        ("bitstreamSizeInBytes",c_uint32),
+        ("bitstreamBufferPtr", c_void_p),
+        ("reserved2",         c_uint32 * 174),
+    ]
+
+# ── #NVENC_STRUCT_VERS: SDK 13.0 version constants (NVENCAPI_STRUCT_VERSION based) ──
+NV_ENC_PRESET_CONFIG_VER     = _sdk13_ver(5, True)   # 0xf005000d
+NV_ENC_CONFIG_VER            = _sdk13_ver(9, True)   # 0xf009000d
+NV_ENC_INITIALIZE_PARAMS_VER = _sdk13_ver(7, True)   # 0xf007000d
+NV_ENC_PIC_PARAMS_VER        = _sdk13_ver(7, True)   # 0xf007000d
+NV_ENC_LOCK_BITSTREAM_VER    = _sdk13_ver(2, True)   # 0xf002000d
+NV_ENC_REGISTER_RESOURCE_VER = _sdk13_ver(5)          # 0x7005000d
+NV_ENC_MAP_INPUT_RESOURCE_VER = _sdk13_ver(4)          # 0x7004000d
+
+# ==============================================================================
+# ctypes 函数原型定义
+# ==============================================================================
+
+_NvEncodeAPICreateInstanceProto = ctypes.CFUNCTYPE(
+    c_uint32, c_void_p,
+)
+
+_NvEncOpenEncodeSessionExProto = ctypes.CFUNCTYPE(
+    c_uint32, ctypes.POINTER(_NvEncOpenEncodeSessionExParams), ctypes.POINTER(c_void_p),
+)
+_NvEncGetEncodePresetConfigProto = ctypes.CFUNCTYPE(
+    c_uint32, c_void_p, _NvGuid, _NvGuid, ctypes.POINTER(_NvEncPresetConfig),
+)
+# [FIX-NVENC-VER-D] nvEncInitializeEncoder(void* encoder, NV_ENC_INITIALIZE_PARAMS*)
+# 原参数顺序错误（params在前），修正为 encoder handle 在第一位
+_NvEncCreateEncoderProto = ctypes.CFUNCTYPE(
+    c_uint32, c_void_p, ctypes.POINTER(_NvEncInitializeParams),
+)
+_NvEncDestroyEncoderProto = ctypes.CFUNCTYPE(c_uint32, c_void_p)
+_NvEncRegisterResourceProto = ctypes.CFUNCTYPE(
+    c_uint32, c_void_p, ctypes.POINTER(_NvEncRegisterResource),
+)
+_NvEncUnregisterResourceProto = ctypes.CFUNCTYPE(
+    c_uint32, c_void_p, c_void_p,
+)
+_NvEncMapInputResourceProto = ctypes.CFUNCTYPE(
+    c_uint32, c_void_p, ctypes.POINTER(_NvEncMapInputResource),
+)
+_NvEncUnmapInputResourceProto = ctypes.CFUNCTYPE(
+    c_uint32, c_void_p, c_void_p,
+)
+_NvEncEncodePictureProto = ctypes.CFUNCTYPE(
+    c_uint32, c_void_p, ctypes.POINTER(_NvEncPicParams),
+)
+_NvEncLockBitstreamProto = ctypes.CFUNCTYPE(
+    c_uint32, c_void_p, ctypes.POINTER(_NvEncLockBitstream),
+)
+_NvEncUnlockBitstreamProto = ctypes.CFUNCTYPE(
+    c_uint32, c_void_p, c_void_p,
+)
+
+# [FIX-NVENC-SDK13] SDK 13.0 function table indices — verified via nv-codec-headers n13.0.19.0 C dump.
+# Index = (offsetof(field) - offsetof(nvEncOpenEncodeSession)) / sizeof(void*)
+# SDK 13.0 将 OpenEncodeSessionEx 从 index 24 → 29 (新增 5 个 reserved 槽)
+_FUNC_IDX = {
+    "GetEncodeGUIDCount":        1,   # nvEncGetEncodeGUIDCount
+    "GetEncodeGUIDs":            4,   # nvEncGetEncodeGUIDs
+    "GetEncodePresetGUIDs":      9,   # nvEncGetEncodePresetGUIDs
+    "GetEncodePresetConfig":    10,   # nvEncGetEncodePresetConfig
+    "InitializeEncoder":        11,   # nvEncInitializeEncoder (旧名 nvEncCreateEncoder)
+    "CreateInputBuffer":        12,   # nvEncCreateInputBuffer
+    "DestroyInputBuffer":       13,   # nvEncDestroyInputBuffer
+    "CreateBitstreamBuffer":    14,   # nvEncCreateBitstreamBuffer
+    "DestroyBitstreamBuffer":   15,   # nvEncDestroyBitstreamBuffer
+    "EncodePicture":            16,   # nvEncEncodePicture
+    "LockBitstream":            17,   # nvEncLockBitstream
+    "UnlockBitstream":          18,   # nvEncUnlockBitstream
+    "LockInputBuffer":          19,   # nvEncLockInputBuffer
+    "UnlockInputBuffer":        20,   # nvEncUnlockInputBuffer
+    "MapInputResource":         25,   # nvEncMapInputResource
+    "UnmapInputResource":       26,   # nvEncUnmapInputResource
+    "DestroyEncoder":           27,   # nvEncDestroyEncoder
+    "OpenEncodeSessionEx":      29,   # nvEncOpenEncodeSessionEx (SDK 13.0)
+    "RegisterResource":         30,   # nvEncRegisterResource
+    "UnregisterResource":       31,   # nvEncUnregisterResource
+    "GetEncodePresetConfigEx":  39,   # nvEncGetEncodePresetConfigEx (SDK 13.0)
+}
+
+# ==============================================================================
+# NVENCEncoder
+# ==============================================================================
+
+class NVENCEncoder:
+    """GPU direct H.264 hardware encoder via NVENC SDK (ctypes) — SDK 13.0 verified.
+
+    Input: GPU tensor (NV12 format, uint8, H_total x W, contiguous)
+    Output: H.264 Elementary Stream bytes
+
+    [FIX-NVENC-SDK13] Complete rewrite based on verified test_nvenc_pre_torch.py:
+      - CreateInputBuffer + LockInputBuffer + cuMemcpyDtoD_v2 (no RegisterResource)
+      - CreateBitstreamBuffer for encoder output
+      - All structs via byte array + manual offset writes (verified offsets)
+      - Dynamic GUID query from driver (GetEncodeGUIDs / GetEncodePresetGUIDs)
+      - Primary context management (cuDevicePrimaryCtxRetain + cuCtxPushCurrent)
+    """
+
+    def __init__(self, width: int, height: int, fps: float,
+                 preset: str = "p1", qp: int = 0,
+                 codec: str = "h264"):
+        if codec != "h264":
+            raise ValueError("NVENCEncoder: only H.264 supported, got: " + codec)
+
+        self._width = width
+        self._height = height
+        self._fps = fps
+        self._qp = qp
+        self._preset_name = preset.lower()
+        self._encoder = c_void_p(None)
+        self._frame_idx = 0
+        self._lock = threading.Lock()
+
+        # Buffers created in init, reused per frame
+        self._input_buf_handle = c_void_p(None)
+        self._bs_handle = c_void_p(None)
+
+        # [SEGMENT-REUSE] 缓存首段 SPS+PPS NAL 单元，后续段预挂到首帧前
+        self._cached_sps_pps: Optional[bytes] = None
+
+        # 1. Load NVENC DLL
+        self._dll_path = self._find_dll()
+        try:
+            self._dll = ctypes.CDLL(self._dll_path)
+        except OSError as e:
+            raise RuntimeError(
+                "[NVENCEncoder] Cannot load NVENC DLL (%s): %s. "
+                "Please verify NVIDIA driver is installed." % (self._dll_path, e))
+
+        # 2. Load libcuda for GPU operations
+        try:
+            self._libcuda = ctypes.CDLL("libcuda.so.1" if sys.platform != "win32" else "nvcuda.dll")
+            self._libcuda.cuInit(0)
+        except Exception as e:
+            raise RuntimeError("[NVENCEncoder] Cannot load CUDA library: %s" % e)
+
+        # 3. Runtime API version detection
+        try:
+            _get_max_ver = self._dll.NvEncodeAPIGetMaxSupportedVersion
+            _get_max_ver.restype = c_uint32
+            _get_max_ver.argtypes = [ctypes.POINTER(c_uint32)]
+            _max_ver_val = c_uint32(0)
+            _get_max_ver(ctypes.byref(_max_ver_val))
+            _nvenc_api_version = _max_ver_val.value if _max_ver_val.value > 0 else _NVENCAPI_VERSION_FALLBACK
+        except Exception:
+            _nvenc_api_version = _NVENCAPI_VERSION_FALLBACK
+        print("[NVENCEncoder] NVENC API: 0x%x = v%d.%d" % (
+            _nvenc_api_version, _nvenc_api_version >> 4, _nvenc_api_version & 0xF), flush=True)
+
+        # 4. CUDA context setup — use primary context (cuCtxCreate fails code=2 on T4)
+        self._saved_ctx = c_void_p(None)
+        self._nvenc_own_ctx = False
+        cuda_ctx = c_void_p(None)
+
+        # Save current context
+        self._libcuda.cuCtxGetCurrent.restype = c_uint32
+        self._libcuda.cuCtxGetCurrent.argtypes = [ctypes.POINTER(c_void_p)]
+        self._libcuda.cuCtxGetCurrent(ctypes.byref(self._saved_ctx))
+
+        # Get primary context for device 0
+        self._libcuda.cuDevicePrimaryCtxRetain.restype = c_uint32
+        self._libcuda.cuDevicePrimaryCtxRetain.argtypes = [ctypes.POINTER(c_void_p), c_int]
+        primary_ctx = c_void_p(None)
+        r = self._libcuda.cuDevicePrimaryCtxRetain(ctypes.byref(primary_ctx), c_int(0))
+        if r == 0 and primary_ctx.value is not None:
+            self._libcuda.cuCtxPushCurrent.restype = c_uint32
+            self._libcuda.cuCtxPushCurrent.argtypes = [c_void_p]
+            self._libcuda.cuCtxPushCurrent(primary_ctx)
+            cuda_ctx = primary_ctx
+            print("[NVENCEncoder] 使用 primary CUDA context (0x%x)" % primary_ctx.value, flush=True)
+        elif self._saved_ctx.value is not None:
+            cuda_ctx = self._saved_ctx
+            print("[NVENCEncoder] 使用已存在的 CUDA context (0x%x)" % self._saved_ctx.value, flush=True)
+        else:
+            raise RuntimeError("[NVENCEncoder] 无法获取 CUDA context")
+
+        # 5. NvEncodeAPICreateInstance
+        _FUNC_TABLE_RAW_SIZE = 2552  # SDK 13.0 func_table size in bytes
+        func_table = (c_uint8 * _FUNC_TABLE_RAW_SIZE)()
+        _flist_ver = _sdk13_ver(2)  # NV_ENCODE_API_FUNCTION_LIST_VER = NVENCAPI_STRUCT_VERSION(2) = 0x7002000d
+        cast(func_table, ctypes.POINTER(c_uint32))[0] = _flist_ver
+        create_instance = _NvEncodeAPICreateInstanceProto(
+            ("NvEncodeAPICreateInstance", self._dll))
+        status = create_instance(cast(func_table, c_void_p))
+        if status != NV_ENC_SUCCESS:
+            raise RuntimeError(
+                "[NVENCEncoder] NvEncodeAPICreateInstance failed, code=%d. "
+                "Verify GPU supports NVENC." % status)
+
+        # func_ptrs at offset 8 (skip version + reserved)
+        self._func_ptrs = cast(byref(func_table, 8), ctypes.POINTER(c_void_p))
+        # Keep ref to prevent GC
+        self._func_table_raw = func_table
+
+        def _get_func(idx):
+            addr = self._func_ptrs[idx]
+            if not addr or addr == 0:
+                return None
+            return addr
+
+        # 6. OpenEncodeSessionEx
+        open_func_addr = _get_func(_FUNC_IDX["OpenEncodeSessionEx"])
+        if open_func_addr is None:
+            raise RuntimeError("[NVENCEncoder] OpenEncodeSessionEx not available")
+        open_session = _NvEncOpenEncodeSessionExProto(open_func_addr)
+
+        # SDK 13.0 apiVersion uses NVENCAPI_VERSION = MAJOR | (MINOR << 24) = 0x0d
+        # Also try old format (MAJOR << 4) | MINOR = 0xd0 for backward compat
+        _api_try_list = sorted(set([
+            _NVENCAPI_VERSION,       # 0x0d — SDK 13.0 new format
+            _nvenc_api_version,      # from driver (0xd0)
+            (13 << 4) | 0,           # 0xd0 — old format 13.0
+            (12 << 4) | 0,           # 0xc0 — old format 12.0
+        ]), reverse=True)
+        status = 0xFFFF
+        for _api_ver in _api_try_list:
+            session_params = _NvEncOpenEncodeSessionExParams()
+            session_params.version = _sdk13_ver(1)  # NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER = NVENCAPI_STRUCT_VERSION(1) = 0x7001000d
+            session_params.deviceType = NV_ENC_DEVICE_TYPE_CUDA
+            session_params.device = cuda_ctx
+            session_params.apiVersion = _api_ver
+            self._encoder = c_void_p(None)
+            status = open_session(byref(session_params), byref(self._encoder))
+            if status == NV_ENC_SUCCESS:
+                print("[NVENCEncoder] OpenEncodeSessionEx OK: apiVersion=0x%x (%d.%d)" % (
+                    _api_ver, _api_ver >> 4, _api_ver & 0xF), flush=True)
+                break
+            if status != 15:  # non-INVALID_VERSION, don't retry
+                break
+        if status != NV_ENC_SUCCESS:
+            raise RuntimeError(
+                "[NVENCEncoder] nvEncOpenEncodeSessionEx failed, code=%d" % status)
+
+        # 7. Dynamic GUID query from driver
+        _GetEncodeGUIDCountProto = ctypes.CFUNCTYPE(c_uint32, c_void_p, ctypes.POINTER(c_uint32))
+        _GetEncodeGUIDsProto = ctypes.CFUNCTYPE(c_uint32, c_void_p, ctypes.POINTER(_NvGuid), c_uint32, ctypes.POINTER(c_uint32))
+        _GetEncodePresetGUIDsProto = ctypes.CFUNCTYPE(
+            c_uint32, c_void_p, _NvGuid, ctypes.POINTER(_NvGuid), c_uint32, ctypes.POINTER(c_uint32))
+
+        count_val = c_uint32(0)
+        s = _GetEncodeGUIDCountProto(_get_func(_FUNC_IDX["GetEncodeGUIDCount"]))(self._encoder, byref(count_val))
+        if s != 0 or count_val.value == 0:
+            raise RuntimeError("[NVENCEncoder] GetEncodeGUIDCount failed, code=%d" % s)
+
+        n_guids = count_val.value
+        guid_array = (_NvGuid * n_guids)()
+        ctypes.memset(cast(guid_array, c_void_p), 0, sizeof(guid_array))
+        actual_count = c_uint32(0)
+        s = _GetEncodeGUIDsProto(_get_func(_FUNC_IDX["GetEncodeGUIDs"]))(self._encoder, guid_array, n_guids, byref(actual_count))
+        if s != 0 or actual_count.value == 0:
+            raise RuntimeError("[NVENCEncoder] GetEncodeGUIDs failed, code=%d" % s)
+        codec_guid = guid_array[0]
+        print("[NVENCEncoder] Driver codec GUID: %08x-%04x-%04x" % (
+            codec_guid.Data1, codec_guid.Data2, codec_guid.Data3), flush=True)
+
+        preset_guid_array = (_NvGuid * 64)()
+        ctypes.memset(cast(preset_guid_array, c_void_p), 0, sizeof(preset_guid_array))
+        preset_count = c_uint32(0)
+        s = _GetEncodePresetGUIDsProto(_get_func(_FUNC_IDX["GetEncodePresetGUIDs"]))(
+            self._encoder, codec_guid, preset_guid_array, 64, byref(preset_count))
+        if s != 0 or preset_count.value == 0:
+            raise RuntimeError("[NVENCEncoder] GetEncodePresetGUIDs failed, code=%d" % s)
+        preset_guid = preset_guid_array[0]
+        print("[NVENCEncoder] Driver preset GUID: %08x-%04x-%04x" % (
+            preset_guid.Data1, preset_guid.Data2, preset_guid.Data3), flush=True)
+
+        # 8. GetEncodePresetConfig
+        get_preset_addr = _get_func(_FUNC_IDX["GetEncodePresetConfig"])
+        if get_preset_addr is None:
+            get_preset_addr = _get_func(_FUNC_IDX["GetEncodePresetConfigEx"])
+        if get_preset_addr is None:
+            raise RuntimeError("[NVENCEncoder] GetEncodePresetConfig not available")
+        _GPC_fn = ctypes.CFUNCTYPE(c_uint32, c_void_p, _NvGuid, _NvGuid, ctypes.POINTER(_NvEncPresetConfig))
+
+        preset_config = _NvEncPresetConfig()
+        ctypes.memset(byref(preset_config), 0, sizeof(preset_config))
+        preset_config.version = NV_ENC_PRESET_CONFIG_VER
+        # presetCfg is NV_ENC_CONFIG at offset 8 in _NvEncPresetConfig
+        cast(byref(preset_config, 8), ctypes.POINTER(c_uint32))[0] = NV_ENC_CONFIG_VER
+
+        status = _GPC_fn(get_preset_addr)(self._encoder, codec_guid, preset_guid, byref(preset_config))
+        if status != NV_ENC_SUCCESS:
+            raise RuntimeError("[NVENCEncoder] GetEncodePresetConfig failed, code=%d" % status)
+        print("[NVENCEncoder] GetEncodePresetConfig OK", flush=True)
+
+        # Configure encoding params (presetCfg at offset 8)
+        enc_cfg = cast(byref(preset_config, 8), ctypes.POINTER(_NvEncConfig)).contents
+        enc_cfg.gopLength = int(fps)
+        enc_cfg.frameIntervalP = 1
+        enc_cfg.encodeCodecConfig.idrPeriod = int(fps)
+        enc_cfg.encodeCodecConfig.maxNumRefFramesInDPB = 16
+        enc_cfg.encodeCodecConfig.repeatSPSPPS = 1  # [SEGMENT-REUSE] 每个 IDR 前重发 SPS/PPS，确保新 muxer 能收到
+
+        # 9. InitializeEncoder
+        init_params = _NvEncInitializeParams()
+        ctypes.memset(byref(init_params), 0, sizeof(init_params))
+        init_params.version = NV_ENC_INITIALIZE_PARAMS_VER
+        init_params.encodeGUID = codec_guid
+        init_params.presetGUID = preset_guid
+        init_params.encodeWidth = width
+        init_params.encodeHeight = height
+        init_params.darWidth = width
+        init_params.darHeight = height
+        init_params.frameRateNum = int(fps * 1000)
+        init_params.frameRateDen = 1000
+        init_params.maxEncodeWidth = width
+        init_params.maxEncodeHeight = height
+        init_params.enablePTD = 1
+        init_params.encodeConfig = cast(byref(preset_config, 8), c_void_p)
+
+        init_addr = _get_func(_FUNC_IDX["InitializeEncoder"])
+        if init_addr is None:
+            raise RuntimeError("[NVENCEncoder] InitializeEncoder not available")
+        create_encoder = _NvEncCreateEncoderProto(init_addr)
+        status = create_encoder(self._encoder, byref(init_params))
+        if status != NV_ENC_SUCCESS:
+            raise RuntimeError("[NVENCEncoder] InitializeEncoder failed, code=%d" % status)
+
+        # 10. Create persistent input buffer
+        nv12_h = height + height // 2
+        create_buf = (c_uint8 * 776)()
+        ctypes.memset(create_buf, 0, 776)
+        cast(create_buf, ctypes.POINTER(c_uint32))[0] = NV_ENC_CREATE_INPUT_BUFFER_VER  # version@0
+        cast(byref(create_buf, 4), ctypes.POINTER(c_uint32))[0] = width                  # width@4
+        cast(byref(create_buf, 8), ctypes.POINTER(c_uint32))[0] = nv12_h                 # height@8
+        cast(byref(create_buf, 16), ctypes.POINTER(c_uint32))[0] = NV_ENC_BUFFER_FORMAT_NV12  # bufferFmt@16
+
+        _CreateInputBufferProto = ctypes.CFUNCTYPE(c_uint32, c_void_p, ctypes.POINTER(c_uint8 * 776))
+        s = _CreateInputBufferProto(_get_func(_FUNC_IDX["CreateInputBuffer"]))(self._encoder, create_buf)
+        if s != 0:
+            raise RuntimeError("[NVENCEncoder] CreateInputBuffer failed, code=%d" % s)
+        _raw_ptr = cast(byref(create_buf, 24), ctypes.POINTER(c_void_p))[0]  # inputBuffer@24
+        self._input_buf_handle = c_void_p(_raw_ptr if isinstance(_raw_ptr, int) else (_raw_ptr.value or 0))
+        print("[NVENCEncoder] Input buffer: 0x%x" % self._input_buf_handle.value, flush=True)
+
+        # 11. Create persistent bitstream buffer
+        bs_buf = (c_uint8 * 776)()
+        ctypes.memset(bs_buf, 0, 776)
+        cast(bs_buf, ctypes.POINTER(c_uint32))[0] = NV_ENC_CREATE_BITSTREAM_BUFFER_VER  # version@0
+
+        _CreateBitstreamBufferProto = ctypes.CFUNCTYPE(c_uint32, c_void_p, ctypes.POINTER(c_uint8 * 776))
+        s = _CreateBitstreamBufferProto(_get_func(_FUNC_IDX["CreateBitstreamBuffer"]))(self._encoder, bs_buf)
+        if s != 0:
+            self._destroy_input_buffer()
+            raise RuntimeError("[NVENCEncoder] CreateBitstreamBuffer failed, code=%d" % s)
+        _raw_bs = cast(byref(bs_buf, 16), ctypes.POINTER(c_void_p))[0]  # bitstreamBuffer@16
+        self._bs_handle = c_void_p(_raw_bs if isinstance(_raw_bs, int) else (_raw_bs.value or 0))
+        print("[NVENCEncoder] Bitstream buffer: 0x%x" % self._bs_handle.value, flush=True)
+
+        # Setup cuMemcpyDtoD
+        self._libcuda.cuMemcpyDtoD_v2.restype = c_uint32
+        self._libcuda.cuMemcpyDtoD_v2.argtypes = [c_void_p, c_void_p, c_size_t]
+
+        # Setup context push/pop helpers
+        self._libcuda.cuCtxPopCurrent.restype = c_uint32
+        self._libcuda.cuCtxPopCurrent.argtypes = [ctypes.POINTER(c_void_p)]
+
+        print("[NVENCEncoder] Ready: %dx%d@%.1ffps H.264 preset=%s QP=%d (GPU direct SDK 13.0)" %
+              (width, height, fps, self._preset_name, qp), flush=True)
+
+    def _destroy_input_buffer(self):
+        if self._input_buf_handle.value is None:
+            return
+        try:
+            _DestroyInputBufferProto = ctypes.CFUNCTYPE(c_uint32, c_void_p, c_void_p)
+            addr = self._func_ptrs[_FUNC_IDX["DestroyInputBuffer"]]
+            if addr:
+                _DestroyInputBufferProto(addr)(self._encoder, self._input_buf_handle)
+        except Exception:
+            pass
+        self._input_buf_handle = c_void_p(None)
+
+    def _destroy_bitstream_buffer(self):
+        if self._bs_handle.value is None:
+            return
+        try:
+            _DestroyBitstreamBufferProto = ctypes.CFUNCTYPE(c_uint32, c_void_p, c_void_p)
+            addr = self._func_ptrs[_FUNC_IDX["DestroyBitstreamBuffer"]]
+            if addr:
+                _DestroyBitstreamBufferProto(addr)(self._encoder, self._bs_handle)
+        except Exception:
+            pass
+        self._bs_handle = c_void_p(None)
+
+    def _find_dll(self) -> str:
+        if sys.platform == "win32":
+            candidates = [
+                "nvEncodeAPI64.dll",
+                os.path.join(os.environ.get("WINDIR", r"C:\Windows"),
+                             "System32", "nvEncodeAPI64.dll"),
+            ]
+            prog_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+            nvidia_video = os.path.join(prog_files, "NVIDIA Corporation",
+                                         "NVIDIA Video Codec SDK")
+            if os.path.isdir(nvidia_video):
+                for root, dirs, files in os.walk(nvidia_video):
+                    if "nvEncodeAPI64.dll" in files:
+                        candidates.insert(0, os.path.join(root, "nvEncodeAPI64.dll"))
+                        break
+            for c in candidates:
+                if os.path.exists(c) or not os.path.dirname(c):
+                    return c
+            return "nvEncodeAPI64.dll"
+        else:
+            candidates = [
+                "/usr/lib/x86_64-linux-gnu/libnvidia-encode.so.1",
+                "/usr/lib64/libnvidia-encode.so.1",
+                "/usr/local/lib/libnvidia-encode.so.1",
+                "libnvidia-encode.so.1",
+            ]
+            for search_dir in ("/usr/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/local/lib", "/usr/lib"):
+                if os.path.isdir(search_dir):
+                    for fname in os.listdir(search_dir):
+                        if fname.startswith("libnvidia-encode.so"):
+                            candidates.insert(0, os.path.join(search_dir, fname))
+            for c in candidates:
+                if os.path.exists(c):
+                    return c
+            return "libnvidia-encode.so.1"
+
+    @staticmethod
+    def _extract_sps_pps(h264_data: bytes) -> Optional[bytes]:
+        """从 H.264 Annex B ES 中提取 SPS+PPS NAL 单元（含起始码）。"""
+        result_parts: List[bytes] = []
+        pos = 0
+        n = len(h264_data)
+        while pos < n - 3:
+            # 查找 4-byte 起始码 0x00 0x00 0x00 0x01
+            if h264_data[pos:pos+4] == b'\x00\x00\x00\x01':
+                start = pos
+                pos += 4
+                if pos >= n:
+                    break
+                nal_byte = h264_data[pos]
+                nal_type = nal_byte & 0x1f
+                # 查找下一个起始码（3-byte 或 4-byte）
+                end = n
+                for j in range(pos, n - 2):
+                    if h264_data[j:j+3] == b'\x00\x00\x01' or h264_data[j:j+4] == b'\x00\x00\x00\x01':
+                        end = j
+                        break
+                if nal_type in (7, 8):  # SPS=7, PPS=8
+                    result_parts.append(h264_data[start:end])
+                pos = end
+            elif h264_data[pos:pos+3] == b'\x00\x00\x01':
+                start = pos
+                pos += 3
+                if pos >= n:
+                    break
+                nal_byte = h264_data[pos]
+                nal_type = nal_byte & 0x1f
+                end = n
+                for j in range(pos, n - 2):
+                    if h264_data[j:j+3] == b'\x00\x00\x01' or h264_data[j:j+4] == b'\x00\x00\x00\x01':
+                        end = j
+                        break
+                if nal_type in (7, 8):
+                    result_parts.append(h264_data[start:end])
+                pos = end
+            else:
+                pos += 1
+        if result_parts:
+            return b''.join(result_parts)
+        return None
+
+    def encode_frame(self, nv12_gpu_tensor, force_idr: bool = False) -> bytes:
+        """Encode one NV12 GPU tensor → H.264 ES bytes.
+
+        Args:
+            nv12_gpu_tensor: NV12 format GPU tensor (H+H//2, W) uint8
+            force_idr: [SEGMENT-REUSE] Force IDR frame to re-emit SPS/PPS for new muxer
+        """
+        import torch
+
+        with self._lock:
+            if self._encoder.value is None:
+                raise RuntimeError("[NVENCEncoder] Encoder not initialized or already closed")
+            if self._input_buf_handle.value is None or self._bs_handle.value is None:
+                raise RuntimeError("[NVENCEncoder] Buffers not initialized")
+
+            assert nv12_gpu_tensor.is_cuda
+            assert nv12_gpu_tensor.dtype == torch.uint8
+            assert nv12_gpu_tensor.is_contiguous()
+
+            nv12_h = self._height + self._height // 2
+            W = self._width
+
+            # ── LockInputBuffer → get mapped pointer ──
+            _LockInputBufferProto = ctypes.CFUNCTYPE(c_uint32, c_void_p, ctypes.POINTER(c_uint8 * 1544))
+            _UnlockInputBufferProto = ctypes.CFUNCTYPE(c_uint32, c_void_p, c_void_p)
+
+            lock_buf = (c_uint8 * 1544)()
+            ctypes.memset(lock_buf, 0, 1544)
+            cast(lock_buf, ctypes.POINTER(c_uint32))[0] = NV_ENC_LOCK_INPUT_BUFFER_VER  # version@0
+            cast(byref(lock_buf, 8), ctypes.POINTER(c_void_p))[0] = self._input_buf_handle  # inputBuffer@8
+
+            lock_addr = self._func_ptrs[_FUNC_IDX["LockInputBuffer"]]
+            s = _LockInputBufferProto(lock_addr)(self._encoder, lock_buf)
+            if s != 0:
+                raise RuntimeError("[NVENCEncoder] LockInputBuffer failed, code=%d" % s)
+
+            _raw_map = cast(byref(lock_buf, 16), ctypes.POINTER(c_void_p))[0]  # bufferDataPtr@16
+            mapped_ptr = _raw_map if isinstance(_raw_map, int) else (_raw_map.value or 0)
+            actual_pitch = cast(byref(lock_buf, 24), ctypes.POINTER(c_uint32))[0]  # pitch@24
+
+            if not mapped_ptr:
+                _UnlockInputBufferProto(self._func_ptrs[_FUNC_IDX["UnlockInputBuffer"]])(
+                    self._encoder, self._input_buf_handle)
+                raise RuntimeError("[NVENCEncoder] LockInputBuffer returned NULL mapped ptr")
+
+            # ── GPU→GPU copy (cuMemcpyDtoD_v2) ──
+            nv12_bytes = nv12_gpu_tensor.numel()
+            src_ptr = nv12_gpu_tensor.data_ptr()
+            r = self._libcuda.cuMemcpyDtoD_v2(c_void_p(mapped_ptr), c_void_p(src_ptr), nv12_bytes)
+            if r != 0:
+                _UnlockInputBufferProto(self._func_ptrs[_FUNC_IDX["UnlockInputBuffer"]])(
+                    self._encoder, self._input_buf_handle)
+                raise RuntimeError("[NVENCEncoder] cuMemcpyDtoD_v2 failed, code=%d" % r)
+
+            # ── UnlockInputBuffer ──
+            _UnlockInputBufferProto(self._func_ptrs[_FUNC_IDX["UnlockInputBuffer"]])(
+                self._encoder, self._input_buf_handle)
+
+            # ── EncodePicture (byte array, verified offsets) ──
+            # NV_ENC_PIC_PARAMS (3360B): version@0, inputWidth@4, inputHeight@8, inputPitch@12,
+            #   encodePicFlags@16, frameIdx@20, inputTimeStamp@24, inputDuration@32,
+            #   inputBuffer@40, outputBitstream@48, completionEvent@56,
+            #   bufferFmt@64, pictureStruct@68, pictureType@72, codecPicParams@76
+            pic_buf = (c_uint8 * 3360)()
+            ctypes.memset(pic_buf, 0, 3360)
+            cast(pic_buf, ctypes.POINTER(c_uint32))[0] = NV_ENC_PIC_PARAMS_VER        # version@0
+            cast(byref(pic_buf, 4), ctypes.POINTER(c_uint32))[0] = W                  # inputWidth@4
+            cast(byref(pic_buf, 8), ctypes.POINTER(c_uint32))[0] = nv12_h             # inputHeight@8
+            cast(byref(pic_buf, 12), ctypes.POINTER(c_uint32))[0] = (
+                actual_pitch if actual_pitch > 0 else W)                               # inputPitch@12
+            cast(byref(pic_buf, 24), ctypes.POINTER(c_uint64))[0] = self._frame_idx   # inputTimeStamp@24
+            cast(byref(pic_buf, 40), ctypes.POINTER(c_void_p))[0] = self._input_buf_handle  # inputBuffer@40
+            cast(byref(pic_buf, 48), ctypes.POINTER(c_void_p))[0] = self._bs_handle   # outputBitstream@48
+            cast(byref(pic_buf, 64), ctypes.POINTER(c_uint32))[0] = NV_ENC_BUFFER_FORMAT_NV12  # bufferFmt@64
+            cast(byref(pic_buf, 68), ctypes.POINTER(c_uint32))[0] = NV_ENC_PIC_STRUCT_FRAME   # pictureStruct@68
+            if force_idr:
+                cast(byref(pic_buf, 16), ctypes.POINTER(c_uint32))[0] = 0x2  # [SEGMENT-REUSE] NV_ENC_PIC_FLAG_FORCEIDR
+
+            encode_picture = _NvEncEncodePictureProto(self._func_ptrs[_FUNC_IDX["EncodePicture"]])
+            status = encode_picture(self._encoder, cast(pic_buf, ctypes.POINTER(_NvEncPicParams)))
+
+            self._frame_idx += 1
+
+            h264_data = b""
+
+            # ── LockBitstream (byte array, verified offsets) ──
+            # NV_ENC_LOCK_BITSTREAM (1544B): version@0, bitfield@4, outputBitstream@8,
+            #   sliceOffsets@16, ..., bitstreamSizeInBytes@36, bitstreamBufferPtr@56, ...
+            _LockBitstreamProto_raw = ctypes.CFUNCTYPE(c_uint32, c_void_p, ctypes.POINTER(c_uint8 * 1544))
+            lock_raw = (c_uint8 * 1544)()
+            ctypes.memset(lock_raw, 0, 1544)
+            cast(lock_raw, ctypes.POINTER(c_uint32))[0] = NV_ENC_LOCK_BITSTREAM_VER     # version@0
+            cast(byref(lock_raw, 8), ctypes.POINTER(c_void_p))[0] = self._bs_handle     # outputBitstream@8
+
+            lock_bs_fn = _LockBitstreamProto_raw(self._func_ptrs[_FUNC_IDX["LockBitstream"]])
+            bs_status = lock_bs_fn(self._encoder, lock_raw)
+
+            if bs_status == NV_ENC_SUCCESS:
+                bitstream_size = cast(byref(lock_raw, 36), ctypes.POINTER(c_uint32))[0]  # @36
+                _raw_bsptr = cast(byref(lock_raw, 56), ctypes.POINTER(c_void_p))[0]     # bitstreamBufferPtr@56
+                bitstream_ptr_val = _raw_bsptr if isinstance(_raw_bsptr, int) else (_raw_bsptr.value or 0)
+                if bitstream_size > 0 and bitstream_ptr_val:
+                    buf_type = c_uint8 * bitstream_size
+                    h264_data = bytes(buf_type.from_address(bitstream_ptr_val))
+
+                # UnlockBitstream
+                _NvEncUnlockBitstreamProto(self._func_ptrs[_FUNC_IDX["UnlockBitstream"]])(
+                    self._encoder, self._bs_handle)
+
+            if status != NV_ENC_SUCCESS:
+                raise RuntimeError("[NVENCEncoder] EncodePicture failed, code=%d" % status)
+
+            # [SEGMENT-REUSE] 首段首次编码时缓存 SPS+PPS，后续段 force_idr 帧预挂
+            if force_idr and self._cached_sps_pps is not None:
+                h264_data = self._cached_sps_pps + h264_data
+            elif not force_idr and self._cached_sps_pps is None and h264_data:
+                self._cached_sps_pps = self._extract_sps_pps(h264_data)
+                if self._cached_sps_pps:
+                    print("[NVENCEncoder] Cached SPS+PPS: %d bytes" % len(self._cached_sps_pps),
+                          flush=True)
+
+            return h264_data
+
+    def flush(self) -> bytes:
+        with self._lock:
+            if self._encoder.value is None:
+                return b""
+
+            # Send EOS
+            pic_buf = (c_uint8 * 3360)()
+            ctypes.memset(pic_buf, 0, 3360)
+            cast(pic_buf, ctypes.POINTER(c_uint32))[0] = NV_ENC_PIC_PARAMS_VER
+            cast(byref(pic_buf, 16), ctypes.POINTER(c_uint32))[0] = 0x8  # encodePicFlags@16 = NV_ENC_PIC_FLAG_EOS
+            cast(byref(pic_buf, 40), ctypes.POINTER(c_void_p))[0] = c_void_p(None)
+            cast(byref(pic_buf, 48), ctypes.POINTER(c_void_p))[0] = self._bs_handle  # outputBitstream
+
+            encode_picture = _NvEncEncodePictureProto(self._func_ptrs[_FUNC_IDX["EncodePicture"]])
+            encode_picture(self._encoder, cast(pic_buf, ctypes.POINTER(_NvEncPicParams)))
+
+            # Drain remaining
+            result_parts = []
+            _LockBitstreamProto_raw = ctypes.CFUNCTYPE(c_uint32, c_void_p, ctypes.POINTER(c_uint8 * 1544))
+            while True:
+                lock_raw = (c_uint8 * 1544)()
+                ctypes.memset(lock_raw, 0, 1544)
+                cast(lock_raw, ctypes.POINTER(c_uint32))[0] = NV_ENC_LOCK_BITSTREAM_VER
+                cast(byref(lock_raw, 4), ctypes.POINTER(c_uint32))[0] = 1  # doNotWait=1
+                cast(byref(lock_raw, 8), ctypes.POINTER(c_void_p))[0] = self._bs_handle
+
+                lock_bs_fn = _LockBitstreamProto_raw(self._func_ptrs[_FUNC_IDX["LockBitstream"]])
+                bs_status = lock_bs_fn(self._encoder, lock_raw)
+                if bs_status != NV_ENC_SUCCESS:
+                    break
+
+                bitstream_size = cast(byref(lock_raw, 36), ctypes.POINTER(c_uint32))[0]
+                if bitstream_size == 0:
+                    _NvEncUnlockBitstreamProto(self._func_ptrs[_FUNC_IDX["UnlockBitstream"]])(
+                        self._encoder, self._bs_handle)
+                    break
+
+                _raw_bsptr = cast(byref(lock_raw, 56), ctypes.POINTER(c_void_p))[0]
+                bitstream_ptr_val = _raw_bsptr if isinstance(_raw_bsptr, int) else (_raw_bsptr.value or 0)
+                if bitstream_ptr_val:
+                    buf_type = c_uint8 * bitstream_size
+                    result_parts.append(bytes(buf_type.from_address(bitstream_ptr_val)))
+
+                _NvEncUnlockBitstreamProto(self._func_ptrs[_FUNC_IDX["UnlockBitstream"]])(
+                    self._encoder, self._bs_handle)
+
+            return b"".join(result_parts)
+
+    def close(self):
+        with self._lock:
+            if self._encoder.value is None:
+                return
+
+            self._destroy_input_buffer()
+            self._destroy_bitstream_buffer()
+
+            destroy_addr = self._func_ptrs[_FUNC_IDX["DestroyEncoder"]]
+            if destroy_addr:
+                _NvEncDestroyEncoderProto(destroy_addr)(self._encoder)
+            self._encoder = c_void_p(None)
+            print("[NVENCEncoder] Encoder closed", flush=True)
+
+            # Restore saved context
+            if self._saved_ctx.value is not None:
+                try:
+                    self._libcuda.cuCtxPushCurrent.restype = c_uint32
+                    self._libcuda.cuCtxPushCurrent.argtypes = [c_void_p]
+                    self._libcuda.cuCtxPushCurrent(self._saved_ctx)
+                except Exception:
+                    pass
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    @property
+    def frame_count(self) -> int:
+        return self._frame_idx
+
+
+# ==============================================================================
+# GPU RGB to NV12 color space conversion (PyTorch)
+# ==============================================================================
+
+def _rgb_to_nv12_gpu(rgb_tensor):
+    # input: (H, W, 3) uint8 GPU tensor, RGB channel order
+    # output: (H + H//2, W) uint8 GPU tensor, NV12 layout
+    import torch
+
+    H, W, C = rgb_tensor.shape
+    assert C == 3
+    assert rgb_tensor.dtype == torch.uint8
+    assert rgb_tensor.is_cuda
+
+    r = rgb_tensor[..., 0].float()
+    g = rgb_tensor[..., 1].float()
+    b = rgb_tensor[..., 2].float()
+
+    # BT.601 limited range
+    Y = (0.257 * r + 0.504 * g + 0.098 * b + 16.0).clamp_(0, 255).round_().to(torch.uint8)
+
+    # 2x2 average downsample for chroma
+    h2, w2 = H // 2, W // 2
+    def _avg_down(x):
+        return (x[:H - H % 2, :W - W % 2].reshape(h2, 2, w2, 2).mean(dim=(1, 3)))
+
+    r_ds = _avg_down(r)
+    g_ds = _avg_down(g)
+    b_ds = _avg_down(b)
+
+    Cb = (-0.148 * r_ds - 0.291 * g_ds + 0.439 * b_ds + 128.0).clamp_(0, 255).round_().to(torch.uint8)
+    Cr = (0.439 * r_ds - 0.368 * g_ds - 0.071 * b_ds + 128.0).clamp_(0, 255).round_().to(torch.uint8)
+
+    # NV12 UV interleave
+    UV = torch.empty((h2, W), dtype=torch.uint8, device=rgb_tensor.device)
+    UV[:, 0::2] = Cb
+    UV[:, 1::2] = Cr
+
+    return torch.cat([Y, UV], dim=0).contiguous()
+
+
+# ==============================================================================
+# FFmpegMuxer -- pure muxer (H.264 ES -> MP4, -c:v copy)
+# ==============================================================================
+
+class FFmpegMuxer:
+    # Receives H.264 Elementary Stream, pipes to FFmpeg for MP4 muxing only.
+    # No re-encoding -- NVENCEncoder already encoded on GPU.
+
+    def __init__(
+        self,
+        output_path: str,
+        fps:    float,
+        audio_src: Optional[str] = None,
+        ffmpeg_bin: str = "ffmpeg",
+        quiet: bool = True,
+    ):
+        self._error: Optional[Exception] = None
+        self._write_count = 0
+
+        cmd = [
+            ffmpeg_bin, "-y",
+            "-f", "h264",
+            "-r", f"{fps:.6f}",
+            "-i", "pipe:0",
+        ]
+        if audio_src:
+            cmd += ["-i", audio_src, "-c:a", "copy", "-map", "0:v", "-map", "1:a?"]
+        cmd += ["-c:v", "copy"]
+        cmd += ["-f", "mp4"]
+        cmd += ["-movflags", "faststart"]
+        cmd += ["-loglevel", "error"]
+        cmd += [output_path]
+
+        if not quiet:
+            print("   [FFmpegMuxer] cmd: " + " ".join(cmd), flush=True)
+
+        self._proc = subprocess.Popen(
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE
+        )
+        self._stderr_lines: List[str] = []
+        self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
+        self._stderr_thread.start()
+
+    def _drain_stderr(self):
+        try:
+            for line in self._proc.stderr:
+                decoded = line.decode(errors="ignore").rstrip()
+                self._stderr_lines.append(decoded)
+                if decoded:
+                    print("[FFmpegMuxer ERR] " + decoded)
+        except Exception:
+            pass
+
+    def write(self, h264_es: bytes):
+        if self._error is not None:
+            raise RuntimeError("FFmpegMuxer error: " + str(self._error)) from self._error
+        try:
+            if h264_es:
+                self._proc.stdin.write(h264_es)
+                self._write_count += 1
+        except BrokenPipeError:
+            self._error = RuntimeError("FFmpeg muxer stdin pipe broken")
+            raise self._error
+
+    def close(self):
+        try:
+            self._proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            self._proc.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            self._proc.kill()
+            self._proc.wait()
+        self._stderr_thread.join(timeout=5)
+        rc = self._proc.returncode
+        if rc is not None and rc != 0:
+            stderr_out = "\\n".join(self._stderr_lines[-20:])
+            print("\\n[FFmpegMuxer Warning] FFmpeg exit=%d, stderr: %s" % (rc, stderr_out[:400]))
+        if self._error:
+            print("[FFmpegMuxer Warning] write error: " + str(self._error))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -453,6 +1685,118 @@ class PinnedResultPool:
 
     def release(self, buf: torch.Tensor):
         self._q.put(buf)
+
+    def free(self) -> int:
+        """
+        [FIX-POOL-LEAK] 显式释放所有 pinned buffer，解除 CUDA 锁页内存占用。
+
+        背景：Python GC 不会立即回收 cudaHostAlloc 分配的锁页内存（底层由 CUDA
+        驱动管理，引用计数归零后仍可能驻留直至下次 GC 扫描）。若跨段不主动释放，
+        各段 PinnedResultPool 会持续叠加（每段 ~1 GiB），累积 4-6 GiB 锁页内存，
+        导致 DMA 带宽下降 → D2H 变慢 → result_queue 满载 → GPU P50 利用率从
+        88% 跌至 8%，吞吐量减半。
+
+        调用时机：_infer_loop finally 块，确保每段推理线程退出前完成释放。
+        返回值：实际释放的 buffer 数量（用于日志确认）。
+        """
+        freed = 0
+        while True:
+            try:
+                buf = self._q.get_nowait()
+                del buf
+                freed += 1
+            except queue.Empty:
+                break
+        return freed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [FIX-T3-V643] Pinned Ring Buffer — T2→T3 零拷贝环形缓冲
+# ─────────────────────────────────────────────────────────────────────────────
+
+class PinnedRingBuffer:
+    """
+    [FIX-T3-V643] 预分配 N 个 pinned memory slot 的环形缓冲区。
+
+    T2 (推理线程) 获取空 slot → GPU 裁剪 + RGB→BGR + D2H → 存储 CUDA event → 标记为可读。
+    T3 (写入线程) 获取可读 slot → 等待 event → memoryview 零拷贝写 pipe → 标记为空闲。
+
+    每帧数据在 pinned memory 中完全连续（无 padding），memoryview 切片即得完整帧。
+    """
+
+    def __init__(self, num_slots: int, max_frames_per_slot: int, H: int, W: int):
+        self.num_slots = num_slots
+        self.H = H   # 原始高度（无 padding）
+        self.W = W   # 原始宽度（无 padding）
+        self.frame_bytes = H * W * 3
+        self.max_frames = max_frames_per_slot
+        self.slot_bytes = max_frames_per_slot * self.frame_bytes
+
+        self.slots: List[torch.Tensor] = []
+        _mb = num_slots * self.slot_bytes / 1e6
+        print(
+            f'[PinnedRingBuffer] 分配 {num_slots} × ({max_frames_per_slot},{H},{W},3) '
+            f'uint8 pinned，共 {_mb:.0f} MB', flush=True
+        )
+        for _ in range(num_slots):
+            t = torch.empty(max_frames_per_slot, H, W, 3, dtype=torch.uint8).pin_memory()
+            self.slots.append(t)
+
+        # 每 slot 的元数据: (n_frames, orig_H, orig_W, B, T, img1_list, cuda_event)
+        self._meta: List[Optional[Tuple]] = [None] * num_slots
+
+        self._write_sem = threading.Semaphore(num_slots)   # 可写 slot 数
+        self._read_sem  = threading.Semaphore(0)           # 可读 slot 数
+        self._write_idx = 0
+        self._read_idx  = 0
+        self._lock = threading.Lock()
+        self._error: Optional[Exception] = None
+
+    def writer_acquire(self, timeout: float = 30.0) -> Tuple[int, torch.Tensor]:
+        """T2 获取一个空 slot 的 (slot_id, pinned_tensor)。"""
+        if not self._write_sem.acquire(timeout=timeout):
+            raise RuntimeError(
+                f'[PinnedRingBuffer] writer_acquire 超时（{timeout}s），T3 可能卡死'
+            )
+        with self._lock:
+            slot_id = self._write_idx % self.num_slots
+            self._write_idx += 1
+        return slot_id, self.slots[slot_id]
+
+    def writer_commit(self, slot_id: int, n_frames: int, orig_H: int, orig_W: int,
+                      B: int, T: int, img1_list: list, cuda_event):
+        """T2 写完 slot + 记录 CUDA event，标记为可读。"""
+        self._meta[slot_id] = (n_frames, orig_H, orig_W, B, T, img1_list, cuda_event)
+        self._read_sem.release()
+
+    def reader_acquire(self, timeout: float = 30.0) -> Tuple[int, memoryview, int, int, int, int, list, object]:
+        """T3 获取可读 slot，返回 (slot_id, memoryview, n_frames, orig_H, orig_W, B, T, img1_list, event)。"""
+        if not self._read_sem.acquire(timeout=timeout):
+            raise RuntimeError(
+                f'[PinnedRingBuffer] reader_acquire 超时（{timeout}s），T2 可能卡死'
+            )
+        with self._lock:
+            slot_id = self._read_idx % self.num_slots
+            self._read_idx += 1
+        meta = self._meta[slot_id]
+        self._meta[slot_id] = None
+        n_frames, orig_H, orig_W, B, T, img1_list, cuda_event = meta
+        mv = memoryview(self.slots[slot_id].numpy())
+        return slot_id, mv, n_frames, orig_H, orig_W, B, T, img1_list, cuda_event
+
+    def reader_release(self, slot_id: int):
+        """T3 读完 slot，释放回可写池。"""
+        self._write_sem.release()
+
+    def free(self) -> int:
+        """显式释放所有 pinned buffer，解除 CUDA 锁页内存占用。"""
+        freed = 0
+        for t in self.slots:
+            del t
+            freed += 1
+        self.slots.clear()
+        self._meta.clear()
+        return freed
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -817,6 +2161,7 @@ class GPUMonitor:
         current_bs:       int,
         current_pair_q:   int,
         current_result_q: int,
+        codec:            str = '',          # [FIX-NVENC-AWARE] 编码器名称，用于避开 NVENC 误判
     ) -> None:
         """
         打印精细统计报告，并依据以下逻辑给出三项调优建议：
@@ -895,7 +2240,7 @@ class GPUMonitor:
         # ── [FIX-T3-DETECT] result_queue（T3 输出缓冲）建议 ─────────────────
         # 先判断是否 T3-bottleneck：若是，增大 result_queue 无助于提速，
         # 反而加重 PinnedPool 锁页内存压力，应保持或缩小。
-        if self._is_t3_bottleneck(stats):
+        if self._is_t3_bottleneck(stats, codec=codec):
             if current_result_q > 16:
                 sug_rq = max(16, current_result_q - 8)
                 print(f'[GPU-MONITOR] ⚠️  检测到 T3-bottleneck（编码器是真正瓶颈）：'
@@ -925,15 +2270,19 @@ class GPUMonitor:
         current_pair_q:   int,
         current_result_q: int,
         slot_mb:          float = 0.0,   # [FIX-T3-MEMCAP] 每个 result slot 的 MiB 数
+        t2_ms:            float = 0.0,   # [FIX-MAXRQ-DYNAMIC] T2 推理延迟（ms），0=未知
+        t3_ms:            float = 0.0,   # [FIX-MAXRQ-DYNAMIC] T3 编码延迟（ms），0=未知
+        codec:            str   = '',    # [FIX-NVENC-AWARE] 编码器名称，用于避开 NVENC 误判
         ) -> Tuple[int, int]:
         """
-        [FIX-T3-DETECT / FIX-T3-MEMCAP / FIX-POOL-AUTOSCALE] 返回 (建议 pair_queue, 建议 result_queue)。
-        用于跨段自适应队列调整，不打印信息。
+        [FIX-T3-DETECT / FIX-T3-MEMCAP / FIX-POOL-AUTOSCALE / FIX-MAXRQ-DYNAMIC]
+        返回 (建议 pair_queue, 建议 result_queue)。用于跨段自适应队列调整，不打印信息。
 
         新增逻辑：
         · T3-bottleneck 时不增大 result_queue（否则 PinnedPool 雪球式积累）。
         · slot_mb > 0 时对 result_queue 施加 PinnedPool 内存上限约束。
-        · [FIX-POOL-AUTOSCALE] 上限由模块级 _PINNED_POOL_MAX_MB 按 GPU 型号自动缩放。
+        · [FIX-MAXRQ-DYNAMIC] 上限改由 _compute_max_result_queue() 三轴动态计算
+          （RAM 上限 / T3/T2 下限 / 绝对上限），替代静态 _PINNED_POOL_MAX_MB。
         """
         pair_q   = current_pair_q
         result_q = current_result_q
@@ -949,7 +2298,7 @@ class GPUMonitor:
             pair_q = max(3, current_pair_q - 1)
 
         # [FIX-T3-DETECT] result_queue 建议：T3-bottleneck 时保持或缩小
-        if self._is_t3_bottleneck(stats):
+        if self._is_t3_bottleneck(stats, codec=codec):
             # T3 是真正瓶颈，增大 result_queue 无助于提速，反而增加内存压力
             if current_result_q > 16:
                 result_q = max(16, current_result_q - 8)
@@ -959,9 +2308,15 @@ class GPUMonitor:
         elif headroom_gib > 2.0 and current_result_q < 32:
             result_q = min(48, current_result_q + 8)
 
-        # [FIX-T3-MEMCAP] PinnedPool 内存上限约束
+        # [FIX-T3-MEMCAP / FIX-MAXRQ-DYNAMIC] PinnedPool 内存上限约束（三轴动态计算）
         if slot_mb > 0.0:
-            _max_rq_by_mem = max(8, int(_PINNED_POOL_MAX_MB / slot_mb) - 2)  # -2 留给 pool overhead
+            _mem_avail_gb_gqs = _detect_encode_parallelism()['mem_avail_gb']
+            _max_rq_by_mem = _compute_max_result_queue(
+                slot_mb      = slot_mb,
+                mem_avail_gb = _mem_avail_gb_gqs,
+                T2_ms        = t2_ms,
+                T3_ms        = t3_ms,
+            )
             result_q = min(result_q, _max_rq_by_mem)
 
         return pair_q, result_q
@@ -981,7 +2336,7 @@ class GPUMonitor:
     # ── [FIX-T3-DETECT] T3 瓶颈检测器 ──────────────────────────────────────
 
     @staticmethod
-    def _is_t3_bottleneck(stats: 'GPUStats') -> bool:
+    def _is_t3_bottleneck(stats: 'GPUStats', codec: str = '') -> bool:
         """
         [FIX-T3-DETECT] 判断流水线瓶颈是否在 T3（编码器）而非 T2（推理）。
 
@@ -996,7 +2351,12 @@ class GPUMonitor:
         仅增加锁页内存压力、拖慢 DMA 带宽。
 
         与 T2-bottleneck 的区分：T2 慢时 GPU 持续均匀高负载（stable_avg 高）。
+
+        [FIX-NVENC-AWARE] NVENC 是独立硬件编码单元，不体现在 CUDA 利用率中；
+        当编码器为 NVENC 时，低 CUDA 利用率是正常现象，不应判定为 T3-bottleneck。
         """
+        if 'nvenc' in codec.lower():
+            return False
         return (
             stats.low_util_frac > 0.60        # GPU 空闲 > 60%
             and stats.stable_p95 > 85.0       # 但 P95 仍然爆发到 85%+（阵发性）
@@ -1144,10 +2504,74 @@ def _pool_limit_mb_for_profile(profile: '_HWProfile') -> float:
 
     return min(tier_limit, ram_limit)
 
-# 模块级常量：PinnedPool 锁页内存上限（MiB），按 GPU 型号自动缩放，只初始化一次
+# 模块级常量：PinnedPool 锁页内存上限（MiB），按 GPU 型号自动缩放，只初始化一次。
+# [FIX-MAXRQ-DYNAMIC] 此常量仅保留供 PinnedPool 构建阶段参考；
+# 运行时队列约束改由 _compute_max_result_queue() 动态计算，不再直接使用此常量。
 _PINNED_POOL_MAX_MB: float = _pool_limit_mb_for_profile(
     _detect_hw_profile(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
 )
+
+
+def _compute_max_result_queue(
+    slot_mb: float,
+    mem_avail_gb: float,
+    T2_ms: float = 0.0,
+    T3_ms: float = 0.0,
+    ram_budget_fraction: float = 0.06,
+    abs_cap: int = 48,
+) -> int:
+    """
+    [FIX-MAXRQ-DYNAMIC] 动态计算 result_queue 安全上限（三轴联合约束）。
+
+    三轴约束原理
+    ─────────────────────────────────────────────────────────────────────────
+    轴1 RAM 上限（主要约束）：
+      PinnedPool 使用系统 RAM 锁页内存（不占 VRAM），但过多会竞争 DMA 带宽。
+      上限 = mem_avail_gb × ram_budget_fraction / slot_mb
+      ram_budget_fraction 默认 6%：T4+20GiB RAM+47MB/slot ≈ 26 槽，与实测吻合。
+      该参数是唯一需要人工校准的旋钮；无论换 GPU / 换分辨率 / 换机器都自适应。
+
+    轴2 T3/T2 速度比（最小需求下限）：
+      result_queue 存在是为了缓冲 T3 比 T2 慢这一事实，但 libx264 是流式编码器，
+      并非每批阻塞整个 T3_ms；实际突发缓冲需求远小于 T3/T2 比值。
+      经验系数 0.22（= 0.15 × 1.5）：在 T4+crf=0+ultrafast 场景实测吻合。
+      floor_by_t3 = max(8, int(T3_ms / T2_ms × 0.22))
+      T2_ms/T3_ms 均为 0 时（未知），跳过此轴，floor = 8。
+
+    轴3 绝对上限（保险兜底）：
+      防止内存估算本身有误（如 mem_avail_gb 异常偏大）时失控。
+      固定为 abs_cap（默认 48）。
+
+    三轴关系：RAM 决定上限，T3/T2 比决定下限，取二者之间合理值：
+      result = max(floor_by_t3, min(cap_by_ram, abs_cap))
+
+    参数
+    ─────────────────────────────────────────────────────────────────────────
+    slot_mb            : 每个 result slot 的锁页内存占用（MiB），
+                         = effective_bs × T × H_pad × W_pad × 3 / 1e6
+    mem_avail_gb       : 系统当前可用 RAM（GiB），来自 _detect_encode_parallelism()
+    T2_ms              : GPU 推理延迟（ms），来自 AUTO-TUNE 测量；0 表示未知
+    T3_ms              : 每批次编码延迟（ms），来自 AUTO-TUNE 估算；0 表示未知
+    ram_budget_fraction: PinnedPool 允许占用可用 RAM 的比例（默认 6%）
+    abs_cap            : result_queue 绝对上限（默认 48）
+    """
+    if slot_mb <= 0.0:
+        return abs_cap
+
+    # 轴1: RAM 上限（可用内存 × 预算比 / 每槽大小）
+    ram_budget_mb = mem_avail_gb * 1024.0 * ram_budget_fraction
+    cap_by_ram = max(8, int(ram_budget_mb / slot_mb))
+
+    # 轴2: T3/T2 实际需求下限（仅在两者均已知时计算）
+    # libx264 流式编码 burst 系数约 0.22（经验值，T4 实测 ~8 槽已足够解耦）
+    if T2_ms > 0.0 and T3_ms > 0.0:
+        floor_by_t3 = max(8, int(T3_ms / T2_ms * 0.22))
+    else:
+        floor_by_t3 = 8   # 未知时使用安全下限
+
+    # 轴3: 绝对上限兜底，防止内存估算失控
+    return max(floor_by_t3, min(cap_by_ram, abs_cap))
+
 
 _X264_PRESET_FACTOR = {
     'ultrafast': 8.0, 'superfast': 6.0, 'veryfast': 4.0,
@@ -1354,13 +2778,21 @@ def _auto_queue_depths(
     pair_depth   = max(2, min(int(_math.ceil(t2_ms / max(t1_ms, 0.1))) + 2, 8))
     result_depth = max(8, min(int(_math.ceil(t3_ms / max(t2_ms, 0.1))) + 3, 64))
 
-    # [FIX-T3-MEMCAP / FIX-POOL-AUTOSCALE] 依据模块级 _PINNED_POOL_MAX_MB 约束 result_depth。
+    # [FIX-T3-MEMCAP / FIX-POOL-AUTOSCALE / FIX-MAXRQ-DYNAMIC] 动态约束 result_depth。
     # 每个 result slot 持有 effective_bs * T 帧的 pinned uint8 buffer。
     # 若不加约束，T3 极慢（大 T3/T2 比）时 result_depth 会达到 50+，
     # 导致 PinnedPool 分配 2 GiB+ 锁页内存，反而拖慢 DMA 带宽，形成恶性循环。
-    _slot_mb     = effective_bs * T * H_pad * W_pad * 3 / 1e6 # 每 slot 的 MiB
+    # [FIX-MAXRQ-DYNAMIC] 改用三轴动态函数：RAM 上限 / T3/T2 下限 / 绝对上限联合约束，
+    # 无论换 GPU / 换分辨率 / 换机器均自适应，无需修改硬编码常量。
+    _slot_mb = effective_bs * T * H_pad * W_pad * 3 / 1e6  # 每 slot 的 MiB
     if _slot_mb > 0.0:
-        _max_result_by_mem = max(8, int(_PINNED_POOL_MAX_MB / _slot_mb) - 2)
+        _mem_avail_gb_aqd = _detect_encode_parallelism()['mem_avail_gb']
+        _max_result_by_mem = _compute_max_result_queue(
+            slot_mb      = _slot_mb,
+            mem_avail_gb = _mem_avail_gb_aqd,
+            T2_ms        = t2_ms,
+            T3_ms        = t3_ms,
+        )
         result_depth = min(result_depth, _max_result_by_mem)
 
     pool_size    = result_depth + 2
@@ -1426,6 +2858,7 @@ class IFRNetPipelineRunner:
         self._pair_queue_override = pair_queue_override
         self._result_queue_override = result_queue_override
         self._t3_fps_measured_input = t3_fps_measured   # [FIX-T3-FPS] 跨段实测值，传给 _auto_queue_depths
+        self._error: Optional[Exception] = None          # 流水线异常标志，供 run() 传播错误
 
         # [FIX-DOUBLEBUF-H2D] 双槽飞行中 H2D，最多保持 2 个预取 in-flight
         self._prefetch_deque: deque = deque()   # 元素: (item, img0_t, img1_t)
@@ -1487,6 +2920,8 @@ class IFRNetPipelineRunner:
                     raw_buf    = [raw_buf[-1]]
                     padded_buf = [padded_buf[-1]]
         except Exception as e:
+            if self._error is None:
+                self._error = e
             import traceback
             print(f'\n[IFRNet-Reader] 异常 @frame={frames_read}: {type(e).__name__}: {e}', flush=True)
             traceback.print_exc()
@@ -1507,6 +2942,10 @@ class IFRNetPipelineRunner:
                 self.pair_queue.put(item, timeout=1.0)
                 return
             except queue.Full:
+                infer_dead = self._infer_th is not None and not self._infer_th.is_alive()
+                writer_dead = self._writer_th is not None and not self._writer_th.is_alive()
+                if infer_dead or writer_dead:
+                    break
                 continue
 
     # ── GPU 预取（[STREAM-DUAL] 使用 stream_h2d）────────────────────────────
@@ -1644,6 +3083,53 @@ class IFRNetPipelineRunner:
                 for _item in items:
                     if _item is self._SENTINEL:
                         continue
+                    # [FIX-T3-V643] NVENC 直通编码 H.264 ES 输出
+                    # [FIX-T3-V643] Handle NVENC flush bytes
+                    if isinstance(_item, tuple) and len(_item) == 2 and isinstance(_item[0], bytes) and _item[0] == b'FLUSH':
+                        writer.write(_item[1])
+                        continue
+                    if isinstance(_item, tuple) and len(_item) == 5:
+                        h264_frames, _rB, _rT, _oh, _ow = _item
+                        _n_pairs_total += _rB
+                        for _hitem in h264_frames:
+                            if isinstance(_hitem, tuple) and _hitem[0] == b'RAW':
+                                writer.write(_hitem[1].tobytes() if hasattr(_hitem[1], 'tobytes') else _hitem[1])
+                                written += 1
+                            elif isinstance(_hitem, bytes) and _hitem:
+                                writer.write(_hitem)
+                                written += 1
+                        continue
+                    if isinstance(_item, tuple) and len(_item) == 2 and _item[0] == 'RING':
+                        # ── [FIX-T3-V643] Ring Buffer 零拷贝路径（Level 2/3） ──
+                        _, _ring_slot = _item
+                        _rb = self.proc._ring_buf
+                        rv = _rb.reader_acquire(timeout=5.0)
+                        if rv is None:
+                            print('[IFRNet-Writer] ⚠️ ring buffer reader_acquire 返回 None，跳过', flush=True)
+                            continue
+                        _sid, _mv, _nf, _oh, _ow, _rB, _rT, _img1l, _ev = rv
+                        # 等待 D2H 完成
+                        if _ev is not None:
+                            _ev.synchronize()
+                            self._event_pool.release(_ev)
+                        frame_sz = _oh * _ow * 3
+                        _n_pairs_total += _rB
+                        # 零拷贝：直接从 memoryview 切片写入 pipe
+                        for i in range(_rB):
+                            for j in range(_rT):
+                                f_idx = i * _rT + j
+                                offset = f_idx * frame_sz
+                                writer.write_direct(_mv[offset:offset + frame_sz])
+                                written += 1
+                            # img1_raw: 来自 reader (BGR)，直接 tobytes() 写管道
+                            if i < len(_img1l):
+                                writer.write_direct(_img1l[i].tobytes())
+                                written += 1
+                        _rb.reader_release(_sid)
+                        continue
+                    if isinstance(_item, tuple) and len(_item) == 2 and _item[0] == b'FLUSH':
+                        writer.write(_item[1])
+                        continue
                     if isinstance(_item, _PinnedResultItem):
                         n_pairs = _item.B
                         _n_pairs_total += n_pairs
@@ -1690,6 +3176,12 @@ class IFRNetPipelineRunner:
                         P=self.pair_queue.qsize(),
                         R=self.result_queue.qsize(),
                     )
+        except Exception as e:
+            self._error = e
+            self.running = False
+            import traceback
+            print(f'\n[IFRNet-Writer] 写线程异常: {type(e).__name__}: {e}', flush=True)
+            traceback.print_exc()
         finally:
             if not self.proc.quiet:
                 print(f'\n[IFRNet-Writer] 退出，已写 {written} 输出帧', flush=True)
@@ -1725,6 +3217,7 @@ class IFRNetPipelineRunner:
         meter:             'ThroughputMeter',
         H_pad:             int = 0,
         W_pad:             int = 0,
+        nvenc_encoder:     Optional[object] = None,  # [FIX-T3-V643] GPU 直通编码器
     ) -> Tuple[int, int]:
         proc = self.proc
         proc._pipeline_runner = self
@@ -1743,8 +3236,9 @@ class IFRNetPipelineRunner:
                 _cached = _load_t2_cache(self.t2_cache_dir).get(self._cache_key, 0.0)
                 if _cached > 0:
                     self._hw_profile.t2_measured_ms = _cached
-                    print(f'[T2-CACHE] 加载缓存 T2={_cached:.1f}ms '
-                          f'(key={self._cache_key})', flush=True)
+                    if proc._is_first_segment():
+                        print(f'[T2-CACHE] 加载缓存 T2={_cached:.1f}ms '
+                              f'(key={self._cache_key})', flush=True)
 
             _current_cfg = (proc.model_name, H_pad, W_pad, effective_bs, infer_be)   # ✅ 加入模型名，跨模型切换时正确清零 t2_measured_ms
             if self._last_calib_config != _current_cfg:
@@ -1755,7 +3249,7 @@ class IFRNetPipelineRunner:
                     and self._result_queue_override is not None):
                 _pd = self._pair_queue_override
                 _rd = self._result_queue_override
-                if not self.proc.quiet:
+                if not self.proc.quiet and proc._is_first_segment():
                     print(f'[AUTO-TUNE] 使用外部建议队列: pair={_pd} result={_rd}')
             else:
                 _pd, _rd, _ = _auto_queue_depths(
@@ -1780,7 +3274,7 @@ class IFRNetPipelineRunner:
                        / max(self._hw_profile.gpu_tier, 0.05)
                 self._t2_estimated_ms = max(_t2b * _ifactor * _mfactor, 1.0)
 
-        # [PINNED-D2H] 创建 PinnedResultPool（检查 stream_d2h 是否可用）
+        # [PINNED-D2H] 创建/复用 PinnedResultPool（检查 stream_d2h 是否可用）
         _pool_ok = False
         if (H_pad > 0 and W_pad > 0
                 and getattr(proc, 'stream_d2h', None) is not None   # [STREAM-DUAL]
@@ -1788,22 +3282,25 @@ class IFRNetPipelineRunner:
             _max_BT    = effective_bs * len(timesteps)
             _pool_size = self.result_queue.maxsize + 2
             try:
-                proc._result_pool = PinnedResultPool(_pool_size, _max_BT, H_pad, W_pad)
+                proc._result_pool, _pool_is_new = proc._get_or_create_result_pool(
+                    _pool_size, _max_BT, H_pad, W_pad)
                 _pool_ok = True
             except Exception as _pe:
                 print(f'[IFRNet-Pipeline] PinnedResultPool 分配失败: {_pe}，回退同步 D2H',
                       flush=True)
                 proc._result_pool = None
 
-        print(
-            f'[IFRNet-Pipeline] 启动深度流水线 | '
-            f'pair_queue={self.pair_queue.maxsize} '
-            f'result_queue={self.result_queue.maxsize} '
-            f'effective_bs={effective_bs} '
-            f'T={len(timesteps)}× | '
-            f'D2H={"pinned(stream_d2h)" if _pool_ok else "sync"}',
-            flush=True,
-        )
+        # [SEGMENT-REUSE] 段 1 完整输出流水线详情，后续段简化
+        if proc._is_first_segment():
+            print(
+                f'[IFRNet-Pipeline] 启动深度流水线 | '
+                f'pair_queue={self.pair_queue.maxsize} '
+                f'result_queue={self.result_queue.maxsize} '
+                f'effective_bs={effective_bs} '
+                f'T={len(timesteps)}× | '
+                f'D2H={"pinned(stream_d2h)" if _pool_ok else "sync"}',
+                flush=True,
+            )
 
         self._reader_th = threading.Thread(
             target=self._reader_loop,
@@ -1823,13 +3320,39 @@ class IFRNetPipelineRunner:
         # [FIX-INFER-THREAD] 启动独立 T2 推理线程（仿 ESRGAN _sr_thread）
         self._infer_th = threading.Thread(
             target=self._infer_loop,
-            args=(timesteps, H, W, effective_bs, H_pad, W_pad, meter),
+            args=(timesteps, H, W, effective_bs, H_pad, W_pad, meter, nvenc_encoder),
             daemon=True, name='IFRNet-Infer',
         )
         self._infer_th.start()
 
-        # 等待推理线程完成（T2 结束后向 result_queue 发送 SENTINEL，Writer 随之退出）
-        self._infer_th.join()
+        # 等待工作线程退出（先等 Writer，确保其错误先写入 self._error）
+        if self._writer_th is not None:
+            self._writer_th.join(timeout=10.0)
+
+        # [FIX-JOIN-TIMEOUT] 动态超时：基于分段帧数估算，避免长分段误触发。
+        # n_seg_est / 5.0 表示最慢 5 fps 仍可完成；下限 120s 保底，上限 7200s 防止
+        # 极端大分段数值溢出。推理线程正常应在 ~n_seg_est / actual_fps 秒内完成。
+        _infer_timeout = max(120.0, min(n_seg_est / 5.0, 7200.0))
+        self._infer_th.join(timeout=_infer_timeout)
+        if self._infer_th.is_alive():
+            # 超时后发送停止信号，再给 60s 宽限期让 finally 块执行
+            print(f'\n[IFRNet] ⚠️ 推理线程 {_infer_timeout:.0f}s 未退出，'
+                  f'发送停止信号...', flush=True)
+            self.running = False
+            self._infer_th.join(timeout=60.0)
+            if self._infer_th.is_alive():
+                _msg = (f'推理线程在停止信号后 60s 仍未退出'
+                        f'（总等待 {_infer_timeout + 60:.0f}s，n_seg_est={n_seg_est}）')
+                self._error = RuntimeError(_msg)
+                print(f'[IFRNet] ❌ {_msg}', flush=True)
+            else:
+                print('[IFRNet] 推理线程已响应停止信号并退出', flush=True)
+
+        # 检查流水线是否有异常
+        if self._error is not None:
+            raise RuntimeError(
+                f'流水线处理异常: {type(self._error).__name__}: {self._error}'
+            ) from self._error
 
         # [FIX-RETUNE-POSTRUN] 段完成后用全段稳定 timing 做 RETUNE（精度优于早期 5-batch 采样）
         # · 采用 timing[_CALIB_SKIP:] 中位数，剔除流水线启动热身噪声
@@ -1889,7 +3412,7 @@ class IFRNetPipelineRunner:
                 flush=True,
             )
 
-        return self._fc_extra, self._written
+        return self._fc_extra, self._oc_extra
 
     # ── T2 推理独立线程体 ──────────────────────────────────────────────────────
     # [FIX-INFER-THREAD] 从 run() 主线程提取为独立线程，消除 Python GIL 竞争。
@@ -1903,6 +3426,7 @@ class IFRNetPipelineRunner:
         H_pad:        int,
         W_pad:        int,
         meter,
+        nvenc_encoder=None,  # [FIX-T3-V643]
     ):
         """
         [FIX-INFER-THREAD] T2 推理独立线程体。
@@ -1983,7 +3507,34 @@ class IFRNetPipelineRunner:
                                       f'(key={self._cache_key})', flush=True)
                         # 队列建议不在此处输出，由 run() 完成后统一处理
 
-                if isinstance(results, _PinnedResultItem):
+                # [FIX-T3-V643] 结果分发：RING > NVENC > PinnedResultItem > fallback
+                if isinstance(results, tuple) and len(results) > 0 and results[0] == 'RING':
+                    # Level 2/3: Ring Buffer 零拷贝路径
+                    _, slot_id, ev, rB, rT, rorig_H, rorig_W, n_frames = results
+                    proc._ring_buf.writer_commit(
+                        slot_id, n_frames, rorig_H, rorig_W, rB, rT, img1_raw, ev
+                    )
+                    out_item = ('RING', slot_id)
+                elif nvenc_encoder is not None and isinstance(results, _PinnedResultItem):
+                    h264_frames = []
+                    interp_arr = results.buf[:results.B * results.T]
+                    for bi in range(results.B):
+                        for tj in range(results.T):
+                            rgb_gpu = interp_arr[bi * results.T + tj,
+                                      :results.orig_H, :results.orig_W, :].cuda()
+                            nv12_gpu = _rgb_to_nv12_gpu(rgb_gpu)
+                            h264_data = nvenc_encoder.encode_frame(nv12_gpu)
+                            h264_frames.append(h264_data)
+                        # Encode img1_raw (original frame) through NVENC too
+                        img1_gpu = torch.from_numpy(img1_raw[bi]).cuda()
+                        img1_nv12 = _rgb_to_nv12_gpu(img1_gpu)
+                        h264_data = nvenc_encoder.encode_frame(img1_nv12)
+                        h264_frames.append(h264_data)
+                    out_item = (h264_frames, results.B, results.T,
+                                results.orig_H, results.orig_W)
+                    self._event_pool.release(results.event)
+                    results.pool.release(results.buf)
+                elif isinstance(results, _PinnedResultItem):
                     results.img1_raw = img1_raw
                     out_item = results
                 else:
@@ -1994,6 +3545,10 @@ class IFRNetPipelineRunner:
                     self.result_queue.put_nowait(out_item)
                     self._try_prefetch_next()
                 except queue.Full:
+                    if self._writer_th is not None and not self._writer_th.is_alive():
+                        raise RuntimeError(
+                            'Writer 线程已退出，result_queue 无消费者，推理线程中止'
+                        )
                     # [FIX-DOUBLEBUF-H2D] 队列满时先触发预取，不让 GPU 闲着
                     self._try_prefetch_next()
                     self.result_queue.put(out_item, timeout=30.0)
@@ -2003,20 +3558,45 @@ class IFRNetPipelineRunner:
                 meter.update(B)
 
         except Exception as e:
+            if self._error is None:
+                self._error = e
             import traceback
             print(f'[IFRNet-Infer] 推理线程异常: {type(e).__name__}: {e}', flush=True)
             traceback.print_exc()
         finally:
-            self.running = False
-            for _ in range(10):
+            # [FIX-T3-V643] Flush NVENC and queue FLUSH+SENTINEL BEFORE setting
+            # self.running=False.  Otherwise the writer loop sees running=False
+            # + queue empty → exits immediately → FLUSH bytes never written.
+            if nvenc_encoder is not None:
                 try:
-                    self.result_queue.put(self._SENTINEL, timeout=1.0)
-                    break
-                except queue.Full:
-                    continue
+                    leftover = nvenc_encoder.flush()
+                    if leftover and self._writer_th and self._writer_th.is_alive():
+                        self.result_queue.put((b'FLUSH', leftover), timeout=5.0)
+                except Exception:
+                    pass
+            writer_alive = self._writer_th is not None and self._writer_th.is_alive()
+            if not writer_alive:
+                if not self.proc.quiet:
+                    print('[IFRNet-Infer] Writer 已退出，跳过 result_queue SENTINEL 投递', flush=True)
+            else:
+                for _ in range(5):
+                    try:
+                        self.result_queue.put(self._SENTINEL, timeout=1.0)
+                        break
+                    except queue.Full:
+                        continue
+            self.running = False
             proc._pipeline_runner = None
-            proc._result_pool     = None
+            # [FIX-POOL-LEAK / SEGMENT-REUSE] 跨段复用模式下，PinnedResultPool
+            # 由 proc._cached_result_pool 持有（全局唯一），段间不释放。
+            # 只清空段级引用，池实例存活至 cleanup() 统一销毁。
+            # 无累积问题：全局只有一个池，不会像旧代码那样每段创建新池叠加。
+            proc._result_pool = None
+            import gc as _gc; _gc.collect()
+            # [SEGMENT-REUSE] PinnedRingBuffer 同理，由 proc._cached_ring_buf 持有
+            proc._ring_buf = None
             self._fc_extra = fc_extra   # [FIX-INFER-THREAD] 供 run() 读取
+            self._oc_extra = oc_extra   # [FIX-INFER-THREAD] 供 run() 读取
 
     def close(self):
         self.running = False
@@ -2177,6 +3757,10 @@ class FFmpegFrameReader:
 
         hw_args: List[str] = []
         if use_hwaccel and HardwareCapability.has_nvdec():
+            # hw_args = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'nv12']
+            # ✅ 正确：nv12 是 NVDEC 合法的 hwaccel_output_format
+            # FFmpeg 会先将 CUDA NV12 surface download 到 CPU，
+            # 再由 swscale 自动转换为 -pix_fmt bgr24 输出到管道
             hw_args = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'nv12']
 
         if frame_start == 0 and frame_end < 0:
@@ -2341,8 +3925,9 @@ class FFmpegWriter:
         quiet: bool = True,
         n_threads: Optional[int] = None,   # [FIX-SLICE-THREAD] None=自动探测
     ):
+        # [FIX-T3-V643] 去除内部 _queue 和 _write_loop 线程，直接管道写入
         self._error: Optional[Exception] = None
-        self._queue: queue.Queue = queue.Queue(maxsize=128)
+        self._write_count = 0
 
         if preset is None:
             preset = 'p4' if 'nvenc' in codec else 'medium'
@@ -2455,7 +4040,6 @@ class FFmpegWriter:
         if 'nvenc' not in codec:
             cmd.insert(2, '-threads')
             cmd.insert(3, str(_ft))
-        ]
         if audio_src:
             cmd += ['-i', audio_src, '-c:a', 'copy', '-map', '0:v', '-map', '1:a?']
         if extra_codec_args:
@@ -2519,8 +4103,7 @@ class FFmpegWriter:
         self._stderr_lines: List[str] = []
         self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
         self._stderr_thread.start()
-        self._thread = threading.Thread(target=self._write_loop, daemon=True)
-        self._thread.start()
+        # [FIX-T3-V643] 不再启动内部 _write_loop 线程，改为 write_direct() 直接写管道
 
     def _drain_stderr(self):
         try:
@@ -2533,37 +4116,22 @@ class FFmpegWriter:
         except Exception:
             pass
 
-    def _write_loop(self):
-        pending: List[bytes] = []
-        try:
-            while True:
-                try:
-                    item = self._queue.get(timeout=0.2)
-                except queue.Empty:
-                    if pending:
-                        self._proc.stdin.write(b''.join(pending))
-                        pending.clear()
-                    continue
-                if item is self._SENTINEL:
-                    if pending:
-                        self._proc.stdin.write(b''.join(pending))
-                    break
-                pending.append(item if isinstance(item, bytes) else item.tobytes())
-                if len(pending) >= self._MAX_BATCH or self._queue.empty():
-                    self._proc.stdin.write(b''.join(pending))
-                    pending.clear()
-        except Exception as e:
-            self._error = e
-            print(f'[FFmpegWriter Error] {e}')
-
-    def write(self, frame: np.ndarray):
+    def write_direct(self, data):
+        """[FIX-T3-V643] 直接写 bytes/memoryview 到 FFmpeg stdin pipe，零中间拷贝。"""
         if self._error is not None:
             raise RuntimeError(f'FFmpegWriter 内部错误: {self._error}') from self._error
-        self._queue.put(frame)
+        try:
+            self._proc.stdin.write(data)
+            self._write_count += 1
+        except BrokenPipeError:
+            self._error = RuntimeError('FFmpeg stdin 管道已断开')
+            raise self._error
+
+    def write(self, frame):
+        """[FIX-T3-V643] 兼容旧接口：numpy array → tobytes() → write_direct()。"""
+        self.write_direct(frame.tobytes())
 
     def close(self):
-        self._queue.put(self._SENTINEL)
-        self._thread.join(timeout=60)
         self._stderr_thread.join(timeout=5)
         try:
             self._proc.stdin.close()
@@ -2632,6 +4200,7 @@ class IFRNetVideoProcessor:
         self.quiet           = quiet
         self._pipeline_runner: Optional[IFRNetPipelineRunner] = None
         self._result_pool:     Optional[PinnedResultPool]     = None
+        self._ring_buf:        Optional[PinnedRingBuffer]    = None  # [FIX-T3-V643] Level 2/3
         self._pool          = TensorPool()
         self._graph:        dict = {}
         self._graph_inputs: dict = {}
@@ -2641,6 +4210,23 @@ class IFRNetVideoProcessor:
         self._next_pair_queue = None      # int or None
         self._next_result_queue = None    # int or None
         self._next_t3_fps_measured = 0.0  # [FIX-T3-FPS] 跨段实测 T3 fps（0 表示无实测）
+
+        # [SEGMENT-REUSE] 跨段复用追踪
+        self._segment_index    = 0        # 当前分段序号（1-based，process_video 入口递增）
+        self._total_segments   = 0        # 总分段数（由外部传入）
+        self._last_seg_resolution: Optional[Tuple[int, int]] = None  # 上段分辨率缓存
+        self._last_effective_bs = 0       # 上段有效 batch_size
+
+        # [SEGMENT-REUSE] NVENC 编码器缓存
+        self._cached_nvenc_encoder: Optional['NVENCEncoder'] = None
+        self._cached_nvenc_key: Optional[Tuple[int, int, float, str, int]] = None
+
+        # [SEGMENT-REUSE] PinnedResultPool / PinnedRingBuffer 缓存
+        self._cached_result_pool: Optional['PinnedResultPool'] = None
+        self._cached_pool_key: Optional[Tuple[int, int, int]] = None     # (max_BT, H_pad, W_pad)
+        self._cached_pool_size: int = 0
+        self._cached_ring_buf: Optional['PinnedRingBuffer'] = None
+        self._cached_ring_key: Optional[Tuple[int, int, int, int]] = None  # (num_slots, max_frames, H, W)
 
         # [FIX-TRT-MUTEX]
         if self.use_tensorrt:
@@ -3070,7 +4656,46 @@ class IFRNetVideoProcessor:
             if self._pipeline_runner is not None:
                 self._pipeline_runner._try_prefetch_next()
 
-        # ── [STREAM-DUAL] PINNED-D2H 路径 ────────────────────────────────────
+        # ── [FIX-T3-V643] RING-BUFFER D2H 路径（Level 2/3） ──────────────
+        # float() + 量化 + DMA 全在 stream_d2h 上执行；GPU 侧 RGB→BGR + 裁剪；
+        # 写入 PinnedRingBuffer slot（无 padding，每帧连续），返回轻量句柄。
+        if (self._ring_buf is not None
+                and self.stream_d2h is not None
+                and pred_big.device.type == 'cuda'):
+            BT = pred_big.shape[0]
+            slot_id, slot_tensor = self._ring_buf.writer_acquire()
+            ev = None
+            try:
+                with torch.cuda.stream(self.stream_d2h):
+                    self.stream_d2h.wait_stream(self.stream_compute)
+                    if self.use_fp16:
+                        pred_f = pred_big.float()
+                    else:
+                        pred_f = pred_big
+                    # [FIX-T3-V643] GPU 侧: 量化 + CHW→HWC + RGB→BGR + 裁剪到 orig_H×orig_W
+                    pred_u8 = (
+                        pred_f.clamp_(0.0, 1.0).mul_(255.0).byte()
+                        .permute(0, 2, 3, 1)                              # CHW → HWC (BT,H,W,3) RGB
+                        .contiguous()
+                    )
+                    # RGB→BGR: 取通道 [2,1,0]，裁剪到原始分辨率
+                    pred_bgr = pred_u8[:, :orig_H, :orig_W, [2, 1, 0]].contiguous()
+                    slot_tensor[:BT].copy_(pred_bgr, non_blocking=True)
+                ev = (self._pipeline_runner._event_pool.acquire()
+                      if self._pipeline_runner is not None
+                      else torch.cuda.Event())
+                ev.record(self.stream_d2h)
+            except Exception:
+                # 归还已获取的 slot（通过 release write_sem）
+                self._ring_buf._write_sem.release()
+                if ev is not None and self._pipeline_runner is not None:
+                    self._pipeline_runner._event_pool.release(ev)
+                raise
+            self._timing.append(time.perf_counter() - t0)
+            # 返回轻量句柄：("RING", slot_id, event, B, T, orig_H, orig_W, BT)
+            return ('RING', slot_id, ev, B, T, orig_H, orig_W, BT)
+
+        # ── [STREAM-DUAL] PINNED-D2H 路径（Level 4） ──────────────────────
         # float() + 量化 + DMA 全在 stream_d2h 上执行，彻底绕开 default stream，
         # 主线程可立即提交下一批 TRT/compute kernel，消除每批空档。
         if (self._result_pool is not None
@@ -3238,6 +4863,76 @@ class IFRNetVideoProcessor:
 
     # ── 单段处理核心 ──────────────────────────────────────────────────────────
 
+    # ── [SEGMENT-REUSE] 跨段资源复用方法 ────────────────────────────────────────
+
+    def _is_first_segment(self) -> bool:
+        return self._segment_index <= 1
+
+    def _is_last_segment(self) -> bool:
+        return self._segment_index >= self._total_segments
+
+    def _get_or_create_nvenc_encoder(self, W: int, H: int, fps: float,
+                                      preset: str, qp: int) -> 'NVENCEncoder':
+        """跨段复用 NVENC 编码器，参数不变时跳过 11 行初始化日志和 DLL 加载。"""
+        key = (W, H, fps, preset, qp)
+        if self._cached_nvenc_encoder is not None and self._cached_nvenc_key == key:
+            if not self.quiet:
+                print(f'   [NVENC] 复用已激活编码器 ({W}x{H}@{fps:.1f}fps)', flush=True)
+            return self._cached_nvenc_encoder
+        if self._cached_nvenc_encoder is not None:
+            self._cached_nvenc_encoder.close()
+        encoder = NVENCEncoder(W, H, fps, preset=preset, qp=qp)
+        self._cached_nvenc_encoder = encoder
+        self._cached_nvenc_key = key
+        return encoder
+
+    def _get_or_create_result_pool(self, pool_size: int, max_BT: int,
+                                    H_pad: int, W_pad: int) -> 'Tuple[PinnedResultPool, bool]':
+        """跨段复用 PinnedResultPool，参数匹配时跳过锁页内存分配。
+
+        保留 FIX-POOL-LEAK 语义：全局只有一个池实例，不会跨段累积。"""
+        key = (max_BT, H_pad, W_pad)
+        if (self._cached_result_pool is not None and self._cached_pool_key == key
+                and self._cached_pool_size >= pool_size):
+            return self._cached_result_pool, False
+        if self._cached_result_pool is not None:
+            self._cached_result_pool.free()
+        pool = PinnedResultPool(pool_size, max_BT, H_pad, W_pad)
+        self._cached_result_pool = pool
+        self._cached_pool_key = key
+        self._cached_pool_size = pool_size
+        return pool, True
+
+    def _get_or_create_ring_buf(self, num_slots: int, max_frames_per_slot: int,
+                                 H: int, W: int) -> 'Tuple[PinnedRingBuffer, bool]':
+        """跨段复用 PinnedRingBuffer。"""
+        key = (num_slots, max_frames_per_slot, H, W)
+        if self._cached_ring_buf is not None and self._cached_ring_key == key:
+            return self._cached_ring_buf, False
+        if self._cached_ring_buf is not None:
+            self._cached_ring_buf.free()
+        ring = PinnedRingBuffer(num_slots=num_slots, max_frames_per_slot=max_frames_per_slot,
+                                H=H, W=W)
+        self._cached_ring_buf = ring
+        self._cached_ring_key = key
+        return ring, True
+
+    def cleanup(self):
+        """统一释放所有跨段缓存资源。由处理器层在全部流程结束后调用。"""
+        if self._cached_nvenc_encoder is not None:
+            self._cached_nvenc_encoder.close()
+            self._cached_nvenc_encoder = None
+            self._cached_nvenc_key = None
+        if self._cached_result_pool is not None:
+            self._cached_result_pool.free()
+            self._cached_result_pool = None
+            self._cached_pool_key = None
+            self._cached_pool_size = 0
+        if self._cached_ring_buf is not None:
+            self._cached_ring_buf.free()
+            self._cached_ring_buf = None
+            self._cached_ring_key = None
+
     def _process_segment(
         self,
         input_path:         str,
@@ -3271,23 +4966,30 @@ class IFRNetVideoProcessor:
         n_seg_est = reader._segment_frames
 
         bytes_per_frame = W * H * 3 * 2 * 6
-        # [FIX-BATCHCAP] mem_get_info()[0] 仅返回 OS 层面空闲 VRAM，跨段后 PyTorch
-        # allocator 仍持有大量 reserved 缓存（TRT engine 等），导致估算严重偏低。
-        # 修复：effective_free = OS空闲 + PyTorch可复用缓存（reserved - allocated）
-        _seg_free = 0
-        if torch.cuda.is_available():
-            _raw_free, _  = torch.cuda.mem_get_info(self.device)
-            _cached_free  = (torch.cuda.memory_reserved(self.device)
-                             - torch.cuda.memory_allocated(self.device))
-            _seg_free = _raw_free + _cached_free
-        effective_bs = self.batch_size
-        if _seg_free > 0:
-            res_max_bs = max(1, int(_seg_free * 0.6 / bytes_per_frame))
-            if effective_bs > res_max_bs:
-                print(f'[分辨率限制] {W}×{H} 下 batch_size {effective_bs} → {res_max_bs}')
-                effective_bs = res_max_bs
-            if self._max_batch_size > res_max_bs:
-                self._max_batch_size = max(effective_bs, res_max_bs)
+        # [SEGMENT-REUSE] 分辨率未变时跳过 VRAM 重算，复用上段 effective_bs
+        if self._last_seg_resolution == (W, H) and self._last_effective_bs > 0:
+            effective_bs = self._last_effective_bs
+        else:
+            # [FIX-BATCHCAP] mem_get_info()[0] 仅返回 OS 层面空闲 VRAM，跨段后 PyTorch
+            # allocator 仍持有大量 reserved 缓存（TRT engine 等），导致估算严重偏低。
+            # 修复：effective_free = OS空闲 + PyTorch可复用缓存（reserved - allocated）
+            _seg_free = 0
+            if torch.cuda.is_available():
+                _raw_free, _  = torch.cuda.mem_get_info(self.device)
+                _cached_free  = (torch.cuda.memory_reserved(self.device)
+                                 - torch.cuda.memory_allocated(self.device))
+                _seg_free = _raw_free + _cached_free
+            effective_bs = self.batch_size
+            if _seg_free > 0:
+                res_max_bs = max(1, int(_seg_free * 0.6 / bytes_per_frame))
+                if effective_bs > res_max_bs:
+                    if self._segment_index <= 1:
+                        print(f'[分辨率限制] {W}×{H} 下 batch_size {effective_bs} → {res_max_bs}')
+                    effective_bs = res_max_bs
+                if self._max_batch_size > res_max_bs:
+                    self._max_batch_size = max(effective_bs, res_max_bs)
+            self._last_seg_resolution = (W, H)
+            self._last_effective_bs = effective_bs
 
         # [FIX-NVENC-UNIFIED] 在分辨率检查后缓存 hw_profile，
         # 作为 best_encoder() 的主判断依据，确保与 AUTO-TUNE 的 nvenc 检测一致
@@ -3310,11 +5012,15 @@ class IFRNetVideoProcessor:
         new_fps   = fps * float(scale_frac)
 
         # [FIX-NVENC-UNIFIED] 传入 hw_profile，统一两套 NVENC 检测路径
-        use_codec = codec_override or HardwareCapability.best_encoder(
-            self.codec, hw_profile=self._hw_profile_cache)
+        if self.crf == 0 and not codec_override:
+            use_codec, _ = HardwareCapability.lossless_encoder()
+        else:
+            use_codec = codec_override or HardwareCapability.best_encoder(
+                self.codec, hw_profile=self._hw_profile_cache)
         use_extra = extra_codec_args
         if 'nvenc' in use_codec:
-            print(f'[{worker_label}] NVENC 编码: {use_codec}')
+            if self._segment_index <= 1:
+                print(f'\n[{worker_label}] NVENC 编码已激活: {use_codec}')
 
         # [FIX-TSTART] 含 warmup 的端到端计时
         t_start = time.time()
@@ -3350,16 +5056,73 @@ class IFRNetVideoProcessor:
                     except Exception: pass
             self._warmup_done = True
 
-        writer = FFmpegWriter(
-            output_path, W, H, new_fps,
-            codec            = use_codec,
-            extra_codec_args = use_extra,
-            crf              = self.crf,
-            preset           = self.x264_preset,
-            audio_src        = audio_src,
-            ffmpeg_bin       = self.ffmpeg_bin,
-            quiet            = self.quiet,
-        )
+        # [FIX-T3-V643] 四级自动回退编码路径探测
+        _nvenc_encoder = None
+        _active_level = 4  # 默认最低级别
+        _use_nvenc_direct = False
+
+        # ── Level 1: NVENC SDK GPU 直通编码 ──
+        if 'nvenc' in use_codec:
+            try:
+                _nvenc_encoder = self._get_or_create_nvenc_encoder(
+                    W, H, new_fps,
+                    preset=self.x264_preset if self.x264_preset else 'p1',
+                    qp=0 if self.crf == 0 else self.crf,
+                )
+                writer = FFmpegMuxer(
+                    output_path, new_fps,
+                    audio_src=audio_src,
+                    ffmpeg_bin=self.ffmpeg_bin,
+                    quiet=self.quiet,
+                )
+                _use_nvenc_direct = True
+                _active_level = 1
+                if self._is_first_segment():
+                    print(f'   [FIX-T3-V643] Level 1: NVENC GPU 直通编码 ({W}x{H}@{new_fps:.1f}fps)', flush=True)
+            except Exception as _nv_err:
+                if self._is_first_segment():
+                    print(f'   [FIX-T3-V643] Level 1 失败: {_nv_err}', flush=True)
+
+        # ── Level 2/3: Pinned Ring Buffer + FFmpegWriter ──
+        if _active_level == 4:
+            _ring_max_frames = effective_bs * (n_interp + 1)  # B × (T+original)
+            _ring_slot_bytes = _ring_max_frames * H * W * 3
+            _ring_num_slots = min(8, max(2,
+                (4 * 1024 * 1024 * 1024) // _ring_slot_bytes if _ring_slot_bytes > 0 else 4
+            ))
+            try:
+                self._ring_buf, _ring_created = self._get_or_create_ring_buf(
+                    num_slots=_ring_num_slots,
+                    max_frames_per_slot=_ring_max_frames,
+                    H=H, W=W,
+                )
+                _lv = 2 if 'nvenc' in use_codec else 3
+                _active_level = _lv
+                if _ring_created and not self.quiet:
+                    print(f'   [FIX-T3-V643] Level {_lv}: Ring Buffer + '
+                          f'{"NVENC" if _lv == 2 else "软编码"} ({_ring_num_slots} slots × {_ring_max_frames} frames)', flush=True)
+            except Exception as _rb_err:
+                if self._is_first_segment():
+                    print(f'   [FIX-T3-V643] Level 2/3 (Ring Buffer) 初始化失败: {_rb_err}', flush=True)
+
+        # ── Level 4: 标准路径 ──
+        if _active_level == 4:
+            if self._is_first_segment():
+                print(f'   [FIX-T3-V643] Level 4: 标准 PinnedResultPool 路径', flush=True)
+
+        if not _use_nvenc_direct:
+            writer = FFmpegWriter(
+                output_path, W, H, new_fps,
+                codec            = use_codec,
+                extra_codec_args = use_extra,
+                crf              = self.crf,
+                preset           = self.x264_preset,
+                audio_src        = audio_src,
+                ffmpeg_bin       = self.ffmpeg_bin,
+                quiet            = self.quiet,
+            )
+        # [FIX-NVENC-AWARE] 保存实际使用的编码器，供段后诊断代码使用
+        self._last_used_codec = use_codec
 
         frame_count  = 0
         output_count = 0
@@ -3378,7 +5141,16 @@ class IFRNetVideoProcessor:
         first, first_padded = pair
 
         if not skip_first_output:
-            writer.write(first)
+            if _nvenc_encoder is not None:
+                first_gpu = torch.from_numpy(first).cuda()
+                first_nv12 = _rgb_to_nv12_gpu(first_gpu)
+                # [SEGMENT-REUSE] 非首段强制 IDR，配合 repeatSPSPPS
+                # 使新 FFmpegMuxer 能收到 SPS/PPS 头部以正确初始化
+                force_idr = not self._is_first_segment()
+                h264_data = _nvenc_encoder.encode_frame(first_nv12, force_idr=force_idr)
+                writer.write(h264_data)
+            else:
+                writer.write(first)
             output_count += 1
 
         frame_count = 1
@@ -3399,22 +5171,35 @@ class IFRNetVideoProcessor:
                 result_queue_override = result_queue_override,
                 t3_fps_measured       = t3_fps_measured,   # [FIX-T3-FPS]
             )
-            fc_extra, oc_extra = pipeline.run(
-                reader            = reader,
-                writer            = writer,
-                timesteps         = timesteps,
-                H                 = H,
-                W                 = W,
-                effective_bs      = effective_bs,
-                first_raw         = first,
-                first_padded      = first_padded,
-                skip_first_output = skip_first_output,
-                pbar              = pbar,
-                n_seg_est         = n_seg_est,
-                meter             = meter,
-                H_pad             = H + pad_h,
-                W_pad             = W + pad_w,
-            )
+            try:
+                fc_extra, oc_extra = pipeline.run(
+                    reader            = reader,
+                    writer            = writer,
+                    timesteps         = timesteps,
+                    H                 = H,
+                    W                 = W,
+                    effective_bs      = effective_bs,
+                    first_raw         = first,
+                    first_padded      = first_padded,
+                    skip_first_output = skip_first_output,
+                    pbar              = pbar,
+                    n_seg_est         = n_seg_est,
+                    meter             = meter,
+                    H_pad             = H + pad_h,
+                    W_pad             = W + pad_w,
+                    nvenc_encoder     = _nvenc_encoder,  # [FIX-T3-V643]
+                )
+            except Exception as e:
+                print(f'[{worker_label}] 流水线异常: {e}', flush=True)
+                reader.close()
+                writer.close()
+                if pbar: pbar.close()
+                return False, 0, 0
+            if _nvenc_encoder:
+                _leftover = _nvenc_encoder.flush()
+                if _leftover:
+                    writer.write(_leftover)
+                # [SEGMENT-REUSE] 编码器跨段复用，仅 flush 不 close；由 cleanup() 统一销毁
             # [GPU-MONITOR-v2] 保存实际队列深度，供 print_report() 调优建议使用
             self._last_pair_q_size   = pipeline.pair_queue.maxsize
             self._last_result_q_size = pipeline.result_queue.maxsize
@@ -3517,11 +5302,18 @@ class IFRNetVideoProcessor:
         scale:            float = 2.0,
         preview:          bool  = False,
         preview_interval: int   = 30,
+        total_segments:   int   = 1,       # [SEGMENT-REUSE] 总分段数
+        segment_index:    int   = 1,       # [SEGMENT-REUSE] 当前分段序号（1-based）
     ) -> bool:
         if not os.path.exists(input_path):
             print(f'错误: 输入不存在 - {input_path}')
             return False
         os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+
+        self._segment_index  = segment_index
+        self._total_segments = total_segments
+        _is_first = (segment_index == 1)
+        _is_last  = (segment_index >= total_segments)
 
         audio_src = input_path if self.keep_audio else None
 
@@ -3557,86 +5349,96 @@ class IFRNetVideoProcessor:
         )
 
         # [GPU-MONITOR-v2] 停止采样，输出精细统计 + 三项调优建议
+        # [SEGMENT-REUSE] 仅最后一段输出完整报告，中间段静默
         self._gpu_monitor.stop()
         _gpu_stats = self._gpu_monitor.get_stats()
+        _verbose_report = _is_last or total_segments <= 1
         if _gpu_stats.sample_count > 0:
             _cur_pair_q   = getattr(self, '_last_pair_q_size',   4)
             _cur_result_q = getattr(self, '_last_result_q_size', 16)
-            print()
-            self._gpu_monitor.print_report(
-                _gpu_stats,
-                current_bs       = self.batch_size,
-                current_pair_q   = _cur_pair_q,
-                current_result_q = _cur_result_q,
-            )
+            if _verbose_report:
+                print()
+                self._gpu_monitor.print_report(
+                    _gpu_stats,
+                    current_bs       = self.batch_size,
+                    current_pair_q   = _cur_pair_q,
+                    current_result_q = _cur_result_q,
+                    codec            = getattr(self, '_last_used_codec', self.codec),    # [FIX-NVENC-AWARE] 使用实际编码器
+                )
             # [FIX-T3-DETECT] 获取 GPU-MONITOR 的队列建议（含 T3-bottleneck 检测）
             _slot_mb = getattr(self, '_last_pool_slot_mb', 0.0)
             pair_gpu_sug, result_gpu_sug = self._gpu_monitor.get_queue_suggestions(
                 _gpu_stats, _cur_pair_q, _cur_result_q,
                 slot_mb=_slot_mb,           # 传入每 slot 大小，用于 PinnedPool 内存约束
+                codec=getattr(self, '_last_used_codec', self.codec),           # [FIX-NVENC-AWARE] 使用实际编码器
             )
             # 获取 AUTO-TUNE-RETUNE 的建议（如果存在）
             retune_pair_q   = getattr(self, '_retune_pair_q',   None)
             retune_result_q = getattr(self, '_retune_result_q', None)
 
             # [FIX-T3-DETECT] 先检测是否 T3-bottleneck，再决定综合策略
-            _is_t3 = GPUMonitor._is_t3_bottleneck(_gpu_stats)
+            _is_t3 = GPUMonitor._is_t3_bottleneck(_gpu_stats, codec=getattr(self, '_last_used_codec', self.codec))
             if _is_t3:
                 # T3 是真正瓶颈：不增大队列，result_queue 可适当缩小以回收 pinned 内存
                 final_pair_q   = _cur_pair_q
                 final_result_q = max(16, _cur_result_q - 8) if _cur_result_q > 16 else _cur_result_q
-                print(
-                    f'[ADAPTIVE-QUEUE] ⚠️  T3-bottleneck 确认（编码器是瓶颈）：'
-                    f'pair_queue={final_pair_q}（不变）'
-                    f' result_queue={_cur_result_q}->{final_result_q}（适当缩小，回收锁页内存）'
-                )
+                if _verbose_report:
+                    print(
+                        f'[ADAPTIVE-QUEUE] ⚠️  T3-bottleneck 确认（编码器是瓶颈）：'
+                        f'pair_queue={final_pair_q}（不变）'
+                        f' result_queue={_cur_result_q}->{final_result_q}（适当缩小，回收锁页内存）'
+                    )
                 # [FIX-T3-REPORT] 增强诊断：实测 vs 理论 T3 fps + 具体编码建议
                 _t3_fps_meas = getattr(self, '_last_t3_fps_measured', 0.0)
                 _H_enc, _W_enc = getattr(self, '_last_encode_hw', (0, 0))
+                _nvenc_already_active = 'nvenc' in getattr(self, '_last_used_codec', self.codec).lower()
                 _t3_fps_est = 0.0
-                if _H_enc > 0 and _W_enc > 0:
+                # [FIX-NVENC-AWARE] _software_encode_fps 估算的是 x264 软编码速度，
+                # 对 NVENC 硬编码毫无意义；当 NVENC 已激活时跳过此估算。
+                if (not _nvenc_already_active
+                        and _H_enc > 0 and _W_enc > 0):
                     _t3_fps_est = _software_encode_fps(
                         os.cpu_count() or 4, _H_enc, _W_enc,
                         self.codec, self.x264_preset, self.crf,
                     )
-                _diag_parts = []
-                if _t3_fps_meas > 0:
-                    _diag_parts.append(f'实测 T3={_t3_fps_meas:.0f} fps')
-                if _t3_fps_est > 0:
-                    _diag_parts.append(f'理论估算={_t3_fps_est:.0f} fps')
-                if _t3_fps_meas > 0 and _t3_fps_est > 0:
-                    _degrade = _t3_fps_est / max(_t3_fps_meas, 1.0)
-                    _diag_parts.append(f'偏差={_degrade:.1f}×（含热节流因素）')
-                _diag_str = '  [' + '  '.join(_diag_parts) + ']' if _diag_parts else ''
-                _has_nvenc_h264 = HardwareCapability.has_nvenc('h264_nvenc')
-                _nvenc_already_active = 'nvenc' in self.codec.lower()
-                if _nvenc_already_active:
-                    _encoder_tip = (
-                        f'NVENC 已激活但 T3 仍为瓶颈（实测 {_t3_fps_meas:.0f} fps）。'
-                        f'建议：1) 尝试 --x264-preset p1（最快 NVENC preset） '
-                        f'2) 尝试 --crf 0 无损模式（跳过 VBR 前向预看） '
-                        f'3) bgr24→yuv420p CPU 格式转换 / pipe 写入带宽 / 非标准分辨率'
-                    )
-                elif _has_nvenc_h264 and _t3_fps_meas > 0:
-                    _nvenc_fps = 3000.0
-                    if _H_enc > 0 and _W_enc > 0:
-                        _nvenc_fps = min(3000.0, 3000.0 * 1920 * 1080 / (_H_enc * _W_enc))
-                    _speedup = _nvenc_fps / max(_t3_fps_meas, 1.0)
-                    _encoder_tip = (
-                        f'建议切换 --codec h264_nvenc（理论 ~{_nvenc_fps:.0f} fps，'
-                        f'约 {_speedup:.0f}× 加速）'
-                        f'；注: Docker 环境需确认 NVENC 设备映射（--gpus）'
-                    )
-                elif _has_nvenc_h264:
-                    _encoder_tip = (
-                        '建议切换 --codec h264_nvenc（NVENC 约 10-20× 加速）'
-                    )
-                else:
-                    _encoder_tip = (
-                        '考虑降低编码参数：--x264-preset veryfast --crf 18'
-                        '（实测约 5-10× 加速，画质略降但通常可接受）'
-                    )
-                print(f'[ADAPTIVE-QUEUE] 提示：真正瓶颈在编码器{_diag_str}  {_encoder_tip}')
+                if _verbose_report:
+                    _diag_parts = []
+                    if _t3_fps_meas > 0:
+                        _diag_parts.append(f'实测 T3={_t3_fps_meas:.0f} fps')
+                    if _t3_fps_est > 0:
+                        _diag_parts.append(f'理论估算={_t3_fps_est:.0f} fps')
+                    if _t3_fps_meas > 0 and _t3_fps_est > 0:
+                        _degrade = _t3_fps_est / max(_t3_fps_meas, 1.0)
+                        _diag_parts.append(f'偏差={_degrade:.1f}×（含热节流因素）')
+                    _diag_str = '  [' + '  '.join(_diag_parts) + ']' if _diag_parts else ''
+                    _has_nvenc_h264 = HardwareCapability.has_nvenc('h264_nvenc')
+                    if _nvenc_already_active:
+                        _encoder_tip = (
+                            f'NVENC 已激活但 T3 仍为瓶颈（实测 {_t3_fps_meas:.0f} fps）。'
+                            f'建议：1) 尝试 --x264-preset p1（最快 NVENC preset） '
+                            f'2) 尝试 --crf 0 无损模式（跳过 VBR 前向预看） '
+                            f'3) bgr24→yuv420p CPU 格式转换 / pipe 写入带宽 / 非标准分辨率'
+                        )
+                    elif _has_nvenc_h264 and _t3_fps_meas > 0:
+                        _nvenc_fps = 3000.0
+                        if _H_enc > 0 and _W_enc > 0:
+                            _nvenc_fps = min(3000.0, 3000.0 * 1920 * 1080 / (_H_enc * _W_enc))
+                        _speedup = _nvenc_fps / max(_t3_fps_meas, 1.0)
+                        _encoder_tip = (
+                            f'建议切换 --codec h264_nvenc（理论 ~{_nvenc_fps:.0f} fps，'
+                            f'约 {_speedup:.0f}× 加速）'
+                            f'；注: Docker 环境需确认 NVENC 设备映射（--gpus）'
+                        )
+                    elif _has_nvenc_h264:
+                        _encoder_tip = (
+                            '建议切换 --codec h264_nvenc（NVENC 约 10-20× 加速）'
+                        )
+                    else:
+                        _encoder_tip = (
+                            '考虑降低编码参数：--x264-preset veryfast --crf 18'
+                            '（实测约 5-10× 加速，画质略降但通常可接受）'
+                        )
+                    print(f'[ADAPTIVE-QUEUE] 提示：真正瓶颈在编码器{_diag_str}  {_encoder_tip}')
                 # [FIX-T3-FPS] 保存实测 T3 fps 供下段使用
                 self._next_t3_fps_measured = _t3_fps_meas
             else:
@@ -3655,25 +5457,36 @@ class IFRNetVideoProcessor:
                 # 硬上限
                 final_pair_q   = min(final_pair_q, 8)
                 final_result_q = min(final_result_q, 64)
-                # [FIX-T3-MEMCAP / FIX-POOL-AUTOSCALE] 施加 PinnedPool 内存上限约束，并显式 log 截断原因
+                # [FIX-T3-MEMCAP / FIX-POOL-AUTOSCALE / FIX-MAXRQ-DYNAMIC]
+                # PinnedPool 内存上限约束：改用三轴动态函数，并显式 log 截断原因。
                 if _slot_mb > 0.0:
-                    _max_rq_mem = max(8, int(_PINNED_POOL_MAX_MB / _slot_mb) - 2)
+                    _mem_avail_gb_aq = _detect_encode_parallelism()['mem_avail_gb']
+                    _max_rq_mem = _compute_max_result_queue(
+                        slot_mb      = _slot_mb,
+                        mem_avail_gb = _mem_avail_gb_aq,
+                    )
                     if final_result_q > _max_rq_mem:
-                        print(
-                            f'[ADAPTIVE-QUEUE] PinnedPool 内存上限截断: '
-                            f'result_queue {final_result_q} → {_max_rq_mem}'
-                            f'  (slot={_slot_mb:.1f} MB × {_max_rq_mem+2} ≈ {_PINNED_POOL_MAX_MB:.0f} MB上限)'
-                        )
+                        if _verbose_report:
+                            _ram_budget_mb = _mem_avail_gb_aq * 1024.0 * 0.06
+                            print(
+                                f'[ADAPTIVE-QUEUE] PinnedPool 动态上限截断: '
+                                f'result_queue {final_result_q} → {_max_rq_mem}'
+                                f'  (slot={_slot_mb:.1f} MB × {_max_rq_mem}'
+                                f' ≈ {_slot_mb * _max_rq_mem:.0f} MB'
+                                f'  ≤ RAM预算 {_ram_budget_mb:.0f} MB'
+                                f'  [mem_avail={_mem_avail_gb_aq:.1f} GB × 6%])'
+                            )
                     final_result_q = min(final_result_q, _max_rq_mem)
 
                 # [FIX-RETUNE-DISPLAY] 打印推导链路，让建议来源透明可追溯
                 _retune_str = (f'RETUNE={_rq_retune}' if retune_result_q is not None
                                else 'RETUNE=N/A')
-                print(
-                    f'[ADAPTIVE-QUEUE] 下次将使用 pair_queue={final_pair_q} '
-                    f'result_queue={final_result_q}'
-                    f'  (GPU-MONITOR={result_gpu_sug} {_retune_str} → avg={_rq_combined_raw})'
-                )
+                if _verbose_report:
+                    print(
+                        f'[ADAPTIVE-QUEUE] 下次将使用 pair_queue={final_pair_q} '
+                        f'result_queue={final_result_q}'
+                        f'  (GPU-MONITOR={result_gpu_sug} {_retune_str} → avg={_rq_combined_raw})'
+                    )
                 # [FIX-T3-FPS] 非 T3-bottleneck 时也更新实测 T3 fps（更可靠）
                 self._next_t3_fps_measured = getattr(self, '_last_t3_fps_measured', 0.0)
 
@@ -3729,7 +5542,7 @@ class IFRNetVideoProcessor:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='IFRNet 视频插帧 —— 终极优化版 v6.3.3（单卡版）',
+        description='IFRNet 视频插帧 —— 终极优化版 v6.4.3（单卡版）',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     # 基础参数
@@ -3825,7 +5638,7 @@ def main():
     Model, _ = _load_ifrnet_module(args.model)
 
     print('=' * 65)
-    print('  IFRNet 视频插帧 —— 终极优化版 v6.3.3（单卡版）')
+    print('  IFRNet 视频插帧 —— 终极优化版 v6.4.3（单卡版）')
     print('=' * 65)
     print(f'  模型:   {args.model}')
     print(f'  设备:   {args.device} | GPU: '

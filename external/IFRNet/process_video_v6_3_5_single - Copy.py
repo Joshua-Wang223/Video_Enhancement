@@ -1,8 +1,34 @@
 ﻿"""
-IFRNet 视频插帧处理脚本 —— 终极优化版 v6.3.4（单卡版）
+IFRNet 视频插帧处理脚本 —— 终极优化版 v6.3.5（单卡版）
 ==========================================================
 基于 IFRNet（Intermediate Flow-based Recursive Network）的视频帧插值脚本，
 面向单 GPU 生产环境的高性能实现。
+
+【v6.3.5 新增修复（基于 v6.3.4）】
+  [FIX-POOL-LEAK]     PinnedResultPool 跨段泄漏修复（后 3 段速度减半问题）：
+                   · 根因：段结束后 PinnedResultPool 持有的 pinned 内存未显式释放，
+                     Python GC 不会立即回收 cudaHostAlloc 分配的锁页内存，导致各
+                     段 Pool 叠加累积（944MB → 1557MB → 1935MB → 1982MB+），
+                     DMA 带宽被竞争，D2H 传输变慢，result_queue 长期满载，
+                     GPU P50 利用率从 88% 跌至 8%，吞吐量减半（83fps → 41fps）。
+                   · 修复：新增 PinnedResultPool.free() 方法，显式 del 全部 pinned
+                     buffer；在 _infer_loop finally 块中调用，确保每段结束后立即
+                     解除锁页内存占用；同时触发 gc.collect() 加速 Python 对象回收。
+
+  [FIX-MAXRQ-DYNAMIC] result_queue 上限改为三轴动态计算（替代静态 _PINNED_POOL_MAX_MB）：
+                   · 根因：_PINNED_POOL_MAX_MB 为 GPU-tier 静态常量（T4=2048MB），
+                     无法反映实际 RAM 余量、分辨率变化、T3/T2 速度比等动态因素；
+                     换机（RAM ≠ 32GB）或换分辨率时上限或过保守或过激进。
+                   · 新增 _compute_max_result_queue(slot_mb, mem_avail_gb, T2_ms, T3_ms)
+                     三轴联合约束：
+                     轴1 RAM 上限  = mem_avail × 6% / slot_size（主要约束）
+                     轴2 T3/T2 下限= T3_ms/T2_ms × 0.22（最小解耦需求，libx264 流式系数）
+                     轴3 绝对上限  = 48（防估算失控保险）
+                     结果 = max(floor_by_t3, min(cap_by_ram, 48))
+                   · 替换 _auto_queue_depths / get_queue_suggestions /
+                     ADAPTIVE-QUEUE 三处 _PINNED_POOL_MAX_MB 硬编码引用。
+                   · _PINNED_POOL_MAX_MB 保留为模块级常量（PinnedPool 构建阶段
+                     的参考值），不再用于运行时队列约束。
 
 【v6.3.4 新增修复（基于 v6.3.3）】
   [FIX-BATCHCAP]     跨段 batch_size 误降修复（Segment 2+ bs 32→7 问题）：
@@ -341,14 +367,35 @@ class HardwareCapability:
 
     @staticmethod
     def _probe_nvenc(codec: str) -> bool:
+        # [FIX-PROBE] 历次修复汇总（根因均由 stderr 诊断确认）：
+        #   LAVFI  : color 源去掉 d=0.1（0帧问题）→ 无限源 + -frames:v 1 截帧
+        #   PIXFMT : FFmpeg 5.0+ color 源默认 yuv444p → 显式 -pix_fmt yuv420p
+        #   BFRAME : 单帧编码触发 B 帧 lookahead 报错 → -bf 0
+        #   MINDIM : h264_nvenc 宽≥145px / hevc_nvenc 宽≥129px → 256×144
+        cmd = [
+            'ffmpeg', '-hide_banner', '-y', '-loglevel', 'error',
+            '-f', 'lavfi', '-i', 'color=c=black:s=256x144:r=1',
+            '-vcodec', codec, '-frames:v', '1',
+            '-pix_fmt', 'yuv420p', '-bf', '0',
+            '-f', 'null', '-',
+        ]
         try:
-            cmd = [
-                'ffmpeg', '-f', 'lavfi', '-i', 'color=c=black:s=64x64:d=0.1:r=1',
-                '-vcodec', codec, '-frames:v', '1',
-                '-f', 'null', '-', '-loglevel', 'error',
-            ]
-            return subprocess.run(cmd, capture_output=True, timeout=10).returncode == 0
-        except Exception:
+            result = subprocess.run(cmd, capture_output=True, timeout=10)
+            if result.returncode != 0:
+                _err = result.stderr.decode('utf-8', errors='replace').strip()
+                print(
+                    f'  [PROBE-FAIL] {codec} probe 失败 (rc={result.returncode})\n'
+                    f'  手动测试: {" ".join(cmd)}\n'
+                    f'  stderr: {_err or "(空)"}',
+                    flush=True,
+                )
+            return result.returncode == 0
+        except Exception as e:
+            print(
+                f'  [PROBE-FAIL] {codec} probe 异常: {e}\n'
+                f'  手动测试: {" ".join(cmd)}',
+                flush=True,
+            )
             return False
 
     @classmethod
@@ -357,10 +404,18 @@ class HardwareCapability:
         """
         [FIX-NVENC-UNIFIED] 统一 NVENC 检测路径。
 
-        优先级：
-        1. hw_profile.has_nvenc（静态 GPU 型号表，与 AUTO-TUNE 一致，Docker 环境可靠）
-        2. HardwareCapability.has_nvenc()（ffmpeg 实际 probe，Docker 无 /dev/nvidia*
-           设备映射时可能失败，作为回退保底）
+        优先级（按 hw_profile 是否提供分两条路径）：
+
+        路径 A（hw_profile 已提供，GPU 型号已知）：
+          1. 直接采信 hw_profile.has_nvenc（静态 GPU 型号表，与 AUTO-TUNE 一致）。
+          2. 若静态表确认可用且 ffmpeg probe 失败（Docker 设备映射缺失常见场景），
+             打印明确警告后仍信任静态表——probe 失败不等于硬件不可用。
+             可将 _NVENC_TRUST_STATIC = False 改为强制要求 probe 通过。
+          3. 静态表否定（has_nvenc=False）时不做 probe，直接回退软件编码。
+
+        路径 B（hw_profile 未提供，GPU 型号未知）：
+          仅凭 ffmpeg 实际 probe 判断，probe 失败即回退软件编码。
+          此路径适用于无法识别 GPU 型号的环境（非 NVIDIA GPU 等）。
 
         两套检测结果在 Docker 未映射 NVENC 设备时会不一致：AUTO-TUNE 显示 nvenc=True
         但 ffmpeg probe 失败，导致实际使用 libx264 引发 T3 瓶颈。本修复确保两者一致。
@@ -368,23 +423,57 @@ class HardwareCapability:
         nvenc_map    = {'libx264': 'h264_nvenc', 'libx265': 'hevc_nvenc'}
         fallback_map = {'h264_nvenc': 'libx264', 'hevc_nvenc': 'libx265'}
 
+        # [FIX-NVENC-TRUST-STATIC] 当 probe 失败但静态表确认可用时，是否信任静态表。
+        # True（默认）：信任静态表，适用于 Docker 设备映射缺失但硬件真实存在的场景。
+        # False：强制要求 probe 通过，适用于需要 100% 运行时验证的严格环境。
+        _NVENC_TRUST_STATIC: bool = True
+
         def _nvenc_ok(codec_name: str) -> bool:
-            # [FIX-NVENC-DOCKER] ffmpeg 实际 probe 是硬件可用性的唯一权威依据。
-            # 静态表（hw_profile.has_nvenc）仅用于 AUTO-TUNE T3 性能估算，
-            # 不能替代实际编码器能力检测：Docker 缺少 /dev/nvidia* 映射时
-            # 静态表显示"GPU 支持 NVENC"但 ffmpeg 无法访问，盲目升级会编码失败。
-            if not cls.has_nvenc(codec_name):
-                return False
-            # ffmpeg probe 通过 + hw_profile 确认（可选，仅作双重校验）
+            # [FIX-NVENC-UNIFIED] 路径 A：hw_profile 已知时优先信任静态 GPU 型号表。
+            # 这与 docstring 描述的优先级一致，解决了原实现 probe-first 导致
+            # Docker 环境中 hw_profile.has_nvenc=True 被静默忽略的问题。
             if hw_profile is not None and hasattr(hw_profile, 'has_nvenc'):
-                return hw_profile.has_nvenc
-            return True
+                if not hw_profile.has_nvenc:
+                    # 静态表明确否定：不做 probe，直接返回 False
+                    return False
+                # 静态表确认可用：尝试 probe 做二次验证
+                probe_ok = cls.has_nvenc(codec_name)
+                if not probe_ok:
+                    # [FIX-NVENC-PROBE-WARN] probe 失败但静态表确认硬件存在。
+                    # 常见于 Docker 容器 /dev/nvidia* 设备映射不完整，
+                    # nvidia-smi 可见 GPU 但 ffmpeg 无法访问 NVENC 编码器。
+                    # 根据 _NVENC_TRUST_STATIC 决定是否信任静态表。
+                    if _NVENC_TRUST_STATIC:
+                        print(
+                            f'  [FIX-NVENC-UNIFIED] {codec_name} ffmpeg probe 失败，'
+                            f'但静态 GPU 型号表确认硬件存在（hw_profile.has_nvenc=True）。\n'
+                            f'  信任静态表，继续使用 {codec_name}（Docker 设备映射不完整时正常）。\n'
+                            f'  若实际编码报错，可在代码中将 _NVENC_TRUST_STATIC 改为 False。'
+                        )
+                        return True
+                    else:
+                        print(
+                            f'  [FIX-NVENC-UNIFIED] {codec_name} ffmpeg probe 失败。'
+                            f'静态表显示硬件存在但 _NVENC_TRUST_STATIC=False，回退软件编码。'
+                        )
+                        return False
+                return True  # 静态表 + probe 双重确认
+
+            # [FIX-NVENC-UNIFIED] 路径 B：hw_profile 未知，仅凭 ffmpeg probe 判断。
+            return cls.has_nvenc(codec_name)
 
         if preferred in fallback_map:
             if _nvenc_ok(preferred):
                 return preferred
             fallback = fallback_map[preferred]
-            print(f'  [警告] {preferred} 不可用，自动回退到 {fallback}')
+            # [FIX-NVENC-WARN] 明确说明回退原因（probe 失败 or 静态表否定 or 无 profile）
+            if hw_profile is not None and hasattr(hw_profile, 'has_nvenc') and not hw_profile.has_nvenc:
+                reason = '静态 GPU 型号表标记 has_nvenc=False'
+            elif not cls.has_nvenc(preferred):
+                reason = 'ffmpeg probe 失败（Docker 设备映射可能缺失 /dev/nvidia*）'
+            else:
+                reason = '未知原因'
+            print(f'  [警告] {preferred} 不可用（{reason}），自动回退到 {fallback}')
             return fallback
         candidate = nvenc_map.get(preferred, preferred)
         if candidate != preferred and _nvenc_ok(candidate):
@@ -453,6 +542,29 @@ class PinnedResultPool:
 
     def release(self, buf: torch.Tensor):
         self._q.put(buf)
+
+    def free(self) -> int:
+        """
+        [FIX-POOL-LEAK] 显式释放所有 pinned buffer，解除 CUDA 锁页内存占用。
+
+        背景：Python GC 不会立即回收 cudaHostAlloc 分配的锁页内存（底层由 CUDA
+        驱动管理，引用计数归零后仍可能驻留直至下次 GC 扫描）。若跨段不主动释放，
+        各段 PinnedResultPool 会持续叠加（每段 ~1 GiB），累积 4-6 GiB 锁页内存，
+        导致 DMA 带宽下降 → D2H 变慢 → result_queue 满载 → GPU P50 利用率从
+        88% 跌至 8%，吞吐量减半。
+
+        调用时机：_infer_loop finally 块，确保每段推理线程退出前完成释放。
+        返回值：实际释放的 buffer 数量（用于日志确认）。
+        """
+        freed = 0
+        while True:
+            try:
+                buf = self._q.get_nowait()
+                del buf
+                freed += 1
+            except queue.Empty:
+                break
+        return freed
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -817,6 +929,7 @@ class GPUMonitor:
         current_bs:       int,
         current_pair_q:   int,
         current_result_q: int,
+        codec:            str = '',          # [FIX-NVENC-AWARE] 编码器名称，用于避开 NVENC 误判
     ) -> None:
         """
         打印精细统计报告，并依据以下逻辑给出三项调优建议：
@@ -895,7 +1008,7 @@ class GPUMonitor:
         # ── [FIX-T3-DETECT] result_queue（T3 输出缓冲）建议 ─────────────────
         # 先判断是否 T3-bottleneck：若是，增大 result_queue 无助于提速，
         # 反而加重 PinnedPool 锁页内存压力，应保持或缩小。
-        if self._is_t3_bottleneck(stats):
+        if self._is_t3_bottleneck(stats, codec=codec):
             if current_result_q > 16:
                 sug_rq = max(16, current_result_q - 8)
                 print(f'[GPU-MONITOR] ⚠️  检测到 T3-bottleneck（编码器是真正瓶颈）：'
@@ -925,15 +1038,19 @@ class GPUMonitor:
         current_pair_q:   int,
         current_result_q: int,
         slot_mb:          float = 0.0,   # [FIX-T3-MEMCAP] 每个 result slot 的 MiB 数
+        t2_ms:            float = 0.0,   # [FIX-MAXRQ-DYNAMIC] T2 推理延迟（ms），0=未知
+        t3_ms:            float = 0.0,   # [FIX-MAXRQ-DYNAMIC] T3 编码延迟（ms），0=未知
+        codec:            str   = '',    # [FIX-NVENC-AWARE] 编码器名称，用于避开 NVENC 误判
         ) -> Tuple[int, int]:
         """
-        [FIX-T3-DETECT / FIX-T3-MEMCAP / FIX-POOL-AUTOSCALE] 返回 (建议 pair_queue, 建议 result_queue)。
-        用于跨段自适应队列调整，不打印信息。
+        [FIX-T3-DETECT / FIX-T3-MEMCAP / FIX-POOL-AUTOSCALE / FIX-MAXRQ-DYNAMIC]
+        返回 (建议 pair_queue, 建议 result_queue)。用于跨段自适应队列调整，不打印信息。
 
         新增逻辑：
         · T3-bottleneck 时不增大 result_queue（否则 PinnedPool 雪球式积累）。
         · slot_mb > 0 时对 result_queue 施加 PinnedPool 内存上限约束。
-        · [FIX-POOL-AUTOSCALE] 上限由模块级 _PINNED_POOL_MAX_MB 按 GPU 型号自动缩放。
+        · [FIX-MAXRQ-DYNAMIC] 上限改由 _compute_max_result_queue() 三轴动态计算
+          （RAM 上限 / T3/T2 下限 / 绝对上限），替代静态 _PINNED_POOL_MAX_MB。
         """
         pair_q   = current_pair_q
         result_q = current_result_q
@@ -949,7 +1066,7 @@ class GPUMonitor:
             pair_q = max(3, current_pair_q - 1)
 
         # [FIX-T3-DETECT] result_queue 建议：T3-bottleneck 时保持或缩小
-        if self._is_t3_bottleneck(stats):
+        if self._is_t3_bottleneck(stats, codec=codec):
             # T3 是真正瓶颈，增大 result_queue 无助于提速，反而增加内存压力
             if current_result_q > 16:
                 result_q = max(16, current_result_q - 8)
@@ -959,9 +1076,15 @@ class GPUMonitor:
         elif headroom_gib > 2.0 and current_result_q < 32:
             result_q = min(48, current_result_q + 8)
 
-        # [FIX-T3-MEMCAP] PinnedPool 内存上限约束
+        # [FIX-T3-MEMCAP / FIX-MAXRQ-DYNAMIC] PinnedPool 内存上限约束（三轴动态计算）
         if slot_mb > 0.0:
-            _max_rq_by_mem = max(8, int(_PINNED_POOL_MAX_MB / slot_mb) - 2)  # -2 留给 pool overhead
+            _mem_avail_gb_gqs = _detect_encode_parallelism()['mem_avail_gb']
+            _max_rq_by_mem = _compute_max_result_queue(
+                slot_mb      = slot_mb,
+                mem_avail_gb = _mem_avail_gb_gqs,
+                T2_ms        = t2_ms,
+                T3_ms        = t3_ms,
+            )
             result_q = min(result_q, _max_rq_by_mem)
 
         return pair_q, result_q
@@ -981,7 +1104,7 @@ class GPUMonitor:
     # ── [FIX-T3-DETECT] T3 瓶颈检测器 ──────────────────────────────────────
 
     @staticmethod
-    def _is_t3_bottleneck(stats: 'GPUStats') -> bool:
+    def _is_t3_bottleneck(stats: 'GPUStats', codec: str = '') -> bool:
         """
         [FIX-T3-DETECT] 判断流水线瓶颈是否在 T3（编码器）而非 T2（推理）。
 
@@ -996,7 +1119,12 @@ class GPUMonitor:
         仅增加锁页内存压力、拖慢 DMA 带宽。
 
         与 T2-bottleneck 的区分：T2 慢时 GPU 持续均匀高负载（stable_avg 高）。
+
+        [FIX-NVENC-AWARE] NVENC 是独立硬件编码单元，不体现在 CUDA 利用率中；
+        当编码器为 NVENC 时，低 CUDA 利用率是正常现象，不应判定为 T3-bottleneck。
         """
+        if 'nvenc' in codec.lower():
+            return False
         return (
             stats.low_util_frac > 0.60        # GPU 空闲 > 60%
             and stats.stable_p95 > 85.0       # 但 P95 仍然爆发到 85%+（阵发性）
@@ -1144,10 +1272,74 @@ def _pool_limit_mb_for_profile(profile: '_HWProfile') -> float:
 
     return min(tier_limit, ram_limit)
 
-# 模块级常量：PinnedPool 锁页内存上限（MiB），按 GPU 型号自动缩放，只初始化一次
+# 模块级常量：PinnedPool 锁页内存上限（MiB），按 GPU 型号自动缩放，只初始化一次。
+# [FIX-MAXRQ-DYNAMIC] 此常量仅保留供 PinnedPool 构建阶段参考；
+# 运行时队列约束改由 _compute_max_result_queue() 动态计算，不再直接使用此常量。
 _PINNED_POOL_MAX_MB: float = _pool_limit_mb_for_profile(
     _detect_hw_profile(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
 )
+
+
+def _compute_max_result_queue(
+    slot_mb: float,
+    mem_avail_gb: float,
+    T2_ms: float = 0.0,
+    T3_ms: float = 0.0,
+    ram_budget_fraction: float = 0.06,
+    abs_cap: int = 48,
+) -> int:
+    """
+    [FIX-MAXRQ-DYNAMIC] 动态计算 result_queue 安全上限（三轴联合约束）。
+
+    三轴约束原理
+    ─────────────────────────────────────────────────────────────────────────
+    轴1 RAM 上限（主要约束）：
+      PinnedPool 使用系统 RAM 锁页内存（不占 VRAM），但过多会竞争 DMA 带宽。
+      上限 = mem_avail_gb × ram_budget_fraction / slot_mb
+      ram_budget_fraction 默认 6%：T4+20GiB RAM+47MB/slot ≈ 26 槽，与实测吻合。
+      该参数是唯一需要人工校准的旋钮；无论换 GPU / 换分辨率 / 换机器都自适应。
+
+    轴2 T3/T2 速度比（最小需求下限）：
+      result_queue 存在是为了缓冲 T3 比 T2 慢这一事实，但 libx264 是流式编码器，
+      并非每批阻塞整个 T3_ms；实际突发缓冲需求远小于 T3/T2 比值。
+      经验系数 0.22（= 0.15 × 1.5）：在 T4+crf=0+ultrafast 场景实测吻合。
+      floor_by_t3 = max(8, int(T3_ms / T2_ms × 0.22))
+      T2_ms/T3_ms 均为 0 时（未知），跳过此轴，floor = 8。
+
+    轴3 绝对上限（保险兜底）：
+      防止内存估算本身有误（如 mem_avail_gb 异常偏大）时失控。
+      固定为 abs_cap（默认 48）。
+
+    三轴关系：RAM 决定上限，T3/T2 比决定下限，取二者之间合理值：
+      result = max(floor_by_t3, min(cap_by_ram, abs_cap))
+
+    参数
+    ─────────────────────────────────────────────────────────────────────────
+    slot_mb            : 每个 result slot 的锁页内存占用（MiB），
+                         = effective_bs × T × H_pad × W_pad × 3 / 1e6
+    mem_avail_gb       : 系统当前可用 RAM（GiB），来自 _detect_encode_parallelism()
+    T2_ms              : GPU 推理延迟（ms），来自 AUTO-TUNE 测量；0 表示未知
+    T3_ms              : 每批次编码延迟（ms），来自 AUTO-TUNE 估算；0 表示未知
+    ram_budget_fraction: PinnedPool 允许占用可用 RAM 的比例（默认 6%）
+    abs_cap            : result_queue 绝对上限（默认 48）
+    """
+    if slot_mb <= 0.0:
+        return abs_cap
+
+    # 轴1: RAM 上限（可用内存 × 预算比 / 每槽大小）
+    ram_budget_mb = mem_avail_gb * 1024.0 * ram_budget_fraction
+    cap_by_ram = max(8, int(ram_budget_mb / slot_mb))
+
+    # 轴2: T3/T2 实际需求下限（仅在两者均已知时计算）
+    # libx264 流式编码 burst 系数约 0.22（经验值，T4 实测 ~8 槽已足够解耦）
+    if T2_ms > 0.0 and T3_ms > 0.0:
+        floor_by_t3 = max(8, int(T3_ms / T2_ms * 0.22))
+    else:
+        floor_by_t3 = 8   # 未知时使用安全下限
+
+    # 轴3: 绝对上限兜底，防止内存估算失控
+    return max(floor_by_t3, min(cap_by_ram, abs_cap))
+
 
 _X264_PRESET_FACTOR = {
     'ultrafast': 8.0, 'superfast': 6.0, 'veryfast': 4.0,
@@ -1354,13 +1546,21 @@ def _auto_queue_depths(
     pair_depth   = max(2, min(int(_math.ceil(t2_ms / max(t1_ms, 0.1))) + 2, 8))
     result_depth = max(8, min(int(_math.ceil(t3_ms / max(t2_ms, 0.1))) + 3, 64))
 
-    # [FIX-T3-MEMCAP / FIX-POOL-AUTOSCALE] 依据模块级 _PINNED_POOL_MAX_MB 约束 result_depth。
+    # [FIX-T3-MEMCAP / FIX-POOL-AUTOSCALE / FIX-MAXRQ-DYNAMIC] 动态约束 result_depth。
     # 每个 result slot 持有 effective_bs * T 帧的 pinned uint8 buffer。
     # 若不加约束，T3 极慢（大 T3/T2 比）时 result_depth 会达到 50+，
     # 导致 PinnedPool 分配 2 GiB+ 锁页内存，反而拖慢 DMA 带宽，形成恶性循环。
-    _slot_mb     = effective_bs * T * H_pad * W_pad * 3 / 1e6 # 每 slot 的 MiB
+    # [FIX-MAXRQ-DYNAMIC] 改用三轴动态函数：RAM 上限 / T3/T2 下限 / 绝对上限联合约束，
+    # 无论换 GPU / 换分辨率 / 换机器均自适应，无需修改硬编码常量。
+    _slot_mb = effective_bs * T * H_pad * W_pad * 3 / 1e6  # 每 slot 的 MiB
     if _slot_mb > 0.0:
-        _max_result_by_mem = max(8, int(_PINNED_POOL_MAX_MB / _slot_mb) - 2)
+        _mem_avail_gb_aqd = _detect_encode_parallelism()['mem_avail_gb']
+        _max_result_by_mem = _compute_max_result_queue(
+            slot_mb      = _slot_mb,
+            mem_avail_gb = _mem_avail_gb_aqd,
+            T2_ms        = t2_ms,
+            T3_ms        = t3_ms,
+        )
         result_depth = min(result_depth, _max_result_by_mem)
 
     pool_size    = result_depth + 2
@@ -1426,6 +1626,7 @@ class IFRNetPipelineRunner:
         self._pair_queue_override = pair_queue_override
         self._result_queue_override = result_queue_override
         self._t3_fps_measured_input = t3_fps_measured   # [FIX-T3-FPS] 跨段实测值，传给 _auto_queue_depths
+        self._error: Optional[Exception] = None          # 流水线异常标志，供 run() 传播错误
 
         # [FIX-DOUBLEBUF-H2D] 双槽飞行中 H2D，最多保持 2 个预取 in-flight
         self._prefetch_deque: deque = deque()   # 元素: (item, img0_t, img1_t)
@@ -1487,6 +1688,7 @@ class IFRNetPipelineRunner:
                     raw_buf    = [raw_buf[-1]]
                     padded_buf = [padded_buf[-1]]
         except Exception as e:
+            self._error = e
             import traceback
             print(f'\n[IFRNet-Reader] 异常 @frame={frames_read}: {type(e).__name__}: {e}', flush=True)
             traceback.print_exc()
@@ -1690,6 +1892,11 @@ class IFRNetPipelineRunner:
                         P=self.pair_queue.qsize(),
                         R=self.result_queue.qsize(),
                     )
+        except Exception as e:
+            self._error = e
+            import traceback
+            print(f'\n[IFRNet-Writer] 写线程异常: {type(e).__name__}: {e}', flush=True)
+            traceback.print_exc()
         finally:
             if not self.proc.quiet:
                 print(f'\n[IFRNet-Writer] 退出，已写 {written} 输出帧', flush=True)
@@ -1830,6 +2037,14 @@ class IFRNetPipelineRunner:
 
         # 等待推理线程完成（T2 结束后向 result_queue 发送 SENTINEL，Writer 随之退出）
         self._infer_th.join()
+
+        # 检查流水线是否有异常
+        if self._error is not None:
+            if self._writer_th and self._writer_th.is_alive():
+                self._writer_th.join(timeout=10.0)
+            raise RuntimeError(
+                f'流水线处理异常: {type(self._error).__name__}: {self._error}'
+            ) from self._error
 
         # [FIX-RETUNE-POSTRUN] 段完成后用全段稳定 timing 做 RETUNE（精度优于早期 5-batch 采样）
         # · 采用 timing[_CALIB_SKIP:] 中位数，剔除流水线启动热身噪声
@@ -2003,6 +2218,7 @@ class IFRNetPipelineRunner:
                 meter.update(B)
 
         except Exception as e:
+            self._error = e
             import traceback
             print(f'[IFRNet-Infer] 推理线程异常: {type(e).__name__}: {e}', flush=True)
             traceback.print_exc()
@@ -2015,6 +2231,15 @@ class IFRNetPipelineRunner:
                 except queue.Full:
                     continue
             proc._pipeline_runner = None
+            # [FIX-POOL-LEAK] 显式释放 PinnedResultPool 锁页内存，防止跨段累积。
+            # 必须在 proc._result_pool = None 之前调用 free()，否则引用丢失后
+            # GC 延迟回收，锁页内存继续占用导致下一段 DMA 带宽被竞争。
+            if proc._result_pool is not None:
+                _freed_slots = proc._result_pool.free()
+                import gc as _gc; _gc.collect()
+                if not proc.quiet:
+                    print(f'[PinnedResultPool] 已释放 {_freed_slots} 个 pinned buffer，'
+                          f'触发 GC 回收', flush=True)
             proc._result_pool     = None
             self._fc_extra = fc_extra   # [FIX-INFER-THREAD] 供 run() 读取
 
@@ -2177,6 +2402,10 @@ class FFmpegFrameReader:
 
         hw_args: List[str] = []
         if use_hwaccel and HardwareCapability.has_nvdec():
+            # hw_args = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'nv12']
+            # ✅ 正确：nv12 是 NVDEC 合法的 hwaccel_output_format
+            # FFmpeg 会先将 CUDA NV12 surface download 到 CPU，
+            # 再由 swscale 自动转换为 -pix_fmt bgr24 输出到管道
             hw_args = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'nv12']
 
         if frame_start == 0 and frame_end < 0:
@@ -2455,7 +2684,6 @@ class FFmpegWriter:
         if 'nvenc' not in codec:
             cmd.insert(2, '-threads')
             cmd.insert(3, str(_ft))
-        ]
         if audio_src:
             cmd += ['-i', audio_src, '-c:a', 'copy', '-map', '0:v', '-map', '1:a?']
         if extra_codec_args:
@@ -3314,7 +3542,7 @@ class IFRNetVideoProcessor:
             self.codec, hw_profile=self._hw_profile_cache)
         use_extra = extra_codec_args
         if 'nvenc' in use_codec:
-            print(f'[{worker_label}] NVENC 编码: {use_codec}')
+            print(f'\n[{worker_label}] NVENC 编码已激活: {use_codec}')
 
         # [FIX-TSTART] 含 warmup 的端到端计时
         t_start = time.time()
@@ -3360,6 +3588,9 @@ class IFRNetVideoProcessor:
             ffmpeg_bin       = self.ffmpeg_bin,
             quiet            = self.quiet,
         )
+        # [FIX-NVENC-AWARE] 保存实际使用的编码器，供段后诊断代码使用
+        # self.codec 存的是用户原始指定值（如 libx264），可能被 best_encoder() 升级
+        self._last_used_codec = use_codec
 
         frame_count  = 0
         output_count = 0
@@ -3399,22 +3630,29 @@ class IFRNetVideoProcessor:
                 result_queue_override = result_queue_override,
                 t3_fps_measured       = t3_fps_measured,   # [FIX-T3-FPS]
             )
-            fc_extra, oc_extra = pipeline.run(
-                reader            = reader,
-                writer            = writer,
-                timesteps         = timesteps,
-                H                 = H,
-                W                 = W,
-                effective_bs      = effective_bs,
-                first_raw         = first,
-                first_padded      = first_padded,
-                skip_first_output = skip_first_output,
-                pbar              = pbar,
-                n_seg_est         = n_seg_est,
-                meter             = meter,
-                H_pad             = H + pad_h,
-                W_pad             = W + pad_w,
-            )
+            try:
+                fc_extra, oc_extra = pipeline.run(
+                    reader            = reader,
+                    writer            = writer,
+                    timesteps         = timesteps,
+                    H                 = H,
+                    W                 = W,
+                    effective_bs      = effective_bs,
+                    first_raw         = first,
+                    first_padded      = first_padded,
+                    skip_first_output = skip_first_output,
+                    pbar              = pbar,
+                    n_seg_est         = n_seg_est,
+                    meter             = meter,
+                    H_pad             = H + pad_h,
+                    W_pad             = W + pad_w,
+                )
+            except Exception as e:
+                print(f'[{worker_label}] 流水线异常: {e}', flush=True)
+                reader.close()
+                writer.close()
+                if pbar: pbar.close()
+                return False, 0, 0
             # [GPU-MONITOR-v2] 保存实际队列深度，供 print_report() 调优建议使用
             self._last_pair_q_size   = pipeline.pair_queue.maxsize
             self._last_result_q_size = pipeline.result_queue.maxsize
@@ -3568,19 +3806,21 @@ class IFRNetVideoProcessor:
                 current_bs       = self.batch_size,
                 current_pair_q   = _cur_pair_q,
                 current_result_q = _cur_result_q,
+                codec            = getattr(self, '_last_used_codec', self.codec),    # [FIX-NVENC-AWARE] 使用实际编码器
             )
             # [FIX-T3-DETECT] 获取 GPU-MONITOR 的队列建议（含 T3-bottleneck 检测）
             _slot_mb = getattr(self, '_last_pool_slot_mb', 0.0)
             pair_gpu_sug, result_gpu_sug = self._gpu_monitor.get_queue_suggestions(
                 _gpu_stats, _cur_pair_q, _cur_result_q,
                 slot_mb=_slot_mb,           # 传入每 slot 大小，用于 PinnedPool 内存约束
+                codec=getattr(self, '_last_used_codec', self.codec),           # [FIX-NVENC-AWARE] 使用实际编码器
             )
             # 获取 AUTO-TUNE-RETUNE 的建议（如果存在）
             retune_pair_q   = getattr(self, '_retune_pair_q',   None)
             retune_result_q = getattr(self, '_retune_result_q', None)
 
             # [FIX-T3-DETECT] 先检测是否 T3-bottleneck，再决定综合策略
-            _is_t3 = GPUMonitor._is_t3_bottleneck(_gpu_stats)
+            _is_t3 = GPUMonitor._is_t3_bottleneck(_gpu_stats, codec=getattr(self, '_last_used_codec', self.codec))
             if _is_t3:
                 # T3 是真正瓶颈：不增大队列，result_queue 可适当缩小以回收 pinned 内存
                 final_pair_q   = _cur_pair_q
@@ -3593,8 +3833,12 @@ class IFRNetVideoProcessor:
                 # [FIX-T3-REPORT] 增强诊断：实测 vs 理论 T3 fps + 具体编码建议
                 _t3_fps_meas = getattr(self, '_last_t3_fps_measured', 0.0)
                 _H_enc, _W_enc = getattr(self, '_last_encode_hw', (0, 0))
+                _nvenc_already_active = 'nvenc' in getattr(self, '_last_used_codec', self.codec).lower()
                 _t3_fps_est = 0.0
-                if _H_enc > 0 and _W_enc > 0:
+                # [FIX-NVENC-AWARE] _software_encode_fps 估算的是 x264 软编码速度，
+                # 对 NVENC 硬编码毫无意义；当 NVENC 已激活时跳过此估算。
+                if (not _nvenc_already_active
+                        and _H_enc > 0 and _W_enc > 0):
                     _t3_fps_est = _software_encode_fps(
                         os.cpu_count() or 4, _H_enc, _W_enc,
                         self.codec, self.x264_preset, self.crf,
@@ -3609,8 +3853,9 @@ class IFRNetVideoProcessor:
                     _diag_parts.append(f'偏差={_degrade:.1f}×（含热节流因素）')
                 _diag_str = '  [' + '  '.join(_diag_parts) + ']' if _diag_parts else ''
                 _has_nvenc_h264 = HardwareCapability.has_nvenc('h264_nvenc')
-                _nvenc_already_active = 'nvenc' in self.codec.lower()
                 if _nvenc_already_active:
+                    # [FIX-NVENC-AWARE] NVENC 已激活但 T3 仍为瓶颈：
+                    # 瓶颈不在 NVENC 硬件编码器本身，而在 pipe 写入 / CPU 格式转换
                     _encoder_tip = (
                         f'NVENC 已激活但 T3 仍为瓶颈（实测 {_t3_fps_meas:.0f} fps）。'
                         f'建议：1) 尝试 --x264-preset p1（最快 NVENC preset） '
@@ -3655,14 +3900,24 @@ class IFRNetVideoProcessor:
                 # 硬上限
                 final_pair_q   = min(final_pair_q, 8)
                 final_result_q = min(final_result_q, 64)
-                # [FIX-T3-MEMCAP / FIX-POOL-AUTOSCALE] 施加 PinnedPool 内存上限约束，并显式 log 截断原因
+                # [FIX-T3-MEMCAP / FIX-POOL-AUTOSCALE / FIX-MAXRQ-DYNAMIC]
+                # PinnedPool 内存上限约束：改用三轴动态函数，并显式 log 截断原因。
                 if _slot_mb > 0.0:
-                    _max_rq_mem = max(8, int(_PINNED_POOL_MAX_MB / _slot_mb) - 2)
+                    _mem_avail_gb_aq = _detect_encode_parallelism()['mem_avail_gb']
+                    _max_rq_mem = _compute_max_result_queue(
+                        slot_mb      = _slot_mb,
+                        mem_avail_gb = _mem_avail_gb_aq,
+                        # ADAPTIVE-QUEUE 阶段 T2/T3 不一定可得，省略以仅用 RAM 上限+绝对上限
+                    )
                     if final_result_q > _max_rq_mem:
+                        _ram_budget_mb = _mem_avail_gb_aq * 1024.0 * 0.06
                         print(
-                            f'[ADAPTIVE-QUEUE] PinnedPool 内存上限截断: '
+                            f'[ADAPTIVE-QUEUE] PinnedPool 动态上限截断: '
                             f'result_queue {final_result_q} → {_max_rq_mem}'
-                            f'  (slot={_slot_mb:.1f} MB × {_max_rq_mem+2} ≈ {_PINNED_POOL_MAX_MB:.0f} MB上限)'
+                            f'  (slot={_slot_mb:.1f} MB × {_max_rq_mem}'
+                            f' ≈ {_slot_mb * _max_rq_mem:.0f} MB'
+                            f'  ≤ RAM预算 {_ram_budget_mb:.0f} MB'
+                            f'  [mem_avail={_mem_avail_gb_aq:.1f} GB × 6%])'
                         )
                     final_result_q = min(final_result_q, _max_rq_mem)
 
@@ -3729,7 +3984,7 @@ class IFRNetVideoProcessor:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='IFRNet 视频插帧 —— 终极优化版 v6.3.3（单卡版）',
+        description='IFRNet 视频插帧 —— 终极优化版 v6.3.5（单卡版）',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     # 基础参数
@@ -3825,7 +4080,7 @@ def main():
     Model, _ = _load_ifrnet_module(args.model)
 
     print('=' * 65)
-    print('  IFRNet 视频插帧 —— 终极优化版 v6.3.3（单卡版）')
+    print('  IFRNet 视频插帧 —— 终极优化版 v6.3.5（单卡版）')
     print('=' * 65)
     print(f'  模型:   {args.model}')
     print(f'  设备:   {args.device} | GPU: '

@@ -1,4 +1,4 @@
-"""
+﻿"""
 IFRNet 视频插帧处理脚本 —— 终极优化版 v6.1（单卡版）
 ==========================================================
 基于 IFRNet（Intermediate Flow-based Recursive Network）的视频帧插值脚本，
@@ -468,7 +468,7 @@ class FFmpegFrameReader:
         # 构建 FFmpeg 命令
         hw_args: List[str] = []
         if use_hwaccel and HardwareCapability.has_nvdec():
-            hw_args = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'bgr24']
+            hw_args = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'nv12']
 
         # 帧范围 select filter
         if frame_start == 0 and frame_end < 0:

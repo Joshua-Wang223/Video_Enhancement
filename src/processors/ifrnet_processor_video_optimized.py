@@ -1,7 +1,7 @@
 """
 IFRNet 视频插帧处理器 v6（单卡版）
 =====================================
-对接 process_video_v6_3_5_single.py（IFRNetVideoProcessor），
+对接 process_video_v6_4_3_single.py（IFRNetVideoProcessor），
 保留分段直接对接与断点恢复逻辑，支持 v6.1 全部硬件加速参数：
   - FP16 / torch.compile / CUDA Graph（compile 激活时自动接管 Graph）
   - TensorRT 可选加速（首次构建需缓存 .trt Engine）
@@ -12,10 +12,10 @@ IFRNet 视频插帧处理器 v6（单卡版）
   - preview 帧预览（可选，每隔 preview_interval 帧弹出一帧预览）
 
 【v6 变更说明（相对 v5）】
-  - 对齐底层 process_video_v6_3_5_single.py v6.3.5（含 FIX-D2H / FIX-PAD）
+  - 对齐底层 process_video_v6_4_3_single.py v6.4.3（含 FIX-D2H / FIX-PAD）
   - 新增 preview / preview_interval 参数（透传至底层 process_video）
   - main() CLI 新增 --preview / --preview-interval
-  - _process_segment 打印信息对齐 v6.3.5 版本标记
+  - _process_segment 打印信息对齐 v6.4.3 版本标记
   - 构造函数新增参数与 default_config.json 完全对齐
   - [v6.1 优化] 底层 IFRNetVideoProcessor 在循环外构造一次，分段复用，避免重复加载/编译/构建
 """
@@ -136,6 +136,9 @@ class IFRNetProcessor:
         self._current_input_video: Optional[str] = None  # 当前输入视频，用于断点指纹
         self._upstream_segments_hash: Optional[str] = None  # 上游分段指纹（process_segments_directly）
 
+        # [v6.4.3 新增] 跟踪是否有分段处理失败，供上游主流程判断是否继续
+        self._has_failure = False
+
         # [v6.1 新增] 底层 IFRNetVideoProcessor 实例缓存，避免每个分段重新初始化
         self._video_processor = None
 
@@ -153,7 +156,7 @@ class IFRNetProcessor:
         Returns:
             处理后的分段文件路径列表
         """
-        print(f"\n🎬 IFRNet 插帧处理（分段模式）—— v6.3.5")
+        print(f"\n🎬 IFRNet 插帧处理（分段模式）—— v6.4.3")
         print(f"📹 输入: {input_video}")
         print(f"⚡ 插帧倍数: {self.interpolation_factor}x")
         print(f"🖥️  设备: {self.device} | "
@@ -206,7 +209,7 @@ class IFRNetProcessor:
         Returns:
             处理后的分段文件路径列表
         """
-        print(f"\n🎬 IFRNet 插帧处理（接收分段输入）—— v6.3.5")
+        print(f"\n🎬 IFRNet 插帧处理（接收分段输入）—— v6.4.3")
         print(f"📹 输入分段数: {len(input_segments)}")
         print(f"⚡ 插帧倍数: {self.interpolation_factor}x")
 
@@ -234,7 +237,7 @@ class IFRNetProcessor:
         )
 
         print("\n" + "=" * 65)
-        print("🎬 IFRNet 视频插帧处理（完整流程）—— v6.3.5")
+        print("🎬 IFRNet 视频插帧处理（完整流程）—— v6.4.3")
         print(f"📹 输入  : {input_video}")
         print(f"📤 输出  : {output_video}")
         print(f"⚡ 插帧倍数: {self.interpolation_factor}x")
@@ -402,7 +405,7 @@ class IFRNetProcessor:
             return self._video_processor
 
         # 延迟导入，保证只在需要时加载
-        from process_video_v6_3_5_single import IFRNetVideoProcessor
+        from process_video_v6_4_3_single import IFRNetVideoProcessor
 
         _trt_cache_dir = None
         if self.use_tensorrt:
@@ -439,10 +442,13 @@ class IFRNetProcessor:
         """
         [v6.1 新增] 释放底层 processor 并清空缓存。
         通常在完整流程结束后调用，释放 GPU 内存等资源。
+        [SEGMENT-REUSE] 先调用 cleanup() 释放跨段缓存的 NVENC/Pool/RingBuffer。
         """
         if self._video_processor is not None:
-            # 如果底层 processor 有显式的清理方法，可以在这里调用
-            # 例如 processor.cleanup() 或 del processor
+            try:
+                self._video_processor.cleanup()
+            except AttributeError:
+                pass  # 旧版 processor 无 cleanup 方法，忽略
             del self._video_processor
             self._video_processor = None
 
@@ -479,7 +485,9 @@ class IFRNetProcessor:
             print(f"\n🎬 片段 {i+1}/{len(segment_files)}: {segment_name}")
             output_file = self.processed_dir / f"interpolated_{segment_name}"
 
-            success = self._process_segment(segment_file, str(output_file))
+            success = self._process_segment(segment_file, str(output_file),
+                                              total_segments=len(segment_files),
+                                              segment_index=i + 1)
             if success:
                 processed_files.append(str(output_file))
                 if i not in checkpoint["processed_segments"]:
@@ -488,6 +496,7 @@ class IFRNetProcessor:
                 self._save_checkpoint(checkpoint)
             else:
                 print(f"⚠️  片段 {i+1} 处理失败，终止后续处理")
+                self._has_failure = True
                 break
 
             # 估算剩余时间
@@ -507,14 +516,18 @@ class IFRNetProcessor:
 
         return processed_files
 
-    def _process_segment(self, segment_path: str, output_path: str) -> bool:
+    def _process_segment(self, segment_path: str, output_path: str,
+                          total_segments: int = 1,
+                          segment_index: int = 1) -> bool:
         """
-        调用 process_video_v6_3_5_single.IFRNetVideoProcessor 处理单个分段。
+        调用 process_video_v6_4_3_single.IFRNetVideoProcessor 处理单个分段。
         [v6.1 修改] 复用全局缓存的 processor，避免重复初始化。
 
         Args:
-            segment_path: 输入片段路径
-            output_path:  输出路径
+            segment_path:   输入片段路径
+            output_path:    输出路径
+            total_segments: 总分段数（用于抑制中间段冗余日志）
+            segment_index:  当前分段序号（1-based）
 
         Returns:
             是否成功
@@ -539,6 +552,8 @@ class IFRNetProcessor:
                 scale            = float(self.interpolation_factor),
                 preview          = self.preview,
                 preview_interval = self.preview_interval,
+                total_segments   = total_segments,
+                segment_index    = segment_index,
             )
 
             elapsed = time.time() - start_time
@@ -552,7 +567,7 @@ class IFRNetProcessor:
                 return False
 
         except ImportError as e:
-            print(f"   ❌ 无法导入 process_video_v6_3_5_single: {e}")
+            print(f"   ❌ 无法导入 process_video_v6_4_3_single: {e}")
             return False
         except Exception as e:
             print(f"   ❌ 处理失败: {e}")
@@ -588,7 +603,7 @@ class IFRNetProcessor:
 def main():
     """
     独立调用入口：直接驱动 IFRNetProcessor，
-    底层对接 process_video_v6_3_5_single.IFRNetVideoProcessor。
+    底层对接 process_video_v6_4_3_single.IFRNetVideoProcessor。
 
     示例：
       # 使用默认配置，直接插帧
@@ -631,7 +646,7 @@ def main():
         description="IFRNet 视频插帧处理器 v6（单卡版）—— 独立入口",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-底层脚本：external/IFRNet/process_video_v6_3_5_single.py（v6.3.5）
+底层脚本：external/IFRNet/process_video_v6_4_3_single.py（v6.4.3）
 
 特性：
   · 分段处理 + 断点恢复

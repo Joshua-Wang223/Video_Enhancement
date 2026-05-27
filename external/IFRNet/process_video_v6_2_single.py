@@ -1,5 +1,5 @@
 ﻿"""
-IFRNet 视频插帧处理脚本 —— 终极优化版 v6.2.1（单卡版）
+IFRNet 视频插帧处理脚本 —— 终极优化版 v6.2（单卡版）
 ==========================================================
 基于 IFRNet（Intermediate Flow-based Recursive Network）的视频帧插值脚本，
 面向单 GPU 生产环境的高性能实现。
@@ -26,24 +26,24 @@ IFRNet 视频插帧处理脚本 —— 终极优化版 v6.2.1（单卡版）
 
 【命令行使用示例】
   # 基础用法（FP16 + torch.compile + NVDEC/NVENC 自动启用）
-  python process_video_v6_2_1_single.py \\
+  python process_video_v6_1_single.py \\
       --input input.mp4 --output output_2x.mp4 --scale 2
 
   # 4× 插帧，关闭 compile（跳过预热，启动更快，适合短视频）
-  python process_video_v6_2_1_single.py \\
+  python process_video_v6_1_single.py \\
       --input input.mp4 --output output_4x.mp4 --scale 4 --no-compile
 
   # TensorRT 加速（首次构建 Engine，后续秒启动）
-  python process_video_v6_2_1_single.py \\
+  python process_video_v6_1_single.py \\
       --input input.mp4 --output output.mp4 --scale 2 --use-tensorrt
 
   # 禁用所有加速（调试/CPU 环境）
-  python process_video_v6_2_1_single.py \\
+  python process_video_v6_1_single.py \\
       --input input.mp4 --output output.mp4 --scale 2 \\
       --no-fp16 --no-compile --no-cuda-graph --no-hwaccel --device cpu
 
   # 输出性能报告
-  python process_video_v6_2_1_single.py \\
+  python process_video_v6_1_single.py \\
       --input input.mp4 --output output.mp4 --scale 2 --report report.json
 
 【关键参数说明】
@@ -2358,7 +2358,7 @@ class IFRNetVideoProcessor:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='IFRNet 视频插帧 —— 终极优化版 v6.2.1（单卡版）',
+        description='IFRNet 视频插帧 —— 终极优化版 v6.2（单卡版）',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     # 基础参数

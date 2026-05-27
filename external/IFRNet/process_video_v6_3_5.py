@@ -1,10 +1,36 @@
 ﻿"""
-IFRNet 视频插帧处理脚本 —— 终极优化版 v6.3.4（单卡版）
+IFRNet 视频插帧处理脚本 —— 终极优化版 v6.3.5（多卡版）
 ==========================================================
 基于 IFRNet（Intermediate Flow-based Recursive Network）的视频帧插值脚本，
-面向单 GPU 生产环境的高性能实现。
+面向多 GPU 生产环境的高性能实现。
 
-【v6.3.4 新增修复（基于 v6.3.3）】
+【v6.3.5 新增修复（基于 v6.3.4 多卡版）】
+  [FIX-POOL-LEAK]     PinnedResultPool 跨段泄漏修复（后 3 段速度减半问题）：
+                   · 根因：段结束后 PinnedResultPool 持有的 pinned 内存未显式释放，
+                     Python GC 不会立即回收 cudaHostAlloc 分配的锁页内存，导致各
+                     段 Pool 叠加累积（944MB → 1557MB → 1935MB → 1982MB+），
+                     DMA 带宽被竞争，D2H 传输变慢，result_queue 长期满载，
+                     GPU P50 利用率从 88% 跌至 8%，吞吐量减半（83fps → 41fps）。
+                   · 修复：新增 PinnedResultPool.free() 方法，显式 del 全部 pinned
+                     buffer；在 _infer_loop finally 块中调用，确保每段结束后立即
+                     解除锁页内存占用；同时触发 gc.collect() 加速 Python 对象回收。
+
+  [FIX-MAXRQ-DYNAMIC] result_queue 上限改为三轴动态计算（替代静态 _PINNED_POOL_MAX_MB）：
+                   · 根因：_PINNED_POOL_MAX_MB 为 GPU-tier 静态常量（T4=2048MB），
+                     无法反映实际 RAM 余量、分辨率变化、T3/T2 速度比等动态因素；
+                     换机（RAM ≠ 32GB）或换分辨率时上限或过保守或过激进。
+                   · 新增 _compute_max_result_queue(slot_mb, mem_avail_gb, T2_ms, T3_ms)
+                     三轴联合约束：
+                     轴1 RAM 上限  = mem_avail × 6% / slot_size（主要约束）
+                     轴2 T3/T2 下限= T3_ms/T2_ms × 0.22（最小解耦需求，libx264 流式系数）
+                     轴3 绝对上限  = 48（防估算失控保险）
+                     结果 = max(floor_by_t3, min(cap_by_ram, 48))
+                   · 替换 _auto_queue_depths / get_queue_suggestions /
+                     ADAPTIVE-QUEUE 三处 _PINNED_POOL_MAX_MB 硬编码引用。
+                   · _PINNED_POOL_MAX_MB 保留为模块级常量（PinnedPool 构建阶段
+                     的参考值），不再用于运行时队列约束。
+
+【v6.3.4 新增修复（基于 v6.3.3 多卡版）】
   [FIX-BATCHCAP]     跨段 batch_size 误降修复（Segment 2+ bs 32→7 问题）：
                    · 根因：free_bytes = torch.cuda.mem_get_info()[0] 仅返回 OS 层面
                      真正空闲 VRAM，忽略 PyTorch allocator 已 reserved 但未 allocated
@@ -32,8 +58,8 @@ IFRNet 视频插帧处理脚本 —— 终极优化版 v6.3.4（单卡版）
                      分支选择对应固定 overhead 常量。
                    · 修复后 Segment 1 初始 pool 估算从 ~1150MB 降至 ~150MB。
 
-  [FIX-POOL-AUTOSCALE] PinnedPool 上限依 GPU 型号自动缩放（替代硬编码 1024MB）：
-                   · 根因：1024MB 对 T4（bs=32 时单 slot ~110MB × 10=1100MB 即超限）
+  [FIX-POOL-AUTOSCALE] PinnedPool 上限依 GPU 型号自动缩放（替代硬编码 2048MB）：
+                   · 根因：硬编码上限对 T4（bs=32 时单 slot ~110MB × 10=1100MB 即超限）
                      过于保守，对 A100/H100（余量充裕）过于宽松。
                    · 新增 _pool_limit_mb_for_profile(profile) 函数，按 gpu_tier 分 6
                      档：GTX 1080=1024  T4/RTX2080=2048  RTX3090/4070=3072
@@ -41,6 +67,99 @@ IFRNet 视频插帧处理脚本 —— 终极优化版 v6.3.4（单卡版）
                    · 兼顾系统可用 RAM：上限不超过 MemAvailable × 12%（最低 1024MB）。
                    · get_queue_suggestions() 新增 hw_profile 参数接收动态上限；
                      _auto_queue_depths() 直接用 profile 计算上限。
+
+【v6.3.3 Worker 链路修复（基于原 v6.3.3 多卡版）】
+  [FIX-WORKER-MODEL]    （严重 Bug）模型变体在多卡模式下完全失效：
+                   · Worker 子进程以 spawn 模式启动，模块级 Model 重置为默认
+                     IFRNet_S；原 worker_args_list 未传 model_name，函数体内
+                     硬编码 model_name='IFRNet_S_Vimeo90K'，导致使用
+                     --model IFRNet_L_Vimeo90K 等变体时 Worker 静默加载错误架构。
+                   · 修复：_process_multi_gpu() worker_args_list 补传
+                     model_name = self.model_name；_ifrnet_segment_worker()
+                     签名补 model_name 参数；函数体内 try 块前重绑：
+                       global Model; Model, _ = _load_ifrnet_module(model_name)
+                     并将 processor 初始化的硬编码改为 model_name=model_name。
+
+  [FIX-WORKER-COMPILE]  --no-compile 在多卡模式下无效：
+                   · 原 worker_args_list 硬编码 use_compile=True，用户传
+                     --no-compile 时单卡路径正确禁用，所有 Worker 仍强制编译。
+                   · 修复：改为 use_compile = self.use_compile 透传真实值。
+
+  [FIX-WORKER-TRT]      --use-tensorrt 在多卡模式下静默失效：
+                   · 原 worker_args_list 无 use_tensorrt 字段，Worker 端
+                     IFRNetVideoProcessor 默认 use_tensorrt=False，无报错。
+                   · 修复：worker_args_list 补 use_tensorrt = self.use_tensorrt；
+                     _ifrnet_segment_worker 签名补 use_tensorrt: bool，
+                     processor 初始化补 use_tensorrt=use_tensorrt。
+
+  [FIX-WORKER-T2CACHE]  T2 缓存目录未透传，接口不一致：
+                   · 原 Worker 创建 IFRNetVideoProcessor 时未传 t2_cache_dir，
+                     走 _T2_CACHE_DIR_DEFAULT；虽当前 Worker auto_tune=False
+                     下 T2 缓存实际不被读写，但接口缺失影响后续扩展。
+                   · 修复：worker_args_list 补 t2_cache_dir = self.t2_cache_dir；
+                     _ifrnet_segment_worker 签名补 t2_cache_dir: str=''，
+                     processor 初始化补 t2_cache_dir=t2_cache_dir。
+
+  [FIX-WORKER-WRITER-NONE]  首帧读取失败时 AttributeError crash：
+                   · _process_segment 在多卡 Worker 路径（_use_queue=True）下
+                     writer=None，但首帧失败早返回代码调用 writer.close() 未判空，
+                     导致 AttributeError。
+                   · 修复：将 reader.close(); writer.close() 改为分行调用，
+                     writer.close() 用 if writer is not None: 保护。
+
+  [FIX-WORKER-QUIET]    --no-quiet 在多卡 Worker 下无效：
+                   · 原 processor 初始化硬编码 quiet=True，用户 --no-quiet
+                     仅对主进程生效，所有 Worker 均保持静默，影响调试体验。
+                   · 修复：worker_args_list 补 quiet = self.quiet；
+                     _ifrnet_segment_worker 签名补 quiet: bool=True（Worker
+                     子进程建议默认静默），processor 初始化改为 quiet=quiet。
+
+【v6.3.3 多卡路径特性补全（基于 Worker 链路修复补丁）】
+  [GAP-MULTIGPU-TRT-PREBUILD]（严重 Bug）TRT 预构建被多卡路由跳过：
+                   · 原 process_video() 中 TRT 预构建代码位于多卡路由之后，
+                     使用 --use-tensorrt + 多 GPU 时主进程不构建 Engine，
+                     所有 Worker TRT 完全静默失效。
+                   · 修复：将 TRT 预构建移到多卡路由判断之前；主进程在 GPU0
+                     上构建并缓存 .trt 文件，Workers 直接加载缓存。
+
+  [GAP-WORKER-TRT-BUILD]（严重 Bug）Worker 内 TRT Engine 从不激活：
+                   · Worker 调用 _process_segment() 而非 process_video()，
+                     Engine 加载代码在 process_video() 里，Worker 路径永远
+                     不触发，use_tensorrt=True 传入后 TRT 分支不走。
+                   · 修复：_ifrnet_segment_worker 创建 processor 后、调用
+                     _process_segment 前手动触发 _build_trt_engine()；
+                     主进程预构建后 Worker 通常仅需加载缓存（< 5s）。
+
+  [GAP-WORKER-TRT-CACHE-DIR]（轻微）trt_cache_dir 未透传给 Worker：
+                   · 用户指定 --trt-cache-dir 时 Worker 走默认路径，
+                     缓存未命中将触发 20-30 分钟重建。
+                   · 修复：worker_args_list / _ifrnet_segment_worker 签名 /
+                     IFRNetVideoProcessor 初始化均补传 trt_cache_dir。
+
+  [GAP-MULTIGPU-GPUMONITOR]（中等）多卡路径无 GPU 监测：
+                   · _process_multi_gpu() 未启动 _gpu_monitor，多卡运行
+                     没有 GPU 利用率统计和 batch_size 调优建议。
+                   · 修复：在 Worker 启动前 .start()，所有 Worker join 后
+                     .stop() + print_report()（仅统计，不运行 ADAPTIVE-QUEUE）。
+
+  [GAP-MULTIGPU-REPORT-TIMING]（中等）多卡模式 JSON 报告永远被跳过：
+                   · _dump_report() 守卫条件 not self._timing，多卡模式
+                     主进程 self._timing 始终为空（推理在 Worker 子进程），
+                     --report 功能完全静默失效。
+                   · 修复：新增 _dump_report_multigpu()，记录宏观吞吐指标
+                     （帧数/总耗时/fps）；infer_latency_ms 注明不可用原因。
+
+  [GAP-MULTIGPU-WRITER-QUIET]（轻微）主进程 FFmpegWriter 缺 quiet 参数：
+                   · _process_multi_gpu() 构造 FFmpegWriter 时未传 quiet，
+                     --no-quiet 对多卡编码器日志无效。
+                   · 修复：补传 quiet=self.quiet。
+
+  [GAP-MULTIGPU-PREVIEW]（轻微）--preview 在多卡路径静默丢失：
+                   · process_video() 多卡路由未传 preview 参数，预览功能
+                     对多卡模式完全无效且无提示。
+                   · 修复：_process_multi_gpu() 补接 preview/preview_interval
+                     参数；FrameCollector 按 preview_interval 调用 cv2.imshow；
+                     Worker spawn 进程无显示上下文，预览仅在主线程侧实现。
 
 【v6.3.3 新增修复（基于 v6.3.2）】
   [FIX-RETUNE-POSTRUN]  AUTO-TUNE-RETUNE 计算时机改为段完成后：
@@ -57,7 +176,7 @@ IFRNet 视频插帧处理脚本 —— 终极优化版 v6.3.4（单卡版）
                      的原因。
                    · 新增截断时打印：
                      [ADAPTIVE-QUEUE] PinnedPool 内存上限截断: result_queue 19 → 15
-                      (slot=58.9 MB × 17 ≈ 动态上限 MB)
+                       (slot=58.9 MB × 17 ≈ 动态上限 MB)
 
   [FIX-RETUNE-DISPLAY]  ADAPTIVE-QUEUE 综合建议打印推导链路：
                    · 原实现只打印最终值，无法追溯 GPU-MONITOR / RETUNE 各自贡献。
@@ -178,15 +297,19 @@ IFRNet 视频插帧处理脚本 —— 终极优化版 v6.3.4（单卡版）
 
 【命令行使用示例】
   # 基础用法（FP16 + torch.compile + NVDEC/NVENC 自动启用）
-  python process_video_v6_3_0_single.py \\
+  python process_video_v6_3_3.py \\
       --input input.mp4 --output output_2x.mp4 --scale 2
 
+  # 每 GPU 2 Worker（适合 24GB+ 显存）
+  python process_video_v6_3_3.py \\
+      --input input.mp4 --output output.mp4 --scale 2 --num-process-per-gpu 2
+	  
   # TensorRT 加速（bs=48，首次构建 Engine）
-  python process_video_v6_3_0_single.py \\
+  python process_video_v6_3_3.py \\
       --input input.mp4 --output output.mp4 --scale 2 --use-tensorrt
 
   # 输出性能报告
-  python process_video_v6_3_0_single.py \\
+  python process_video_v6_3_3.py \\
       --input input.mp4 --output output.mp4 --scale 2 --report report.json
 
 【注意事项】
@@ -194,6 +317,14 @@ IFRNet 视频插帧处理脚本 —— 终极优化版 v6.3.4（单卡版）
     首次运行会因 shape 不匹配而自动删除旧缓存并重建 Engine（约需 20-30 分钟）。
   · stream_transfer 属性已拆分为 stream_h2d / stream_d2h，上层调用方如有直接
     引用 processor.stream_transfer 需改为 stream_h2d（预取）或 stream_d2h（输出）。
+
+【多卡版专属功能（相对单卡版新增）】
+  M1. [多 GPU 帧范围分割调度]
+      按帧计数均分任务，每 GPU 独立处理一段。
+      - 多 GPU 时 Worker 将帧以 (global_idx, bytes, shape) 放入 result_q
+      - 主进程 FrameCollector 用 heapq 重排后直接写单一 FFmpegWriter
+      - 单 GPU 时自动使用全套 v6.3.3 三级流水线优化
+
 """
 
 from __future__ import annotations
@@ -208,6 +339,8 @@ import sys
 import threading
 import time
 import warnings
+import multiprocessing as mp
+import shutil
 from collections import deque
 from contextlib import nullcontext
 from fractions import Fraction
@@ -231,11 +364,18 @@ class _NVMLFilter:
 
 _sys.stderr = _NVMLFilter(_sys.stderr)
 
+# ── U1: VRAM 碎片优化：expandable_segments 允许 PyTorch 用不连续 VRAM 满足大分配请求
+# 必须在任何 CUDA 分配之前设置（setdefault 不覆盖用户已设置的值）
 os.environ.setdefault('PYTORCH_ALLOC_CONF', 'expandable_segments:True')
 
+# ── U2: 抑制 torch.inductor / dynamo 的噪音警告 ─────────────────────────────
 import logging as _logging
+# "Not enough SMs to use max_autotune_gemm mode"
 _logging.getLogger('torch._inductor.utils').setLevel(_logging.ERROR)
+# "failed while executing pow_by_natural" —— 符号形状求解器边界问题，有 fallback，无害
+# 当 dynamic=True + 跨 shape 推理时，inductor 符号范围偶尔命中负指数，自动回退正确路径
 _logging.getLogger('torch.utils._sympy.interp').setLevel(_logging.ERROR)
+# 同类符号求解警告（其他 sympy 子模块）
 _logging.getLogger('torch.utils._sympy').setLevel(_logging.ERROR)
 
 try:
@@ -244,14 +384,20 @@ try:
 except ImportError:
     HAS_TQDM = False
 
-# ── 路径配置 ──────────────────────────────────────────────────────────────────
+# ── U7: 动态路径配置 ──────────────────────────────────────────────────────────
+# 目录结构假设：<project_root>/external/IFRNet/process_video_v5.py
+# 如与实际部署结构不符，请直接修改 base_dir / models_ifrnet 两个变量
 _SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
 base_dir      = str(os.path.dirname(os.path.dirname(_SCRIPT_DIR)))
 models_ifrnet = os.path.join(base_dir, 'models_IFRNet', 'checkpoints')
 sys.path.insert(0, os.path.join(base_dir, 'external', 'IFRNet'))
 sys.path.insert(0, models_ifrnet)
 
-# ── [FIX-CUDA-GRAPH-WARP] CUDA-Graph 安全 warp ───────────────────────────────
+# [FIX-CUDA-GRAPH-WARP] ───────────────────────────────────────────────────────
+# utils.warp 每次调用都会在 CPU 上用 torch.arange 动态生成坐标网格并触发
+# H2D 复制，CUDA Graph 捕获期间会崩溃。下面的 _cached_warp 在 GPU 上缓存
+# 坐标网格，捕获期间不产生任何新的 malloc / H2D 复制。
+# ─────────────────────────────────────────────────────────────────────────────
 import torch.nn.functional as _F_warp
 
 _warp_grid_cache: dict = {}
@@ -273,6 +419,7 @@ def _cached_warp(img: 'torch.Tensor', flow: 'torch.Tensor') -> 'torch.Tensor':
     return _F_warp.grid_sample(img, vgrid_scaled,
                                mode='bilinear', padding_mode='border', align_corners=True)
 
+# ── 按模型名动态导入对应变体 ─────────────────────────────────────────────────
 MODEL_MODULE_MAP: Dict[str, str] = {
     'IFRNet_Vimeo90K':   'models.IFRNet',
     'IFRNet_S_Vimeo90K': 'models.IFRNet_S',
@@ -280,13 +427,19 @@ MODEL_MODULE_MAP: Dict[str, str] = {
 }
 
 def _load_ifrnet_module(model_name: str):
+    """按模型名动态导入对应变体的 Model 类，并把其 warp 替换为 CUDA-Graph 安全版本。"""
     import importlib
     module_name = MODEL_MODULE_MAP.get(model_name, 'models.IFRNet_S')
     mod = importlib.import_module(module_name)
-    mod.warp = _cached_warp
+    mod.warp = _cached_warp  # 三个变体都调用 warp，统一替换
     return mod.Model, mod
 
+# 先按 S 版占位初始化；main() 里解析完 --model 后会再次重新绑定
 Model, _ifrnet_s_mod = _load_ifrnet_module('IFRNet_S_Vimeo90K')
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 常量
+# ─────────────────────────────────────────────────────────────────────────────
 
 MODEL_STRIDE = 32
 MODEL_NAME_MAP: Dict[str, str] = {
@@ -341,14 +494,35 @@ class HardwareCapability:
 
     @staticmethod
     def _probe_nvenc(codec: str) -> bool:
+        # [FIX-PROBE] 历次修复汇总（根因均由 stderr 诊断确认）：
+        #   LAVFI  : color 源去掉 d=0.1（0帧问题）→ 无限源 + -frames:v 1 截帧
+        #   PIXFMT : FFmpeg 5.0+ color 源默认 yuv444p → 显式 -pix_fmt yuv420p
+        #   BFRAME : 单帧编码触发 B 帧 lookahead 报错 → -bf 0
+        #   MINDIM : h264_nvenc 宽≥145px / hevc_nvenc 宽≥129px → 256×144
+        cmd = [
+            'ffmpeg', '-hide_banner', '-y', '-loglevel', 'error',
+            '-f', 'lavfi', '-i', 'color=c=black:s=256x144:r=1',
+            '-vcodec', codec, '-frames:v', '1',
+            '-pix_fmt', 'yuv420p', '-bf', '0',
+            '-f', 'null', '-',
+        ]
         try:
-            cmd = [
-                'ffmpeg', '-f', 'lavfi', '-i', 'color=c=black:s=64x64:d=0.1:r=1',
-                '-vcodec', codec, '-frames:v', '1',
-                '-f', 'null', '-', '-loglevel', 'error',
-            ]
-            return subprocess.run(cmd, capture_output=True, timeout=10).returncode == 0
-        except Exception:
+            result = subprocess.run(cmd, capture_output=True, timeout=10)
+            if result.returncode != 0:
+                _err = result.stderr.decode('utf-8', errors='replace').strip()
+                print(
+                    f'  [PROBE-FAIL] {codec} probe 失败 (rc={result.returncode})\n'
+                    f'  手动测试: {" ".join(cmd)}\n'
+                    f'  stderr: {_err or "(空)"}',
+                    flush=True,
+                )
+            return result.returncode == 0
+        except Exception as e:
+            print(
+                f'  [PROBE-FAIL] {codec} probe 异常: {e}\n'
+                f'  手动测试: {" ".join(cmd)}',
+                flush=True,
+            )
             return False
 
     @classmethod
@@ -357,10 +531,18 @@ class HardwareCapability:
         """
         [FIX-NVENC-UNIFIED] 统一 NVENC 检测路径。
 
-        优先级：
-        1. hw_profile.has_nvenc（静态 GPU 型号表，与 AUTO-TUNE 一致，Docker 环境可靠）
-        2. HardwareCapability.has_nvenc()（ffmpeg 实际 probe，Docker 无 /dev/nvidia*
-           设备映射时可能失败，作为回退保底）
+        优先级（按 hw_profile 是否提供分两条路径）：
+
+        路径 A（hw_profile 已提供，GPU 型号已知）：
+          1. 直接采信 hw_profile.has_nvenc（静态 GPU 型号表，与 AUTO-TUNE 一致）。
+          2. 若静态表确认可用且 ffmpeg probe 失败（Docker 设备映射缺失常见场景），
+             打印明确警告后仍信任静态表——probe 失败不等于硬件不可用。
+             可将 _NVENC_TRUST_STATIC = False 改为强制要求 probe 通过。
+          3. 静态表否定（has_nvenc=False）时不做 probe，直接回退软件编码。
+
+        路径 B（hw_profile 未提供，GPU 型号未知）：
+          仅凭 ffmpeg 实际 probe 判断，probe 失败即回退软件编码。
+          此路径适用于无法识别 GPU 型号的环境（非 NVIDIA GPU 等）。
 
         两套检测结果在 Docker 未映射 NVENC 设备时会不一致：AUTO-TUNE 显示 nvenc=True
         但 ffmpeg probe 失败，导致实际使用 libx264 引发 T3 瓶颈。本修复确保两者一致。
@@ -368,28 +550,91 @@ class HardwareCapability:
         nvenc_map    = {'libx264': 'h264_nvenc', 'libx265': 'hevc_nvenc'}
         fallback_map = {'h264_nvenc': 'libx264', 'hevc_nvenc': 'libx265'}
 
+        # [FIX-NVENC-TRUST-STATIC] 当 probe 失败但静态表确认可用时，是否信任静态表。
+        # True（默认）：信任静态表，适用于 Docker 设备映射缺失但硬件真实存在的场景。
+        # False：强制要求 probe 通过，适用于需要 100% 运行时验证的严格环境。
+        _NVENC_TRUST_STATIC: bool = True
+
         def _nvenc_ok(codec_name: str) -> bool:
-            # [FIX-NVENC-DOCKER] ffmpeg 实际 probe 是硬件可用性的唯一权威依据。
-            # 静态表（hw_profile.has_nvenc）仅用于 AUTO-TUNE T3 性能估算，
-            # 不能替代实际编码器能力检测：Docker 缺少 /dev/nvidia* 映射时
-            # 静态表显示"GPU 支持 NVENC"但 ffmpeg 无法访问，盲目升级会编码失败。
-            if not cls.has_nvenc(codec_name):
-                return False
-            # ffmpeg probe 通过 + hw_profile 确认（可选，仅作双重校验）
+            # [FIX-NVENC-UNIFIED] 路径 A：hw_profile 已知时优先信任静态 GPU 型号表。
+            # 这与 docstring 描述的优先级一致，解决了原实现 probe-first 导致
+            # Docker 环境中 hw_profile.has_nvenc=True 被静默忽略的问题。
             if hw_profile is not None and hasattr(hw_profile, 'has_nvenc'):
-                return hw_profile.has_nvenc
-            return True
+                if not hw_profile.has_nvenc:
+                    # 静态表明确否定：不做 probe，直接返回 False
+                    return False
+                # 静态表确认可用：尝试 probe 做二次验证
+                probe_ok = cls.has_nvenc(codec_name)
+                if not probe_ok:
+                    # [FIX-NVENC-PROBE-WARN] probe 失败但静态表确认硬件存在。
+                    # 常见于 Docker 容器 /dev/nvidia* 设备映射不完整，
+                    # nvidia-smi 可见 GPU 但 ffmpeg 无法访问 NVENC 编码器。
+                    # 根据 _NVENC_TRUST_STATIC 决定是否信任静态表。
+                    if _NVENC_TRUST_STATIC:
+                        print(
+                            f'  [FIX-NVENC-UNIFIED] {codec_name} ffmpeg probe 失败，'
+                            f'但静态 GPU 型号表确认硬件存在（hw_profile.has_nvenc=True）。\n'
+                            f'  信任静态表，继续使用 {codec_name}（Docker 设备映射不完整时正常）。\n'
+                            f'  若实际编码报错，可在代码中将 _NVENC_TRUST_STATIC 改为 False。'
+                        )
+                        return True
+                    else:
+                        print(
+                            f'  [FIX-NVENC-UNIFIED] {codec_name} ffmpeg probe 失败。'
+                            f'静态表显示硬件存在但 _NVENC_TRUST_STATIC=False，回退软件编码。'
+                        )
+                        return False
+                return True  # 静态表 + probe 双重确认
+
+            # [FIX-NVENC-UNIFIED] 路径 B：hw_profile 未知，仅凭 ffmpeg probe 判断。
+            return cls.has_nvenc(codec_name)
 
         if preferred in fallback_map:
             if _nvenc_ok(preferred):
                 return preferred
             fallback = fallback_map[preferred]
-            print(f'  [警告] {preferred} 不可用，自动回退到 {fallback}')
+            # [FIX-NVENC-WARN] 明确说明回退原因（probe 失败 or 静态表否定 or 无 profile）
+            if hw_profile is not None and hasattr(hw_profile, 'has_nvenc') and not hw_profile.has_nvenc:
+                reason = '静态 GPU 型号表标记 has_nvenc=False'
+            elif not cls.has_nvenc(preferred):
+                reason = 'ffmpeg probe 失败（Docker 设备映射可能缺失 /dev/nvidia*）'
+            else:
+                reason = '未知原因'
+            print(f'  [警告] {preferred} 不可用（{reason}），自动回退到 {fallback}')
             return fallback
         candidate = nvenc_map.get(preferred, preferred)
         if candidate != preferred and _nvenc_ok(candidate):
             return candidate
         return preferred
+
+    @classmethod
+    def lossless_encoder(cls) -> Tuple[str, List[str]]:
+        """
+        返回 (codec, extra_args) 用于无损中间段编码。
+        优先 nvenc lossless（-rc constqp -qp 0），否则 libx264 lossless。
+
+        与 best_encoder 的区别：best_encoder 只探测 NVENC 是否可用（VBR 编码），
+        lossless_encoder 额外测试 constqp（常量 QP）模式——部分 GPU/driver 组合
+        虽支持 NVENC VBR 但不支持 constqp 无损。
+        """
+        if cls.has_nvenc('h264_nvenc'):
+            try:
+                # [FIX-PROBE] 使用与 _probe_nvenc 一致的参数：
+                # 256x144, yuv420p, bf 0, hide_banner
+                cmd = [
+                    'ffmpeg', '-hide_banner', '-y', '-loglevel', 'error',
+                    '-f', 'lavfi', '-i', 'color=c=black:s=256x144:r=1',
+                    '-vcodec', 'h264_nvenc',
+                    '-rc', 'constqp', '-qp', '0',
+                    '-pix_fmt', 'yuv420p', '-bf', '0',
+                    '-frames:v', '1', '-f', 'null', '-',
+                ]
+                if subprocess.run(cmd, capture_output=True, timeout=10).returncode == 0:
+                    return 'h264_nvenc', ['-rc', 'constqp', '-qp', '0']
+            except Exception:
+                pass
+        # 回退：libx264 无损
+        return 'libx264', ['-qp', '0', '-preset', 'medium']
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -453,6 +698,29 @@ class PinnedResultPool:
 
     def release(self, buf: torch.Tensor):
         self._q.put(buf)
+
+    def free(self) -> int:
+        """
+        [FIX-POOL-LEAK] 显式释放所有 pinned buffer，解除 CUDA 锁页内存占用。
+
+        背景：Python GC 不会立即回收 cudaHostAlloc 分配的锁页内存（底层由 CUDA
+        驱动管理，引用计数归零后仍可能驻留直至下次 GC 扫描）。若跨段不主动释放，
+        各段 PinnedResultPool 会持续叠加（每段 ~1 GiB），累积 4-6 GiB 锁页内存，
+        导致 DMA 带宽下降 → D2H 变慢 → result_queue 满载 → GPU P50 利用率从
+        88% 跌至 8%，吞吐量减半。
+
+        调用时机：_infer_loop finally 块，确保每段推理线程退出前完成释放。
+        返回值：实际释放的 buffer 数量（用于日志确认）。
+        """
+        freed = 0
+        while True:
+            try:
+                buf = self._q.get_nowait()
+                del buf
+                freed += 1
+            except queue.Empty:
+                break
+        return freed
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -817,6 +1085,7 @@ class GPUMonitor:
         current_bs:       int,
         current_pair_q:   int,
         current_result_q: int,
+        codec:            str = '',          # [FIX-NVENC-AWARE] 编码器名称，用于避开 NVENC 误判
     ) -> None:
         """
         打印精细统计报告，并依据以下逻辑给出三项调优建议：
@@ -895,7 +1164,7 @@ class GPUMonitor:
         # ── [FIX-T3-DETECT] result_queue（T3 输出缓冲）建议 ─────────────────
         # 先判断是否 T3-bottleneck：若是，增大 result_queue 无助于提速，
         # 反而加重 PinnedPool 锁页内存压力，应保持或缩小。
-        if self._is_t3_bottleneck(stats):
+        if self._is_t3_bottleneck(stats, codec=codec):
             if current_result_q > 16:
                 sug_rq = max(16, current_result_q - 8)
                 print(f'[GPU-MONITOR] ⚠️  检测到 T3-bottleneck（编码器是真正瓶颈）：'
@@ -925,15 +1194,19 @@ class GPUMonitor:
         current_pair_q:   int,
         current_result_q: int,
         slot_mb:          float = 0.0,   # [FIX-T3-MEMCAP] 每个 result slot 的 MiB 数
-        ) -> Tuple[int, int]:
+        t2_ms:            float = 0.0,   # [FIX-MAXRQ-DYNAMIC] T2 推理延迟（ms），0=未知
+        t3_ms:            float = 0.0,   # [FIX-MAXRQ-DYNAMIC] T3 编码延迟（ms），0=未知
+        codec:            str   = '',    # [FIX-NVENC-AWARE] 编码器名称，用于避开 NVENC 误判
+    ) -> Tuple[int, int]:
         """
-        [FIX-T3-DETECT / FIX-T3-MEMCAP / FIX-POOL-AUTOSCALE] 返回 (建议 pair_queue, 建议 result_queue)。
-        用于跨段自适应队列调整，不打印信息。
+        [FIX-T3-DETECT / FIX-T3-MEMCAP / FIX-POOL-AUTOSCALE / FIX-MAXRQ-DYNAMIC]
+        返回 (建议 pair_queue, 建议 result_queue)。用于跨段自适应队列调整，不打印信息。
 
         新增逻辑：
         · T3-bottleneck 时不增大 result_queue（否则 PinnedPool 雪球式积累）。
         · slot_mb > 0 时对 result_queue 施加 PinnedPool 内存上限约束。
-        · [FIX-POOL-AUTOSCALE] 上限由模块级 _PINNED_POOL_MAX_MB 按 GPU 型号自动缩放。
+        · [FIX-MAXRQ-DYNAMIC] 上限改由 _compute_max_result_queue() 三轴动态计算
+          （RAM 上限 / T3/T2 下限 / 绝对上限），替代静态 _PINNED_POOL_MAX_MB。
         """
         pair_q   = current_pair_q
         result_q = current_result_q
@@ -949,7 +1222,7 @@ class GPUMonitor:
             pair_q = max(3, current_pair_q - 1)
 
         # [FIX-T3-DETECT] result_queue 建议：T3-bottleneck 时保持或缩小
-        if self._is_t3_bottleneck(stats):
+        if self._is_t3_bottleneck(stats, codec=codec):
             # T3 是真正瓶颈，增大 result_queue 无助于提速，反而增加内存压力
             if current_result_q > 16:
                 result_q = max(16, current_result_q - 8)
@@ -959,9 +1232,14 @@ class GPUMonitor:
         elif headroom_gib > 2.0 and current_result_q < 32:
             result_q = min(48, current_result_q + 8)
 
-        # [FIX-T3-MEMCAP] PinnedPool 内存上限约束
+        # [FIX-T3-MEMCAP / FIX-MAXRQ-DYNAMIC] PinnedPool 内存上限约束（三轴动态计算）
         if slot_mb > 0.0:
-            _max_rq_by_mem = max(8, int(_PINNED_POOL_MAX_MB / slot_mb) - 2)  # -2 留给 pool overhead
+            _max_rq_by_mem = _compute_max_result_queue(
+                slot_mb      = slot_mb,
+                mem_avail_gb = _detect_encode_parallelism()['mem_avail_gb'],
+                T2_ms        = t2_ms,
+                T3_ms        = t3_ms,
+            )
             result_q = min(result_q, _max_rq_by_mem)
 
         return pair_q, result_q
@@ -981,7 +1259,7 @@ class GPUMonitor:
     # ── [FIX-T3-DETECT] T3 瓶颈检测器 ──────────────────────────────────────
 
     @staticmethod
-    def _is_t3_bottleneck(stats: 'GPUStats') -> bool:
+    def _is_t3_bottleneck(stats: 'GPUStats', codec: str = '') -> bool:
         """
         [FIX-T3-DETECT] 判断流水线瓶颈是否在 T3（编码器）而非 T2（推理）。
 
@@ -996,7 +1274,12 @@ class GPUMonitor:
         仅增加锁页内存压力、拖慢 DMA 带宽。
 
         与 T2-bottleneck 的区分：T2 慢时 GPU 持续均匀高负载（stable_avg 高）。
+
+        [FIX-NVENC-AWARE] NVENC 是独立硬件编码单元，不体现在 CUDA 利用率中；
+        当编码器为 NVENC 时，低 CUDA 利用率是正常现象，不应判定为 T3-bottleneck。
         """
+        if 'nvenc' in codec.lower():
+            return False
         return (
             stats.low_util_frac > 0.60        # GPU 空闲 > 60%
             and stats.stable_p95 > 85.0       # 但 P95 仍然爆发到 85%+（阵发性）
@@ -1144,10 +1427,74 @@ def _pool_limit_mb_for_profile(profile: '_HWProfile') -> float:
 
     return min(tier_limit, ram_limit)
 
-# 模块级常量：PinnedPool 锁页内存上限（MiB），按 GPU 型号自动缩放，只初始化一次
+# 模块级常量：PinnedPool 锁页内存上限（MiB），按 GPU 型号自动缩放，只初始化一次。
+# [FIX-MAXRQ-DYNAMIC] 此常量仅保留供 PinnedPool 构建阶段参考；
+# 运行时队列约束改由 _compute_max_result_queue() 动态计算，不再直接使用此常量。
 _PINNED_POOL_MAX_MB: float = _pool_limit_mb_for_profile(
     _detect_hw_profile(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
 )
+
+
+def _compute_max_result_queue(
+    slot_mb: float,
+    mem_avail_gb: float,
+    T2_ms: float = 0.0,
+    T3_ms: float = 0.0,
+    ram_budget_fraction: float = 0.06,
+    abs_cap: int = 48,
+) -> int:
+    """
+    [FIX-MAXRQ-DYNAMIC] 动态计算 result_queue 安全上限（三轴联合约束）。
+
+    三轴约束原理
+    ─────────────────────────────────────────────────────────────────────────
+    轴1 RAM 上限（主要约束）：
+      PinnedPool 使用系统 RAM 锁页内存（不占 VRAM），但过多会竞争 DMA 带宽。
+      上限 = mem_avail_gb × ram_budget_fraction / slot_mb
+      ram_budget_fraction 默认 6%：T4+20GiB RAM+47MB/slot ≈ 26 槽，与实测吻合。
+      该参数是唯一需要人工校准的旋钮；无论换 GPU / 换分辨率 / 换机器都自适应。
+
+    轴2 T3/T2 速度比（最小需求下限）：
+      result_queue 存在是为了缓冲 T3 比 T2 慢这一事实，但 libx264 是流式编码器，
+      并非每批阻塞整个 T3_ms；实际突发缓冲需求远小于 T3/T2 比值。
+      经验系数 0.22（= 0.15 × 1.5）：在 T4+crf=0+ultrafast 场景实测吻合。
+      floor_by_t3 = max(8, int(T3_ms / T2_ms × 0.22))
+      T2_ms/T3_ms 均为 0 时（未知），跳过此轴，floor = 8。
+
+    轴3 绝对上限（保险兜底）：
+      防止内存估算本身有误（如 mem_avail_gb 异常偏大）时失控。
+      固定为 abs_cap（默认 48）。
+
+    三轴关系：RAM 决定上限，T3/T2 比决定下限，取二者之间合理值：
+      result = max(floor_by_t3, min(cap_by_ram, abs_cap))
+
+    参数
+    ─────────────────────────────────────────────────────────────────────────
+    slot_mb            : 每个 result slot 的锁页内存占用（MiB），
+                         = effective_bs × T × H_pad × W_pad × 3 / 1e6
+    mem_avail_gb       : 系统当前可用 RAM（GiB），来自 _detect_encode_parallelism()
+    T2_ms              : GPU 推理延迟（ms），来自 AUTO-TUNE 测量；0 表示未知
+    T3_ms              : 每批次编码延迟（ms），来自 AUTO-TUNE 估算；0 表示未知
+    ram_budget_fraction: PinnedPool 允许占用可用 RAM 的比例（默认 6%）
+    abs_cap            : result_queue 绝对上限（默认 48）
+    """
+    if slot_mb <= 0.0:
+        return abs_cap
+
+    # 轴1: RAM 上限（可用内存 × 预算比 / 每槽大小）
+    ram_budget_mb = mem_avail_gb * 1024.0 * ram_budget_fraction
+    cap_by_ram = max(8, int(ram_budget_mb / slot_mb))
+
+    # 轴2: T3/T2 实际需求下限（仅在两者均已知时计算）
+    # libx264 流式编码 burst 系数约 0.22（经验值，T4 实测 ~8 槽已足够解耦）
+    if T2_ms > 0.0 and T3_ms > 0.0:
+        floor_by_t3 = max(8, int(T3_ms / T2_ms * 0.22))
+    else:
+        floor_by_t3 = 8   # 未知时使用安全下限
+
+    # 轴3: 绝对上限兜底，防止内存估算失控
+    return max(floor_by_t3, min(cap_by_ram, abs_cap))
+
 
 _X264_PRESET_FACTOR = {
     'ultrafast': 8.0, 'superfast': 6.0, 'veryfast': 4.0,
@@ -1354,13 +1701,21 @@ def _auto_queue_depths(
     pair_depth   = max(2, min(int(_math.ceil(t2_ms / max(t1_ms, 0.1))) + 2, 8))
     result_depth = max(8, min(int(_math.ceil(t3_ms / max(t2_ms, 0.1))) + 3, 64))
 
-    # [FIX-T3-MEMCAP / FIX-POOL-AUTOSCALE] 依据模块级 _PINNED_POOL_MAX_MB 约束 result_depth。
+    # [FIX-T3-MEMCAP / FIX-POOL-AUTOSCALE / FIX-MAXRQ-DYNAMIC] 动态约束 result_depth。
     # 每个 result slot 持有 effective_bs * T 帧的 pinned uint8 buffer。
     # 若不加约束，T3 极慢（大 T3/T2 比）时 result_depth 会达到 50+，
     # 导致 PinnedPool 分配 2 GiB+ 锁页内存，反而拖慢 DMA 带宽，形成恶性循环。
-    _slot_mb     = effective_bs * T * H_pad * W_pad * 3 / 1e6 # 每 slot 的 MiB
+    # [FIX-MAXRQ-DYNAMIC] 改用三轴动态函数：RAM 上限 / T3/T2 下限 / 绝对上限联合约束，
+    # 无论换 GPU / 换分辨率 / 换机器均自适应，无需修改硬编码常量。
+    _slot_mb = effective_bs * T * H_pad * W_pad * 3 / 1e6  # 每 slot 的 MiB
     if _slot_mb > 0.0:
-        _max_result_by_mem = max(8, int(_PINNED_POOL_MAX_MB / _slot_mb) - 2)
+        _mem_avail_gb_aqd = _detect_encode_parallelism()['mem_avail_gb']
+        _max_result_by_mem = _compute_max_result_queue(
+            slot_mb      = _slot_mb,
+            mem_avail_gb = _mem_avail_gb_aqd,
+            T2_ms        = t2_ms,
+            T3_ms        = t3_ms,
+        )
         result_depth = min(result_depth, _max_result_by_mem)
 
     pool_size    = result_depth + 2
@@ -1437,6 +1792,7 @@ class IFRNetPipelineRunner:
         self._writer_th: Optional[threading.Thread] = None
         self._fc_extra   = 0                    # [FIX-INFER-THREAD] 推理线程累计输入帧
         self._oc_extra   = 0                    # [FIX-INFER-THREAD] 推理线程累计输出帧
+        self._error: Optional[Exception] = None          # 流水线异常标志，供 run() 传播错误
 
         # [EVENT-POOL] 预分配 CUDA Event 对象池
         self._event_pool = CudaEventPool(max_size=8)
@@ -1487,6 +1843,8 @@ class IFRNetPipelineRunner:
                     raw_buf    = [raw_buf[-1]]
                     padded_buf = [padded_buf[-1]]
         except Exception as e:
+            if self._error is None:
+                self._error = e
             import traceback
             print(f'\n[IFRNet-Reader] 异常 @frame={frames_read}: {type(e).__name__}: {e}', flush=True)
             traceback.print_exc()
@@ -1507,6 +1865,10 @@ class IFRNetPipelineRunner:
                 self.pair_queue.put(item, timeout=1.0)
                 return
             except queue.Full:
+                infer_dead = self._infer_th is not None and not self._infer_th.is_alive()
+                writer_dead = self._writer_th is not None and not self._writer_th.is_alive()
+                if infer_dead or writer_dead:
+                    break
                 continue
 
     # ── GPU 预取（[STREAM-DUAL] 使用 stream_h2d）────────────────────────────
@@ -1690,6 +2052,12 @@ class IFRNetPipelineRunner:
                         P=self.pair_queue.qsize(),
                         R=self.result_queue.qsize(),
                     )
+        except Exception as e:
+            self._error = e
+            self.running = False
+            import traceback
+            print(f'\n[IFRNet-Writer] 写线程异常: {type(e).__name__}: {e}', flush=True)
+            traceback.print_exc()
         finally:
             if not self.proc.quiet:
                 print(f'\n[IFRNet-Writer] 退出，已写 {written} 输出帧', flush=True)
@@ -1773,7 +2141,7 @@ class IFRNetPipelineRunner:
             else:
                 _HWB = float(H_pad * W_pad * effective_bs)
                 _ifactor = _INFER_BACKEND_FACTORS.get(infer_be, 3.5)
-                _mfactor = _MODEL_T2_FACTOR.get(proc.model_name, 1.0)
+                _mfactor = _MODEL_T2_FACTOR.get(proc.model_name, 1.0)   # ✅ 补乘模型系数，与 _auto_queue_depths 保持一致
                 # [FIX-T2-TRT-CALIB] TRT 路径使用专用固定 overhead 常量（5ms vs 240ms）
                 _fixed_ms = _T2_FIXED_MS_TRT if infer_be == 'trt' else _T2_FIXED_MS
                 _t2b = (_fixed_ms + _T2_VAR_MS * _HWB / _T2_BASELINE_HWB) \
@@ -1828,8 +2196,16 @@ class IFRNetPipelineRunner:
         )
         self._infer_th.start()
 
-        # 等待推理线程完成（T2 结束后向 result_queue 发送 SENTINEL，Writer 随之退出）
+        # 等待工作线程退出（先等 Writer，确保其错误先写入 self._error）
+        if self._writer_th is not None:
+            self._writer_th.join(timeout=10.0)
         self._infer_th.join()
+
+        # 检查流水线是否有异常
+        if self._error is not None:
+            raise RuntimeError(
+                f'流水线处理异常: {type(self._error).__name__}: {self._error}'
+            ) from self._error
 
         # [FIX-RETUNE-POSTRUN] 段完成后用全段稳定 timing 做 RETUNE（精度优于早期 5-batch 采样）
         # · 采用 timing[_CALIB_SKIP:] 中位数，剔除流水线启动热身噪声
@@ -1872,11 +2248,6 @@ class IFRNetPipelineRunner:
                     f'校准建议 pair={_pd_post} result={_rd_post}（下次生效）',
                     flush=True,
                 )
-
-        if self._writer_th and self._writer_th.is_alive():
-            self._writer_th.join(timeout=30.0)
-            if self._writer_th.is_alive():
-                print('\n[IFRNet-Writer] ⚠️ 线程未在 30s 内退出', flush=True)
 
         if self._reader_th and self._reader_th.is_alive():
             self._reader_th.join(timeout=10.0)
@@ -1994,6 +2365,10 @@ class IFRNetPipelineRunner:
                     self.result_queue.put_nowait(out_item)
                     self._try_prefetch_next()
                 except queue.Full:
+                    if self._writer_th is not None and not self._writer_th.is_alive():
+                        raise RuntimeError(
+                            'Writer 线程已退出，result_queue 无消费者，推理线程中止'
+                        )
                     # [FIX-DOUBLEBUF-H2D] 队列满时先触发预取，不让 GPU 闲着
                     self._try_prefetch_next()
                     self.result_queue.put(out_item, timeout=30.0)
@@ -2003,18 +2378,34 @@ class IFRNetPipelineRunner:
                 meter.update(B)
 
         except Exception as e:
+            if self._error is None:
+                self._error = e
             import traceback
             print(f'[IFRNet-Infer] 推理线程异常: {type(e).__name__}: {e}', flush=True)
             traceback.print_exc()
         finally:
             self.running = False
-            for _ in range(10):
-                try:
-                    self.result_queue.put(self._SENTINEL, timeout=1.0)
-                    break
-                except queue.Full:
-                    continue
+            writer_alive = self._writer_th is not None and not self._writer_th.is_alive()
+            if not writer_alive:
+                if not self.proc.quiet:
+                    print('[IFRNet-Infer] Writer 已退出，跳过 result_queue SENTINEL 投递', flush=True)
+            else:
+                for _ in range(5):
+                    try:
+                        self.result_queue.put(self._SENTINEL, timeout=1.0)
+                        break
+                    except queue.Full:
+                        continue
             proc._pipeline_runner = None
+            # [FIX-POOL-LEAK] 显式释放 PinnedResultPool 锁页内存，防止跨段累积。
+            # 必须在 proc._result_pool = None 之前调用 free()，否则引用丢失后
+            # GC 延迟回收，锁页内存继续占用导致下一段 DMA 带宽被竞争。
+            if proc._result_pool is not None:
+                _freed_slots = proc._result_pool.free()
+                import gc as _gc; _gc.collect()
+                if not proc.quiet:
+                    print(f'[PinnedResultPool] 已释放 {_freed_slots} 个 pinned buffer，'
+                          f'触发 GC 回收', flush=True)
             proc._result_pool     = None
             self._fc_extra = fc_extra   # [FIX-INFER-THREAD] 供 run() 读取
 
@@ -2041,7 +2432,7 @@ class PinnedBufferPool:
 
     def __init__(self):
         self._bufs:    list = [None, None, None, None]   # [FIX-DOUBLEBUF-SLOT] 4 槽支持 slot 0-3
-        self._out_buf: Optional[torch.Tensor] = None
+        self._out_buf: Optional[torch.Tensor] = None   # [FIX-D2H] 异步 D2H 输出 buffer
 
     def get_for_frames(self, frames: List[np.ndarray],
                        to_rgb: bool = True, slot: int = 0) -> torch.Tensor:
@@ -2062,6 +2453,7 @@ class PinnedBufferPool:
         return dst
 
     def get_output_buf(self, shape: torch.Size, dtype: torch.dtype) -> torch.Tensor:
+        """[FIX-D2H] 返回与 shape/dtype 匹配的 pinned 输出 buffer，按需扩容。"""
         n_elem = 1
         for s in shape:
             n_elem *= s
@@ -2092,6 +2484,8 @@ def pad_to_stride(arr: np.ndarray, stride: int = MODEL_STRIDE):
 
 
 def frames_to_tensor(frames, device, stream=None, dtype=torch.float32, slot: int = 0):
+    # slot 0/1 selects which pinned buffer to use (img0 vs img1),
+    # preventing DMA races when img0 and img1 are transferred concurrently.
     pool  = _get_pinned_pool()
     cpu_t = pool.get_for_frames(frames, to_rgb=True, slot=slot)
     ctx   = torch.cuda.stream(stream) if stream is not None else nullcontext()
@@ -2103,15 +2497,18 @@ def tensor_to_np(t, orig_H, orig_W, sync_stream=None) -> List[np.ndarray]:
     """[FIX-D2H] 异步 D2H，用于同步回退路径。"""
     if sync_stream is not None and torch.cuda.is_available():
         torch.cuda.current_stream().wait_stream(sync_stream)
+    # GPU 上完成类型转换
     arr_gpu    = t.clamp_(0.0, 1.0).mul_(255.0).round_().byte()
-    arr_perm   = arr_gpu.permute(0, 2, 3, 1).contiguous()
+    arr_perm   = arr_gpu.permute(0, 2, 3, 1).contiguous()   # [B, H, W, C]，仍在 GPU
+    # 申请 pinned 输出 buffer，异步 DMA GPU→主机
     pool       = _get_pinned_pool()
     out_pinned = pool.get_output_buf(arr_perm.shape, torch.uint8)
-    out_pinned.copy_(arr_perm, non_blocking=True)
+    out_pinned.copy_(arr_perm, non_blocking=True)          # 发起 DMA，不阻塞 CPU
+    # 显式 synchronize：仅等待 DMA 完成，可与其他 CPU 工作重叠
     device = t.device
     if device.type == 'cuda':
         torch.cuda.synchronize(device)
-    arr = out_pinned.numpy()
+    arr = out_pinned.numpy()                               # 零拷贝视图
     return [arr[i, :orig_H, :orig_W, ::-1].copy() for i in range(arr.shape[0])]
 
 
@@ -2131,6 +2528,45 @@ class TensorPool:
 
     def clear(self):
         self._cache.clear()
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [FIX-TMP-PIPELINE] _ResultQueueWriter：result_q 适配器
+# 实现与 FFmpegWriter 相同的 write()/close() 接口，
+# 使 IFRNetPipelineRunner.T3-Writer 在多卡 Worker 中也能透明使用三级流水线。
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _ResultQueueWriter:
+    """
+    [FIX-TMP-PIPELINE] FFmpegWriter 兼容适配器（多卡模式）。
+
+    将 IFRNetPipelineRunner.T3-Writer 的 writer.write(frame) 调用
+    重定向为 result_q.put((global_idx, bytes, shape))，
+    使每个 Worker 子进程也能享受完整三级流水线加速（T1/T2/T3 全重叠），
+    而无需修改 IFRNetPipelineRunner 的任何内部逻辑。
+
+    设计要点：
+    · _error = None     : 兼容 IFRNetPipelineRunner 对 writer._error 的检查
+    · close()           : 空操作，result_q 由主进程的 FrameCollector 管理
+    · final_gidx        : 供调用方获取写完后的全局帧索引（用于 output_count 统计）
+    """
+    def __init__(self, result_q, start_gidx: int):
+        self._q     = result_q
+        self._gidx  = start_gidx
+        self._error: Optional[Exception] = None   # FFmpegWriter 接口兼容
+
+    def write(self, frame: np.ndarray):
+        # frame 已是独立 copy（来自 T3-Writer 的 arr[...].copy()），tobytes() 安全
+        self._q.put((self._gidx, frame.tobytes(), frame.shape))
+        self._gidx += 1
+
+    def close(self):
+        pass   # result_q 生命周期由主进程管理，Worker 无需关闭
+
+    @property
+    def final_gidx(self) -> int:
+        return self._gidx
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2164,6 +2600,7 @@ class FFmpegFrameReader:
         self._segment_frames = actual_end - frame_start + 1
         self._frame_bytes    = self.width * self.height * 3
 
+        # [FIX-PAD] 预计算 padding 量，后台线程直接产出 (raw, padded) 元组
         self._pad_stride = pad_stride
         if pad_stride > 0:
             def _ceil(x, s): return x if x % s == 0 else x + (s - x % s)
@@ -2215,6 +2652,8 @@ class FFmpegFrameReader:
             pass
 
     def _read_loop(self):
+        # [FIX-PAD] 若 pad_stride>0，后台线程在解码后立即执行 padding，
+        # 始终产出 (raw_frame, padded_frame) 元组。
         pad_h, pad_w = self._pad_h, self._pad_w
         do_pad = self.need_pad
         fb = self._frame_bytes
@@ -2242,6 +2681,8 @@ class FFmpegFrameReader:
         self._queue.put(self._SENTINEL)
 
     def read(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """返回 (raw_frame, padded_frame) 元组；视频结束时返回 None。
+        [FIX-PAD] padded_frame 已在后台线程完成，主线程零额外 CPU 开销。"""
         item = self._queue.get()
         if item is self._SENTINEL:
             return None
@@ -2262,6 +2703,7 @@ class FFmpegFrameReader:
 
 
 def _probe_video(video_path: str) -> dict:
+    """轻量级 ffprobe 视频元信息探测（不依赖 ffmpeg-python）。"""
     cmd = [
         'ffprobe', '-v', 'error',
         '-select_streams', 'v:0',
@@ -2455,7 +2897,6 @@ class FFmpegWriter:
         if 'nvenc' not in codec:
             cmd.insert(2, '-threads')
             cmd.insert(3, str(_ft))
-        ]
         if audio_src:
             cmd += ['-i', audio_src, '-c:a', 'copy', '-map', '0:v', '-map', '1:a?']
         if extra_codec_args:
@@ -2523,6 +2964,8 @@ class FFmpegWriter:
         self._thread.start()
 
     def _drain_stderr(self):
+        """持续消费 FFmpeg stderr，防止 pipe buffer 满导致死锁；
+        过滤 x265 info/set_mempolicy 噪音，只打印真正的错误行。"""
         try:
             for line in self._proc.stderr:
                 decoded = line.decode(errors='ignore').rstrip()
@@ -2565,6 +3008,9 @@ class FFmpegWriter:
         self._queue.put(self._SENTINEL)
         self._thread.join(timeout=60)
         self._stderr_thread.join(timeout=5)
+        # Close stdin FIRST to signal EOF to FFmpeg, then wait for it to exit.
+        # Do NOT call communicate() after closing stdin — communicate() tries to
+        # flush stdin internally and raises "flush of closed file".
         try:
             self._proc.stdin.close()
         except Exception:
@@ -2583,11 +3029,23 @@ class FFmpegWriter:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 核心推理类
+# 核心推理类（多 GPU 版本，携带全部单卡优化）
 # ─────────────────────────────────────────────────────────────────────────────
 
 class IFRNetVideoProcessor:
+    """
+    IFRNet 插帧处理器（v5 终极多卡版）。
 
+    单 GPU 模式：直接处理完整视频（保留所有单卡优化）。
+    多 GPU 模式：M1 帧范围分割 + 无损中间段 + ffmpeg concat。
+
+    包含全部单卡 v5 演进升级：
+      - VRAM 碎片优化（expandable_segments）
+      - torch.compile 编译缓存持久化
+      - 小形状（32×32）预热，避免大分辨率首编译崩溃
+      - 分辨率自适应 batch_size 上限
+      - OOM 级联保护与深度清理 + 按实测显存估算恢复
+    """
     def __init__(
         self,
         model_path:       str,
@@ -2609,6 +3067,7 @@ class IFRNetVideoProcessor:
         t2_cache_dir:     Optional[str] = None,
         model_name: str = 'IFRNet_S_Vimeo90K',   # 新增
         quiet:            bool = True,
+        num_process_per_gpu: int  = 1,
     ):
         self.model_path      = model_path
         self.device_str      = device
@@ -2626,10 +3085,13 @@ class IFRNetVideoProcessor:
         self.ffmpeg_bin      = ffmpeg_bin
         self.report_json     = report_json
         self.dtype           = torch.float16 if self.use_fp16 else torch.float32
+        # [FIX-TRT-CACHE-DIR] 允许外部指定 TRT 缓存目录（如 ifrnet_processor 传入稳定路径），
+        # 不指定时在 process_video() 中回退到 base_dir/.trt_cache 默认规则。
         self.trt_cache_dir   = trt_cache_dir
         self.t2_cache_dir    = t2_cache_dir or _T2_CACHE_DIR_DEFAULT
         self.model_name = model_name      # 保存模型名称
         self.quiet           = quiet
+        self.num_process_per_gpu = num_process_per_gpu
         self._pipeline_runner: Optional[IFRNetPipelineRunner] = None
         self._result_pool:     Optional[PinnedResultPool]     = None
         self._pool          = TensorPool()
@@ -2661,12 +3123,15 @@ class IFRNetVideoProcessor:
         self._trt_built   = False  # 标记 TRT Engine 是否已构建
 
     def _load_model(self, device: torch.device, use_compile: bool = True):
+        """加载模型到指定设备，供单卡路径和多卡子进程共用。"""
         print(f'  加载模型: {self.model_path} → {device}')
         model = Model()
         ckpt  = torch.load(self.model_path, map_location=device, weights_only=False)
         model.load_state_dict(ckpt)
         model = model.to(device).eval()
 
+        # [FIX-CU] cuDNN benchmark：IFRNet 输入尺寸在同段内固定，
+        # cuDNN 首次遇到该 shape 时自动测速并缓存最优卷积算法，后续批次零开销。
         if device.type == 'cuda':
             torch.backends.cudnn.benchmark = True
             torch.backends.cudnn.enabled   = True
@@ -2678,7 +3143,25 @@ class IFRNetVideoProcessor:
 
         if use_compile and hasattr(torch, 'compile'):
             try:
+                # Use 'default' mode instead of 'reduce-overhead'.
+                #
+                # Why NOT 'reduce-overhead':
+                #   That mode enables torch._inductor's internal CUDA graph tree manager.
+                #   This code dynamically ramps batch_size (4->5->...->N) on every
+                #   successful inference, producing a different input shape each time.
+                #   The inductor captures a new CUDA graph per shape. When OOM fires,
+                #   empty_cache() frees GPU memory and invalidates the tensor weakrefs
+                #   stored inside graph tree nodes. On the next call (even for a previously-
+                #   seen shape) the assertion:
+                #     assert len(node.tensor_weakrefs) == len(node.stack_traces)
+                #   fails -> AssertionError crash (not caught by the OOM handler).
+                #
+                # 'default' mode still performs kernel fusion and Triton codegen (the bulk
+                # of the speedup) but does NOT manage CUDA graphs internally, so dynamic
+                # batch sizes and OOM recovery are fully safe.
                 torch._inductor.config.triton.cudagraph_skip_dynamic_graphs = True
+
+                # U3: 持久化编译缓存，首次约 2~3 分钟，后续运行秒启动
                 cache_dir = os.path.join(
                     os.path.dirname(os.path.abspath(self.model_path)),
                     '.torch_compile_cache',
@@ -2698,6 +3181,9 @@ class IFRNetVideoProcessor:
                         print('  手动 CUDA Graph 已禁用（由 torch.compile 接管）')
             except Exception as e:
                 print(f'  torch.compile 不可用: {e}')
+                # [FIX-TRT-MUTEX] compile 异常退出时若 use_tensorrt 同时开启，
+                # use_cuda_graph 未经 compile 成功路径重置，需在此补充禁用，
+                # 否则 _infer_batch 中 use_cuda_graph 分支会静默优先于 TRT 执行。
                 if self.use_tensorrt and self.use_cuda_graph:
                     self.use_cuda_graph = False
                     print('  [FIX-TRT-MUTEX] compile 异常 + use_tensorrt=True → 补充禁用手动 CUDA Graph')
@@ -2712,10 +3198,16 @@ class IFRNetVideoProcessor:
         else:
             self.stream_compute = self.stream_h2d = self.stream_d2h = None
 
-    # ── M4: TensorRT ─────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────────────
+    # M4: TensorRT 封装（可选）
+    # ──────────────────────────────────────────────────────────────────────────
 
     def _build_trt_engine(self, input_shape: Tuple[int, int, int, int], cache_dir: str,
                           _rebuild_attempt: bool = False):
+        """构建或加载 TRT Engine（单对帧推理形状）。
+
+        包含 GPU SM 标记与构建进度心跳，确保跨架构缓存自动重建。
+        """
         try:
             import tensorrt as trt
         except ImportError:
@@ -2726,6 +3218,7 @@ class IFRNetVideoProcessor:
         os.makedirs(cache_dir, exist_ok=True)
         B, C, H, W = input_shape
 
+        # ── 生成当前 GPU 的 SM 标记（防止跨架构缓存复用）─────────────────
         _sm_tag = ''
         if torch.cuda.is_available():
             _props = torch.cuda.get_device_properties(0)
@@ -2749,16 +3242,24 @@ class IFRNetVideoProcessor:
 
         if not os.path.exists(trt_path):
             print(f'[TensorRT] 构建 Engine (shape={input_shape}) ...')
+            # 导出 ONNX
             dummy0 = torch.randn(*input_shape, device=self.device)
             dummy1 = torch.randn(*input_shape, device=self.device)
             embt   = torch.full((B,), 0.5, dtype=torch.float32,
                                 device=self.device).view(B, 1, 1, 1)
             if self.use_fp16:
                 dummy0, dummy1, embt = dummy0.half(), dummy1.half(), embt.half()
-
+            # [FIX-TRT] torch.compile 包装的模型导出时需解包 _orig_mod，
+            # 否则权重名带 _orig_mod. 前缀导致 TRT parser 解析失败。
+            # [FIX-ONNX-EXPORT] Model.forward() 是训练接口，签名为 (img0,img1,embt,imgt,flow=None)，
+            # torch.onnx.export 仅传入 (img0,img1,embt) 会触发 "missing required argument: imgt" 错误。
+            # 解决方案：用轻量 InferenceWrapper 封装 model.inference()，
+            # 推理接口签名为 (img0,img1,embt)，返回单个 imgt_pred tensor，
+            # 无 loss 计算，无额外输出节点，无 FP16/FP32 类型冲突。
             _base_model = getattr(self.model, '_orig_mod', self.model)
 
             class _InferenceWrapper(torch.nn.Module):
+                """将 Model.inference() 包装为独立 nn.Module，供 ONNX 导出使用。"""
                 def __init__(self, m):
                     super().__init__()
                     self.m = m
@@ -2771,15 +3272,19 @@ class IFRNetVideoProcessor:
                     export_model, (dummy0, dummy1, embt), onnx_path,
                     input_names=['img0', 'img1', 'embt'],
                     output_names=['output'],
-                    opset_version=18,
+                    opset_version=18,       # [FIX-TRT] torch.onnx >= 2.x 最低支持 18
                     dynamic_axes=None,
                 )
+            # [FIX-TRT] 确保无 .onnx.data 外部权重文件（TRT parser 只认单文件 ONNX）
             import onnx
             model_proto = onnx.load(onnx_path)
             onnx.save(model_proto, onnx_path,
                       save_as_external_data=False, all_tensors_to_one_file=False)
             print(f'[TensorRT] ONNX 已导出: {onnx_path}')
 
+            # 构建 Engine
+            # [FIX-TRT-LOGGER] TRT 全局只允许一个 Logger 实例；
+            # 多次创建会触发 'logger ignored' WARNING。保存到 self._trt_logger 并复用。
             if not hasattr(self, '_trt_logger'):
                 self._trt_logger = trt.Logger(trt.Logger.WARNING)
             logger  = self._trt_logger
@@ -2808,9 +3313,10 @@ class IFRNetVideoProcessor:
                 86: '约需 5~15 分钟（A10/RTX30系 SM8.6）',
                 89: '约需 5~10 分钟（RTX40系 SM8.9）',
                 90: '约需 3~8 分钟（H100 SM9.0）',
-            }.get(_sm_code, f'约需 5~20 分钟（{_gpu_name}）')
+            }.get(_sm_code, f'约需 5~20 分钟（{_gpu_name} SM{_props.major}.{_props.minor}）')
             print(f'[TensorRT] {_time_hint}')
 
+            # 启动心跳线程，每 300 秒报告进度
             _build_start = time.time()
             _build_done  = threading.Event()
 
@@ -2840,7 +3346,7 @@ class IFRNetVideoProcessor:
                 f.write(serialized)
             print(f'[TensorRT] Engine 已缓存（用时 {_build_elapsed:.0f}s）: {trt_path}')
 
-        # 加载 Engine
+        # ── 加载 Engine（含 deserialize / context 双重 None 防御）─────────
         try:
             if not hasattr(self, '_trt_logger'):
                 self._trt_logger = trt.Logger(trt.Logger.WARNING)
@@ -2849,6 +3355,17 @@ class IFRNetVideoProcessor:
             with open(trt_path, 'rb') as f:
                 self._trt_engine = runtime.deserialize_cuda_engine(f.read())
 
+            # ── [FIX-TRT-DESER] deserialize_cuda_engine 防御 ────────────────
+            # deserialize_cuda_engine 在以下场景静默返回 None（不抛异常）：
+            #   · GPU compute capability 不匹配（如 T4 → A10 迁移）
+            #   · TRT 版本升级（8.x → 10.x），序列化格式不兼容
+            #   · .trt 文件损坏（不完整写入 / 磁盘错误）
+            # 若不检测，下方 create_execution_context() 在 NoneType 上调用 →
+            #   AttributeError: 'NoneType' object has no attribute 'create_execution_context'
+            #
+            # 处理策略：
+            #   首次失败 → 删除过期缓存 + 删除 ONNX + 递归重建（_rebuild_attempt=True）
+            #   重建后仍失败 → 放弃 TRT，graceful 回退 PyTorch 路径
             if self._trt_engine is None:
                 if _rebuild_attempt:
                     print('[TensorRT] ⚠️  重建后 Engine 仍反序列化失败，回退 PyTorch。')
@@ -2863,6 +3380,11 @@ class IFRNetVideoProcessor:
                     except OSError: pass
                 return self._build_trt_engine(input_shape, cache_dir, _rebuild_attempt=True)
 
+            # ── [FIX-TRT-CTX-OOM] create_execution_context 防御 ────────────
+            # create_execution_context() 在 GPU 显存不足时返回 None（不抛异常）。
+            # 典型场景：upscale_then_interpolate 模式下，前序 ESRGan 步骤
+            # 占用大量 GPU 显存（模型权重 + GFPGAN + 缓存分配器残留），
+            # 导致 IFRNet TRT context 无法分配所需的激活内存。
             self._trt_context = self._trt_engine.create_execution_context()
             if self._trt_context is None:
                 print('[TensorRT] ⚠️  create_execution_context() 失败（显存不足），回退 PyTorch。')
@@ -2873,6 +3395,7 @@ class IFRNetVideoProcessor:
                     torch.cuda.empty_cache()
                 return
 
+            # [FIX-TRT] 动态查询 engine 的实际 tensor 名，不硬编码
             n = self._trt_engine.num_io_tensors
             inputs, outputs = [], []
             for i in range(n):
@@ -2882,20 +3405,23 @@ class IFRNetVideoProcessor:
                     inputs.append(name)
                 else:
                     outputs.append(name)
-            self._trt_input_names  = inputs
-            self._trt_output_names = outputs
+            self._trt_input_names  = inputs   # e.g. ['img0','img1','embt']
+            self._trt_output_names = outputs  # e.g. ['output']
             if not self.quiet:
                 print(f'[TensorRT] inputs={inputs} outputs={outputs}')
             self._trt_ok = True
             print('[TensorRT] Engine 已激活，TRT 推理就绪。')
         except Exception as e:
+            # 加载失败（如架构不匹配、文件损坏），删除缓存并标记不可用
             print(f'[TensorRT] Engine 加载失败: {e}，回退 PyTorch。')
             try: os.remove(trt_path)
             except OSError: pass
             self.use_tensorrt = False
             self._trt_ok = False
 
-    # ── CUDA Graph ────────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────────────
+    # CUDA Graph 推理（v4 B5 修复，完整保留）
+    # ──────────────────────────────────────────────────────────────────────────
 
     def _get_cuda_graph(self, shape_key, img0, img1, embt, imgt_approx):
         if shape_key in self._graph:
@@ -2911,18 +3437,33 @@ class IFRNetVideoProcessor:
         static_img1 = img1.clone()
         static_embt = embt.clone()
 
+        # [FIX-CUDA-GRAPH-INFERENCE] 必须用 model.inference()，forward() 含损失计算会触发 CPU 分配。
+        #
+        # [FIX-CG-BENCHMARK] 根本修复：cudnn.benchmark=True 导致 FIND 在 capture context 内
+        # 重新测速而崩溃（FIND was unable to find an engine）。
+        # 原理：
+        #   · Warmup 阶段 benchmark=True → cuDNN 运行测速、选出最优算法并写入内部 cache。
+        #   · 捕获阶段切换为 benchmark=False → cuDNN 走确定性 heuristic 路径，
+        #     完全跳过 FIND/测速流程，避免在 capture context 内发起受限内存分配。
+        #   · 捕获完成后恢复 benchmark=True，后续普通推理仍受益于 benchmark 缓存。
+        # 增加至 5 次 warmup，确保内存碎片恢复后每层 conv 算法均已充分缓存。
+
+        # ── Warmup（benchmark=True，充分缓存每层 conv 最优算法）────────────────
         for _ in range(5):
             with torch.cuda.stream(self.stream_compute):
                 _ = self.model.inference(static_img0, static_img1, static_embt)
+        # 捕获前完整同步，确保所有 warmup kernel 落盘、cuDNN 算法 cache 写入完成
         torch.cuda.synchronize(self.device)
 
+        # ── CUDA Graph 捕获（benchmark=False 防止 FIND 在捕获内触发测速）─────────
         g = torch.cuda.CUDAGraph()
         _saved_benchmark = torch.backends.cudnn.benchmark
-        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.benchmark = False  # [FIX-CG-BENCHMARK]
         try:
             with torch.cuda.graph(g, stream=self.stream_compute):
                 static_output = self.model.inference(static_img0, static_img1, static_embt)
         except Exception as e:
+            # [FIX-CG-FALLBACK] 捕获失败时的兜底：同步、清理、禁用 CUDA Graph、回退普通推理
             torch.backends.cudnn.benchmark = _saved_benchmark
             try: torch.cuda.synchronize(self.device)
             except Exception: pass
@@ -2935,6 +3476,12 @@ class IFRNetVideoProcessor:
         finally:
             torch.backends.cudnn.benchmark = _saved_benchmark
 
+        # [FIX-CUDA-GRAPH-CAPTURE-REPLAY]
+        # CUDA Graph 捕获期间操作只是被录制，并不执行
+        # （cudaStreamBeginCapture 官方文档：work is not executed during capture）。
+        # capture 路径直接返回 static_output 拿到的是未初始化内存 → 黑帧。
+        # 必须在 capture 后立即 replay 一次，让 static_output 填入真实结果，
+        # 再通过 wait_stream 让调用方安全读取。
         with torch.cuda.stream(self.stream_compute):
             g.replay()
 
@@ -2945,7 +3492,9 @@ class IFRNetVideoProcessor:
         }
         return static_output
 
-    # ── 核心批推理 ─────────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────────────
+    # 核心批推理（v4 完整保留）
+    # ──────────────────────────────────────────────────────────────────────────
 
     @torch.no_grad()
     def _infer_batch(
@@ -3003,24 +3552,57 @@ class IFRNetVideoProcessor:
                 self._pipeline_runner._try_prefetch_next()
 
         elif getattr(self, '_trt_ok', False):
+            # [FIX-TRT] TensorRT 静态 Engine 推理路径
+            # ─────────────────────────────────────────────────────────────────
+            # [FIX-TRT-STREAM-RACE] 频闪根因（TRT 路径）：
+            #
+            # 旧代码在 default stream 上执行 img0_exp.half() / img1_exp.half() 的
+            # 类型转换 GPU kernel，然后立即调用 execute_async_v3(stream=stream_compute)。
+            # stream_compute 只 wait 了 stream_transfer（DMA完成），从未 wait default stream，
+            # 因此 TRT 在 stream_compute 上读 i0/i1 时，default stream 上的 .half() kernel
+            # 可能尚未写完 → TRT 读到未完成的半精度数据 → 每批帧概率性画面错误 → 频闪。
+            #
+            # 修复：把所有输入准备（.half()/.contiguous()/pad/bind）全部移入
+            # torch.cuda.stream(stream_compute) 上下文，使 execute_async_v3 和其所有
+            # 数据依赖都处于同一条流，彻底消除跨流竞争。
+            # ─────────────────────────────────────────────────────────────────
             import tensorrt as _trt2
             in_names  = getattr(self, '_trt_input_names',  ['img0', 'img1', 'embt'])
             out_names = getattr(self, '_trt_output_names', ['output'])
             engine_BT = self._trt_engine.get_tensor_shape(in_names[0])[0]
             BT        = img0_exp.shape[0]
             out_dtype = torch.float16 if self.use_fp16 else torch.float32
+            # # 输出 buffer 在 stream_compute 外分配（纯内存分配，无 GPU kernel）
+            # out_buf   = torch.empty((engine_BT, 3, H_p, W_p), dtype=out_dtype, device=self.device)
+            
+            # [FIX-TRT-OUT-SHAPE] 直接从 Engine 查询输出 shape 分配 out_buf，
+            # 替代原来手工推导的 (engine_BT, 3, H_p, W_p)。
+            #
+            # 与 FIX-TRT-PAD-DIMS（process_video 中用 pad 后尺寸构建 Engine）的关系：
+            #   FIX-TRT-PAD-DIMS 是根基：确保 Engine 本身以正确的 padded shape 构建，
+            #   因此 get_tensor_shape 返回的就是 padded shape（H_p, W_p）。
+            #   本修复是在此基础上的加固：out_buf 的 shape 直接来源于 Engine，
+            #   与 Engine 永远严格自洽，不再依赖 img0_exp.shape 的间接推导。
+            #
+            # 为什么手工推导有隐患（即使 FIX-TRT-PAD-DIMS 已修复）：
+            #   IFRNet 是帧插值模型，输入输出恰好同尺寸，手工推导目前成立；
+            #   但这是对模型结构的隐含假设，一旦换用输出通道数/尺寸不同的模型
+            #  （如带 alpha 的 4 通道输出），手工推导会静默算错，而 get_tensor_shape
+            #   能自动适应任何模型结构变化，无需修改推理代码。
             out_shape = tuple(self._trt_engine.get_tensor_shape(out_names[0]))
             out_buf   = torch.empty(out_shape, dtype=out_dtype, device=self.device)
 
             _trt_stream_ctx = (torch.cuda.stream(self.stream_compute)
                                if self.stream_compute is not None else nullcontext())
             with _trt_stream_ctx:
+                # 在 stream_compute 上做类型转换和 pad，与 execute_async_v3 同流，无竞争
                 t_vals = timesteps * B
                 embt_t = torch.tensor(t_vals, dtype=torch.float32,
                                       device=self.device).view(-1, 1, 1, 1)
                 i0 = img0_exp.half().contiguous() if self.use_fp16 else img0_exp.float().contiguous()
                 i1 = img1_exp.half().contiguous() if self.use_fp16 else img1_exp.float().contiguous()
                 em = embt_t.half().contiguous() if self.use_fp16 else embt_t.contiguous()
+                # [FIX-TRT-PAD] 最后一批不足 engine_BT 时 pad，推理后只取前 BT 帧
                 if BT < engine_BT:
                     pad_n = engine_BT - BT
                     def _pad(t):
@@ -3124,6 +3706,7 @@ class IFRNetVideoProcessor:
     # ── OOM 自动降级 ──────────────────────────────────────────────────────────
 
     def _estimate_safe_batch_size(self, H: int, W: int) -> int:
+        """根据当前实测空闲显存估算安全的 batch_size。"""
         if not torch.cuda.is_available():
             return 1
         try:
@@ -3135,12 +3718,17 @@ class IFRNetVideoProcessor:
             cached_free    = (torch.cuda.memory_reserved(self.device)
                               - torch.cuda.memory_allocated(self.device))
             effective_free = free_bytes + cached_free
+            # 单帧 FP16 字节数 × 6 倍激活系数（经验值）
             bytes_per_frame = H * W * 3 * 2 * 6
+            # 只使用空闲显存的 70%，留 30% 给中间缓冲
             estimated = max(1, int(effective_free * 0.7 / bytes_per_frame))
             return min(estimated, self._max_batch_size)
         except Exception:
             return 1
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # U6: OOM 级联保护 + 深度清理 + 按实测显存恢复
+    # ──────────────────────────────────────────────────────────────────────────
     def _safe_infer(self, img0_list, img1_list, timesteps, orig_H, orig_W,
                     prefetched_img0_t=None, prefetched_img1_t=None):
         in_oom_cascade = False
@@ -3179,28 +3767,33 @@ class IFRNetVideoProcessor:
                     self.stream_d2h     = torch.cuda.Stream(device=self.device)
 
                 if not in_oom_cascade:
+                    # ── 首次 OOM：永久更新天花板，此 batch_size 已证明不可用 ──
                     safe_ceiling = max(1, self.batch_size - 1)
                     if self._max_batch_size > safe_ceiling:
                         print(f'[OOM] 永久降低 max_batch_size: {self._max_batch_size} → {safe_ceiling}')
                         self._max_batch_size = safe_ceiling
-                    in_oom_cascade = True
+                    in_oom_cascade = True  # 进入级联状态，后续降级不再修改上限
 
                 if self.batch_size <= 1:
+                    # 深度清理：同步 + 清空 + 重置 inductor
                     print(f'\n[OOM] batch_size=1 仍 OOM，深度清理后按剩余显存估算恢复...')
                     if torch.cuda.is_available():
                         torch.cuda.synchronize()
                         torch.cuda.empty_cache()
                         try: torch._dynamo.reset()
                         except Exception: pass
-                        torch.cuda.empty_cache()
+                        torch.cuda.empty_cache()  # 二次清理，inductor reset 后可能释放更多
+
+                    # 深度清理后用实测空闲显存重新估算 batch_size
                     recovered_bs = self._estimate_safe_batch_size(orig_H, orig_W)
+                    # 同时以此作为新的上限（深度清理后能用多少就上限多少）
                     if recovered_bs < self._max_batch_size:
                         print(f'[OOM] 深度清理后估算安全 batch_size={recovered_bs}，'
                               f'更新 max_batch_size: {self._max_batch_size} → {recovered_bs}')
                         self._max_batch_size = recovered_bs
                     self.batch_size    = recovered_bs
-                    self._oom_cooldown = 20
-                    in_oom_cascade     = False
+                    self._oom_cooldown = 20      # 稳定一段时间再尝试爬升
+                    in_oom_cascade     = False   # 深度清理后重置级联标志
                     print(f'[OOM] 恢复 batch_size={self.batch_size}，继续处理...')
                     continue
 
@@ -3236,16 +3829,18 @@ class IFRNetVideoProcessor:
                     continue
                 raise
 
-    # ── 单段处理核心 ──────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────────────
+    # 单段处理核心（单 GPU 或多 GPU 的单个 Worker 内部调用）
+    # ──────────────────────────────────────────────────────────────────────────
 
     def _process_segment(
         self,
         input_path:         str,
         output_path:        str,
-        scale:              float,
-        frame_start:        int  = 0,
-        frame_end:          int  = -1,
-        skip_first_output:  bool = False,
+        scale:              float = 2.0,
+        frame_start:        int   = 0,
+        frame_end:          int   = -1,
+        skip_first_output:  bool  = False,   # M1: 多 GPU 时首帧去重
         audio_src:          Optional[str] = None,
         codec_override:     Optional[str] = None,
         extra_codec_args:   Optional[List[str]] = None,
@@ -3256,7 +3851,17 @@ class IFRNetVideoProcessor:
         pair_queue_override:   Optional[int] = None,
         result_queue_override: Optional[int] = None,
         t3_fps_measured:       float = 0.0,   # [FIX-T3-FPS] 跨段实测 T3 fps
+        # [FIX-TMP] 多卡零临时文件模式
+        result_q:              Optional[object] = None,
+        scale_int_override:    int   = 0,
     ) -> Tuple[bool, int, int]:
+        """
+        处理视频的一个帧范围段。
+        - result_q=None: 写出到 output_path（单 GPU / v5 兼容模式）
+        - result_q!=None: [FIX-TMP] 帧数据放入 result_q，由主进程 FrameCollector 写出
+        返回 (成功, 原始帧数, 输出帧数)。
+        """
+        # [FIX-PAD] 将 pad_stride 传入 reader，padding 在后台线程完成
         reader = FFmpegFrameReader(
             input_path,
             frame_start  = frame_start,
@@ -3264,13 +3869,14 @@ class IFRNetVideoProcessor:
             prefetch     = self.batch_size * 3,
             use_hwaccel  = self.use_hwaccel,
             ffmpeg_bin   = self.ffmpeg_bin,
-            pad_stride   = MODEL_STRIDE,
+            pad_stride   = MODEL_STRIDE,     # [FIX-PAD] 交由后台线程 pad
         )
         W, H      = reader.width, reader.height
         fps       = reader.fps
-        n_seg_est = reader._segment_frames
+        n_seg_est = reader._segment_frames   # 估计值
 
-        bytes_per_frame = W * H * 3 * 2 * 6
+        # ── U5: 根据分辨率限制最大 batch_size，防止大分辨率下 VRAM 溢出 ──────
+        bytes_per_frame = W * H * 3 * 2 * 6  # 3 channels, fp16=2B, ~6x activations
         # [FIX-BATCHCAP] mem_get_info()[0] 仅返回 OS 层面空闲 VRAM，跨段后 PyTorch
         # allocator 仍持有大量 reserved 缓存（TRT engine 等），导致估算严重偏低。
         # 修复：effective_free = OS空闲 + PyTorch可复用缓存（reserved - allocated）
@@ -3280,11 +3886,12 @@ class IFRNetVideoProcessor:
             _cached_free  = (torch.cuda.memory_reserved(self.device)
                              - torch.cuda.memory_allocated(self.device))
             _seg_free = _raw_free + _cached_free
+        # [FIX-BS] 局部变量 effective_bs，不修改实例状态，避免多段处理状态泄漏
         effective_bs = self.batch_size
         if _seg_free > 0:
             res_max_bs = max(1, int(_seg_free * 0.6 / bytes_per_frame))
             if effective_bs > res_max_bs:
-                print(f'[分辨率限制] {W}×{H} 下 batch_size {effective_bs} → {res_max_bs}')
+                print(f'[{worker_label}][分辨率限制] {W}×{H} 下 batch_size {effective_bs} → {res_max_bs}')
                 effective_bs = res_max_bs
             if self._max_batch_size > res_max_bs:
                 self._max_batch_size = max(effective_bs, res_max_bs)
@@ -3294,6 +3901,7 @@ class IFRNetVideoProcessor:
         if not hasattr(self, '_hw_profile_cache'):
             self._hw_profile_cache = _detect_hw_profile(self.device)
 
+        # [FIX-PAD] padding 已由 FFmpegFrameReader 后台线程完成
         pad_h    = reader._pad_h
         pad_w    = reader._pad_w
 
@@ -3309,12 +3917,25 @@ class IFRNetVideoProcessor:
         timesteps = [float(Fraction(i, int(scale_frac))) for i in range(1, int(scale_frac))]
         new_fps   = fps * float(scale_frac)
 
-        # [FIX-NVENC-UNIFIED] 传入 hw_profile，统一两套 NVENC 检测路径
-        use_codec = codec_override or HardwareCapability.best_encoder(
-            self.codec, hw_profile=self._hw_profile_cache)
+        if self.crf == 0 and not codec_override:
+            use_codec, _ = HardwareCapability.lossless_encoder()
+        else:
+            use_codec = codec_override or HardwareCapability.best_encoder(
+                self.codec, hw_profile=getattr(self, '_hw_profile_cache', None))
         use_extra = extra_codec_args
         if 'nvenc' in use_codec:
             print(f'[{worker_label}] NVENC 编码: {use_codec}')
+        # [FIX-NVENC-AWARE] 保存实际使用的编码器，供段后诊断代码使用
+        self._last_used_codec = use_codec
+
+        # [FIX-TMP] 多卡零临时文件：result_q 模式下不创建 writer，帧数据放入队列
+        _use_queue = result_q is not None
+        _s_int = scale_int_override if scale_int_override > 0 else int(scale_frac)
+        if _use_queue:
+            _out_gidx = [frame_start * _s_int + (1 if skip_first_output else 0)]
+            def _write_frame(frame: np.ndarray):
+                result_q.put((_out_gidx[0], frame.tobytes(), frame.shape))
+                _out_gidx[0] += 1
 
         # [FIX-TSTART] 含 warmup 的端到端计时
         t_start = time.time()
@@ -3350,16 +3971,19 @@ class IFRNetVideoProcessor:
                     except Exception: pass
             self._warmup_done = True
 
-        writer = FFmpegWriter(
-            output_path, W, H, new_fps,
-            codec            = use_codec,
-            extra_codec_args = use_extra,
-            crf              = self.crf,
-            preset           = self.x264_preset,
-            audio_src        = audio_src,
-            ffmpeg_bin       = self.ffmpeg_bin,
-            quiet            = self.quiet,
-        )
+        if not _use_queue:
+            writer = FFmpegWriter(
+                output_path, W, H, new_fps,
+                codec            = use_codec,
+                extra_codec_args = use_extra,
+                crf              = self.crf,
+                preset           = self.x264_preset,
+                audio_src        = audio_src,
+                ffmpeg_bin       = self.ffmpeg_bin,
+                quiet            = self.quiet,
+            )
+        else:
+            writer = None
 
         frame_count  = 0
         output_count = 0
@@ -3372,13 +3996,18 @@ class IFRNetVideoProcessor:
         pair = reader.read()
         if pair is None:
             print(f'[{worker_label}] 无法读取首帧')
-            reader.close(); writer.close()
+            reader.close()
+            if writer is not None:   # [FIX-WORKER-WRITER-NONE] _use_queue 模式下 writer=None
+                writer.close()
             if pbar: pbar.close()
             return False, 0, 0
         first, first_padded = pair
 
         if not skip_first_output:
-            writer.write(first)
+            if _use_queue:
+                _write_frame(first)
+            else:
+                writer.write(first)
             output_count += 1
 
         frame_count = 1
@@ -3388,20 +4017,26 @@ class IFRNetVideoProcessor:
         # ── 主处理 ────────────────────────────────────────────────────────────
         preview_interrupted = False
         if self.device.type == 'cuda':
+            # 单卡：直接用 FFmpegWriter；多卡 Worker：用 _ResultQueueWriter 适配器
+            if _use_queue:
+                _pipeline_writer = _ResultQueueWriter(result_q, _out_gidx[0])
+            else:
+                _pipeline_writer = writer
+
             pipeline = IFRNetPipelineRunner(
                 self,
-                auto_tune    = True,
+                auto_tune    = not _use_queue,   # 多卡 Worker 不需要 auto-tune
                 codec        = use_codec,
                 x264_preset  = self.x264_preset,
                 crf          = self.crf,
-                t2_cache_dir = self.t2_cache_dir,
+                t2_cache_dir = self.t2_cache_dir if not _use_queue else '',
                 pair_queue_override   = pair_queue_override,
                 result_queue_override = result_queue_override,
                 t3_fps_measured       = t3_fps_measured,   # [FIX-T3-FPS]
             )
             fc_extra, oc_extra = pipeline.run(
                 reader            = reader,
-                writer            = writer,
+                writer            = _pipeline_writer,
                 timesteps         = timesteps,
                 H                 = H,
                 W                 = W,
@@ -3415,17 +4050,18 @@ class IFRNetVideoProcessor:
                 H_pad             = H + pad_h,
                 W_pad             = W + pad_w,
             )
-            # [GPU-MONITOR-v2] 保存实际队列深度，供 print_report() 调优建议使用
-            self._last_pair_q_size   = pipeline.pair_queue.maxsize
-            self._last_result_q_size = pipeline.result_queue.maxsize
+            if not _use_queue:
+                # [GPU-MONITOR-v2] 单卡模式保存 pipeline 统计供 ADAPTIVE-QUEUE 使用
+                self._last_pair_q_size   = pipeline.pair_queue.maxsize
+                self._last_result_q_size = pipeline.result_queue.maxsize
             # [FIX-T3-MEMCAP] 记录每个 result slot 的 MiB，供 get_queue_suggestions 约束
-            _max_BT = effective_bs * len(timesteps)
-            self._last_pool_slot_mb = (
-                _max_BT * (H + pad_h) * (W + pad_w) * 3 / 1e6
-            )
+                _max_BT = effective_bs * len(timesteps)
+                self._last_pool_slot_mb = (
+                    _max_BT * (H + pad_h) * (W + pad_w) * 3 / 1e6
+                )
             # [FIX-T3-FPS] 保存实测 T3 fps + 编码分辨率，供 process_video 报告使用
-            self._last_t3_fps_measured = getattr(pipeline, '_t3_fps_measured', 0.0)
-            self._last_encode_hw = (H, W)
+                self._last_t3_fps_measured = getattr(pipeline, '_t3_fps_measured', 0.0)
+                self._last_encode_hw = (H, W)
             frame_count  += fc_extra
             output_count += oc_extra
             if n_seg_est > 0:
@@ -3450,9 +4086,15 @@ class IFRNetVideoProcessor:
                 results = self._safe_infer(padded_buf[:-1], padded_buf[1:], timesteps, H, W)
                 for i, interps in enumerate(results):
                     for interp_frame in interps:
-                        writer.write(interp_frame)
+                        if _use_queue:
+                            _write_frame(interp_frame)
+                        else:
+                            writer.write(interp_frame)
                         output_count += 1
-                    writer.write(raw_buf[i + 1])
+                    if _use_queue:
+                        _write_frame(raw_buf[i + 1])
+                    else:
+                        writer.write(raw_buf[i + 1])
                     output_count += 1
                 meter.update(n_pairs)
 
@@ -3488,7 +4130,8 @@ class IFRNetVideoProcessor:
         # ── 收尾 ──────────────────────────────────────────────────────────────
         if pbar:
             pbar.close()
-        writer.close()
+        if writer is not None:
+            writer.close()
         reader.close()
 
         if n_seg_est > 0:
@@ -3508,7 +4151,9 @@ class IFRNetVideoProcessor:
             return False, 0, 0
         return True, frame_count, output_count
 
-    # ── 对外公开接口 ──────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────────────
+    # 单 GPU 完整视频处理（对外公开，兼容 v4 接口）
+    # ──────────────────────────────────────────────────────────────────────────
 
     def process_video(
         self,
@@ -3523,8 +4168,10 @@ class IFRNetVideoProcessor:
             return False
         os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
 
-        audio_src = input_path if self.keep_audio else None
-
+        # [GAP-MULTIGPU-TRT-PREBUILD] TRT 预构建必须在多卡路由之前执行：
+        # 主进程在 GPU0 上构建并缓存 .trt 文件，Workers 启动后读取同一缓存（
+        # 同架构 GPU 的缓存文件名相同），避免各 Worker 独立重建导致 20-30 分钟
+        # 的串行等待，也避免原先 TRT 预构建被多卡路由直接跳过的沉默失效问题。
         # if self.use_tensorrt:
         if self.use_tensorrt and not self._trt_built:
             if torch.cuda.is_available():
@@ -3538,6 +4185,20 @@ class IFRNetVideoProcessor:
             self._build_trt_engine(sh, trt_dir)
             # 无论成功或失败，标记已尝试，避免重复构建
             self._trt_built = True
+
+        # ── 多卡路由 ──────────────────────────────────────────────────────────
+        num_gpus  = torch.cuda.device_count()
+        nwpg      = self.num_process_per_gpu
+        n_workers = max(1, num_gpus * nwpg)
+        if n_workers > 1 and num_gpus > 1:
+            # [GAP-MULTIGPU-PREVIEW] 透传 preview 参数，多卡路径由 FrameCollector 侧实现预览
+            return self._process_multi_gpu(
+                input_path, output_path, scale, num_gpus, nwpg,
+                preview=preview, preview_interval=preview_interval,
+            )
+        # ── 单 GPU 路径（含全套 v6.3.3 优化）────────────────────────────────
+
+        audio_src = input_path if self.keep_audio else None
 
         # [GPU-MONITOR] 启动后台监测
         self._gpu_monitor.start()
@@ -3568,19 +4229,21 @@ class IFRNetVideoProcessor:
                 current_bs       = self.batch_size,
                 current_pair_q   = _cur_pair_q,
                 current_result_q = _cur_result_q,
+                codec            = getattr(self, '_last_used_codec', self.codec),    # [FIX-NVENC-AWARE] 使用实际编码器
             )
             # [FIX-T3-DETECT] 获取 GPU-MONITOR 的队列建议（含 T3-bottleneck 检测）
             _slot_mb = getattr(self, '_last_pool_slot_mb', 0.0)
             pair_gpu_sug, result_gpu_sug = self._gpu_monitor.get_queue_suggestions(
                 _gpu_stats, _cur_pair_q, _cur_result_q,
-                slot_mb=_slot_mb,           # 传入每 slot 大小，用于 PinnedPool 内存约束
+                slot_mb=_slot_mb,             # 传入每 slot 大小，用于 PinnedPool 内存约束
+                codec=getattr(self, '_last_used_codec', self.codec),             # [FIX-NVENC-AWARE] 使用实际编码器
             )
             # 获取 AUTO-TUNE-RETUNE 的建议（如果存在）
             retune_pair_q   = getattr(self, '_retune_pair_q',   None)
             retune_result_q = getattr(self, '_retune_result_q', None)
 
             # [FIX-T3-DETECT] 先检测是否 T3-bottleneck，再决定综合策略
-            _is_t3 = GPUMonitor._is_t3_bottleneck(_gpu_stats)
+            _is_t3 = GPUMonitor._is_t3_bottleneck(_gpu_stats, codec=getattr(self, '_last_used_codec', self.codec))
             if _is_t3:
                 # T3 是真正瓶颈：不增大队列，result_queue 可适当缩小以回收 pinned 内存
                 final_pair_q   = _cur_pair_q
@@ -3593,8 +4256,12 @@ class IFRNetVideoProcessor:
                 # [FIX-T3-REPORT] 增强诊断：实测 vs 理论 T3 fps + 具体编码建议
                 _t3_fps_meas = getattr(self, '_last_t3_fps_measured', 0.0)
                 _H_enc, _W_enc = getattr(self, '_last_encode_hw', (0, 0))
+                _nvenc_already_active = 'nvenc' in getattr(self, '_last_used_codec', self.codec).lower()
                 _t3_fps_est = 0.0
-                if _H_enc > 0 and _W_enc > 0:
+                # [FIX-NVENC-AWARE] _software_encode_fps 估算的是 x264 软编码速度，
+                # 对 NVENC 硬编码毫无意义；当 NVENC 已激活时跳过此估算。
+                if (not _nvenc_already_active
+                        and _H_enc > 0 and _W_enc > 0):
                     _t3_fps_est = _software_encode_fps(
                         os.cpu_count() or 4, _H_enc, _W_enc,
                         self.codec, self.x264_preset, self.crf,
@@ -3609,8 +4276,9 @@ class IFRNetVideoProcessor:
                     _diag_parts.append(f'偏差={_degrade:.1f}×（含热节流因素）')
                 _diag_str = '  [' + '  '.join(_diag_parts) + ']' if _diag_parts else ''
                 _has_nvenc_h264 = HardwareCapability.has_nvenc('h264_nvenc')
-                _nvenc_already_active = 'nvenc' in self.codec.lower()
                 if _nvenc_already_active:
+                    # [FIX-NVENC-AWARE] NVENC 已激活但 T3 仍为瓶颈：
+                    # 瓶颈不在 NVENC 硬件编码器本身，而在 pipe 写入 / CPU 格式转换
                     _encoder_tip = (
                         f'NVENC 已激活但 T3 仍为瓶颈（实测 {_t3_fps_meas:.0f} fps）。'
                         f'建议：1) 尝试 --x264-preset p1（最快 NVENC preset） '
@@ -3655,14 +4323,24 @@ class IFRNetVideoProcessor:
                 # 硬上限
                 final_pair_q   = min(final_pair_q, 8)
                 final_result_q = min(final_result_q, 64)
-                # [FIX-T3-MEMCAP / FIX-POOL-AUTOSCALE] 施加 PinnedPool 内存上限约束，并显式 log 截断原因
+                # [FIX-T3-MEMCAP / FIX-POOL-AUTOSCALE / FIX-MAXRQ-DYNAMIC]
+                # PinnedPool 内存上限约束：改用三轴动态函数，并显式 log 截断原因。
                 if _slot_mb > 0.0:
-                    _max_rq_mem = max(8, int(_PINNED_POOL_MAX_MB / _slot_mb) - 2)
+                    _mem_avail_gb_aq = _detect_encode_parallelism()['mem_avail_gb']
+                    _max_rq_mem = _compute_max_result_queue(
+                        slot_mb      = _slot_mb,
+                        mem_avail_gb = _mem_avail_gb_aq,
+                        # ADAPTIVE-QUEUE 阶段 T2/T3 不一定可得，省略以仅用 RAM 上限+绝对上限
+                    )
                     if final_result_q > _max_rq_mem:
+                        _ram_budget_mb = _mem_avail_gb_aq * 1024.0 * 0.06
                         print(
-                            f'[ADAPTIVE-QUEUE] PinnedPool 内存上限截断: '
+                            f'[ADAPTIVE-QUEUE] PinnedPool 动态上限截断: '
                             f'result_queue {final_result_q} → {_max_rq_mem}'
-                            f'  (slot={_slot_mb:.1f} MB × {_max_rq_mem+2} ≈ {_PINNED_POOL_MAX_MB:.0f} MB上限)'
+                            f'  (slot={_slot_mb:.1f} MB × {_max_rq_mem}'
+                            f' ≈ {_slot_mb * _max_rq_mem:.0f} MB'
+                            f'  ≤ RAM预算 {_ram_budget_mb:.0f} MB'
+                            f'  [mem_avail={_mem_avail_gb_aq:.1f} GB × 6%])'
                         )
                     final_result_q = min(final_result_q, _max_rq_mem)
 
@@ -3685,8 +4363,258 @@ class IFRNetVideoProcessor:
 
         if ok:
             self._print_summary(input_path, output_path, fc, oc, scale)
-            self._dump_report(input_path, output_path, fc, oc, scale)
+            self._dump_report(input_path, output_path, fc, oc, scale, n_workers=1)
         return ok
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # M1 v6: 多 GPU 帧范围分割处理 [FIX-TMP 零临时文件架构]
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _process_multi_gpu(
+        self,
+        input_path:       str,
+        output_path:      str,
+        scale:            float,
+        num_gpus:         int,
+        nwpg:             int,
+        preview:          bool = False,           # [GAP-MULTIGPU-PREVIEW]
+        preview_interval: int  = 30,              # [GAP-MULTIGPU-PREVIEW]
+    ) -> bool:
+        """
+        [FIX-TMP] 零临时文件多卡架构。
+
+        Worker 不再写无损中间 seg_*.mp4，改为将每帧以
+        (output_global_idx, frame.tobytes(), frame.shape) 放入有界 result_q；
+        主进程 FrameCollector 线程用 heapq 按 output_global_idx 重排，
+        再直接写入唯一的 FFmpegWriter（最终编码直接完成，无 concat 步骤）。
+
+        消除了：
+          · 无损段磁盘 IO（4K 10s 视频 ~3GB）
+          · Worker 端 FFmpegWriter 编码 + 主进程端 concat 解码
+          · ffmpeg concat 本身的读取时间
+        """
+        import heapq as _heapq
+
+        # [GAP-MULTIGPU-PREVIEW] --preview 在多卡模式下由 FrameCollector 主线程处理。
+        # Worker 子进程为 spawn 模式，无显示上下文，不支持 cv2.imshow。
+        if preview:
+            try:
+                import cv2 as _cv2_preview
+                _preview_ok = True
+            except ImportError:
+                print('[Multi-GPU] [GAP-MULTIGPU-PREVIEW] 警告：cv2 未安装，--preview 在多卡模式下无效。')
+                _preview_ok = False
+        else:
+            _preview_ok = False
+
+        n_workers = num_gpus * nwpg
+        meta      = _probe_video(input_path)
+        nb        = meta['nb_frames']
+        fps       = meta['fps']
+        if nb <= 0:
+            print('[Multi-GPU] 无法获取帧数，回退单 GPU 处理。')
+            return self._process_single_fallback(input_path, output_path, scale)
+
+        scale_frac = Fraction(scale).limit_denominator(64)
+        scale_int  = int(scale_frac)
+        new_fps    = fps * scale_int
+
+        print(f'\n[Multi-GPU v6] 零临时文件帧范围分割模式')
+        print(f'  GPU 数: {num_gpus} × {nwpg} Worker = {n_workers} 总 Worker')
+        print(f'  总帧数: {nb} → 每段约 {nb // n_workers} 帧 | 输出帧率: {new_fps:.2f}')
+
+        # 计算帧范围（带 1 帧 overlap）
+        seg_size = nb // n_workers
+        ranges: List[Tuple[int, int]] = []
+        for i in range(n_workers):
+            s = i * seg_size
+            e = (i + 1) * seg_size - 1 if i < n_workers - 1 else nb - 1
+            if i < n_workers - 1:
+                e = min(e + 1, nb - 1)  # +1 overlap
+            ranges.append((s, e))
+
+        worker_args_list = []
+        for i, (s, e) in enumerate(ranges):
+            worker_args_list.append(dict(
+                worker_idx         = i,
+                device_id          = i % num_gpus,
+                input_path         = input_path,
+                scale              = scale,
+                frame_start        = s,
+                frame_end          = e,
+                skip_first_output  = (i > 0),
+                scale_int          = scale_int,
+                model_path         = self.model_path,
+                batch_size         = self.batch_size,
+                max_batch_size     = self._max_batch_size,
+                use_fp16           = self.use_fp16,
+                use_compile        = self.use_compile,        # [FIX-WORKER-COMPILE] 透传真实值，原为硬编码 True，--no-compile 在多卡模式下无效
+                use_tensorrt       = self.use_tensorrt,       # [FIX-WORKER-TRT] 透传 TRT 开关，原缺失，--use-tensorrt 在多卡模式下静默失效
+                use_cuda_graph     = self.use_cuda_graph,
+                use_hwaccel        = self.use_hwaccel,
+                model_name         = self.model_name,         # [FIX-WORKER-MODEL] 透传模型变体名，原缺失，Worker 内硬编码 IFRNet_S
+                crf                = self.crf,
+                x264_preset        = self.x264_preset,
+                ffmpeg_bin         = self.ffmpeg_bin,
+                t2_cache_dir       = self.t2_cache_dir,       # [FIX-WORKER-T2CACHE] 透传缓存目录，保持接口一致性
+                trt_cache_dir      = self.trt_cache_dir,      # [GAP-WORKER-TRT-CACHE-DIR] 透传 TRT Engine 缓存目录；Worker 加载主进程预构建的 .trt 缓存
+                quiet              = self.quiet,               # [FIX-WORKER-QUIET] 透传静默开关，原硬编码 True，--no-quiet 在 Worker 无效
+            ))
+
+        ctx         = mp.get_context('spawn')
+        # result_q 有界（200 帧缓冲），Frame data + __DONE__ 共用同一队列
+        result_q:   mp.Queue = ctx.Queue(maxsize=200)
+        error_q:    mp.Queue = ctx.Queue()
+
+        processes = [
+            ctx.Process(
+                target = _ifrnet_segment_worker,
+                kwargs = dict(**wa, error_q=error_q, result_q=result_q),
+                daemon = True,
+                name   = f'IFRWorker-{wa["worker_idx"]}',
+            )
+            for wa in worker_args_list
+        ]
+        # [GAP-MULTIGPU-GPUMONITOR] 启动后台 GPU 监测（监测主进程所在 GPU0，
+        # 反映 FrameCollector / 主进程侧整体 GPU 负载；Worker 推理负载可通过
+        # pynvml 多设备接口扩展，当前阶段仅监测设备 0）。
+        # 注：多卡模式不运行 ADAPTIVE-QUEUE 调优（Worker 内各自 auto-tune），
+        # 仅打印统计信息供参考。
+        self._gpu_monitor.start()
+        for p in processes:
+            p.start()
+        print(f'[Multi-GPU] {n_workers} 个 Worker 已启动...')
+
+        # 探测视频尺寸（用于 FrameCollector）
+        meta_probe = _probe_video(input_path)
+        W, H = meta_probe['width'], meta_probe['height']
+
+        final_codec = HardwareCapability.best_encoder(self.codec)
+        # [FIX-NVENC-AWARE] 保存实际使用的编码器，供后续诊断代码使用
+        self._last_used_codec = final_codec
+        audio_src   = input_path if self.keep_audio else None
+
+        writer = FFmpegWriter(
+            output_path, W, H, new_fps,
+            codec      = final_codec,
+            crf        = self.crf,
+            preset     = self.x264_preset,
+            audio_src  = audio_src,
+            ffmpeg_bin = self.ffmpeg_bin,
+            quiet      = self.quiet,   # [GAP-MULTIGPU-WRITER-QUIET] 透传静默开关，与单卡路径保持一致
+        )
+        print(f'[Multi-GPU] FrameCollector 启动，输出编码器: {final_codec}')
+
+        # FrameCollector：主线程同步处理（避免额外线程同步开销）
+        heap         = []   # (global_idx, bytes)
+        next_expected = 0
+        done          = 0
+        errors        = []
+        total_written = 0
+        t_collect     = time.time()
+
+        while done < n_workers:
+            # 检查 error_q
+            try:
+                wid, err = error_q.get_nowait()
+                errors.append(f'Worker-{wid}: {err}')
+                print(f'\n[Worker-{wid} Error] {err}')
+            except Exception:
+                pass
+
+            try:
+                item = result_q.get(timeout=30.0)
+            except Exception:
+                # 超时：检查进程是否还活着
+                alive = any(p.is_alive() for p in processes)
+                if not alive and done < n_workers:
+                    print('[Multi-GPU] 警告：所有进程已退出但未收到全部 __DONE__，强制结束收集。')
+                    break
+                continue
+
+            if isinstance(item, tuple) and len(item) == 2 and item[0] == '__DONE__':
+                done += 1
+                print(f'[Multi-GPU] Worker-{item[1]} 完成 ({done}/{n_workers})')
+                continue
+
+            global_idx, frame_bytes, shape = item
+            _heapq.heappush(heap, (global_idx, frame_bytes, shape))
+
+            # 按序写出已就绪帧
+            while heap and heap[0][0] == next_expected:
+                idx, fb, sh = _heapq.heappop(heap)
+                frame = np.frombuffer(fb, dtype=np.uint8).reshape(sh)
+                writer.write(frame)
+                # [GAP-MULTIGPU-PREVIEW] FrameCollector 侧预览（BGR，来自 Worker D2H 输出）
+                if _preview_ok and total_written % preview_interval == 0:
+                    _cv2_preview.imshow('[Multi-GPU] IFRNet Preview', frame)
+                    if _cv2_preview.waitKey(1) & 0xFF == ord('q'):
+                        _preview_ok = False
+                next_expected += 1
+                total_written += 1
+
+        # flush 剩余帧（理论上 heap 应已空，但防御性处理）
+        if heap:
+            heap.sort()
+            for idx, fb, sh in heap:
+                frame = np.frombuffer(fb, dtype=np.uint8).reshape(sh)
+                writer.write(frame)
+                total_written += 1
+
+        for p in processes:
+            p.join(timeout=30)
+            if p.is_alive():
+                print(f'[Warning] {p.name} 未在超时内退出，强制终止。')
+                p.kill()
+
+        writer.close()
+        elapsed = time.time() - t_collect
+        print(f'[Multi-GPU] 收集完成 | 总输出帧={total_written} | 耗时={elapsed:.1f}s')
+
+        # [GAP-MULTIGPU-GPUMONITOR] 停止采样，打印 GPU 利用率统计
+        # 多卡模式不运行 ADAPTIVE-QUEUE（Worker 内各自 auto-tune），
+        # 仅打印统计数据供调优参考，不更新 _next_pair/result_queue。
+        self._gpu_monitor.stop()
+        _mgpu_stats = self._gpu_monitor.get_stats()
+        if _mgpu_stats.sample_count > 0:
+            print()
+            self._gpu_monitor.print_report(
+                _mgpu_stats,
+                current_bs       = self.batch_size,
+                current_pair_q   = 4,    # Worker 默认值（多卡模式主进程无 pipeline 深度数据）
+                current_result_q = 8,
+                codec            = getattr(self, '_last_used_codec', self.codec),    # [FIX-NVENC-AWARE] 使用实际编码器
+            )
+        else:
+            print('[GPU-MONITOR] 警告：未能获取 GPU 采样数据（多卡模式仅监测 GPU0）。')
+
+        if errors:
+            print(f'[Error] {len(errors)} 个 Worker 出现错误:\n' + '\n'.join(errors))
+            return False
+
+        self._print_summary(input_path, output_path, nb, total_written, scale)
+        # [GAP-MULTIGPU-REPORT-TIMING] 多卡模式调用专用报告函数：
+        # 主进程 self._timing 为空（推理计时在 Worker 子进程中），
+        # 改写宏观吞吐指标，避免报告被 _dump_report 守卫条件静默跳过。
+        self._dump_report_multigpu(
+            input_path, output_path, nb, total_written, scale,
+            n_workers=n_workers, elapsed_s=elapsed,
+        )
+        return True
+
+
+
+    def _process_single_fallback(self, input_path, output_path, scale):
+        audio_src = input_path if self.keep_audio else None
+        ok, fc, oc = self._process_segment(
+            input_path, output_path, scale,
+            audio_src=audio_src, worker_label='GPU0',
+        )
+        if ok:
+            self._print_summary(input_path, output_path, fc, oc, scale)
+            self._dump_report(input_path, output_path, fc, oc, scale, n_workers=1)
+        return ok
+
 
     def _print_summary(self, input_path, output_path, fc, oc, scale):
         print(f'\n✅ 插帧完成！')
@@ -3696,7 +4624,7 @@ class IFRNetVideoProcessor:
             size_mb = os.path.getsize(output_path) / 1024 / 1024
             print(f'   输出: {output_path} ({size_mb:.1f} MB)')
 
-    def _dump_report(self, input_path, output_path, fc, oc, scale):
+    def _dump_report(self, input_path, output_path, fc, oc, scale, n_workers: int = 1):
         if not self.report_json or not self._timing:
             return
         report = {
@@ -3709,7 +4637,7 @@ class IFRNetVideoProcessor:
             'tensorrt':   getattr(self, '_trt_ok', False),
             'nvdec':      HardwareCapability.has_nvdec(),
             'nvenc':      HardwareCapability.best_encoder(self.codec).endswith('nvenc'),
-            'n_workers':  1,
+            'n_workers':  n_workers,
             'frame_count':  fc,
             'output_count': oc,
             'infer_latency_ms': {
@@ -3722,6 +4650,185 @@ class IFRNetVideoProcessor:
             json.dump(report, f, ensure_ascii=False, indent=2)
         print(f'   性能报告: {self.report_json}')
 
+    def _dump_report_multigpu(
+        self,
+        input_path:  str,
+        output_path: str,
+        fc:          int,
+        oc:          int,
+        scale:       float,
+        n_workers:   int,
+        elapsed_s:   float,
+    ):
+        """
+        [GAP-MULTIGPU-REPORT-TIMING] 多卡模式专用 JSON 性能报告。
+
+        单卡 _dump_report() 依赖 self._timing（推理批次延迟）生成 infer_latency_ms，
+        但多卡模式下推理发生在 Worker 子进程，主进程 self._timing 始终为空，
+        导致单卡版报告守卫条件（not self._timing）永远触发，报告被静默跳过。
+
+        本函数改为记录宏观吞吐指标（总帧数、输出帧数、总耗时、帧率），
+        infer_latency_ms 字段标注为不可用，完整保留其余配置字段以保持格式兼容。
+        """
+        if not self.report_json:
+            return
+        report = {
+            'input':       input_path,
+            'output':      output_path,
+            'scale':       scale,
+            'batch_size':  self.batch_size,
+            'fp16':        self.use_fp16,
+            'cuda_graph':  self.use_cuda_graph,
+            'tensorrt':    getattr(self, '_trt_ok', False),
+            'nvdec':       HardwareCapability.has_nvdec(),
+            'nvenc':       HardwareCapability.best_encoder(self.codec).endswith('nvenc'),
+            'n_workers':   n_workers,
+            'frame_count':  fc,
+            'output_count': oc,
+            'elapsed_s':    round(elapsed_s, 1),
+            'throughput_fps': round(fc / max(elapsed_s, 0.1), 1),
+            # 推理延迟数据在 Worker 子进程中，主进程无法获取；记录说明供参考。
+            'infer_latency_ms': 'N/A（多卡模式：推理延迟数据在 Worker 子进程中）',
+        }
+        with open(self.report_json, 'w', encoding='utf-8') as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+        print(f'   性能报告（多卡宏观指标）: {self.report_json}')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# M1: 多 GPU Worker 函数（FIX-TMP，spawn 安全）
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _ifrnet_segment_worker(
+    worker_idx:       int,
+    device_id:        int,
+    input_path:       str,
+    scale:            float,
+    frame_start:      int,
+    frame_end:        int,
+    skip_first_output: bool,
+    scale_int:        int,          # [FIX-TMP] 全局帧索引计算所需
+    model_path:       str,
+    batch_size:       int,
+    max_batch_size:   int,
+    use_fp16:         bool,
+    use_compile:      bool,
+    use_tensorrt:     bool,         # [FIX-WORKER-TRT] 透传 TRT 开关
+    use_cuda_graph:   bool,
+    use_hwaccel:      bool,
+    model_name:       str,          # [FIX-WORKER-MODEL] 透传模型变体名，spawn 子进程必须重绑
+    crf:              int,
+    x264_preset:      str,
+    ffmpeg_bin:       str,
+    t2_cache_dir:     str = '',          # [FIX-WORKER-T2CACHE] 透传缓存目录，保持接口一致性
+    trt_cache_dir:    Optional[str] = None,  # [GAP-WORKER-TRT-CACHE-DIR] 透传 TRT Engine 缓存目录
+    quiet:            bool = True,       # [FIX-WORKER-QUIET] 透传静默开关
+    error_q:          mp.Queue = None,
+    result_q:         mp.Queue = None,    # [FIX-TMP] 帧数据 + __DONE__ 共用同一队列
+):
+    """
+    v6 多 GPU Worker：[FIX-TMP] 不再写临时文件，改为将帧放入 result_q。
+    [FIX-NML] 在 Worker 进程中安装 _NVMLFilter，屏蔽 NVML 无害日志。
+    spawn 模式启动，进程隔离，携带全部 v6 升级。
+    """
+    label = f'GPU{device_id}-W{worker_idx}'
+
+    # ── U1: spawn 子进程中必须重设 PYTORCH_ALLOC_CONF ──────────────────────
+    os.environ.setdefault('PYTORCH_ALLOC_CONF', 'expandable_segments:True')
+
+    # ── U2: 子进程中重新抑制噪音日志 ──────────────────────────────────────
+    import logging as _log
+    _log.getLogger('torch._inductor.utils').setLevel(_log.ERROR)
+    _log.getLogger('torch.utils._sympy.interp').setLevel(_log.ERROR)
+    _log.getLogger('torch.utils._sympy').setLevel(_log.ERROR)
+
+    # ── [FIX-NML] Worker 进程安装 _NVMLFilter ────────────────────────────
+    import sys as _sys, re as _re
+    class _F:
+        _p = _re.compile(r'NVML_SUCCESS|INTERNAL ASSERT FAILED.*CUDACachingAllocator')
+        def __init__(self, s): self._s = s
+        def write(self, m):
+            if not self._p.search(m): self._s.write(m)
+        def flush(self): self._s.flush()
+        def __getattr__(self, a): return getattr(self._s, a)
+    _sys.stderr = _F(_sys.stderr)
+
+    # ── [FIX-WORKER-MODEL] spawn 子进程模块级 Model 默认为 IFRNet_S，
+    # 必须按传入的 model_name 重新绑定，否则与主进程模型架构不一致。
+    global Model
+    Model, _ = _load_ifrnet_module(model_name)
+
+    try:
+        device = torch.device(f'cuda:{device_id}')
+        torch.cuda.set_device(device)
+
+        processor = IFRNetVideoProcessor(
+            model_path     = model_path,
+            device         = f'cuda:{device_id}',
+            batch_size     = batch_size,
+            max_batch_size = max_batch_size,
+            use_fp16       = use_fp16,
+            use_compile    = use_compile,
+            use_cuda_graph = use_cuda_graph,
+            use_tensorrt   = use_tensorrt,        # [FIX-WORKER-TRT] 透传 TRT 开关
+            use_hwaccel    = use_hwaccel,
+            codec          = 'libx264',  # [FIX-TMP] codec 不再用于 Worker
+            crf            = crf,
+            x264_preset    = x264_preset,
+            keep_audio     = False,
+            ffmpeg_bin     = ffmpeg_bin,
+            model_name     = model_name,          # [FIX-WORKER-MODEL] 使用传入值，而非硬编码 IFRNet_S
+            t2_cache_dir   = t2_cache_dir,        # [FIX-WORKER-T2CACHE] 透传缓存目录
+            trt_cache_dir  = trt_cache_dir,       # [GAP-WORKER-TRT-CACHE-DIR] 透传 TRT Engine 缓存目录
+            quiet          = quiet,               # [FIX-WORKER-QUIET] 透传静默开关
+            num_process_per_gpu = 1,
+        )
+
+        # [GAP-WORKER-TRT-BUILD] Worker 不走 process_video()，_process_segment 内
+        # 没有 TRT Engine 构建逻辑，必须在此手动触发构建/加载。
+        # 主进程已在路由前预构建并写入缓存（GAP-MULTIGPU-TRT-PREBUILD），
+        # 同架构 GPU 的 Worker 直接加载缓存文件（通常 < 5s），不会重新编译。
+        if use_tensorrt:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            _meta_trt = _probe_video(input_path)
+            _trt_ceil_w = lambda x, s: x if x % s == 0 else x + (s - x % s)
+            _trt_H_w = _trt_ceil_w(_meta_trt['height'], MODEL_STRIDE)
+            _trt_W_w = _trt_ceil_w(_meta_trt['width'],  MODEL_STRIDE)
+            _sh_w    = (batch_size, 3, _trt_H_w, _trt_W_w)
+            _trt_dir_w = trt_cache_dir if trt_cache_dir else os.path.join(base_dir, '.trt_cache')
+            print(f'[{label}] [GAP-WORKER-TRT-BUILD] 加载 TRT Engine (shape={_sh_w})...', flush=True)
+            processor._build_trt_engine(_sh_w, _trt_dir_w)
+            processor._trt_built = True
+
+        # [FIX-TMP] 使用 result_q 代替 FFmpegWriter
+        ok, fc, oc = processor._process_segment(
+            input_path          = input_path,
+            output_path         = '',     # [FIX-TMP] 不使用
+            scale               = scale,
+            frame_start         = frame_start,
+            frame_end           = frame_end,
+            skip_first_output   = skip_first_output,
+            audio_src           = None,
+            worker_label        = label,
+            result_q            = result_q,
+            scale_int_override  = scale_int,
+        )
+
+        if not ok:
+            error_q.put((worker_idx, '_process_segment 返回失败'))
+
+    except Exception as e:
+        import traceback
+        err_msg = traceback.format_exc()
+        print(f'[{label}] 异常: {err_msg}')
+        error_q.put((worker_idx, err_msg))
+
+    finally:
+        # [FIX-TMP] 发送完成信号（与帧数据共用 result_q）
+        result_q.put(('__DONE__', worker_idx))
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 命令行入口
@@ -3729,7 +4836,7 @@ class IFRNetVideoProcessor:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='IFRNet 视频插帧 —— 终极优化版 v6.3.3（单卡版）',
+        description='IFRNet 视频插帧 —— 终极优化版 v6.3.5（多卡版）',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     # 基础参数
@@ -3750,15 +4857,21 @@ def main():
     # 高优先级覆盖参数
     parser.add_argument('--use-cuda-graph', dest='use_cuda_graph_force',
                         action='store_true', default=False,
-                        help='[覆盖] 强制启用 CUDA Graph，覆盖 --no-cuda-graph')
+                        help='[覆盖] 强制启用 CUDA Graph，覆盖 --no-cuda-graph / config。'
+                             '与 torch.compile 互斥（compile 成功时自动禁用 CUDA Graph）；'
+                             '如需确保生效，请同时指定 --no-compile。')
     parser.add_argument('--use-compile', dest='use_compile_force',
                         action='store_true', default=False,
-                        help='[覆盖] 强制启用 torch.compile，覆盖 --no-compile')
+                        help='[覆盖] 强制启用 torch.compile，覆盖 --no-compile / config。'
+                             '与 --use-tensorrt 互斥（TRT 激活时 compile 被跳过）。')
     parser.add_argument('--no-tensorrt', dest='no_tensorrt',
                         action='store_true', default=False,
                         help='[覆盖] 强制禁用 TensorRT，覆盖 --use-tensorrt')
     # 硬件加速
     parser.add_argument('--no-hwaccel', action='store_true', help='强制禁用 NVDEC')
+    # 多 GPU
+    parser.add_argument('--num-process-per-gpu', type=int, default=1,
+                        help='每 GPU Worker 数（多 GPU 模式，显存充裕时可设 2）')
     # 编码参数
     parser.add_argument('--codec',       default='libx264')
     parser.add_argument('--crf',         type=int, default=23)
@@ -3773,7 +4886,7 @@ def main():
     parser.add_argument('--report',            default=None, help='JSON 性能报告路径')
     parser.add_argument('--quiet', action=argparse.BooleanOptionalAction, default=True,
                         help='静默模式（默认开启），仅显示关键信息；--no-quiet 开启详细日志')
-    parser.add_argument('--trt-cache-dir',   default=None)
+    parser.add_argument('--trt-cache-dir',   default=None, help='TRT Engine 缓存目录')
     parser.add_argument('--t2-cache-dir',    default=None)
 
     args = parser.parse_args()
@@ -3821,15 +4934,22 @@ def main():
         print(f'错误: 模型不存在 - {model_path}')
         sys.exit(1)
 
+    # 根据 --model 选择对应的模型变体
     global Model
     Model, _ = _load_ifrnet_module(args.model)
 
+    # 打印启动信息
     print('=' * 65)
-    print('  IFRNet 视频插帧 —— 终极优化版 v6.3.3（单卡版）')
+    print('  IFRNet 视频插帧 —— 终极优化版 v6.3.5（多卡版）')
     print('=' * 65)
+    num_gpus  = torch.cuda.device_count()
+    n_workers = max(1, num_gpus * args.num_process_per_gpu)
     print(f'  模型:   {args.model}')
-    print(f'  设备:   {args.device} | GPU: '
-          f'{torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"}')
+    print(f'  设备:   {args.device} | GPU 数: {num_gpus} | Workers: {n_workers}')
+    if torch.cuda.is_available():
+        for _i in range(num_gpus):
+            _props = torch.cuda.get_device_properties(_i)
+            print(f'    GPU{_i}: {_props.name} ({_props.total_memory/1024**3:.1f} GB)')
     print(f'  FP16:   {not args.no_fp16} | '
           f'Compile: {not args.no_compile} | '
           f'CUDA Graph: {not args.no_cuda_graph} | '
@@ -3877,6 +4997,7 @@ def main():
         t2_cache_dir   = getattr(args, 't2_cache_dir', None),
         model_name     = model_name,   # ✅ 使用规范化后的 model_name（自定义路径时为 basename）
         quiet          = getattr(args, 'quiet', True),
+        num_process_per_gpu = getattr(args, 'num_process_per_gpu', 1),
     )
 
     ok = processor.process_video(

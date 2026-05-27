@@ -745,14 +745,17 @@ class FFmpegWriter:
         cmd_args = [
             getattr(self.args, 'ffmpeg_bin', 'ffmpeg'),
             '-y',
-            # [FIX-SLICE-THREAD] FFmpeg 全局 -threads：作用于 demux / filter graph
-            '-threads', str(_ft),
             '-f', 'rawvideo',
             '-pix_fmt', 'rgb24',
             '-s', f'{self.width}x{self.height}',
             '-r', str(self.fps),
             '-i', 'pipe:',
         ]
+        # [FIX-SLICE-THREAD] FFmpeg 全局 -threads：仅软编码路径需要，
+        # NVENC 是 GPU 固定功能硬件单元，不受 CPU 线程数控制。
+        if 'nvenc' not in video_codec:
+            cmd_args.insert(2, '-threads')
+            cmd_args.insert(3, str(_ft))
 
         # [FIX-AUDIO-MUX] audio_src 内联音轨：在编码时直接 mux，省去 post-encode 合并
         if self._audio_src and os.path.exists(self._audio_src):

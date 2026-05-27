@@ -1,4 +1,4 @@
-"""
+﻿"""
 RealESRGAN 视频超分处理脚本 —— 终极优化版 v6（单卡版）
 ==========================================================
 基于 Real-ESRGAN 的视频超分脚本，面向单 GPU 生产环境的最高性能实现。
@@ -783,9 +783,9 @@ class FFmpegReader:
         # M2: 构建 hwaccel 参数
         hw_args: List[str] = []
         if use_hwaccel and HardwareCapability.has_nvdec():
-            # hw_args = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'bgr24']
+            # hw_args = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'nv12']
             hw_args = ['-hwaccel', 'cuda']
-            # 删掉 '-hwaccel_output_format', 'bgr24' 让 FFmpeg 自动做软解色彩转换到 bgr24
+            # 删掉 '-hwaccel_output_format', 'nv12' 让 FFmpeg 自动做软解色彩转换到 bgr24
             print('[NVDEC] 硬件解码已启用')
         else:
             if use_hwaccel:
