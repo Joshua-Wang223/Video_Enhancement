@@ -1,4 +1,4 @@
-"""
+﻿"""
 IFRNet 视频插帧处理脚本 —— 终极优化版 v6.3.2（单卡版）
 ==========================================================
 基于 IFRNet（Intermediate Flow-based Recursive Network）的视频帧插值脚本，
@@ -786,7 +786,8 @@ class GPUMonitor:
             else:
                 print(f'[GPU-MONITOR] ⚠️  检测到 T3-bottleneck（编码器是真正瓶颈）：'
                       f'result_queue={current_result_q} 保持不变'
-                      f'  （根本瓶颈在编码器速度，应考虑换用更快的 preset 或 NVENC）')
+                      f'  （根本瓶颈在编码器速度，应考虑换用更快的 preset'
+                      f'{"" if "nvenc" in codec.lower() else " 或 NVENC"}）')
         elif stats.stable_p95 > 85.0 and stable_std > 20.0:
             sug_rq = min(64, current_result_q + 8)
             print(f'[GPU-MONITOR] 💡 result_queue 建议增大: {current_result_q} → {sug_rq}'
@@ -1859,7 +1860,7 @@ class FFmpegFrameReader:
 
         hw_args: List[str] = []
         if use_hwaccel and HardwareCapability.has_nvdec():
-            hw_args = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'bgr24']
+            hw_args = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'nv12']
 
         if frame_start == 0 and frame_end < 0:
             vf_args: List[str] = []
@@ -3095,7 +3096,15 @@ class IFRNetVideoProcessor:
                     _diag_parts.append(f'偏差={_degrade:.1f}×（含热节流因素）')
                 _diag_str = '  [' + '  '.join(_diag_parts) + ']' if _diag_parts else ''
                 _has_nvenc_h264 = HardwareCapability.has_nvenc('h264_nvenc')
-                if _has_nvenc_h264 and _t3_fps_meas > 0:
+                _nvenc_already_active = 'nvenc' in self.codec.lower()
+                if _nvenc_already_active:
+                    _encoder_tip = (
+                        f'NVENC 已激活但 T3 仍为瓶颈（实测 {_t3_fps_meas:.0f} fps）。'
+                        f'建议：1) 尝试 --x264-preset p1（最快 NVENC preset） '
+                        f'2) 尝试 --crf 0 无损模式（跳过 VBR 前向预看） '
+                        f'3) bgr24→yuv420p CPU 格式转换 / pipe 写入带宽 / 非标准分辨率'
+                    )
+                elif _has_nvenc_h264 and _t3_fps_meas > 0:
                     _nvenc_fps = 3000.0
                     if _H_enc > 0 and _W_enc > 0:
                         _nvenc_fps = min(3000.0, 3000.0 * 1920 * 1080 / (_H_enc * _W_enc))

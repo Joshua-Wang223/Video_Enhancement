@@ -1,4 +1,4 @@
-"""
+﻿"""
 RealESRGAN 视频超分处理脚本 —— 终极优化版 v6（多卡版）
 ==========================================================
 在 v5++ 多卡版基础上，全面移植 v6 单卡版的所有升级，
@@ -768,7 +768,7 @@ class FFmpegReader:
         self.nb_frames = meta['nb_frames']
 
         # M2: 构建 hwaccel 参数
-        # [FIX-NVDEC] 删掉 '-hwaccel_output_format', 'bgr24'，
+        # [FIX-NVDEC] 删掉 '-hwaccel_output_format', 'nv12'，
         # 让 FFmpeg 自动做软解色彩转换，避免部分 GPU 不支持直接输出 bgr24
         hw_args: List[str] = []
         if use_hwaccel and HardwareCapability.has_nvdec():

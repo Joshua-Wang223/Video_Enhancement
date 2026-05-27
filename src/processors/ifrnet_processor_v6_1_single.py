@@ -24,6 +24,7 @@ import os
 import sys
 import json
 import time
+import hashlib
 from pathlib import Path
 from typing import List, Optional
 
@@ -133,6 +134,7 @@ class IFRNetProcessor:
         self.processed_dir:   Optional[Path] = None
         self._checkpoint_save_logged = False    # 首次保存断点时打印路径
         self._current_input_video: Optional[str] = None  # 当前输入视频，用于断点指纹
+        self._upstream_segments_hash: Optional[str] = None  # 上游分段指纹（process_segments_directly）
 
         # [v6.1 新增] 底层 IFRNetVideoProcessor 实例缓存，避免每个分段重新初始化
         self._video_processor = None
@@ -209,6 +211,9 @@ class IFRNetProcessor:
         print(f"⚡ 插帧倍数: {self.interpolation_factor}x")
 
         self._setup_temp_dirs(video_name, "ifrnet_from_segments")
+        self._upstream_segments_hash = hashlib.md5(
+            '|'.join(sorted(input_segments)).encode()
+        ).hexdigest()
         checkpoint = self._load_checkpoint()
         return self._process_segments(input_segments, checkpoint)
 
@@ -278,6 +283,8 @@ class IFRNetProcessor:
             total_time = time.time() - total_start
             print(f"\n✅ 插帧处理完成！总用时: {format_time(total_time)}")
             print(f"📤 输出: {output_video}")
+            # 全部成功完成 → 自动删除断点文件（不依赖 auto_cleanup_temp）
+            self._delete_checkpoint()
             if self.config.get("processing", "auto_cleanup_temp", default=False):
                 self._cleanup_temp_files()
         else:
@@ -318,7 +325,7 @@ class IFRNetProcessor:
                     return {"processed_segments": [], "last_segment": -1}
 
                 current_snapshot = self._get_config_snapshot()
-                _fingerprint_keys = {"input_mtime", "input_size"}
+                _fingerprint_keys = {"input_mtime", "input_size", "upstream_segments_hash"}
                 mismatches = []
                 for key in current_snapshot:
                     saved_val = saved_snapshot.get(key)
@@ -371,6 +378,8 @@ class IFRNetProcessor:
             st = os.stat(self._current_input_video)
             snap["input_mtime"] = st.st_mtime
             snap["input_size"] = st.st_size
+        if self._upstream_segments_hash:
+            snap["upstream_segments_hash"] = self._upstream_segments_hash
         return snap
 
     def _save_checkpoint(self, checkpoint: dict):
@@ -493,9 +502,6 @@ class IFRNetProcessor:
         if processed_files:
             print(f"\n✅ IFRNet 处理完成: "
                   f"{len(processed_files)}/{len(segment_files)} 个分段")
-            # 全部成功完成 → 自动删除断点文件
-            if len(processed_files) == len(segment_files):
-                self._delete_checkpoint()
         else:
             print("\n❌ 没有成功处理的片段")
 

@@ -1,4 +1,4 @@
-"""
+﻿"""
 IFRNet 视频插帧处理脚本 —— 终极优化版 v6.3.5（多卡版）
 ==========================================================
 基于 IFRNet（Intermediate Flow-based Recursive Network）的视频帧插值脚本，
@@ -494,14 +494,35 @@ class HardwareCapability:
 
     @staticmethod
     def _probe_nvenc(codec: str) -> bool:
+        # [FIX-PROBE] 历次修复汇总（根因均由 stderr 诊断确认）：
+        #   LAVFI  : color 源去掉 d=0.1（0帧问题）→ 无限源 + -frames:v 1 截帧
+        #   PIXFMT : FFmpeg 5.0+ color 源默认 yuv444p → 显式 -pix_fmt yuv420p
+        #   BFRAME : 单帧编码触发 B 帧 lookahead 报错 → -bf 0
+        #   MINDIM : h264_nvenc 宽≥145px / hevc_nvenc 宽≥129px → 256×144
+        cmd = [
+            'ffmpeg', '-hide_banner', '-y', '-loglevel', 'error',
+            '-f', 'lavfi', '-i', 'color=c=black:s=256x144:r=1',
+            '-vcodec', codec, '-frames:v', '1',
+            '-pix_fmt', 'yuv420p', '-bf', '0',
+            '-f', 'null', '-',
+        ]
         try:
-            cmd = [
-                'ffmpeg', '-f', 'lavfi', '-i', 'color=c=black:s=64x64:d=0.1:r=1',
-                '-vcodec', codec, '-frames:v', '1',
-                '-f', 'null', '-', '-loglevel', 'error',
-            ]
-            return subprocess.run(cmd, capture_output=True, timeout=10).returncode == 0
-        except Exception:
+            result = subprocess.run(cmd, capture_output=True, timeout=10)
+            if result.returncode != 0:
+                _err = result.stderr.decode('utf-8', errors='replace').strip()
+                print(
+                    f'  [PROBE-FAIL] {codec} probe 失败 (rc={result.returncode})\n'
+                    f'  手动测试: {" ".join(cmd)}\n'
+                    f'  stderr: {_err or "(空)"}',
+                    flush=True,
+                )
+            return result.returncode == 0
+        except Exception as e:
+            print(
+                f'  [PROBE-FAIL] {codec} probe 异常: {e}\n'
+                f'  手动测试: {" ".join(cmd)}',
+                flush=True,
+            )
             return False
 
     @classmethod
@@ -510,38 +531,77 @@ class HardwareCapability:
         """
         [FIX-NVENC-UNIFIED] 统一 NVENC 检测路径。
 
-        优先级：
-        1. hw_profile.has_nvenc（静态 GPU 型号表，与 AUTO-TUNE 一致，Docker 环境可靠）
-        2. HardwareCapability.has_nvenc()（ffmpeg 实际 probe，Docker 无 /dev/nvidia*
-           设备映射时可能失败，作为回退保底）
+        优先级（按 hw_profile 是否提供分两条路径）：
+
+        路径 A（hw_profile 已提供，GPU 型号已知）：
+          1. 直接采信 hw_profile.has_nvenc（静态 GPU 型号表，与 AUTO-TUNE 一致）。
+          2. 若静态表确认可用且 ffmpeg probe 失败（Docker 设备映射缺失常见场景），
+             打印明确警告后仍信任静态表——probe 失败不等于硬件不可用。
+             可将 _NVENC_TRUST_STATIC = False 改为强制要求 probe 通过。
+          3. 静态表否定（has_nvenc=False）时不做 probe，直接回退软件编码。
+
+        路径 B（hw_profile 未提供，GPU 型号未知）：
+          仅凭 ffmpeg 实际 probe 判断，probe 失败即回退软件编码。
+          此路径适用于无法识别 GPU 型号的环境（非 NVIDIA GPU 等）。
 
         两套检测结果在 Docker 未映射 NVENC 设备时会不一致：AUTO-TUNE 显示 nvenc=True
         但 ffmpeg probe 失败，导致实际使用 libx264 引发 T3 瓶颈。本修复确保两者一致。
         """
         nvenc_map    = {'libx264': 'h264_nvenc', 'libx265': 'hevc_nvenc'}
-        # 反向映射：若用户直接指定 nvenc 编码器但不可用，回退到软件编码器
         fallback_map = {'h264_nvenc': 'libx264', 'hevc_nvenc': 'libx265'}
 
-        def _nvenc_ok(codec_name: str) -> bool:
-            # [FIX-NVENC-DOCKER] ffmpeg 实际 probe 是硬件可用性的唯一权威依据。
-            # 静态表（hw_profile.has_nvenc）仅用于 AUTO-TUNE T3 性能估算，
-            # 不能替代实际编码器能力检测：Docker 缺少 /dev/nvidia* 映射时
-            # 静态表显示"GPU 支持 NVENC"但 ffmpeg 无法访问，盲目升级会编码失败。
-            if not cls.has_nvenc(codec_name):
-                return False
-            # ffmpeg probe 通过 + hw_profile 确认（可选，仅作双重校验）
-            if hw_profile is not None and hasattr(hw_profile, 'has_nvenc'):
-                return hw_profile.has_nvenc
-            return True
+        # [FIX-NVENC-TRUST-STATIC] 当 probe 失败但静态表确认可用时，是否信任静态表。
+        # True（默认）：信任静态表，适用于 Docker 设备映射缺失但硬件真实存在的场景。
+        # False：强制要求 probe 通过，适用于需要 100% 运行时验证的严格环境。
+        _NVENC_TRUST_STATIC: bool = True
 
-        # 情况1：用户直接指定了 nvenc 编码器 → 检测可用性，不可用则回退
+        def _nvenc_ok(codec_name: str) -> bool:
+            # [FIX-NVENC-UNIFIED] 路径 A：hw_profile 已知时优先信任静态 GPU 型号表。
+            # 这与 docstring 描述的优先级一致，解决了原实现 probe-first 导致
+            # Docker 环境中 hw_profile.has_nvenc=True 被静默忽略的问题。
+            if hw_profile is not None and hasattr(hw_profile, 'has_nvenc'):
+                if not hw_profile.has_nvenc:
+                    # 静态表明确否定：不做 probe，直接返回 False
+                    return False
+                # 静态表确认可用：尝试 probe 做二次验证
+                probe_ok = cls.has_nvenc(codec_name)
+                if not probe_ok:
+                    # [FIX-NVENC-PROBE-WARN] probe 失败但静态表确认硬件存在。
+                    # 常见于 Docker 容器 /dev/nvidia* 设备映射不完整，
+                    # nvidia-smi 可见 GPU 但 ffmpeg 无法访问 NVENC 编码器。
+                    # 根据 _NVENC_TRUST_STATIC 决定是否信任静态表。
+                    if _NVENC_TRUST_STATIC:
+                        print(
+                            f'  [FIX-NVENC-UNIFIED] {codec_name} ffmpeg probe 失败，'
+                            f'但静态 GPU 型号表确认硬件存在（hw_profile.has_nvenc=True）。\n'
+                            f'  信任静态表，继续使用 {codec_name}（Docker 设备映射不完整时正常）。\n'
+                            f'  若实际编码报错，可在代码中将 _NVENC_TRUST_STATIC 改为 False。'
+                        )
+                        return True
+                    else:
+                        print(
+                            f'  [FIX-NVENC-UNIFIED] {codec_name} ffmpeg probe 失败。'
+                            f'静态表显示硬件存在但 _NVENC_TRUST_STATIC=False，回退软件编码。'
+                        )
+                        return False
+                return True  # 静态表 + probe 双重确认
+
+            # [FIX-NVENC-UNIFIED] 路径 B：hw_profile 未知，仅凭 ffmpeg probe 判断。
+            return cls.has_nvenc(codec_name)
+
         if preferred in fallback_map:
             if _nvenc_ok(preferred):
                 return preferred
             fallback = fallback_map[preferred]
-            print(f'  [警告] {preferred} 不可用，自动回退到 {fallback}')
+            # [FIX-NVENC-WARN] 明确说明回退原因（probe 失败 or 静态表否定 or 无 profile）
+            if hw_profile is not None and hasattr(hw_profile, 'has_nvenc') and not hw_profile.has_nvenc:
+                reason = '静态 GPU 型号表标记 has_nvenc=False'
+            elif not cls.has_nvenc(preferred):
+                reason = 'ffmpeg probe 失败（Docker 设备映射可能缺失 /dev/nvidia*）'
+            else:
+                reason = '未知原因'
+            print(f'  [警告] {preferred} 不可用（{reason}），自动回退到 {fallback}')
             return fallback
-        # 情况2：用户指定软件编码器 → 尝试升级到对应 nvenc
         candidate = nvenc_map.get(preferred, preferred)
         if candidate != preferred and _nvenc_ok(candidate):
             return candidate
@@ -552,15 +612,22 @@ class HardwareCapability:
         """
         返回 (codec, extra_args) 用于无损中间段编码。
         优先 nvenc lossless（-rc constqp -qp 0），否则 libx264 lossless。
+
+        与 best_encoder 的区别：best_encoder 只探测 NVENC 是否可用（VBR 编码），
+        lossless_encoder 额外测试 constqp（常量 QP）模式——部分 GPU/driver 组合
+        虽支持 NVENC VBR 但不支持 constqp 无损。
         """
         if cls.has_nvenc('h264_nvenc'):
             try:
+                # [FIX-PROBE] 使用与 _probe_nvenc 一致的参数：
+                # 256x144, yuv420p, bf 0, hide_banner
                 cmd = [
-                    'ffmpeg',
-                    '-f', 'lavfi', '-i', 'color=c=black:s=64x64:d=0.1:r=1',
+                    'ffmpeg', '-hide_banner', '-y', '-loglevel', 'error',
+                    '-f', 'lavfi', '-i', 'color=c=black:s=256x144:r=1',
                     '-vcodec', 'h264_nvenc',
                     '-rc', 'constqp', '-qp', '0',
-                    '-frames:v', '1', '-f', 'null', '-', '-loglevel', 'error',
+                    '-pix_fmt', 'yuv420p', '-bf', '0',
+                    '-frames:v', '1', '-f', 'null', '-',
                 ]
                 if subprocess.run(cmd, capture_output=True, timeout=10).returncode == 0:
                     return 'h264_nvenc', ['-rc', 'constqp', '-qp', '0']
@@ -1107,7 +1174,8 @@ class GPUMonitor:
             else:
                 print(f'[GPU-MONITOR] ⚠️  检测到 T3-bottleneck（编码器是真正瓶颈）：'
                       f'result_queue={current_result_q} 保持不变'
-                      f'  （根本瓶颈在编码器速度，应考虑换用更快的 preset 或 NVENC）')
+                      f'  （根本瓶颈在编码器速度，应考虑换用更快的 preset'
+                      f'{"" if "nvenc" in codec.lower() else " 或 NVENC"}）')
         elif stats.stable_p95 > 85.0 and stable_std > 20.0:
             sug_rq = min(64, current_result_q + 8)
             print(f'[GPU-MONITOR] 💡 result_queue 建议增大: {current_result_q} → {sug_rq}'
@@ -1724,6 +1792,7 @@ class IFRNetPipelineRunner:
         self._writer_th: Optional[threading.Thread] = None
         self._fc_extra   = 0                    # [FIX-INFER-THREAD] 推理线程累计输入帧
         self._oc_extra   = 0                    # [FIX-INFER-THREAD] 推理线程累计输出帧
+        self._error: Optional[Exception] = None          # 流水线异常标志，供 run() 传播错误
 
         # [EVENT-POOL] 预分配 CUDA Event 对象池
         self._event_pool = CudaEventPool(max_size=8)
@@ -1774,6 +1843,8 @@ class IFRNetPipelineRunner:
                     raw_buf    = [raw_buf[-1]]
                     padded_buf = [padded_buf[-1]]
         except Exception as e:
+            if self._error is None:
+                self._error = e
             import traceback
             print(f'\n[IFRNet-Reader] 异常 @frame={frames_read}: {type(e).__name__}: {e}', flush=True)
             traceback.print_exc()
@@ -1794,6 +1865,10 @@ class IFRNetPipelineRunner:
                 self.pair_queue.put(item, timeout=1.0)
                 return
             except queue.Full:
+                infer_dead = self._infer_th is not None and not self._infer_th.is_alive()
+                writer_dead = self._writer_th is not None and not self._writer_th.is_alive()
+                if infer_dead or writer_dead:
+                    break
                 continue
 
     # ── GPU 预取（[STREAM-DUAL] 使用 stream_h2d）────────────────────────────
@@ -1977,6 +2052,12 @@ class IFRNetPipelineRunner:
                         P=self.pair_queue.qsize(),
                         R=self.result_queue.qsize(),
                     )
+        except Exception as e:
+            self._error = e
+            self.running = False
+            import traceback
+            print(f'\n[IFRNet-Writer] 写线程异常: {type(e).__name__}: {e}', flush=True)
+            traceback.print_exc()
         finally:
             if not self.proc.quiet:
                 print(f'\n[IFRNet-Writer] 退出，已写 {written} 输出帧', flush=True)
@@ -2115,8 +2196,16 @@ class IFRNetPipelineRunner:
         )
         self._infer_th.start()
 
-        # 等待推理线程完成（T2 结束后向 result_queue 发送 SENTINEL，Writer 随之退出）
+        # 等待工作线程退出（先等 Writer，确保其错误先写入 self._error）
+        if self._writer_th is not None:
+            self._writer_th.join(timeout=10.0)
         self._infer_th.join()
+
+        # 检查流水线是否有异常
+        if self._error is not None:
+            raise RuntimeError(
+                f'流水线处理异常: {type(self._error).__name__}: {self._error}'
+            ) from self._error
 
         # [FIX-RETUNE-POSTRUN] 段完成后用全段稳定 timing 做 RETUNE（精度优于早期 5-batch 采样）
         # · 采用 timing[_CALIB_SKIP:] 中位数，剔除流水线启动热身噪声
@@ -2159,11 +2248,6 @@ class IFRNetPipelineRunner:
                     f'校准建议 pair={_pd_post} result={_rd_post}（下次生效）',
                     flush=True,
                 )
-
-        if self._writer_th and self._writer_th.is_alive():
-            self._writer_th.join(timeout=30.0)
-            if self._writer_th.is_alive():
-                print('\n[IFRNet-Writer] ⚠️ 线程未在 30s 内退出', flush=True)
 
         if self._reader_th and self._reader_th.is_alive():
             self._reader_th.join(timeout=10.0)
@@ -2281,6 +2365,10 @@ class IFRNetPipelineRunner:
                     self.result_queue.put_nowait(out_item)
                     self._try_prefetch_next()
                 except queue.Full:
+                    if self._writer_th is not None and not self._writer_th.is_alive():
+                        raise RuntimeError(
+                            'Writer 线程已退出，result_queue 无消费者，推理线程中止'
+                        )
                     # [FIX-DOUBLEBUF-H2D] 队列满时先触发预取，不让 GPU 闲着
                     self._try_prefetch_next()
                     self.result_queue.put(out_item, timeout=30.0)
@@ -2290,17 +2378,24 @@ class IFRNetPipelineRunner:
                 meter.update(B)
 
         except Exception as e:
+            if self._error is None:
+                self._error = e
             import traceback
             print(f'[IFRNet-Infer] 推理线程异常: {type(e).__name__}: {e}', flush=True)
             traceback.print_exc()
         finally:
             self.running = False
-            for _ in range(10):
-                try:
-                    self.result_queue.put(self._SENTINEL, timeout=1.0)
-                    break
-                except queue.Full:
-                    continue
+            writer_alive = self._writer_th is not None and not self._writer_th.is_alive()
+            if not writer_alive:
+                if not self.proc.quiet:
+                    print('[IFRNet-Infer] Writer 已退出，跳过 result_queue SENTINEL 投递', flush=True)
+            else:
+                for _ in range(5):
+                    try:
+                        self.result_queue.put(self._SENTINEL, timeout=1.0)
+                        break
+                    except queue.Full:
+                        continue
             proc._pipeline_runner = None
             # [FIX-POOL-LEAK] 显式释放 PinnedResultPool 锁页内存，防止跨段累积。
             # 必须在 proc._result_pool = None 之前调用 free()，否则引用丢失后
@@ -2519,7 +2614,7 @@ class FFmpegFrameReader:
 
         hw_args: List[str] = []
         if use_hwaccel and HardwareCapability.has_nvdec():
-            hw_args = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'bgr24']
+            hw_args = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'nv12']
 
         if frame_start == 0 and frame_end < 0:
             vf_args: List[str] = []
@@ -2789,19 +2884,19 @@ class FFmpegWriter:
                 '-x264-params', f'threads={_et}:slices={_s}',
             ]
 
-        # [FIX-SLICE-THREAD] FFmpeg 全局 -threads：
-        #   · 放在第一个 -i 之前（全局选项位置），作用于 demux / filter graph
-        #   · 对 libx264/libx265 编码器本身作用有限（由 -x264-params threads= 控制），
-        #     但影响 rawvideo demux 的读取线程和 filter 并行度
         cmd = [
             ffmpeg_bin, '-y',
-            '-threads', str(_ft),          # [FIX-SLICE-THREAD] FFmpeg 全局线程数
             '-f', 'rawvideo', '-vcodec', 'rawvideo',
             '-pix_fmt', 'bgr24',
             '-s', f'{width}x{height}',
             '-r', f'{fps:.6f}',
             '-i', 'pipe:0',
         ]
+        # [FIX-SLICE-THREAD] FFmpeg 全局 -threads：仅软编码路径需要，
+        # NVENC 是 GPU 固定功能硬件单元，不受 CPU 线程数控制。
+        if 'nvenc' not in codec:
+            cmd.insert(2, '-threads')
+            cmd.insert(3, str(_ft))
         if audio_src:
             cmd += ['-i', audio_src, '-c:a', 'copy', '-map', '0:v', '-map', '1:a?']
         if extra_codec_args:
@@ -3822,11 +3917,16 @@ class IFRNetVideoProcessor:
         timesteps = [float(Fraction(i, int(scale_frac))) for i in range(1, int(scale_frac))]
         new_fps   = fps * float(scale_frac)
 
-        use_codec = codec_override or HardwareCapability.best_encoder(
-            self.codec, hw_profile=getattr(self, '_hw_profile_cache', None))
+        if self.crf == 0 and not codec_override:
+            use_codec, _ = HardwareCapability.lossless_encoder()
+        else:
+            use_codec = codec_override or HardwareCapability.best_encoder(
+                self.codec, hw_profile=getattr(self, '_hw_profile_cache', None))
         use_extra = extra_codec_args
         if 'nvenc' in use_codec:
             print(f'[{worker_label}] NVENC 编码: {use_codec}')
+        # [FIX-NVENC-AWARE] 保存实际使用的编码器，供段后诊断代码使用
+        self._last_used_codec = use_codec
 
         # [FIX-TMP] 多卡零临时文件：result_q 模式下不创建 writer，帧数据放入队列
         _use_queue = result_q is not None
@@ -4129,21 +4229,21 @@ class IFRNetVideoProcessor:
                 current_bs       = self.batch_size,
                 current_pair_q   = _cur_pair_q,
                 current_result_q = _cur_result_q,
-                codec            = self.codec,    # [FIX-NVENC-AWARE] 避免 NVENC 误判
+                codec            = getattr(self, '_last_used_codec', self.codec),    # [FIX-NVENC-AWARE] 使用实际编码器
             )
             # [FIX-T3-DETECT] 获取 GPU-MONITOR 的队列建议（含 T3-bottleneck 检测）
             _slot_mb = getattr(self, '_last_pool_slot_mb', 0.0)
             pair_gpu_sug, result_gpu_sug = self._gpu_monitor.get_queue_suggestions(
                 _gpu_stats, _cur_pair_q, _cur_result_q,
                 slot_mb=_slot_mb,             # 传入每 slot 大小，用于 PinnedPool 内存约束
-                codec=self.codec,             # [FIX-NVENC-AWARE] 避免 NVENC 误判
+                codec=getattr(self, '_last_used_codec', self.codec),             # [FIX-NVENC-AWARE] 使用实际编码器
             )
             # 获取 AUTO-TUNE-RETUNE 的建议（如果存在）
             retune_pair_q   = getattr(self, '_retune_pair_q',   None)
             retune_result_q = getattr(self, '_retune_result_q', None)
 
             # [FIX-T3-DETECT] 先检测是否 T3-bottleneck，再决定综合策略
-            _is_t3 = GPUMonitor._is_t3_bottleneck(_gpu_stats, codec=self.codec)
+            _is_t3 = GPUMonitor._is_t3_bottleneck(_gpu_stats, codec=getattr(self, '_last_used_codec', self.codec))
             if _is_t3:
                 # T3 是真正瓶颈：不增大队列，result_queue 可适当缩小以回收 pinned 内存
                 final_pair_q   = _cur_pair_q
@@ -4156,7 +4256,7 @@ class IFRNetVideoProcessor:
                 # [FIX-T3-REPORT] 增强诊断：实测 vs 理论 T3 fps + 具体编码建议
                 _t3_fps_meas = getattr(self, '_last_t3_fps_measured', 0.0)
                 _H_enc, _W_enc = getattr(self, '_last_encode_hw', (0, 0))
-                _nvenc_already_active = 'nvenc' in self.codec.lower()
+                _nvenc_already_active = 'nvenc' in getattr(self, '_last_used_codec', self.codec).lower()
                 _t3_fps_est = 0.0
                 # [FIX-NVENC-AWARE] _software_encode_fps 估算的是 x264 软编码速度，
                 # 对 NVENC 硬编码毫无意义；当 NVENC 已激活时跳过此估算。
@@ -4181,8 +4281,9 @@ class IFRNetVideoProcessor:
                     # 瓶颈不在 NVENC 硬件编码器本身，而在 pipe 写入 / CPU 格式转换
                     _encoder_tip = (
                         f'NVENC 已激活但 T3 仍为瓶颈（实测 {_t3_fps_meas:.0f} fps）。'
-                        f'可能原因：1) bgr24→yuv420p CPU 格式转换 '
-                        f'2) pipe 写入带宽  3) 非标准分辨率'
+                        f'建议：1) 尝试 --x264-preset p1（最快 NVENC preset） '
+                        f'2) 尝试 --crf 0 无损模式（跳过 VBR 前向预看） '
+                        f'3) bgr24→yuv420p CPU 格式转换 / pipe 写入带宽 / 非标准分辨率'
                     )
                 elif _has_nvenc_h264 and _t3_fps_meas > 0:
                     _nvenc_fps = 3000.0
@@ -4389,6 +4490,8 @@ class IFRNetVideoProcessor:
         W, H = meta_probe['width'], meta_probe['height']
 
         final_codec = HardwareCapability.best_encoder(self.codec)
+        # [FIX-NVENC-AWARE] 保存实际使用的编码器，供后续诊断代码使用
+        self._last_used_codec = final_codec
         audio_src   = input_path if self.keep_audio else None
 
         writer = FFmpegWriter(
@@ -4480,7 +4583,7 @@ class IFRNetVideoProcessor:
                 current_bs       = self.batch_size,
                 current_pair_q   = 4,    # Worker 默认值（多卡模式主进程无 pipeline 深度数据）
                 current_result_q = 8,
-                codec            = self.codec,    # [FIX-NVENC-AWARE] 避免 NVENC 误判
+                codec            = getattr(self, '_last_used_codec', self.codec),    # [FIX-NVENC-AWARE] 使用实际编码器
             )
         else:
             print('[GPU-MONITOR] 警告：未能获取 GPU 采样数据（多卡模式仅监测 GPU0）。')

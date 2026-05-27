@@ -1,4 +1,4 @@
-"""
+﻿"""
 IFRNet 视频插帧处理脚本 —— 终极优化版 v6.2.2（单卡版）
 ==========================================================
 基于 IFRNet（Intermediate Flow-based Recursive Network）的视频帧插值脚本，
@@ -502,7 +502,7 @@ def _auto_queue_depths(
         t3_src  = f'x264({x264_preset})'
     # Little's Law
     pair_depth   = max(2, min(int(_math.ceil(t2_ms / max(t1_ms, 0.1))) + 2, 8))
-    result_depth = max(8, min(int(_math.ceil(t3_ms / max(t2_ms, 0.1))) + 3, 64))
+    result_depth = max(4, min(int(_math.ceil(t3_ms / max(t2_ms, 0.1))) + 3, 32))
     pool_size    = result_depth + 2
     if verbose:
         pair_mb = pair_depth * effective_bs * 3 * H_pad * W_pad * 3 / 1e6
@@ -1181,7 +1181,7 @@ class FFmpegFrameReader:
         # 构建 FFmpeg 命令
         hw_args: List[str] = []
         if use_hwaccel and HardwareCapability.has_nvdec():
-            hw_args = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'bgr24']
+            hw_args = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'nv12']
 
         # 帧范围 select filter
         if frame_start == 0 and frame_end < 0:

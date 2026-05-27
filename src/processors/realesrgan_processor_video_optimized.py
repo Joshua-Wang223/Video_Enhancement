@@ -34,6 +34,7 @@ import os
 import sys
 import json
 import time
+import hashlib
 import shutil
 import argparse
 import importlib.util
@@ -147,12 +148,16 @@ class RealESRGANVideoProcessor:
         self.processed_dir:   Optional[Path] = None
         self._checkpoint_save_logged = False    # 首次保存断点时打印路径
         self._current_input_video: Optional[str] = None  # 当前输入视频，用于断点指纹
+        self._upstream_segments_hash: Optional[str] = None  # 上游分段指纹（process_segments_directly）
 
         # ------ 多片段复用相关 ------
         self._main_mod = None          # 底层 main 模块
         self._enhancer = None          # create_video_enhancer 的返回值
         self._ns = None                # 标准化后的参数命名空间（存一份用于构建 enhancer）
         self._enhancer_initialized = False
+
+        # 跟踪是否有分段处理失败，供上游主流程判断是否继续
+        self._has_failure = False
 
     # -------------------------------------------------------------------------
     # 公共接口
@@ -210,6 +215,8 @@ class RealESRGANVideoProcessor:
             total_time = time.time() - total_start
             print(f"\n✅ 超分处理完成！总用时: {format_time(total_time)}")
             print(f"📤 输出: {output_video}")
+            # 全部成功完成 → 自动删除断点文件（不依赖 auto_cleanup_temp）
+            self._delete_checkpoint()
             if self.config.get("processing", "auto_cleanup_temp", default=False):
                 self._cleanup_temp_files()
             return True
@@ -284,6 +291,9 @@ class RealESRGANVideoProcessor:
         print(f"🖥️  设备: {self.device}")
 
         self._setup_temp_dirs(video_name, prefix="esrgan_from_segments")
+        self._upstream_segments_hash = hashlib.md5(
+            '|'.join(sorted(input_segments)).encode()
+        ).hexdigest()
         checkpoint = self._load_checkpoint()
         return self._process_segments(input_segments, checkpoint)
 
@@ -430,7 +440,7 @@ class RealESRGANVideoProcessor:
                     return {"processed_segments": [], "last_segment": -1}
 
                 current_snapshot = self._get_config_snapshot()
-                _fingerprint_keys = {"input_mtime", "input_size"}
+                _fingerprint_keys = {"input_mtime", "input_size", "upstream_segments_hash"}
                 mismatches = []
                 for key in current_snapshot:
                     saved_val = saved_snapshot.get(key)
@@ -483,6 +493,8 @@ class RealESRGANVideoProcessor:
             st = os.stat(self._current_input_video)
             snap["input_mtime"] = st.st_mtime
             snap["input_size"] = st.st_size
+        if self._upstream_segments_hash:
+            snap["upstream_segments_hash"] = self._upstream_segments_hash
         return snap
 
     def _save_checkpoint(self, checkpoint: dict):
@@ -545,6 +557,7 @@ class RealESRGANVideoProcessor:
                 self._save_checkpoint(checkpoint)
             else:
                 print(f"⚠️  片段 {idx+1} 处理失败，终止后续处理")
+                self._has_failure = True
                 break
 
             # 估算剩余时间
@@ -559,9 +572,6 @@ class RealESRGANVideoProcessor:
         if processed_files:
             print(f"\n✅ Real-ESRGAN 处理完成: "
                   f"{len(processed_files)}/{len(segment_files)} 个分段")
-            # 全部成功完成 → 自动删除断点文件
-            if len(processed_files) == len(segment_files):
-                self._delete_checkpoint()
         else:
             print("\n❌ 没有成功处理的片段")
 

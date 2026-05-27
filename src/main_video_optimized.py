@@ -18,7 +18,7 @@
   阶段 4: [可选] 临时 / 中间文件清理
 
 【底层架构】
-  IFRNet     : src/processors/ifrnet_processor_v6_1_single.py
+  IFRNet     : src/processors/ifrnet_processor_video_optimized.py
   Real-ESRGAN: src/processors/realesrgan_processor_video_optimized.py
                → external/realesrgan_video/main.py (main_optimized, v6.4)
 
@@ -1161,7 +1161,7 @@ def _process_single(
     Returns:
         是否成功
     """
-    from ifrnet_processor_v6_1_single           import IFRNetProcessor           # noqa
+    from ifrnet_processor_video_optimized       import IFRNetProcessor           # noqa
     from realesrgan_processor_video_optimized   import RealESRGANVideoProcessor  # noqa
 
     t0         = time.time()
@@ -1318,8 +1318,8 @@ def _process_single(
         except KeyboardInterrupt:
             print("\n\n⚠️  用户中断（Ctrl+C），当前分段将在下次运行时重新处理。")
             return False
-        if not step1_segs:
-            print("❌ IFRNet 插帧未产生有效分段，流程终止")
+        if not step1_segs or getattr(ifrnet_proc, '_has_failure', False):
+            print("❌ IFRNet 插帧未产生有效分段或部分分段失败，流程终止")
             _print_failure_hints(time.time() - t0)
             return False
         print(f"\n   ✅ Step 1 完成，产生 {len(step1_segs)} 个分段")
@@ -1341,8 +1341,8 @@ def _process_single(
         except KeyboardInterrupt:
             print("\n\n⚠️  用户中断（Ctrl+C），当前分段将在下次运行时重新处理。")
             return False
-        if not step1_segs:
-            print("❌ Real-ESRGAN 超分未产生有效分段，流程终止")
+        if not step1_segs or getattr(esrgan_proc, '_has_failure', False):
+            print("❌ Real-ESRGAN 超分未产生有效分段或部分分段失败，流程终止")
             _print_failure_hints(time.time() - t0)
             return False
         print(f"\n   ✅ Step 1 完成，产生 {len(step1_segs)} 个分段")
@@ -1410,12 +1410,26 @@ def _process_single(
                                denoised_path, args, env_info)
         _print_completion(output_video, elapsed, env_info)
 
-        # 自动清理临时分段文件
+        # 清理断点文件（全流程成功完成后无条件删除）
+        for proc in (ifrnet_proc, esrgan_proc):
+            try:
+                proc._delete_checkpoint()
+            except Exception:
+                pass
+        # 自动清理临时分段文件及音频
         if config.get("processing", "auto_cleanup_temp", default=False):
             print("🧹 自动清理临时分段文件...")
             for proc in (ifrnet_proc, esrgan_proc):
                 try:
                     proc._cleanup_temp_files()
+                except Exception:
+                    pass
+            # 清理本次提取的临时音频文件（精准删除，避免误删并发流程的文件）
+            if audio_path:
+                try:
+                    audio_file = Path(audio_path)
+                    if audio_file.exists():
+                        audio_file.unlink()
                 except Exception:
                     pass
             print("\n   ✅ 清理完成")
@@ -1510,7 +1524,7 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 底层架构：
-  IFRNet     : src/processors/ifrnet_processor_v6_1_single.py
+  IFRNet     : src/processors/ifrnet_processor_video_optimized.py
   Real-ESRGAN: src/processors/realesrgan_processor_video_optimized.py
                → external/realesrgan_video/main.py (main_optimized, v6.4)
 
