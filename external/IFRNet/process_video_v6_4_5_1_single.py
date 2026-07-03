@@ -1749,7 +1749,9 @@ class NVENCEncoder:
                 _CU_MEMORYTYPE_DEVICE = 2
 
                 for fi in range(n_frames):
-                    slot_idx = fi % self._pipeline_depth
+                    # [FIX-F0-MISSING] 使用全局 _frame_idx 分配 slot，
+                    # 与 encode_frame 首帧编码的 slot 0 不冲突。
+                    slot_idx = self._frame_idx % self._pipeline_depth
                     slot = self._slots[slot_idx]
                     force_idr = force_idr_first and (slot_idx not in _slots_warmed)
 
@@ -2044,7 +2046,9 @@ class NVENCEncoder:
                 _CUDA_DEV = 2
 
                 for fi in range(n_frames):
-                    slot_idx = fi % pd
+                    # [FIX-F0-MISSING] 使用全局 _frame_idx 分配 slot，
+                    # 与 encode_frame 首帧编码的 slot 0 不冲突。
+                    slot_idx = self._frame_idx % pd
                     slot = self._slots[slot_idx]
                     # [FIX-PIPE4-LA8] fi==0 only force_idr (单 IDR 替代 per-slot ×4 IDR)
                     force_idr = force_idr_first and (fi == 0)
@@ -2824,6 +2828,15 @@ class _NVENCEncodeThread:
         _acc_nv12: list = []
         _acc_force_idr = False
         _first_batch = True
+        # [FIX-F0-IN-BATCH] 从 encoder 取出暂存的 f0 NV12 tensor，
+        # 在累积 batch 开头插入，确保首帧参与 LA 缓冲 + EOS flush。
+        _pending_f0 = getattr(self._nvenc, '_pending_f0_nv12', None)
+        if _pending_f0 is not None:
+            self._nvenc._pending_f0_nv12 = None
+            _f0_idr = getattr(self._nvenc, '_pending_f0_force_idr', False)
+            self._nvenc._pending_f0_force_idr = False
+        else:
+            _f0_idr = False
         while True:
             item = self._q.get()
             if item is self._SENTINEL:
@@ -2863,6 +2876,12 @@ class _NVENCEncodeThread:
 
         # [FIX-LA-ACCUMULATE] LA>0: 编码所有累积帧 + 内置 EOS flush
         if _la_mode and _acc_nv12:
+            # [FIX-F0-IN-BATCH] 将暂存的 f0 NV12 插入累积 batch 开头
+            if _pending_f0 is not None:
+                _acc_nv12.insert(0, _pending_f0)
+                # f0 编码时的 force_idr 优先于 batch 的 force_idr_first
+                if _f0_idr:
+                    _acc_force_idr = True  # 若 f0 需要 IDR，首个 batch 帧也需 IDR
             try:
                 # [FIX-LA-EOS-IN-BATCH] send_eos=True: encode_frames_batch 内部
                 # 发送 EOS 并完整排空所有 slot，保证帧数守恒。
@@ -6993,12 +7012,25 @@ class IFRNetVideoProcessor:
             return False, 0, 0
         first, first_padded = pair
 
-        # [FIX-PIPE4-LA8] 首帧归入 CE pipeline 统一处理，不再单独 encode_frame()。
-        # first_raw/first_padded 已通过 pipeline.run() 进入 writer_loop → ce_pipeline，
-        # 由 fi==0 only force_idr + 单 IDR 管理 SPS/PPS 缓存，消除 encode_frame slot0 混叠。
+        # [FIX-F0-MISSING] 首帧 f0 必须显式编码并写入。CE pipeline 的 encode_order
+        # 仅包含插值帧+img1（右帧），f0 从未被列入 — 不在此处写入则永久丢失。
+        # encode_frames_batch / ce_pipeline 已改为全局 _frame_idx slot 分配，
+        # 与 encode_frame 的 slot 0 使用不冲突（f0→slot0, 后续→slot1+）。
         if not skip_first_output:
             if _nvenc_encoder is not None:
-                pass  # 首帧已由 pipeline 内部 CE pipeline 处理
+                first_gpu = torch.from_numpy(first).cuda()
+                first_nv12 = _rgb_to_nv12_gpu(first_gpu, input_is_bgr=True)
+                force_idr_f0 = not self._is_first_segment()
+                if _nvenc_encoder._la_depth > 0:
+                    # [FIX-F0-IN-BATCH] LA>0 时 encode_frame 返回 0 bytes（LA 缓冲），
+                    # 将 f0 NV12 tensor 暂存 encoder，由编码线程插入累积 batch 开头。
+                    _nvenc_encoder._pending_f0_nv12 = first_nv12
+                    _nvenc_encoder._pending_f0_force_idr = force_idr_f0
+                else:
+                    # LA=0: 无缓冲延迟，直接 encode_frame 即可返回数据
+                    h264_data = _nvenc_encoder.encode_frame(first_nv12, force_idr=force_idr_f0)
+                    writer.write(h264_data)
+                    output_count += 1
             else:
                 writer.write(first)
                 output_count += 1
@@ -7081,7 +7113,7 @@ class IFRNetVideoProcessor:
             if _nvenc_encoder is not None:
                 _actual_written = getattr(pipeline, '_written', 0)
                 if _actual_written > 0:
-                    output_count = _actual_written
+                    output_count += _actual_written  # [FIX-F0] 累加(含f0)，不再替换
                 else:
                     output_count += oc_extra
             else:
