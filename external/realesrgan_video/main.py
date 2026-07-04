@@ -40,7 +40,8 @@ from basicsr.utils.download_util import load_file_from_url
 from realesrgan import RealESRGANer
 from config import MODEL_CONFIG, models_RealESRGAN, models_GFPGAN, gfpgan_weights_dir
 from realesrgan_utils import get_video_meta_info, _build_upsampler
-from ffmpeg_io import FFmpegReader, FFmpegWriter, HardwareCapability
+from ffmpeg_io import (FFmpegReader, FFmpegWriter, HardwareCapability,
+                        _NVENC_LOOKAHEAD_VBR, _X264_TO_NVENC_PRESET)
 from tensorrt_accel import TensorRTAccelerator
 from gfpgan_subprocess import GFPGANSubprocess
 from pipeline import DeepPipelineOptimizer
@@ -682,7 +683,38 @@ def run_pipeline_for_video(enhancer, input_video, output_video):
     output_dir = os.path.dirname(output_video)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
-    base_writer = FFmpegWriter(args, reader.audio, out_h, out_w, output_video, reader.fps)
+    # [SDK-NVENC-LEVEL1] Auto-detect NVENC SDK ctypes encoder (Level 1).
+    # If CUDA available and SDK init succeeds → use NVENCWriter.
+    # Otherwise transparently fall back to FFmpegWriter (Level 2/3/4).
+    base_writer = None
+    _cuda_ok = torch.cuda.is_available() if torch else False
+    if 'nvenc' in args.video_codec and _cuda_ok:
+        try:
+            from nvenc_sdk import NVENCEncoder, NVENCWriter
+
+            _sdk_qp = getattr(args, 'crf', 23)
+            _sdk_rate = getattr(args, 'rate_mode', 'vbr_hq')
+            _sdk_la = getattr(args, 'lookahead_depth',
+                              _NVENC_LOOKAHEAD_VBR if _sdk_qp > 0 else 0)
+            _sdk_preset = getattr(args, 'x264_preset', 'medium')
+            _nvenc_preset = _X264_TO_NVENC_PRESET.get(_sdk_preset, _sdk_preset)
+
+            _sdk_encoder = NVENCEncoder(out_w, out_h, reader.fps,
+                                         preset=_nvenc_preset, qp=_sdk_qp,
+                                         rate_mode=_sdk_rate,
+                                         la_depth=_sdk_la)
+            base_writer = NVENCWriter(_sdk_encoder, args, reader.audio,
+                                       out_w, out_h, output_video, reader.fps,
+                                       audio_src=getattr(reader, 'audio_src', None))
+            print(f'[GPU0] NVENC SDK Level 1 编码已激活 (ctypes direct, '
+                  f'slots={_sdk_encoder._slot_count})', flush=True)
+        except Exception as _sdk_e:
+            print(f'[GPU0] NVENC SDK 初始化失败 ({_sdk_e})，降级到 FFmpeg 管道编码',
+                  flush=True)
+            base_writer = None
+
+    if base_writer is None:
+        base_writer = FFmpegWriter(args, reader.audio, out_h, out_w, output_video, reader.fps)
     # 根据预览选项包装 writer
     preview_enabled = getattr(args, 'preview', False)
     preview_interval = getattr(args, 'preview_interval', 30)
