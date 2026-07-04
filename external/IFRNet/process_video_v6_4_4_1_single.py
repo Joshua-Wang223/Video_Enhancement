@@ -1018,9 +1018,7 @@ class NVENCEncoder:
         self._lock = threading.Lock()
 
         # 多 slot 缓冲池: _slot_count >= _required_buffers (SDK 硬件安全要求)
-        # _pipeline_depth 为向后兼容别名
         self._slot_count = pipeline_depth
-        self._pipeline_depth = pipeline_depth
         self._slots: list = []
 
         # Backward compat: legacy refs (initialized after slot creation)
@@ -6818,7 +6816,7 @@ class IFRNetVideoProcessor:
         # 现在通过 _NVENC_CRF0_FORCE_CONSTQP 常量控制该行为。
         # True (默认) → 行为与当前 100% 一致。
         # False → crf=0 不覆盖 rate_mode/lookahead，使用独立 quality 常量。
-        _level1_pd = getattr(self, '_pipeline_depth', _NVENC_LEVEL1_DEFAULT_SLOTS)
+        _level1_pd = getattr(self, '_slot_count', _NVENC_LEVEL1_DEFAULT_SLOTS)
         if self.crf == 0 and _NVENC_CRF0_FORCE_CONSTQP:
             _level1_qp = 0
             _level1_rate = "constqp"

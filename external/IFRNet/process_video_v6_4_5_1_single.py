@@ -1024,7 +1024,6 @@ class NVENCEncoder:
         # ── 概念分离（参见 pipeline-depth-slot-rotation-confusion.md）──
         # _required_buffers: SDK 硬件安全下限 — la_depth==0 时为 1，否则 >= LA+1
         # _slot_count: 实际分配的 slot 对数（buffer pool 大小 + 轮转模数）
-        # _pipeline_depth: 保留向后兼容别名，值 = _slot_count
         # LA=0 时 _slot_count=2 (ce_pipeline 真正的 2 帧流水线深度)
         # LA>0 时 _slot_count=max(2, LA+1) (膨胀为 buffer pool，累积模式不参与轮转)
         # CONSTQP 下硬件静默禁用 LA，代码层面清零以与硬件行为一致
@@ -1045,9 +1044,7 @@ class NVENCEncoder:
         self._lock = threading.Lock()
 
         # 多 slot 缓冲池: _slot_count >= _required_buffers (SDK 硬件安全要求)
-        # _pipeline_depth 为向后兼容别名
         self._slot_count = _slot_count
-        self._pipeline_depth = _slot_count
         self._slots: list = []
 
         # Backward compat: legacy refs (initialized after slot creation)
@@ -6905,7 +6902,7 @@ class IFRNetVideoProcessor:
         # 现在通过 _NVENC_CRF0_FORCE_CONSTQP 常量控制该行为。
         # True (默认) → 行为与当前 100% 一致。
         # False → crf=0 不覆盖 rate_mode/lookahead，使用独立 quality 常量。
-        _level1_pd = getattr(self, '_pipeline_depth', _NVENC_LEVEL1_DEFAULT_SLOTS)
+        _level1_pd = getattr(self, '_slot_count', _NVENC_LEVEL1_DEFAULT_SLOTS)
         if self.crf == 0 and _NVENC_CRF0_FORCE_CONSTQP:
             _level1_qp = 0
             _level1_rate = "constqp"
