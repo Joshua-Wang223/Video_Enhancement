@@ -280,5 +280,10 @@ class TensorRTAccelerator:
             )
         self._trt_stream.synchronize()
         if actual_B < engine_B:
-            out_tensor = out_tensor[:actual_B]
+            # [FIX-MEM-LEAK] .contiguous() 创建独立副本，释放全尺寸 engine_B
+            # 存储。若只用 [:] view，返回的 slice 持有全尺寸存储引用 →
+            # 实际占用 engine_B 显存但只用 actual_B 部分，等效泄漏。
+            # 配合 expandable_segments 模式，cudaFreeAsync 不会立即归还，
+            # 导致碎片累积 → bs=1 最终也 OOM。
+            out_tensor = out_tensor[:actual_B].contiguous()
         return out_tensor

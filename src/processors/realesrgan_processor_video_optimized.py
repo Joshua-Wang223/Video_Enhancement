@@ -68,6 +68,24 @@ class RealESRGANVideoProcessor:
             config: 配置对象（应包含 paths, models.realesrgan, processing 等节）
         """
         self.config     = config
+
+        # ------ 防御性初始化（必须在任何可能失败的代码之前）------
+        # 确保 __del__ 中 close_enhancer() 等清理方法不会因 AttributeError 崩溃
+        self._main_mod = None          # 底层 main 模块
+        self._enhancer = None          # create_video_enhancer 的返回值
+        self._ns = None                # 标准化后的参数命名空间
+        self._enhancer_initialized = False
+        self._has_failure = False
+        self._checkpoint_save_logged = False
+        self._current_input_video: Optional[str] = None
+        self._upstream_segments_hash: Optional[str] = None
+        self.temp_base: Optional[Path] = None
+        self.checkpoint_file: Optional[Path] = None
+        self.segment_dir: Optional[Path] = None
+        self.processed_dir: Optional[Path] = None
+        self._sdk_nvenc_available = False
+        # ----------------------------------------------------------
+
         self.esrgan_dir = Path(config.get("paths", "base_dir")) / "external" / "realesrgan_video"
         self.model_name = config.get("models", "realesrgan", "model_name",
                                      default="realesr-general-x4v3")
@@ -122,7 +140,20 @@ class RealESRGANVideoProcessor:
         self.use_hwaccel = config.get("models", "realesrgan", "use_hwaccel", default=True)
         self.codec       = config.get("models", "realesrgan", "codec",       default="libx264")
         self.crf         = config.get("models", "realesrgan", "crf",         default=23)
+        self.rate_mode       = config.get("models", "realesrgan", "rate_mode",       default="vbr_hq")
+        self.lookahead_depth = config.get("models", "realesrgan", "lookahead_depth", default=8)
+        # [FIX-QUEUE-RIGHTSIZE] 流水线队列深度（批）与延迟解析开关
+        self.frame_queue_size  = config.get("models", "realesrgan", "frame_queue_size",  default=8)
+        self.detect_queue_size = config.get("models", "realesrgan", "detect_queue_size", default=4)
+        self.defer_sr_resolve  = config.get("models", "realesrgan", "defer_sr_resolve",  default=True)
         self.ffmpeg_bin  = config.get("models", "realesrgan", "ffmpeg_bin",  default="ffmpeg")
+
+        # SDK Level 1 NVENC 可用性检测（用于日志提示）
+        try:
+            from realesrgan_video.nvenc_sdk import NVENCEncoder as _NE
+            self._sdk_nvenc_available = torch.cuda.is_available()
+        except ImportError:
+            pass
 
         # TRT Engine 缓存目录
         # 优先级：config.paths.trt_cache_dir（由 config_manager 自动派生为 base_dir/.trt_cache，
@@ -158,7 +189,6 @@ class RealESRGANVideoProcessor:
 
         # 跟踪是否有分段处理失败，供上游主流程判断是否继续
         self._has_failure = False
-
     # -------------------------------------------------------------------------
     # 公共接口
     # -------------------------------------------------------------------------
@@ -219,10 +249,25 @@ class RealESRGANVideoProcessor:
             self._delete_checkpoint()
             if self.config.get("processing", "auto_cleanup_temp", default=False):
                 self._cleanup_temp_files()
-            return True
         else:
             print("❌ 视频合并失败")
+
+        # [VRAM-CLEANUP] 合并只走 ffmpeg（CPU），enhancer 已不再需要，确定释放
+        # （覆盖 --skip-interpolate 单步路径；close_enhancer 幂等，重复调用安全）
+        self.close_enhancer()
+        return success
+
+    def _la_is_active(self) -> bool:
+        """检测 NVENC LA 是否实际生效 (仅 VBR_HQ/QVBR, crf>0, SDK NVENC 可用)。
+
+        NVENC SDK 严格遵守帧数守恒 (Output==Input)，LA 仅引入编码延迟，不增删帧。
+        跨编码会话不可复用 LA FIFO，每个 segment 独立管理其 LA 状态。
+        """
+        if self.crf == 0:
             return False
+        if self.rate_mode not in ("vbr_hq", "qvbr") or self.lookahead_depth <= 0:
+            return False
+        return getattr(self, '_sdk_nvenc_available', False)
 
     def process_video_segments(self, input_video: str) -> List[str]:
         """
@@ -252,13 +297,18 @@ class RealESRGANVideoProcessor:
             print("❌ 无法获取视频时长")
             return []
         print(f"📊 时长: {format_time(duration)}, 分段: {self.segment_duration}秒")
+        if self._la_is_active():
+            print(f"   NVENC LA={self.lookahead_depth} 已激活 — 每段独立排空，帧数守恒")
 
         # 视频较短时直接整体处理
         if duration <= self.segment_duration:
             print("📦 视频较短，直接处理整个视频...")
             output_file = self.processed_dir / f"upscaled_{Path(input_video).name}"
-            success = self._process_segment(input_video, str(output_file), segment_idx=0)
-            return [str(output_file)] if success else []
+            try:
+                success = self._process_segment(input_video, str(output_file), segment_idx=0)
+                return [str(output_file)] if success else []
+            finally:
+                self.close_enhancer()  # [FIX-GFPGAN-KEEPALIVE] 单段路径保活子进程统一关闭
 
         print(f"\n🔪 分割视频...")
         segment_files = split_video_by_time(
@@ -290,6 +340,9 @@ class RealESRGANVideoProcessor:
         print(f"⚡ 超分倍数: {self.upscale_factor}x")
         print(f"🖥️  设备: {self.device}")
 
+        # LA 参数透传：NVENC SDK 帧数守恒，每段独立编码+排空，无需禁用 LA
+        if len(input_segments) > 1 and self._la_is_active():
+            print(f"   接收多分段输入 + NVENC LA={self.lookahead_depth} — 每段独立排空，帧数守恒")
         self._setup_temp_dirs(video_name, prefix="esrgan_from_segments")
         self._upstream_segments_hash = hashlib.md5(
             '|'.join(sorted(input_segments)).encode()
@@ -364,6 +417,12 @@ class RealESRGANVideoProcessor:
         ns.video_codec     = self.codec
         ns.crf             = self.crf
         ns.x264_preset     = self.x264_preset
+        ns.rate_mode       = self.rate_mode
+        ns.lookahead_depth = self.lookahead_depth
+        # [FIX-QUEUE-RIGHTSIZE] 透传队列深度与延迟解析开关
+        ns.frame_queue_size  = self.frame_queue_size
+        ns.detect_queue_size = self.detect_queue_size
+        ns.defer_sr_resolve  = self.defer_sr_resolve
         ns.ffmpeg_bin      = self.ffmpeg_bin
         ns.preview         = self.preview
         ns.preview_interval = self.preview_interval
@@ -525,55 +584,71 @@ class RealESRGANVideoProcessor:
         processed_files: List[str] = []
         start_time = time.time()
 
-        for idx, seg_path in enumerate(segment_files):
-            seg_name = Path(seg_path).name
+        try:
+            for idx, seg_path in enumerate(segment_files):
+                seg_name = Path(seg_path).name
 
-            # 断点跳过
-            if idx in checkpoint["processed_segments"]:
+                # 断点跳过
+                if idx in checkpoint["processed_segments"]:
+                    out_path = self.processed_dir / f"upscaled_{seg_name}"
+                    if out_path.exists():
+                        print(f"\n⏭️  片段 {idx+1}/{len(segment_files)}: {seg_name} (已处理)")
+                        processed_files.append(str(out_path))
+                        continue
+                    else:
+                        print(f"\n⚠️  片段 {idx+1}/{len(segment_files)}: {seg_name} "
+                              f"(断点标记已完成但输出文件缺失，重新处理)")
+
+                print(f"\n🎨 片段 {idx+1}/{len(segment_files)}: {seg_name}")
                 out_path = self.processed_dir / f"upscaled_{seg_name}"
-                if out_path.exists():
-                    print(f"\n⏭️  片段 {idx+1}/{len(segment_files)}: {seg_name} (已处理)")
+
+                # 使用复用模式处理
+                try:
+                    success = self._process_segment_with_enhancer(
+                        seg_path, str(out_path), idx)
+                except KeyboardInterrupt:
+                    print(f"\n⚠️  用户中断，停止处理后续分段"
+                          f"（已完成 {len(processed_files)}/{len(segment_files)} 分段已保留）")
+                    raise  # 重新抛出，让外层 main_video_optimized.py 处理
+                if success:
                     processed_files.append(str(out_path))
-                    continue
+                    if idx not in checkpoint["processed_segments"]:
+                        checkpoint["processed_segments"].append(idx)
+                    checkpoint["last_segment"] = idx
+                    self._save_checkpoint(checkpoint)
                 else:
-                    print(f"\n⚠️  片段 {idx+1}/{len(segment_files)}: {seg_name} "
-                          f"(断点标记已完成但输出文件缺失，重新处理)")
+                    print(f"⚠️  片段 {idx+1} 处理失败，终止后续处理")
+                    self._has_failure = True
+                    break
 
-            print(f"\n🎨 片段 {idx+1}/{len(segment_files)}: {seg_name}")
-            out_path = self.processed_dir / f"upscaled_{seg_name}"
+                # 估算剩余时间
+                elapsed   = time.time() - start_time
+                completed = len(checkpoint["processed_segments"])
+                if completed > 0:
+                    avg_time  = elapsed / completed
+                    remaining = (len(segment_files) - completed) * avg_time
+                    print(f"   ⏱️  已用时: {format_time(elapsed)}, "
+                          f"预计剩余: {format_time(remaining)}")
 
-            # 使用复用模式处理
-            try:
-                success = self._process_segment_with_enhancer(seg_path, str(out_path), idx)
-            except KeyboardInterrupt:
-                print(f"\n⚠️  用户中断，停止处理后续分段"
-                      f"（已完成 {len(processed_files)}/{len(segment_files)} 分段已保留）")
-                raise  # 重新抛出，让外层 main_video_optimized.py 处理
-            if success:
-                processed_files.append(str(out_path))
-                if idx not in checkpoint["processed_segments"]:
-                    checkpoint["processed_segments"].append(idx)
-                checkpoint["last_segment"] = idx
-                self._save_checkpoint(checkpoint)
+            if processed_files:
+                print(f"\n✅ Real-ESRGAN 处理完成: "
+                      f"{len(processed_files)}/{len(segment_files)} 个分段")
             else:
-                print(f"⚠️  片段 {idx+1} 处理失败，终止后续处理")
-                self._has_failure = True
-                break
-
-            # 估算剩余时间
-            elapsed   = time.time() - start_time
-            completed = len(checkpoint["processed_segments"])
-            if completed > 0:
-                avg_time  = elapsed / completed
-                remaining = (len(segment_files) - completed) * avg_time
-                print(f"   ⏱️  已用时: {format_time(elapsed)}, "
-                      f"预计剩余: {format_time(remaining)}")
-
-        if processed_files:
-            print(f"\n✅ Real-ESRGAN 处理完成: "
-                  f"{len(processed_files)}/{len(segment_files)} 个分段")
-        else:
-            print("\n❌ 没有成功处理的片段")
+                print("\n❌ 没有成功处理的片段")
+        finally:
+            # [SDK-NVENC] 所有段处理完毕，关闭跨段复用的 NVENCEncoder
+            _enc = self._enhancer.get('_sdk_nvenc_encoder') if self._enhancer_initialized else None
+            if _enc is not None:
+                try:
+                    _enc.close()
+                    print("[SDK-NVENC] NVENCEncoder 已关闭（所有段处理完成）", flush=True)
+                except Exception as e:
+                    print(f"[SDK-NVENC] NVENCEncoder 关闭异常: {e}", flush=True)
+                if self._enhancer_initialized:
+                    self._enhancer['_sdk_nvenc_encoder'] = None
+            # [FIX-GFPGAN-KEEPALIVE] 统一关闭保活子进程（必须在 NVENC close 之后，
+            # 因为 close_enhancer() 会将 self._enhancer 置 None）
+            self.close_enhancer()
 
         return processed_files
 
@@ -703,6 +778,12 @@ class RealESRGANVideoProcessor:
             ns.video_codec  = self.codec
             ns.crf          = self.crf
             ns.x264_preset  = self.x264_preset
+            ns.rate_mode       = self.rate_mode
+            ns.lookahead_depth = self.lookahead_depth
+            # [FIX-QUEUE-RIGHTSIZE] 透传队列深度与延迟解析开关
+            ns.frame_queue_size  = self.frame_queue_size
+            ns.detect_queue_size = self.detect_queue_size
+            ns.defer_sr_resolve  = self.defer_sr_resolve
             ns.ffmpeg_bin   = self.ffmpeg_bin
 
             # ── 预览与报告参数 ─────────────────────────────────────────────
@@ -794,7 +875,7 @@ class RealESRGANVideoProcessor:
             print(f"   ⚠️  清理失败: {e}")
 
     def close_enhancer(self):
-        """手动释放 enhancer 中的资源（GFPGAN 子进程等）"""
+        """手动释放 enhancer 中的资源（GFPGAN 子进程、SR 模型、TRT 引擎、torch 缓存）"""
         if self._enhancer:
             sub = self._enhancer.get('gfpgan_subprocess')
             if sub is not None:
@@ -805,6 +886,16 @@ class RealESRGANVideoProcessor:
                     print(f"[优化] 关闭子进程异常: {e}")
             self._enhancer = None
             self._enhancer_initialized = False
+            # [VRAM-CLEANUP] enhancer 释放后归还 torch reserved 缓存，
+            # 使后续阶段（如 IFRNet TRT 构建）看到真实空闲显存。
+            try:
+                import gc as _gc
+                import torch as _torch
+                _gc.collect()
+                if _torch.cuda.is_available():
+                    _torch.cuda.empty_cache()
+            except Exception:
+                pass
 
     def __del__(self):
         self.close_enhancer()
@@ -945,6 +1036,12 @@ def main():
                         choices=['ultrafast', 'superfast', 'veryfast', 'faster', 'fast',
                                  'medium', 'slow', 'slower', 'veryslow'],
                         help="libx264/libx265 编码预设（默认 medium）")
+    parser.add_argument("--rate-mode", type=str,
+                        choices=['constqp', 'vbr_hq', 'qvbr'],
+                        help="NVENC 码率控制模式（默认 vbr_hq）")
+    parser.add_argument("--lookahead-depth", type=int,
+                        choices=[0, 8, 16, 32],
+                        help="NVENC 前向帧预看深度（默认 16）")
     parser.add_argument("--ffmpeg-bin",    type=str,
                         help="ffmpeg 可执行文件路径（默认 ffmpeg）")
 
@@ -1031,6 +1128,10 @@ def main():
         config.set("models", "realesrgan", "codec",          value=args.codec)
     if args.x264_preset:
         config.set("models", "realesrgan", "x264_preset",    value=args.x264_preset)
+    if args.rate_mode:
+        config.set("models", "realesrgan", "rate_mode",       value=args.rate_mode)
+    if args.lookahead_depth is not None:
+        config.set("models", "realesrgan", "lookahead_depth", value=args.lookahead_depth)
     if args.ffmpeg_bin:
         config.set("models", "realesrgan", "ffmpeg_bin",     value=args.ffmpeg_bin)
 

@@ -74,7 +74,7 @@ class Config:
                 "prefetch_factor":  48,
                 "use_compile":      True,
                 "use_cuda_graph":   True,
-                "use_tensorrt":     False,
+                "use_tensorrt":     True,
                 "gfpgan_trt":       False,
                 # v6 face_enhance 精细控制
                 "gfpgan_model":      "1.4",

@@ -30,11 +30,11 @@ _NVENC_SURFACES_PIPE: int = 32
 
 # NVENC VBR 模式前向帧预看窗口（-rc-lookahead N）：
 #   仅在 crf>0（-rc:v vbr 模式）下启用。NVENC 默认不使用前向预看（N=0），
-#   设为 16 后编码器可向前分析 16 帧的运动复杂度，进行更精准的码率分配。
+#   设为 8 后编码器可向前分析 8 帧的运动复杂度，进行更精准的码率分配。
 #   典型 PSNR 改善 0.2-0.5 dB（1080p VBR）。
 #   注意：lookahead 需要 N 帧前瞻缓冲，与 -delay 0（零输出延迟）互斥，
 #   故仅在 VBR 路径启用，QP=0 路径改用 -delay 0。
-_NVENC_LOOKAHEAD_VBR: int = 16
+_NVENC_LOOKAHEAD_VBR: int = 8
 
 # [FIX-NVENC-PRESET] x264 → NVENC preset 名称映射。
 # NVENC 使用 p1(最快)~p7(最慢) 命名体系，与 x264 的 ultrafast~veryslow 不兼容。
@@ -706,6 +706,9 @@ class FFmpegWriter:
         video_codec = getattr(self.args, 'video_codec', 'libx264')
         crf = getattr(self.args, 'crf', 23)
         x264_preset = getattr(self.args, 'x264_preset', 'medium')
+        # [V6451-RATEMODE] 从 processor 层透传的 rate_mode / lookahead_depth
+        rc_mode = getattr(self.args, 'rate_mode', 'vbr_hq')
+        rc_lookahead = getattr(self.args, 'lookahead_depth', _NVENC_LOOKAHEAD_VBR)
 
         # [FIX-NVENC-UNIFIED] 统一 NVENC 检测：静态 GPU 型号表 + ffmpeg probe 双路径
         _hw_profile = getattr(self.args, '_hw_profile', None)
@@ -784,14 +787,20 @@ class FFmpegWriter:
                         '-delay', '0',
                     ]
                 else:
-                    # [FIX-NVENC-PIPE] NVENC VBR（cq）模式 pipe 场景优化
+                    # [FIX-NVENC-PIPE] NVENC（cq）模式 pipe 场景优化
                     #   -bf 0 禁用 B 帧，降低流水线缓冲延迟
                     #   -rc-lookahead N 前向帧预看（与 -delay 0 互斥）
+                    # [V6451-RATEMODE] rc_mode / rc_lookahead 由 processor 层透传
+                    # [FIX-QVBR-NVENC] FFmpeg NVENC CLI 不支持 "qvbr" 作为 -rc:v 值，
+                    # 映射到 vbr_hq（语义等价：VBR + -cq:v 质量目标控制）。
+                    _NVENC_RC_MAP = {'constqp': 'constqp', 'vbr_hq': 'vbr_hq', 'qvbr': 'vbr_hq'}
+                    nvenc_rc = _NVENC_RC_MAP.get(rc_mode, 'vbr_hq')
+                    print(f'[FFmpegWriter] rate_mode={rc_mode} rc-lookahead={rc_lookahead}')
                     quality_args = [
                         '-preset', nvenc_preset,
-                        '-rc:v', 'vbr', '-cq:v', str(crf), '-b:v', '0',
+                        '-rc:v', nvenc_rc, '-cq:v', str(crf), '-b:v', '0',
                         '-bf', '0',
-                        '-rc-lookahead', str(_NVENC_LOOKAHEAD_VBR),
+                        '-rc-lookahead', str(rc_lookahead),
                         '-surfaces', str(_NVENC_SURFACES_PIPE),
                     ]
                 cmd_args += ['-vcodec', video_codec, '-pix_fmt', 'yuv420p'] + quality_args
@@ -870,9 +879,9 @@ class FFmpegWriter:
                 )
             else:
                 _enc_info = (
-                    f'[FIX-NVENC-PIPE] NVENC VBR(cq={crf}): '
+                    f'[FIX-NVENC-PIPE] NVENC {rc_mode}(cq={crf}): '
                     f'preset={nvenc_preset}  bf=0  '
-                    f'rc-lookahead={_NVENC_LOOKAHEAD_VBR}  '
+                    f'rc-lookahead={rc_lookahead}  '
                     f'surfaces={_NVENC_SURFACES_PIPE}  '
                     f'ffmpeg_threads={_ft}(全局demux，不影响NVENC硬件单元)'
                 )

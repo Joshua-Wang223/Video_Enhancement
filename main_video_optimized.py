@@ -18,7 +18,7 @@
   阶段 4: [可选] 临时 / 中间文件清理
 
 【底层架构】
-  IFRNet     : src/processors/ifrnet_processor_v6_4_single.py
+  IFRNet     : src/processors/ifrnet_processor_video_optimized.py
   Real-ESRGAN: src/processors/realesrgan_processor_video_optimized.py
                → external/realesrgan_video/main.py (main_optimized, v6.4)
 
@@ -504,35 +504,6 @@ def _run_denoise_stage(input_path: str, output_path: str,
 
 
 # =============================================================================
-# LA 音频同步修正                                                       [V2]
-# =============================================================================
-
-def _trim_audio_start(audio_path: str, offset_seconds: float) -> Optional[str]:
-    """用 ffmpeg 修剪音频开头指定秒数，返回修剪后文件路径。
-
-    使用 -ss X -i input -c copy（输入 seek + 流复制），快速不重编码。
-    AAC 帧精度 ~21ms，对人耳不可感知。
-    """
-    import subprocess as _subprocess
-    p = Path(audio_path)
-    out = p.parent / f"trimmed_{p.name}"
-    try:
-        _subprocess.run([
-            "ffmpeg", "-y",
-            "-ss", f"{offset_seconds:.6f}",
-            "-i", str(p),
-            "-c", "copy",
-            str(out)
-        ], check=True, capture_output=True, text=True, timeout=60)
-        if out.exists() and out.stat().st_size > 0:
-            return str(out)
-        return None
-    except Exception as e:
-        print(f"   ⚠️ 音频修剪失败 ({Path(audio_path).name}): {e}")
-        return None
-
-
-# =============================================================================
 # 后处理与验证阶段                                                      [V1]
 # =============================================================================
 
@@ -804,8 +775,6 @@ def _apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
         config.set("processing", "segment_duration",     value=args.segment_duration)
     if args.auto_cleanup:
         config.set("processing", "auto_cleanup_temp",    value=True)
-    if getattr(args, "no_auto_cleanup", False):
-        config.set("processing", "auto_cleanup_temp",    value=False)
 
     # ── IFRNet 模型参数（与 v6 完全一致）─────────────────────────────────────
     if args.ifrnet_model_path:
@@ -836,10 +805,6 @@ def _apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
         config.set("models", "ifrnet", "codec",          value=args.codec_ifrnet)
     if args.x264_preset_ifrnet:
         config.set("models", "ifrnet", "x264_preset",    value=args.x264_preset_ifrnet)
-    if args.rate_mode_ifrnet:
-        config.set("models", "ifrnet", "rate_mode",       value=args.rate_mode_ifrnet)
-    if args.lookahead_depth_ifrnet is not None:
-        config.set("models", "ifrnet", "lookahead_depth", value=args.lookahead_depth_ifrnet)
     if args.no_audio_ifrnet:
         config.set("models", "ifrnet", "keep_audio",     value=False)
     if args.report_ifrnet:
@@ -922,52 +887,8 @@ def _apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
         config.set("models", "realesrgan", "codec",           value=args.codec_esrgan)
     if args.x264_preset_esrgan:
         config.set("models", "realesrgan", "x264_preset",     value=args.x264_preset_esrgan)
-    if args.rate_mode_esrgan:
-        config.set("models", "realesrgan", "rate_mode",       value=args.rate_mode_esrgan)
-    if args.lookahead_depth_esrgan is not None:
-        config.set("models", "realesrgan", "lookahead_depth", value=args.lookahead_depth_esrgan)
     if getattr(args, "ffmpeg_bin", None):
         config.set("models", "realesrgan", "ffmpeg_bin",      value=args.ffmpeg_bin)
-
-    # ── ESRGan 高优先级覆盖（后写入，覆盖上方 --no-* / config 的值）────────────
-    _esr_overrides: list[str] = []
-    if args.no_tensorrt_esrgan and args.use_tensorrt_esrgan:
-        config.set("models", "realesrgan", "use_tensorrt", value=False)
-        _esr_overrides.append(
-            "--no-tensorrt-esrgan  覆盖了  --use-tensorrt-esrgan  → ESRGan TensorRT 已禁用")
-    elif args.no_tensorrt_esrgan:
-        config.set("models", "realesrgan", "use_tensorrt", value=False)
-
-    if args.use_compile_force_esrgan:
-        config.set("models", "realesrgan", "use_compile", value=True)
-        if args.no_compile_esrgan:
-            _esr_overrides.append(
-                "--use-compile-esrgan  覆盖了  --no-compile-esrgan  → ESRGan torch.compile 已启用")
-    if args.use_cuda_graph_force_esrgan:
-        config.set("models", "realesrgan", "use_cuda_graph", value=True)
-        if args.no_cuda_graph_esrgan:
-            _esr_overrides.append(
-                "--use-cuda-graph-esrgan  覆盖了  --no-cuda-graph-esrgan  → ESRGan CUDA Graph 已启用")
-    # 互斥冲突预警（基于最终写入 config 的有效值）
-    _eff_trt_esr     = config.get("models", "realesrgan", "use_tensorrt",   default=False)
-    _eff_compile_esr = config.get("models", "realesrgan", "use_compile",    default=True)
-    if args.use_cuda_graph_force_esrgan and _eff_compile_esr and not _eff_trt_esr:
-        print("[CLI警告] --use-cuda-graph-esrgan 与 torch.compile 互斥："
-              "compile 成功后 CUDA Graph 将被自动禁用。")
-        print("          若要确保 CUDA Graph 生效，请同时指定 --no-compile-esrgan。")
-    if args.use_cuda_graph_force_esrgan and _eff_trt_esr:
-        print("[CLI警告] --use-cuda-graph-esrgan 与 --use-tensorrt-esrgan 互斥："
-              "TensorRT 优先，CUDA Graph 将被禁用。")
-        print("          如需 CUDA Graph，请同时指定 --no-tensorrt-esrgan。")
-    if args.use_compile_force_esrgan and _eff_trt_esr:
-        print("[CLI警告] --use-compile-esrgan 与 --use-tensorrt-esrgan 互斥："
-              "TensorRT 优先，torch.compile 将被禁用。")
-        print("          如需 torch.compile，请同时指定 --no-tensorrt-esrgan。")
-    if _esr_overrides:
-        print("[CLI覆盖] ESRGan 以下设置已被高优先级参数覆盖：")
-        for msg in _esr_overrides:
-            print(f"          · {msg}")
-        print()
 
     # ── face_enhance ─────────────────────────────────────────────────────────
     if args.face_enhance is not None:
@@ -1240,7 +1161,7 @@ def _process_single(
     Returns:
         是否成功
     """
-    from ifrnet_processor_v6_4_single           import IFRNetProcessor           # noqa
+    from ifrnet_processor_video_optimized       import IFRNetProcessor           # noqa
     from realesrgan_processor_video_optimized   import RealESRGANVideoProcessor  # noqa
 
     t0         = time.time()
@@ -1315,27 +1236,6 @@ def _process_single(
             print("\n\n⚠️  用户中断（Ctrl+C），当前分段将在下次运行时重新处理。")
             return False
         _elapsed_sk = time.time() - t0
-
-        # [FIX] --skip-interpolate 模式下，process_video() 内部不会回写音频，
-        # 需要在此处将已提取的音频合并到最终输出中。
-        if success and audio_path:
-            try:
-                print("🎵 回写音频到输出视频...")
-                _tmp_out = output_video + ".with_audio.mp4"
-                _merge_cfg = config.get_section("output", {})
-                audio_ok = merge_videos_by_codec(
-                    [output_video], _tmp_out,
-                    audio_path=audio_path,
-                    config=_merge_cfg,
-                )
-                if audio_ok:
-                    shutil.move(_tmp_out, output_video)
-                    print("   ✅ 音频已回写")
-                else:
-                    print("   ⚠️  音频回写失败，输出将无音频")
-            except Exception as e:
-                print(f"   ⚠️  音频回写异常: {e}")
-
         if success:
             _run_postprocess_stage(output_video, input_video,
                                    denoised_path, args, env_info)
@@ -1359,10 +1259,6 @@ def _process_single(
     # ── 3b. 单步模式 —— 仅插帧 ───────────────────────────────────────────────
     if skip_upscale:
         _print_stage(2, "IFRNet 视频插帧", "🎞️")
-        # [FIX] 禁用 IFRNet 内部音频处理，统一由本层使用已提取的 audio_path 回写，
-        # 避免重复提取音频或音频冲突。
-        proc_keep_audio = config.get("models", "ifrnet", "keep_audio", default=True)
-        config.set("models", "ifrnet", "keep_audio", value=False)
         try:
             proc = IFRNetProcessor(config)
             proc.preview          = _preview_ifr
@@ -1371,36 +1267,13 @@ def _process_single(
         except Exception as e:
             print(f"❌ 初始化 IFRNet 处理器失败: {e}")
             traceback.print_exc()
-            config.set("models", "ifrnet", "keep_audio", value=proc_keep_audio)
             return False
         try:
             success = proc.process_video(actual_input, output_video)
         except KeyboardInterrupt:
             print("\n\n⚠️  用户中断（Ctrl+C），当前分段将在下次运行时重新处理。")
-            config.set("models", "ifrnet", "keep_audio", value=proc_keep_audio)
             return False
-        config.set("models", "ifrnet", "keep_audio", value=proc_keep_audio)
         _elapsed_sk = time.time() - t0
-
-        # [FIX] 统一使用顶层提取的 audio_path 回写音频（与 skip-interpolate 对齐）
-        if success and audio_path:
-            try:
-                print("🎵 回写音频到输出视频...")
-                _tmp_out = output_video + ".with_audio.mp4"
-                _merge_cfg = config.get_section("output", {})
-                audio_ok = merge_videos_by_codec(
-                    [output_video], _tmp_out,
-                    audio_path=audio_path,
-                    config=_merge_cfg,
-                )
-                if audio_ok:
-                    shutil.move(_tmp_out, output_video)
-                    print("   ✅ 音频已回写")
-                else:
-                    print("   ⚠️  音频回写失败，输出将无音频")
-            except Exception as e:
-                print(f"   ⚠️  音频回写异常: {e}")
-
         if success:
             _run_postprocess_stage(output_video, input_video,
                                    denoised_path, args, env_info)
@@ -1451,11 +1324,6 @@ def _process_single(
             return False
         print(f"\n   ✅ Step 1 完成，产生 {len(step1_segs)} 个分段")
 
-        # [VRAM-CLEANUP] 释放 IFRNet 持有的全部 GPU/pinned 资源，为 ESRGAN 腾出显存。
-        # ifrnet_proc 本体保留：末尾 _delete_checkpoint/_cleanup_temp_files 不依赖 _video_processor。
-        ifrnet_proc._cleanup_video_processor()
-        print("   🧹 IFRNet GPU 资源已释放（模型/TRT/pinned 池/torch 缓存）")
-
         # Step 2: ESRGan
         _print_stage(2, "Step 2/2 — Real-ESRGAN 超分（优化版）", "🎨")
         try:
@@ -1479,11 +1347,6 @@ def _process_single(
             return False
         print(f"\n   ✅ Step 1 完成，产生 {len(step1_segs)} 个分段")
 
-        # [VRAM-CLEANUP] 对称释放 ESRGAN enhancer（SR 模型/TRT/GFPGAN 子进程），为 IFRNet 腾出显存。
-        # esrgan_proc 本体保留：末尾 _delete_checkpoint/_cleanup_temp_files 不依赖 _enhancer。
-        esrgan_proc.close_enhancer()
-        print("   🧹 ESRGAN GPU 资源已释放（enhancer/TRT/GFPGAN 子进程/torch 缓存）")
-
         # Step 2: IFRNet
         _print_stage(2, "Step 2/2 — IFRNet 插帧", "🎞️")
         try:
@@ -1502,14 +1365,6 @@ def _process_single(
         print("❌ 第二步处理未产生有效分段，流程终止")
         _print_failure_hints(time.time() - t0)
         return False
-
-    # [VRAM-CLEANUP] 第二阶段资源在合并/后处理（纯 CPU ffmpeg）前确定释放。
-    # 两个清理方法均幂等：本阶段此前若已清理（或另一阶段已清理）重复调用无副作用。
-    # 批量模式下避免上一文件的残留资源累积到下一文件。
-    if mode == "interpolate_then_upscale":
-        esrgan_proc.close_enhancer()
-    else:
-        ifrnet_proc._cleanup_video_processor()
 
     # ── 4. 合并最终分段（含音频无损回写）──────────────────────────────────────
     print(f"\n🔗 合并 {len(final_segs)} 个最终分段 → {output_video}")
@@ -1534,63 +1389,6 @@ def _process_single(
         else:
             _last_codec = config.get("models", "realesrgan", "codec", default="")
         final_segs = _normalize_segs_for_copy(final_segs, codec_hint=_last_codec)
-
-    # ── LA 音频同步修正：比较输出时长与预期时长，修剪音频开头 ──────────
-    if audio_path and final_segs:
-        input_dur = get_video_duration(input_video)
-        if input_dur and input_dur > 0:
-            # 累加所有最终分段时长
-            output_dur = 0.0
-            for seg in final_segs:
-                d = get_video_duration(str(seg))
-                if d:
-                    output_dur += d
-
-            # 预期时长 = 原始时长（插帧改变帧率，不改变时长）
-            expected_dur = input_dur
-
-            # [FIX-LA-TOTAL] 累加两处理器 LA 深度，双层 LA 各 8 帧 → 总 16 帧
-            # ESRGAN 仅在 SDK Level 1 丢帧；FFmpeg CLI (-rc-lookahead) 不丢帧
-            # CRF=0 时底层强制禁用 LA，从总深度中扣除
-            _total_la_depth = 0
-            if not args.skip_interpolate:
-                _total_la_depth += config.get("models", "ifrnet", "lookahead_depth", default=0)
-            if not args.skip_upscale:
-                _esrgan_la = config.get("models", "realesrgan", "lookahead_depth", default=0)
-                # ESRGAN SDK Level 1 丢帧；FFmpeg CLI 安全（仅引入延迟）
-                try:
-                    import torch as _torch_la
-                    from realesrgan_video.nvenc_sdk import NVENCEncoder as _NE_LA
-                    if _torch_la.cuda.is_available():
-                        _total_la_depth += _esrgan_la
-                except ImportError:
-                    pass  # FFmpeg CLI 路径，不丢帧
-            # CRF=0 时 _NVENC_CRF0_FORCE_CONSTQP 强制 CONSTQP+LA=0
-            if config.get("models", "ifrnet", "crf", default=23) == 0:
-                _total_la_depth -= config.get("models", "ifrnet", "lookahead_depth", default=0)
-            if config.get("models", "realesrgan", "crf", default=23) == 0:
-                _total_la_depth -= config.get("models", "realesrgan", "lookahead_depth", default=0)
-            _la_enabled = _total_la_depth > 0
-            # 阈值基于总 LA 帧数（60fps 下 LA=16 → ~0.27s），0.5x 安全系数
-            _la_threshold = max(0.3, _total_la_depth / 60.0 * 0.5)
-
-            audio_offset = expected_dur - output_dur
-            if audio_offset > _la_threshold and _la_enabled:
-                print(f"\n🔊 检测到 LA 导致输出视频缺失 {audio_offset:.2f}秒")
-                print(f"   预期时长 {expected_dur:.2f}s，实际 {output_dur:.2f}s")
-                print(f"   正在修剪音频开头 {audio_offset:.2f}秒...")
-                trimmed = _trim_audio_start(audio_path, audio_offset)
-                if trimmed:
-                    audio_path = trimmed
-                    print(f"   ✅ 音频已修剪: {Path(trimmed).name}")
-                else:
-                    print("   ⚠️ 音频修剪失败，将使用原始音频（可能音画不同步）")
-            elif audio_offset > 0.1 and not _la_enabled:
-                # 非 LA 原因导致的时长偏差（如编码器行为、时间基精度），记录但不修剪
-                print(f"   ℹ️ 输出时长偏差 {audio_offset:.2f}s（非 LA 原因，不修剪音频）")
-            elif audio_offset < -0.1:
-                # 防御：输出反而更长（不应发生，但记录一下）
-                print(f"   ℹ️ 输出视频比预期长 {abs(audio_offset):.2f}s，无需修剪音频")
 
     success = merge_videos_by_codec(
         final_segs, output_video,
@@ -1726,7 +1524,7 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 底层架构：
-  IFRNet     : src/processors/ifrnet_processor_v6_4_single.py
+  IFRNet     : src/processors/ifrnet_processor_video_optimized.py
   Real-ESRGAN: src/processors/realesrgan_processor_video_optimized.py
                → external/realesrgan_video/main.py (main_optimized, v6.4)
 
@@ -1838,7 +1636,7 @@ ESRGan 模型选项 (--esrgan-model):
     g.add_argument("--ifrnet-model-path", metavar="PATH",
                    help="IFRNet .pth 权重绝对路径（优先级高于 --ifrnet-model）")
     g.add_argument("--batch-size-ifrnet", type=int, metavar="N",
-                   help="IFRNet 批处理大小（覆盖配置，默认 24）")
+                   help="IFRNet 批处理大小（覆盖配置，默认 4）")
     g.add_argument("--max-batch-size-ifrnet", type=int, metavar="N",
                    help="IFRNet 批大小上限（OOM 天花板，覆盖配置，默认 8）")
     g.add_argument("--no-fp16-ifrnet",       action="store_true",
@@ -1848,7 +1646,7 @@ ESRGan 模型选项 (--esrgan-model):
     g.add_argument("--no-cuda-graph-ifrnet", action="store_true",
                    help="禁用 IFRNet CUDA Graph（compile 激活时已接管，可安全禁用）")
     g.add_argument("--use-tensorrt-ifrnet",  action="store_true",
-                   help="IFRNet TensorRT 加速（JSON 配置默认开启；显式添加确保开启；--no-tensorrt-ifrnet 可禁用）")
+                   help="启用 IFRNet TensorRT 加速（首次需构建 Engine，缓存于 .trt_cache/）")
     g.add_argument("--no-hwaccel-ifrnet",    action="store_true",
                    help="禁用 IFRNet NVDEC 硬件解码")
     g.add_argument("--no-audio-ifrnet",      action="store_true",
@@ -1861,12 +1659,6 @@ ESRGan 模型选项 (--esrgan-model):
                choices=["ultrafast", "superfast", "veryfast", "faster", "fast",
                         "medium", "slow", "slower", "veryslow"],
                help="IFRNet 编码预设（libx264/libx265 有效，NVENC 自动使用 p4）")
-    g.add_argument("--rate-mode-ifrnet", metavar="MODE",
-               choices=["constqp", "vbr_hq", "qvbr"],
-               help="IFRNet NVENC 码率控制模式（默认 vbr_hq）")
-    g.add_argument("--lookahead-depth-ifrnet", type=int, metavar="N",
-               choices=[0, 8, 16, 32],
-               help="IFRNet NVENC 前向帧预看深度（默认 8）")
     g.add_argument("--report-ifrnet", metavar="PATH",
                    help="IFRNet JSON 性能报告输出路径")
     g.add_argument("--preview-ifrnet", action="store_true",
@@ -1897,7 +1689,7 @@ ESRGan 模型选项 (--esrgan-model):
                    help="SR 模型降噪强度 0~1"
                         "（仅 realesr-general-x4v3）")
     g.add_argument("--batch-size-esrgan", type=int, metavar="N",
-                   help="ESRGan SR 批处理大小（默认 24）")
+                   help="ESRGan SR 批处理大小（默认 6）")
     g.add_argument("--prefetch-factor-esrgan", type=int, metavar="N",
                    help="ESRGan 读帧预取深度（默认 48）")
     g.add_argument("--tile-size", type=int, metavar="N",
@@ -1913,7 +1705,7 @@ ESRGan 模型选项 (--esrgan-model):
     g.add_argument("--no-cuda-graph-esrgan", action="store_true",
                    help="禁用 ESRGan CUDA Graph（默认开启；compile/TRT 激活时自动禁用）")
     g.add_argument("--use-tensorrt-esrgan", action="store_true",
-                   help="ESRGan TensorRT 加速（JSON 配置默认开启；显式添加确保开启；--no-tensorrt-esrgan 可禁用）")
+                   help="启用 ESRGan TensorRT 加速（首次需构建 Engine，缓存于 .trt_cache/）")
     g.add_argument("--no-hwaccel-esrgan", action="store_true",
                    help="禁用 ESRGan NVDEC 硬件解码")
     g.add_argument("--crf-esrgan", type=int, metavar="N",
@@ -1925,12 +1717,6 @@ ESRGan 模型选项 (--esrgan-model):
                             "faster", "fast", "medium",
                             "slow", "slower", "veryslow"],
                    help="ESRGan libx264/libx265 编码预设（默认 medium）")
-    g.add_argument("--rate-mode-esrgan", metavar="MODE",
-                   choices=["constqp", "vbr_hq", "qvbr"],
-                   help="ESRGan NVENC 码率控制模式（默认 vbr_hq）")
-    g.add_argument("--lookahead-depth-esrgan", type=int, metavar="N",
-                   choices=[0, 8, 16, 32],
-                   help="ESRGan NVENC 前向帧预看深度（默认 8）")
     g.add_argument("--ffmpeg-bin", type=str,
                    help="ffmpeg 可执行文件路径（默认 ffmpeg）")
     # ── 高优先级覆盖开关（强制启用，覆盖 --no-* / config 中的禁用设置）──────────
@@ -1999,8 +1785,6 @@ ESRGan 模型选项 (--esrgan-model):
     g = parser.add_argument_group("杂项")
     g.add_argument("--auto-cleanup", action="store_true",
                    help="全流程结束后自动删除所有临时分段文件")
-    g.add_argument("--no-auto-cleanup", action="store_true",
-                   help="保留所有临时分段文件（覆盖配置文件中的 auto_cleanup_temp）")
     g.add_argument("--quiet-ifrnet", action=argparse.BooleanOptionalAction, default=True,
                    help="静默 IFRNet 底层冗余输出（底层 --quiet 参数）；--no-quiet-ifrnet 开启详细日志")
     g.add_argument("--quiet-esrgan", action=argparse.BooleanOptionalAction, default=True,
@@ -2094,8 +1878,8 @@ def main() -> int:
             return 2
     else:
         input_video = (args.input
-                       or config.get("paths", "input_video", default="")).strip()
-        output_video = (args.output or "").strip()
+                       or config.get("paths", "input_video", default=""))
+        output_video = args.output or ""
         if not input_video:
             print("❌ 单文件模式需指定 --input / -i"
                   "（或配置 paths.input_video）")

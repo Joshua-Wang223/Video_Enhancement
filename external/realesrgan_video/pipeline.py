@@ -4,6 +4,7 @@ Real-ESRGAN Video Enhancement - 深度流水线模块
 包含：GPUMemoryPool, DeepPipelineOptimizer, SR推理函数
 """
 
+import gc
 import os
 import sys
 import time
@@ -15,6 +16,11 @@ from typing import List, Optional, Tuple, Dict, Any
 # [FIX-NVML] 明确禁用 PyTorch 基于 NVML 的 CUDA 检测，
 # 避免因系统 NVML/RM 版本不匹配导致 INTERNAL ASSERT FAILED。
 os.environ.setdefault("PYTORCH_NVML_BASED_CUDA_CHECK", "0")
+
+# [FIX-OOM-TRT] expandable_segments 使用 cudaMallocAsync 分配器，
+# 大幅减少 PyTorch CUDA allocator 碎片化，防止 OOM 降级时批大小
+# 因碎片而非真实需求持续塌方（参照 IFRNet v6.4.5.1 L322）。
+os.environ.setdefault('PYTORCH_ALLOC_CONF', 'expandable_segments:True')
 
 import numpy as np
 import torch
@@ -38,6 +44,7 @@ def _sr_infer_batch(
     trt_accel,
     cuda_graph_accel=None,
     prefetched_batch_t=None,
+    defer_resolve: bool = False,
 ):
     """纯 SR 推理：H2D → 模型前向 → 后处理 → D2H。"""
     device = upsampler.device
@@ -59,6 +66,10 @@ def _sr_infer_batch(
                 batch_t = batch_t.permute(0, 3, 1, 2).float().div_(255.0)
                 if use_half:
                     batch_t = batch_t.half()
+            # [FIX-PINNED-POOL-RACE] 记录本次 H2D 拷贝所在 stream 的 event，
+            # 供 pool 下次轮到这个 pinned buffer slot 时正确等待，
+            # 避免下一批 CPU 写入和这次 GPU 异步读取竞争同一块内存。
+            pool.mark_issued(transfer_stream)
         else:
             batch_t = batch_pin.to(device)
             batch_t = batch_t.permute(0, 3, 1, 2).float().div_(255.0)
@@ -99,19 +110,91 @@ def _sr_infer_batch(
             mode='bicubic', align_corners=False,
         )
 
+    if defer_resolve:
+        # [FIX-DEFER-RESOLVE] 延迟解析路径：发起 D2H 后立即返回句柄，
+        # 不在此等待 event / CPU 拷贝 / stream 同步——这些由调用方的解析线程
+        # 在下一批 TRT 推理（主机同步 ~700ms）期间执行（_sr_materialize），
+        # 实现 CPU 拷贝与 GPU 推理跨批重叠，消除每批 ~25-45ms 串行尾部。
+        # GPU 张量引用随句柄保留至解析时释放（比原路径晚 ~1 批，显存峰值
+        # 多占 ~1 批）；句柄携带私有 event，不依赖池的 slot 事件注册表，
+        # 避免 slot 复用后事件被覆写导致的错误等待。
+        out_u8 = output_t.float().clamp_(0.0, 1.0).mul_(255.0).byte()
+        out_perm = out_u8.permute(0, 2, 3, 1).contiguous()
+        out_pinned = pool.get_output_buf(out_perm.shape, torch.uint8)
+        out_pinned.copy_(out_perm, non_blocking=True)
+        pool.mark_output_issued()
+        _ev = torch.cuda.Event()
+        _ev.record()   # 当前流，紧随 D2H 发起
+        handle = {
+            '_pending_sr': True,
+            'event': _ev,
+            'view': out_pinned,
+            'B': B,
+            'gpu_refs': (batch_t, output_t, out_u8, out_perm),
+        }
+        elapsed = time.perf_counter() - t0
+        timing_info = {'batch_size': B, 'processing_time': elapsed}
+        return [handle], timing_info, 'success'
+
     out_u8 = output_t.float().clamp_(0.0, 1.0).mul_(255.0).byte()
     out_perm = out_u8.permute(0, 2, 3, 1).contiguous()
     out_pinned = pool.get_output_buf(out_perm.shape, torch.uint8)
     out_pinned.copy_(out_perm, non_blocking=True)
-
-    torch.cuda.synchronize(device)
+    # [FIX-PINNED-POOL-RACE] 上面这行是异步 D2H 拷贝，之前紧接着就对 out_pinned
+    # 做 .numpy() 读取——但 GPU 可能还没真正把数据写完（甚至还没开始写），读到的
+    # 是"半新半旧"或纯粹上一批遗留的数据。这正是分段视频里出现"某几帧内容和
+    # 更早批次逐像素相同"现象的根因。这里显式记录 event 并阻塞等待拷贝真正完成，
+    # 再读取 numpy 数据。
+    pool.mark_output_issued()
+    pool.wait_output_ready()
 
     out_np = out_pinned.numpy()
     sr_results = [out_np[i].copy() for i in range(B)]
 
+    # [FIX-CUDAFREEASYNC] expandable_segments 模式下 del 触发
+    # cudaFreeAsync（非同步 cudaFree），必须在 del 后 synchronize
+    # 排空异步释放，否则下一批 alloc 时旧内存尚未归还 →
+    # CUDA pool 膨胀 → allocated 每批 +30MB 持续上升。
+    # 原 synchronize 在 del 之前，只排空了计算流，不排空 free。
+    #
+    # [FIX-NARROW-SYNC] 原 torch.cuda.synchronize(device) 是全设备同步，
+    # 会阻塞该 CUDA context 下**所有** stream（包括 NVENC 编码线程的专用
+    # stream_encode、transfer_stream、gfpgan_stream），每个 SR batch 都
+    # 触发一次——这是比 NVENC 那次 legacy-stream 拷贝更频繁的"隐式全局
+    # 屏障"来源，会周期性阻塞编码/GFPGAN 与 SR 推理的并行重叠。
+    # del 触发的 cudaFreeAsync 是 stream-ordered 的：本函数此处的 del 发生
+    # 在 current_stream（此前的 compute_stream/transfer_stream 相关工作
+    # 已通过 wait_stream 汇入 current_stream，且 pool.wait_output_ready()
+    # 已经用 event 确认了 D2H 拷贝完成），因此只需同步 current_stream 即可
+    # 保证这次 free 被排空，无需等待其他无关 stream 上的工作。
+    del batch_t, output_t, out_u8, out_perm, out_pinned
+    torch.cuda.current_stream(device).synchronize()
+
     elapsed = time.perf_counter() - t0
     timing_info = {'batch_size': B, 'processing_time': elapsed}
     return sr_results, timing_info, 'success'
+
+
+def _sr_materialize(all_sr: list) -> list:
+    """[FIX-DEFER-RESOLVE] 把 _sr_infer_batch 延迟句柄解析为 numpy 帧列表。
+
+    严格按列表顺序处理，OOM 回退路径产出的普通 ndarray 元素原样透传，
+    因此混合列表（句柄 + 帧）也能保持帧序不变。
+    句柄解析：等待私有 D2H event → CPU 拷贝出 pinned buffer → 释放 GPU 引用。
+    不在此做 stream synchronize：引用释放产生的 cudaFreeAsync 随后续批次
+    流推进自然排空（_process_sr 每 100 批有深度清理兜底，OOM 路径亦有全同步）。
+    """
+    results = []
+    for item in all_sr:
+        if isinstance(item, dict) and item.get('_pending_sr'):
+            item['event'].synchronize()
+            out_np = item['view'].numpy()
+            results.extend(out_np[i].copy() for i in range(item['B']))
+            item['view'] = None
+            item['gpu_refs'] = None   # 释放 GPU 张量引用（refcount 归零即释放）
+        else:
+            results.append(item)
+    return results
 
 
 class GPUMemoryPool:
@@ -149,10 +232,29 @@ class DeepPipelineOptimizer:
         self.args = args
         self.device = device
 
-        self.optimal_batch_size = min(args.batch_size, 24)
+        # [FIX-BS-CAP-DYNAMIC] batch 硬顶由分辨率+显存联合决定，替换原固定 24：
+        # 小分辨率（≤640x360）TRT 启动/调度开销占比高，允许 32-48 摊薄；
+        # 高分辨率（>640x360）维持 24。VRAM 护栏沿用 _estimate_safe_batch_size
+        # 的 6× 张量模型（B × H×W×3×2×6 ≤ 20% 总显存）。
+        # 当前 config batch_size=24 时行为与原来完全一致。
+        _bs_cap = 24
+        if input_h * input_w <= 640 * 360:
+            _bs_cap = 48
+            if torch.cuda.is_available():
+                _total_b = torch.cuda.get_device_properties(0).total_memory
+                _bs_by_vram = int(_total_b * 0.20 / max(input_h * input_w * 36, 1))
+                _bs_cap = max(24, min(48, _bs_by_vram))
+        self.optimal_batch_size = min(args.batch_size, _bs_cap)
 
-        self.frame_queue = queue.Queue(maxsize=48)
-        self.detect_queue = queue.Queue(maxsize=32)
+        # [FIX-QUEUE-RIGHTSIZE] 上游缓冲右置（参数化，可用 config 覆盖）：
+        # SR 是唯一瓶颈时 F/D 队列常年全满，48/32 批在飞缓冲（≈1.3GB RAM）
+        # 对吞吐零贡献，仅增加段尾延迟与内存压力；4-8 批已足够吸收
+        # 读取/检测抖动（实测 σ ≈ 1 批）。S/G 保持 16：高分辨率下
+        # 写端抖动需要更深出口缓冲。
+        _frame_q_size = int(getattr(args, 'frame_queue_size', 8))
+        _detect_q_size = int(getattr(args, 'detect_queue_size', 4))
+        self.frame_queue = queue.Queue(maxsize=_frame_q_size)
+        self.detect_queue = queue.Queue(maxsize=_detect_q_size)
         self.sr_queue = queue.Queue(maxsize=16)
         self.gfpgan_queue = queue.Queue(maxsize=16)
 
@@ -168,6 +270,17 @@ class DeepPipelineOptimizer:
         )
         self.paste_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=2, thread_name_prefix='opt_paste'
+        )
+
+        # [FIX-DEFER-RESOLVE] 延迟解析执行器（单线程保证 sr_queue 入队顺序=提交顺序）。
+        # 解析（D2H event 等待 + CPU 拷贝 + 入队）在此线程执行，与 SR 线程的
+        # 下一批 TRT 推理重叠，消除每批 ~25-45ms 串行尾部（实测段 FPS +4-6%）。
+        # 可用 args.defer_sr_resolve=False 回退原同步路径。
+        self._defer_resolve = getattr(args, 'defer_sr_resolve', True)
+        self._resolve_executor = (
+            concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix='sr_resolve')
+            if self._defer_resolve else None
         )
 
         self.transfer_stream = torch.cuda.Stream(device=device)
@@ -191,11 +304,22 @@ class DeepPipelineOptimizer:
         self._low_face_threshold = 2.0
         self._high_face_threshold = 5.0
         self._base_batch_size = self.optimal_batch_size
-        self._max_adaptive_batch = min(self._base_batch_size * 2, 12)
+        # [FIX-ADAPTIVE-BS-INVERSION] 原硬顶 min(base*2, 12) 是 base=6 时代的遗留：
+        # base=24 时 max_adaptive=12 < base，人脸低密度（便宜场景）反被压到 bs=12，
+        # 自适应方向完全反转，SR 吞吐损失 ~50%。上限改为随 base 缩放（硬顶 48）。
+        self._max_adaptive_batch = min(self._base_batch_size * 2, 48)
         self._min_adaptive_batch = max(2, self._base_batch_size // 2)
         self._adaptive_batch_lock = threading.Lock()
         self._adaptive_read_batch_size = self.optimal_batch_size
         self._enable_adaptive_batch = getattr(args, 'adaptive_batch', True)
+
+        # ── OOM 冷却与统计（参照 IFRNet v6.4.5.1 _safe_infer）──
+        self._oom_cooldown    = 0    # 正数 = 冷却轮数，期间不恢复 batch_size
+        self._oom_total_count = 0    # 累计 OOM 次数（诊断用）
+        self._oom_max_history = 5    # 保留最近 N 次 OOM 的 bs/retry_bs
+        # ── TRT OOM 恢复跟踪 ──
+        self._trt_working_bs     = 0  # OOM 后记住的成功临时 bs（避免每批都从 optimal 开始）
+        self._trt_success_streak = 0  # 连续成功批次数，≥5 后尝试恢复 optimal_batch_size
 
         self.detect_helper = _make_detect_helper(face_enhancer, device) if face_enhancer else None
 
@@ -244,6 +368,11 @@ class DeepPipelineOptimizer:
         self._task_id_counter = 0
         self._task_id_lock = threading.Lock()
 
+        # [FIX-QUEUE-LABEL] G 队列实际为 writer 编码前的最终输出缓冲；
+        # face_enhance 关闭时改名为 O(Output)，避免误解为"人脸增强队列仍有排队"。
+        self._g_label = 'G' if (self.face_enhancer is not None
+                                or self.gfpgan_subprocess is not None) else 'O'
+
         # 线程句柄
         self._read_thread = None
         self._detect_thread = None
@@ -270,7 +399,9 @@ class DeepPipelineOptimizer:
               f"/F{self.frame_queue.maxsize}"
               f"/D{self.detect_queue.maxsize}"
               f"/S{self.sr_queue.maxsize}"
-              f"/G{self.gfpgan_queue.maxsize}")
+              f"/{self._g_label}{self.gfpgan_queue.maxsize}")
+        if self._g_label == 'O':
+            self._vlog("[优化架构] 人脸增强关闭，O 队列为编码输出缓冲（非 GFPGAN 队列）")
         self._vlog(f"[优化架构] 内存池: {self.memory_pool.max_batches}批次")
         self._vlog(f"[优化架构] 最优batch_size: {self.optimal_batch_size}")
         if self.face_enhancer is not None:
@@ -351,6 +482,17 @@ class DeepPipelineOptimizer:
         # 主线程处理写入
         self._write_frames(writer, pbar, total_frames)
 
+        # [EARLY-FLUSH] 提前触发 NVENC 编码收尾，在管线线程清理之前启动。
+        # 此时所有帧已由主线程同步提交到编码队列（write_frame_batch →
+        # NVENCWriter.submit → _NVENCEncodeThread._q.put），发送 SENTINEL
+        # 排在队尾绝对安全。begin_flush() 为非阻塞（仅 queue.put, ~μs），
+        # 编码线程收到后立即异步执行最终 chunk 编码 + per-slot EOS drain
+        # （GPU 操作），主线程同步继续下方 CPU 线程 join/清理，两者真并行。
+        # PreviewWriter 经 __getattr__ 透明代理到内部 NVENCWriter：
+        # hasattr 对 NVENCWriter → True，对 FFmpegWriter → False 自动跳过。
+        if hasattr(writer, 'begin_flush'):
+            writer.begin_flush()
+
         # 终止所有流水线线程
         self.running = False
 
@@ -393,7 +535,7 @@ class DeepPipelineOptimizer:
                 f"F:{self.frame_queue.qsize()}/"
                 f"D:{self.detect_queue.qsize()}/"
                 f"S:{self.sr_queue.qsize()}/"
-                f"G:{self.gfpgan_queue.qsize()}")
+                f"{self._g_label}:{self.gfpgan_queue.qsize()}")
 
     def _dump_all_queues(self):
         import sys, queue, collections
@@ -627,13 +769,51 @@ class DeepPipelineOptimizer:
                 except Exception:
                     pass
 
+    def _estimate_safe_batch_size(self, H: int, W: int) -> int:
+        """[FIX-ESTIMATE-BS] bs=1 OOM 时估算安全 batch_size（吸收 IFRNet
+        v6.4.5.1 _estimate_safe_batch_size L6592-6608）。
+
+        综合 OS 层面空闲 VRAM + PyTorch allocator 已 reserved 但未 allocated
+        的可复用缓存，给出 70% 保守估算。避免硬编码逐帧回退造成速度惩罚。
+        """
+        if not torch.cuda.is_available():
+            return 1
+        try:
+            free_bytes, _ = torch.cuda.mem_get_info(self.device)
+            cached_free = (torch.cuda.memory_reserved(self.device)
+                           - torch.cuda.memory_allocated(self.device))
+            effective_free = free_bytes + cached_free
+            # SR 输入+输出+中间特征 ≈ H*W*3 byte * 2(fp16) * 6(tensors)
+            bytes_per_frame = H * W * 3 * 2 * 6
+            estimated = max(1, int(effective_free * 0.7 / bytes_per_frame))
+            return min(estimated, self.optimal_batch_size)
+        except Exception:
+            return 1
+
+    def _clamp_adaptive_bs(self, new_bs: int) -> int:
+        """[FIX-TRT-ALIGN-READ-BS] 自适应读批收敛约束。
+
+        TRT 激活时 engine B 编译时固定，小于 engine B 的批次会被
+        tensorrt_accel.infer 内部 padding 到 engine B（pad 帧纯浪费算力），
+        缩小 read_bs 不省 SR 算力、反而降低 GFPGAN 侧批效率 → 锁定 engine B。
+        非 TRT 路径维持原收敛逻辑：不超过 [min_adaptive, optimal] 区间。
+        """
+        new_bs = min(new_bs, max(self.optimal_batch_size, self._min_adaptive_batch))
+        if self.trt_accel is not None and self.trt_accel.available:
+            return self.trt_accel.input_shape[0]
+        return new_bs
+
     def _process_sr(self):
         """SR推理处理"""
         _first_batch_done = False
         _sentinel_sent = False
         _prefetched_item = None
         _prefetched_tensor = None
-        _prefetch_pool = _get_pinned_pool()
+        # [FIX-DEFER-RESOLVE] 延迟解析要求输出环深 ≥ 在飞句柄数+1（此处 4），
+        # 保证 slot 被 GPU 复用覆写前上一占用者的 CPU 拷贝已完成
+        _prefetch_pool = _get_pinned_pool(4)
+        _resolve_futs = []   # 在飞解析 future（按提交顺序，最多 2 个未完成）
+        _batch_cnt = 0  # 周期清理计数器
         _use_half = self.upsampler.half
 
         try:
@@ -649,6 +829,9 @@ class DeepPipelineOptimizer:
                         item = self.detect_queue.get(timeout=1.0)
 
                     if item is None:
+                        # [FIX-DEFER-RESOLVE] 转发哨兵前按序冲刷全部在飞解析，
+                        # 保证末批帧先于哨兵入队（帧序守恒）
+                        self._drain_resolve_futs(_resolve_futs)
                         self.sr_queue.put(None)
                         _sentinel_sent = True
                         break
@@ -656,6 +839,7 @@ class DeepPipelineOptimizer:
                     batch_frames, face_data, is_end = item
 
                     if batch_frames is None:
+                        self._drain_resolve_futs(_resolve_futs)
                         self.sr_queue.put((None, None, None, None, True))
                         _sentinel_sent = True
                         break
@@ -671,16 +855,41 @@ class DeepPipelineOptimizer:
                     t0 = time.perf_counter()
 
                     def _sr_with_oom_fallback(frames, prefetched_batch_t=None):
-                        retry_bs = min(self.optimal_batch_size, len(frames))
+                        # [FIX-OOM-TRT] TRT engine 的 batch 维度是编译时固定的，
+                        # OOM 时不持久化降低 optimal_batch_size，否则后续所有批次
+                        # 都用小 batch 去 pad 大 engine，性能塌方（参照 IFRNet
+                        # v6.4.5.1 _safe_infer L6627: TRT 启用时抑制 batch_size 变更）。
+                        _is_trt = (self.trt_accel is not None
+                                   and self.trt_accel.available)
+                        _trt_engine_B = (self.trt_accel.input_shape[0]
+                                         if _is_trt else None)
+                        # [FIX-TRT-WORKING-BS] TRT OOM 后记住成功 bs，
+                        # 避免每批都从 optimal_batch_size 重试 → 必然 OOM → 浪费冷却时间
+                        if _is_trt and self._trt_working_bs > 0:
+                            retry_bs = min(self._trt_working_bs, len(frames))
+                        else:
+                            retry_bs = min(self.optimal_batch_size, len(frames))
                         _can_use_prefetch = (prefetched_batch_t is not None and
                                              retry_bs >= len(frames) and
                                              prefetched_batch_t.shape[0] == len(frames))
                         _had_real_oom = False
+                        _oom_count = 0
+                        _max_oom_retries = 4 if _is_trt else 12
                         while True:
                             try:
                                 all_sr = []
                                 i = 0
+                                # [FIX-DEFER-RESOLVE] 单批多子批（OOM 降级后 retry_bs < len）
+                                # 时在飞句柄上限 = 2：跨批 slot 复用距离 ≥ 2 次调用，
+                                # 保证下次复用前其 future 已被 reap（解析完成），
+                                # 防止 pinned slot 复用覆写未拷贝数据
+                                _defer_this = self._defer_resolve
+                                _ring_keep = min(2, max(1, getattr(_prefetch_pool, '_num_slots', 2) - 1))
                                 while i < len(frames):
+                                    if _defer_this and sum(
+                                            1 for _x in all_sr
+                                            if isinstance(_x, dict)) >= _ring_keep:
+                                        all_sr = _sr_materialize(all_sr)
                                     sub = frames[i:i + retry_bs]
                                     _pt = (prefetched_batch_t
                                            if (_can_use_prefetch and i == 0)
@@ -691,43 +900,128 @@ class DeepPipelineOptimizer:
                                         self.transfer_stream, self.sr_stream,
                                         self.trt_accel, self.cuda_graph_accel,
                                         prefetched_batch_t=_pt,
+                                        defer_resolve=_defer_this,
                                     )
                                     all_sr.extend(sub_sr)
                                     i += retry_bs
-                                if _had_real_oom and retry_bs < self.optimal_batch_size:
-                                    print(f'[SR-OOM] batch_size 降级至 {retry_bs}，持久生效', flush=True)
-                                    self.optimal_batch_size = retry_bs
+
+                                # ── 成功：TRT 模式不持久化 batch_size ──
+                                # [FIX-RECOVER-THRESHOLD] 原阈值 5 太低（~0.3s 就触发恢复），
+                                # 恢复到 engine B 后立即 OOM → 死亡螺旋。提升到 50 批，
+                                # 确保显存压力真正缓解后才尝试扩大 batch。
+                                _recover_threshold = 50
+                                if _had_real_oom:
+                                    if _is_trt:
+                                        # 记录本次成功的临时 bs，后续批次从它开始
+                                        self._trt_working_bs = retry_bs
+                                        self._trt_success_streak = 1
+                                        print(f'[SR-OOM] TRT OOM 恢复（临时 bs={retry_bs}，'
+                                              f'engine B={_trt_engine_B} 不变，稳定={self._trt_success_streak}/{_recover_threshold}）',
+                                              flush=True)
+                                    elif retry_bs < self.optimal_batch_size:
+                                        print(f'[SR-OOM] batch_size 降级至 {retry_bs}，持久生效', flush=True)
+                                        self.optimal_batch_size = retry_bs
+                                elif _is_trt and self._trt_working_bs > 0:
+                                    # 无 OOM 的正常批次（使用中 reduced bs），递增成功计数
+                                    self._trt_success_streak += 1
+                                    if self._trt_success_streak >= _recover_threshold:
+                                        # [FIX-GRADUAL-RECOVER] 渐进恢复：×2 而非直接跳
+                                        # engine B，避免跳跃过大导致立即 OOM（参照 IFRNet
+                                        # batch_size+1 渐进模式）。
+                                        # [FIX-NO-RESET] 到达 engine B 后不再清零 _trt_working_bs，
+                                        # 保持 = engine B（非 0），后续批次继续走 tracking 路径。
+                                        # 清零导致下一批从 optimal_batch_size 开始 → 立即 OOM → 死亡螺旋。
+                                        _next_bs = min(self._trt_working_bs * 2, _trt_engine_B)
+                                        if _next_bs > self._trt_working_bs:
+                                            # [FIX-MEM-GUARD] 显存压力检查：free < 20% 时跳过恢复，
+                                            # 维持当前 bs 并重置计数。避免在显存近满时盲目扩大 batch。
+                                            _free_bytes, _total_bytes = torch.cuda.mem_get_info(self.device)
+                                            if _free_bytes < _total_bytes * 0.20:
+                                                self._trt_success_streak = 0
+                                                # 不打印，避免日志洪水（每 50 批触发一次检查）
+                                            else:
+                                                _old_bs = self._trt_working_bs
+                                                self._trt_working_bs = _next_bs
+                                                self._trt_success_streak = 0
+                                                self._oom_cooldown = 0
+                                                _label = '完全恢复' if _next_bs >= _trt_engine_B else '渐进恢复'
+                                                print(f'[SR-OOM] {_label}（bs={_old_bs}'
+                                                      f'→{_next_bs}，engine B={_trt_engine_B}）', flush=True)
+                                                # [FIX-NO-RESET] 不再清零。_trt_working_bs 保持 = engine_B。
+                                                # 下一批走 tracking 路径 (L726-727)，而非从 optimal 开始。
+
+                                # ── TRT padding 模式：碎片整理 ──
+                                # [FIX-NO-EMPTY-CACHE] expandable_segments 模式下
+                                # empty_cache() 释放整个内存池回 OS，下一次 alloc
+                                # 需重新走 cudaMallocAsync → 反而增加碎片+延迟。
+                                # 不再每批调用。低频兜底由 _batch_cnt % 100 处理。
+                                # 原逻辑（每批 empty_cache）已移除。
+
+                                # ── OOM 冷却递减 ──
+                                if self._oom_cooldown > 0:
+                                    self._oom_cooldown -= 1
                                 return all_sr
+
                             except RuntimeError as _oom_e:
                                 _es = str(_oom_e).lower()
                                 if 'out of memory' not in _es:
                                     raise
 
                                 _had_real_oom = True
+                                _oom_count += 1
+                                self._oom_total_count += 1
+                                self._trt_success_streak = 0  # OOM 打破稳定计数
                                 _can_use_prefetch = False
                                 prefetched_batch_t = None
 
+                                # ── Stage 1: 轻量清理 ──
+                                # [FIX-SYNC-BEFORE-CACHE] expandable_segments 下
+                                # cudaFreeAsync 是异步的 — 必须先 synchronize 排空异步释放，
+                                # 再 empty_cache() 将回收内存返回 OS（参照
+                                # expandable-segments-synchronize-after-del.md）。
+                                torch.cuda.synchronize(self.device)
                                 torch.cuda.empty_cache()
+
+                                # ── OOM 冷却期：防连续震荡 ──
+                                if self._oom_cooldown > 0:
+                                    if _is_trt:
+                                        # [FIX-TRT-NO-SLEEP] TRT 模式不睡眠：
+                                        # engine B 固定不变 → 无 batch_size 震荡风险；
+                                        # sleep 只会浪费 wall-clock 时间，不释放显存
+                                        self._oom_cooldown = min(self._oom_cooldown + 5, 60)
+                                        retry_bs = max(1, retry_bs // 2)
+                                    else:
+                                        _wait_s = min(self._oom_cooldown * 0.15, 3.0)
+                                        print(f'[SR-OOM] 冷却中 (cooldown={self._oom_cooldown})，'
+                                              f'等待 {_wait_s:.1f}s ...', flush=True)
+                                        time.sleep(_wait_s)
+                                        torch.cuda.synchronize(self.device)
+                                        torch.cuda.empty_cache()
+                                        self._oom_cooldown = min(self._oom_cooldown + 5, 60)
+                                        retry_bs = max(1, retry_bs // 2)
+                                    continue
+
+                                # ── 暂停 GFPGAN 子进程释放显存 ──
                                 if self.gfpgan_subprocess is not None:
                                     self.gfpgan_subprocess.pause(duration=5.0)
 
-                                if retry_bs > 1:
-                                    retry_bs = max(1, retry_bs // 2)
-                                    print(f'[SR-OOM] OOM，降级 batch_size → {retry_bs}，重试...', flush=True)
-                                else:
-                                    print('[SR-OOM] bs=1 仍 OOM，等待 2s 后最终尝试...', flush=True)
-                                    time.sleep(2.0)
+                                # ── 超过最大重试次数 → 深度清理后逐帧回退 ──
+                                if _oom_count > _max_oom_retries:
+                                    if _is_trt:
+                                        print(f'[SR-OOM] TRT 重试 {_max_oom_retries} 次仍 OOM，'
+                                              f'深度清理后逐帧推理（engine B={_trt_engine_B} 不变）...', flush=True)
+                                    else:
+                                        print(f'[SR-OOM] 重试 {_max_oom_retries} 次仍 OOM，'
+                                              f'深度清理后逐帧推理...', flush=True)
+                                    self._oom_cooldown = 20
+                                    torch.cuda.synchronize(self.device)
                                     torch.cuda.empty_cache()
-                                    if self.gfpgan_subprocess is not None:
-                                        self.gfpgan_subprocess.pause(duration=5.0)
-                                    sub_sr, _, _ = _sr_infer_batch(
-                                        self.upsampler, frames[:1], self.args.outscale,
-                                        getattr(self.args, 'netscale', 4),
-                                        self.transfer_stream, self.sr_stream,
-                                        self.trt_accel, self.cuda_graph_accel,
-                                    )
-                                    all_sr = sub_sr
-                                    for fi in range(1, len(frames)):
+                                    gc.collect()
+                                    torch.cuda.empty_cache()
+                                    time.sleep(3.0)
+                                    # 逐帧推理
+                                    all_sr = []
+                                    for fi in range(len(frames)):
                                         s, _, _ = _sr_infer_batch(
                                             self.upsampler, [frames[fi]], self.args.outscale,
                                             getattr(self.args, 'netscale', 4),
@@ -735,7 +1029,71 @@ class DeepPipelineOptimizer:
                                             self.trt_accel, self.cuda_graph_accel,
                                         )
                                         all_sr.extend(s)
-                                    self.optimal_batch_size = 1
+                                    if not _is_trt:
+                                        self.optimal_batch_size = 1
+                                    return all_sr
+
+                                # ── Stage 2: 减半重试 ──
+                                if retry_bs > 1:
+                                    retry_bs = max(1, retry_bs // 2)
+                                    if _is_trt:
+                                        # [FIX-TRT-WORKING-BS] 记录本次成功的临时 bs，
+                                        # 下一批从它开始，避免每批都从 optimal 重试
+                                        self._trt_working_bs = retry_bs
+                                        print(f'[SR-OOM] TRT OOM → 临时拆分 bs={retry_bs}'
+                                              f'（engine B={_trt_engine_B} 不变），重试...', flush=True)
+                                    else:
+                                        self._oom_cooldown = 8
+                                        print(f'[SR-OOM] OOM，降级 batch_size → {retry_bs}，重试...', flush=True)
+                                else:
+                                    # bs=1 仍 OOM：深度清理 + 估算安全 bs 重试
+                                    self._oom_cooldown = 15
+                                    torch.cuda.synchronize(self.device)
+                                    torch.cuda.empty_cache()
+                                    gc.collect()
+                                    torch.cuda.empty_cache()
+                                    # [STREAM-DUAL] OOM 后重建 sr_stream（参照 IFRNet L6646-6651）
+                                    if self.sr_stream is not None:
+                                        try:
+                                            torch.cuda.synchronize(self.device)
+                                        except Exception:
+                                            pass
+                                        self.sr_stream = torch.cuda.Stream(device=self.device)
+                                    time.sleep(3.0)
+                                    if self.gfpgan_subprocess is not None:
+                                        self.gfpgan_subprocess.pause(duration=5.0)
+                                    # [FIX-ESTIMATE-BS] 深度清理后用 IFRNet 方法估算
+                                    # 安全 batch_size，避免硬编码逐帧回退的速度惩罚
+                                    _h = frames[0].shape[0] if frames else 540
+                                    _w = frames[0].shape[1] if frames else 960
+                                    _safe_bs = self._estimate_safe_batch_size(_h, _w)
+                                    if _safe_bs > 1:
+                                        if _is_trt:
+                                            self._trt_working_bs = _safe_bs
+                                            print(f'[SR-OOM] bs=1 OOM 深度清理后估算'
+                                                  f' safe_bs={_safe_bs}，以临时 bs={_safe_bs} 重试...', flush=True)
+                                        else:
+                                            self.optimal_batch_size = _safe_bs
+                                            print(f'[SR-OOM] bs=1 OOM 深度清理后估算'
+                                                  f' safe_bs={_safe_bs}，重试...', flush=True)
+                                        retry_bs = _safe_bs
+                                        continue
+                                    # 估算 ≤1：逐帧推理兜底
+                                    print('[SR-OOM] 估算 safe_bs≤1，逐帧推理兜底...', flush=True)
+                                    all_sr = []
+                                    for fi in range(len(frames)):
+                                        s, _, _ = _sr_infer_batch(
+                                            self.upsampler, [frames[fi]], self.args.outscale,
+                                            getattr(self.args, 'netscale', 4),
+                                            self.transfer_stream, self.sr_stream,
+                                            self.trt_accel, self.cuda_graph_accel,
+                                        )
+                                        all_sr.extend(s)
+                                    if _is_trt:
+                                        self._trt_working_bs = 1
+                                        print(f'[SR-OOM] 逐帧推理完成，TRT engine B={_trt_engine_B} 保持不变', flush=True)
+                                    else:
+                                        self.optimal_batch_size = 1
                                     return all_sr
 
                     try:
@@ -779,13 +1137,20 @@ class DeepPipelineOptimizer:
                                 if _peek_item is not None:
                                     _pk_frames, _pk_face_data, _pk_is_end = _peek_item
                                     if _pk_frames is not None:
-                                        self.transfer_stream.synchronize()
+                                        # [FIX-PINNED-POOL-RACE] 原来这里用
+                                        # self.transfer_stream.synchronize() 笨重地整条
+                                        # stream 同步来规避 pinned buffer 复用竞态，代价是
+                                        # 抵消了预取本该带来的重叠收益。现在 PinnedBufferPool
+                                        # 内部按 slot 用 event 精确追踪，get_for_frames() 会
+                                        # 自动等待"这个 slot 上次的拷贝"完成，不需要在外面
+                                        # 再做一次全量同步。
                                         with torch.cuda.stream(self.transfer_stream):
                                             _pk_pin = _prefetch_pool.get_for_frames(_pk_frames)
                                             _pk_gpu = _pk_pin.to(self.device, non_blocking=True)
                                             _pk_gpu = _pk_gpu.permute(0, 3, 1, 2).float().div_(255.0)
                                             if _use_half:
                                                 _pk_gpu = _pk_gpu.half()
+                                        _prefetch_pool.mark_issued(self.transfer_stream)
                                         _prefetched_item = _peek_item
                                         _prefetched_tensor = _pk_gpu
                                     else:
@@ -795,12 +1160,40 @@ class DeepPipelineOptimizer:
                             except queue.Empty:
                                 pass
 
-                        while self.running:
-                            try:
-                                self.sr_queue.put((batch_frames, face_data, memory_block, sr_results, is_end), timeout=1.0)
-                                break
-                            except queue.Full:
-                                continue
+                        if self._defer_resolve:
+                            # [FIX-DEFER-RESOLVE] 解析+入队交给解析线程，
+                            # 与下一批 TRT 推理重叠；限深 2 个未完成 future
+                            # （下一迭代启动新推理前会 reap 最旧 future，
+                            # 保证 pinned slot 复用时上一占用者已拷贝完成）
+                            _resolve_futs.append(self._resolve_executor.submit(
+                                self._resolve_and_put,
+                                sr_results, batch_frames, face_data,
+                                memory_block, is_end))
+                            while len(_resolve_futs) > 2:
+                                try:
+                                    _resolve_futs.pop(0).result()
+                                except Exception as _rp_e:
+                                    # 旧批次解析失败不级联：当前批 future 已提交，
+                                    # 其 memory_block 由 GFPGAN 线程消费时释放
+                                    print(f'[SR] 解析任务 reap 异常: {_rp_e}', flush=True)
+                        else:
+                            while self.running:
+                                try:
+                                    self.sr_queue.put((batch_frames, face_data, memory_block, sr_results, is_end), timeout=1.0)
+                                    break
+                                except queue.Full:
+                                    continue
+
+                        # [FIX-MEM-PERIODIC] 低频深层清理。非延迟解析路径的主清理
+                        # 已由 _sr_infer_batch 的 del+synchronize 覆盖；
+                        # [FIX-DEFER-RESOLVE] 延迟解析路径下句柄引用在解析线程释放，
+                        # 此处的周期性全同步同时承担其 cudaFreeAsync 排空职责。
+                        # 频率降至 100 批以降低开销。
+                        _batch_cnt += 1
+                        if _batch_cnt % 100 == 0:
+                            torch.cuda.synchronize(self.device)
+                            gc.collect()
+                            torch.cuda.empty_cache()
 
                     except Exception as e:
                         print(f"SR推理错误（不可恢复）: {e}", flush=True)
@@ -816,6 +1209,12 @@ class DeepPipelineOptimizer:
                 except Exception as e:
                     print(f"SR处理错误: {e}")
         finally:
+            # [FIX-DEFER-RESOLVE] 先按序冲刷全部在飞解析（其中的批次早于
+            # 下方预取残留批次），保证 sr_queue 内帧序不乱
+            try:
+                self._drain_resolve_futs(_resolve_futs)
+            except Exception as _dr_e:
+                print(f'[SR] finally: 解析冲刷异常: {_dr_e}', flush=True)
             # 处理预取残留
             if _prefetched_item is not None:
                 _pk_frames, _pk_face_data, _pk_is_end = _prefetched_item
@@ -868,6 +1267,43 @@ class DeepPipelineOptimizer:
                     self.sr_queue.put((None, None, None, None, True), timeout=3.0)
                 except Exception:
                     pass
+
+    def _resolve_and_put(self, all_sr, batch_frames, face_data, memory_block, is_end):
+        """[FIX-DEFER-RESOLVE] 解析线程入口：物化延迟句柄 → 保序入队 sr_queue。
+
+        单线程执行器保证各批次的入队顺序与提交顺序一致。
+        解析失败时回退 CPU resize 保帧（质量降级但不丢帧，守住帧数守恒）。
+        """
+        try:
+            results = _sr_materialize(all_sr)
+        except Exception as _m_e:
+            print(f'[SR] 延迟解析失败: {_m_e}，回退 CPU resize 保帧', flush=True)
+            import cv2 as _cv2_fb
+            _out_h = int(batch_frames[0].shape[0] * self.args.outscale)
+            _out_w = int(batch_frames[0].shape[1] * self.args.outscale)
+            results = [_cv2_fb.resize(f, (_out_w, _out_h),
+                                      interpolation=_cv2_fb.INTER_LANCZOS4)
+                       for f in batch_frames]
+        for _ in range(300):   # 最多 300s，覆盖下游长时间背压
+            try:
+                self.sr_queue.put(
+                    (batch_frames, face_data, memory_block, results, is_end),
+                    timeout=1.0)
+                return
+            except queue.Full:
+                if not self.running:
+                    break
+        print('[SR] 延迟解析入队失败（pipeline 已停止），批次可能丢失', flush=True)
+
+    def _drain_resolve_futs(self, futs):
+        """[FIX-DEFER-RESOLVE] 按提交顺序等待全部在飞解析完成（含入队）。
+        单个 future 异常不阻断后续冲刷（批次丢失会大声记录）。"""
+        while futs:
+            _f = futs.pop(0)
+            try:
+                _f.result()
+            except Exception as _fe:
+                print(f'[SR] 解析任务异常: {_fe}', flush=True)
 
     def _process_gfpgan(self):
         """GFPGAN处理 - 优化2(提前释放) + 优化5B(异步派发)"""
@@ -1107,8 +1543,8 @@ class DeepPipelineOptimizer:
                                         _new_bs = self._min_adaptive_batch
                                     else:
                                         _new_bs = self._base_batch_size
-                                    _new_bs = min(_new_bs, max(self.optimal_batch_size, self._min_adaptive_batch))
-                                    self._adaptive_read_batch_size = _new_bs
+                                    # [FIX-TRT-ALIGN-READ-BS] 收敛约束集中到辅助方法（TRT 锁定 engine B）
+                                    self._adaptive_read_batch_size = self._clamp_adaptive_bs(_new_bs)
                             continue
                         else:
                             all_restored = self.gfpgan_subprocess.infer(all_crops)
@@ -1147,8 +1583,8 @@ class DeepPipelineOptimizer:
                             _new_bs = self._min_adaptive_batch
                         else:
                             _new_bs = self._base_batch_size
-                        _new_bs = min(_new_bs, max(self.optimal_batch_size, self._min_adaptive_batch))
-                        self._adaptive_read_batch_size = _new_bs
+                        # [FIX-TRT-ALIGN-READ-BS] 收敛约束集中到辅助方法（TRT 锁定 engine B）
+                        self._adaptive_read_batch_size = self._clamp_adaptive_bs(_new_bs)
 
                 _pending_tasks.append((None, None, final_frames, None, is_end))
                 _current_sr_item = None
@@ -1257,6 +1693,12 @@ class DeepPipelineOptimizer:
             self._async_dispatcher.close()
             self._async_dispatcher = None
 
+        # [FIX-DEFER-RESOLVE] 关闭解析执行器（正常流程 futures 已在哨兵处冲刷，
+        # 此处不等待以避免异常关闭路径挂死）
+        if self._resolve_executor is not None:
+            self._resolve_executor.shutdown(wait=False)
+            self._resolve_executor = None
+
         for q_name, q in [('frame', self.frame_queue), ('detect', self.detect_queue),
                           ('sr', self.sr_queue), ('gfpgan', self.gfpgan_queue)]:
             try:
@@ -1267,10 +1709,20 @@ class DeepPipelineOptimizer:
                 pass
         self._vlog("\n[Pipeline] 已发送停止信号到所有队列", flush=True)
 
-        if self.gfpgan_subprocess:
-            self._vlog("\n[Pipeline] 正在关闭GFPGAN子进程...", flush=True)
-            self.gfpgan_subprocess.close()
-            self._vlog("\n[Pipeline] GFPGAN子进程已关闭", flush=True)
+        if self.gfpgan_subprocess is not None:
+            if self.gfpgan_subprocess.process.is_alive():
+                # [FIX-GFPGAN-KEEPALIVE] 子进程跨段保活：存活时回注到 args 供下一段复用，
+                # 避免每段重新 spawn + TRT warmup（典型几十秒/段）。
+                # 下一段 DeepPipelineOptimizer.__init__ 的预启动消费路径
+                # （is_alive() 检查 + 死亡回退）天然接住回注的存活子进程。
+                self.args._early_gfpgan_subprocess = self.gfpgan_subprocess
+                self.gfpgan_subprocess = None  # 断开本 pipeline 引用，防止重复处置
+                print("[FIX-GFPGAN-KEEPALIVE] GFPGAN 子进程保活，注入 args._early_gfpgan_subprocess 供下一段复用",
+                      flush=True)
+            else:
+                self._vlog("\n[Pipeline] 正在关闭GFPGAN子进程（已死亡）...", flush=True)
+                self.gfpgan_subprocess.close()
+                self._vlog("\n[Pipeline] GFPGAN子进程已关闭", flush=True)
 
         self.detect_executor.shutdown(wait=False)
         self.paste_executor.shutdown(wait=False)
@@ -1323,13 +1775,26 @@ class DeepPipelineOptimizer:
                     # 收到有效数据，重置空转计时
                     _idle_since = None
 
-                    for frame in final_frames:
-                        if getattr(writer, '_broken', False):
-                            print("\n[致命错误] FFmpeg 后台写入进程已崩溃!", flush=True)
-                            self.running = False
-                            break
-                        writer.write_frame(frame)
-                        written_count += 1
+                    # [SDK-NVENC] 检测批量写入接口: 一次性提交整批帧以获得更好的编码吞吐
+                    if hasattr(writer, 'write_frame_batch'):
+                        try:
+                            writer.write_frame_batch(final_frames)
+                            written_count += len(final_frames)
+                        except Exception:
+                            # 批量写入失败时回退到逐帧写入
+                            for frame in final_frames:
+                                if getattr(writer, '_broken', False):
+                                    break
+                                writer.write_frame(frame)
+                                written_count += 1
+                    else:
+                        for frame in final_frames:
+                            if getattr(writer, '_broken', False):
+                                print("\n[致命错误] FFmpeg 后台写入进程已崩溃!", flush=True)
+                                self.running = False
+                                break
+                            writer.write_frame(frame)
+                            written_count += 1
 
                     if getattr(writer, '_broken', False):
                         break
@@ -1373,15 +1838,22 @@ class DeepPipelineOptimizer:
                                      f"F:{self.frame_queue.qsize()}/"
                                      f"D:{self.detect_queue.qsize()}/"
                                      f"S:{self.sr_queue.qsize()}/"
-                                     f"G:{self.gfpgan_queue.qsize()}")
+                                     f"{self._g_label}:{self.gfpgan_queue.qsize()}")
                     )
 
                     if torch.cuda.is_available():
                         allocated = torch.cuda.memory_allocated() / 1024 ** 3
                         reserved = torch.cuda.memory_reserved() / 1024 ** 3
-                        if allocated > 0.9 * reserved:
+                        # [FIX-THRESHOLD] 原阈值 allocated > 0.9 * reserved 在 T4 等
+                        # 小显存 GPU 上因 reserved 很小（~2GB）几乎每帧都触发误报。
+                        # 改用物理总显存：> 85% 物理上限才报警，对应实际 OOM 风险。
+                        # [FIX-RATELIMIT] 200 帧才报告一次（对齐 IFRNet 不报实时压力的设计），
+                        # 避免日志洪水。阈值仍保留作为早期预警。
+                        _total_mem = torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
+                        if allocated > 0.85 * _total_mem and written_count % 200 < len(final_frames):
                             print(f'\n[资源警告] GPU内存压力过高: '
-                                  f'{allocated:.2f}GB / {reserved:.2f}GB')
+                                  f'{allocated:.2f}GB / {_total_mem:.1f}GB total '
+                                  f'(reserved={reserved:.2f}GB)')
 
                     if written_count // 20 > (written_count - len(final_frames)) // 20:
                         # monitor_msg = (f"\n[性能监控] 帧{written_count}/{total_frames} | "
