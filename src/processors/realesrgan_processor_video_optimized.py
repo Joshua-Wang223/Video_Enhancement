@@ -172,23 +172,6 @@ class RealESRGANVideoProcessor:
         if _esrgan_ds_str not in sys.path:
             sys.path.insert(0, _esrgan_ds_str)
 
-        # 临时目录句柄（在 _setup_temp_dirs 中初始化）
-        self.temp_base:       Optional[Path] = None
-        self.checkpoint_file: Optional[Path] = None
-        self.segment_dir:     Optional[Path] = None
-        self.processed_dir:   Optional[Path] = None
-        self._checkpoint_save_logged = False    # 首次保存断点时打印路径
-        self._current_input_video: Optional[str] = None  # 当前输入视频，用于断点指纹
-        self._upstream_segments_hash: Optional[str] = None  # 上游分段指纹（process_segments_directly）
-
-        # ------ 多片段复用相关 ------
-        self._main_mod = None          # 底层 main 模块
-        self._enhancer = None          # create_video_enhancer 的返回值
-        self._ns = None                # 标准化后的参数命名空间（存一份用于构建 enhancer）
-        self._enhancer_initialized = False
-
-        # 跟踪是否有分段处理失败，供上游主流程判断是否继续
-        self._has_failure = False
     # -------------------------------------------------------------------------
     # 公共接口
     # -------------------------------------------------------------------------
