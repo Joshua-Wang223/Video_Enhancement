@@ -1,7 +1,8 @@
 """
-IFRNet 视频插帧处理器 v6（单卡版）
-=====================================
-对接 process_video_v6_4_3_single.py（IFRNetVideoProcessor），
+IFRNet 视频插帧处理器 v6（单卡版，模块化优化层）
+====================================================
+对接 external/ifrnet_video/main.py（IFRNetVideoProcessor，v6.4.5.1 深度模块化包），
+NVENC SDK Level 1 GPU 直通 + CE-Pipeline 异步编码。
 保留分段直接对接与断点恢复逻辑，支持 v6.1 全部硬件加速参数：
   - FP16 / torch.compile / CUDA Graph（compile 激活时自动接管 Graph）
   - TensorRT 可选加速（首次构建需缓存 .trt Engine）
@@ -11,11 +12,20 @@ IFRNet 视频插帧处理器 v6（单卡版）
   - JSON 性能报告（可选，含 infer_latency_ms / nvdec / nvenc 等字段）
   - preview 帧预览（可选，每隔 preview_interval 帧弹出一帧预览）
 
+【v6.4.5.1 模块化重构】
+  - 底层由 external/IFRNet/process_video_v6_4_5_1_single.py（8756 行单文件）
+    重构为 external/ifrnet_video 包（main / pipeline / nvenc_sdk /
+    tensorrt_accel / ffmpeg_io / config / ifrnet_utils），镜像
+    external/realesrgan_video 的目录与模块划分，实现逐字保真迁移。
+  - 本处理器（ifrnet_processor_video_optimized）为中间适配层：自
+    ifrnet_processor_v6_4_single.py 复制而来，仅将底层对接点改为
+    ifrnet_video.main.IFRNetVideoProcessor，其余逻辑保持不变。
+
 【v6 变更说明（相对 v5）】
-  - 对齐底层 process_video_v6_4_3_single.py v6.4.3（含 FIX-D2H / FIX-PAD）
+  - 对齐底层 IFRNet v6.4.5.1（NVENC SDK Level 1 + CE-Pipeline）
   - 新增 preview / preview_interval 参数（透传至底层 process_video）
   - main() CLI 新增 --preview / --preview-interval
-  - _process_segment 打印信息对齐 v6.4.3 版本标记
+  - _process_segment 打印信息对齐 v6.4.5.1 版本标记
   - 构造函数新增参数与 default_config.json 完全对齐
   - [v6.1 优化] 底层 IFRNetVideoProcessor 在循环外构造一次，分段复用，避免重复加载/编译/构建
 """
@@ -60,7 +70,8 @@ class IFRNetProcessor:
             config: 配置对象（应包含 paths, models.ifrnet, processing 等节）
         """
         self.config   = config
-        self.ifrnet_dir = Path(config.get("paths", "base_dir")) / "external" / "IFRNet"
+        # 底层项目：external/ifrnet_video（v6.4.5.1 模块化包，镜像 realesrgan_video）
+        self.ifrnet_dir = Path(config.get("paths", "base_dir")) / "external" / "ifrnet_video"
 
         # ── 模型路径解析（优先级: model_path 显式路径 > model_name 自动拼接 > 默认名称）
         self.model_name = config.get("models", "ifrnet", "model_name",
@@ -105,6 +116,8 @@ class IFRNetProcessor:
         self.codec       = config.get("models", "ifrnet", "codec",       default="libx264")
         self.crf         = config.get("models", "ifrnet", "crf",         default=23)
         self.x264_preset = config.get("models", "ifrnet", "x264_preset", default="medium")
+        self.rate_mode       = config.get("models", "ifrnet", "rate_mode",       default="vbr_hq")
+        self.lookahead_depth = config.get("models", "ifrnet", "lookahead_depth", default=8)
         self.keep_audio  = config.get("models", "ifrnet", "keep_audio",  default=True)
         self.ffmpeg_bin  = config.get("models", "ifrnet", "ffmpeg_bin",  default="ffmpeg")
         self.report_json = config.get("models", "ifrnet", "report_json", default=None)
@@ -120,12 +133,21 @@ class IFRNetProcessor:
         # 或用户在 config / CLI --trt-cache-dir 中显式指定）；空时兜底为 base_dir/.trt_cache。
         self.trt_cache_dir = config.get("paths", "trt_cache_dir", default="") or ""
 
-        # 验证 IFRNet 目录
+        # 验证 IFRNet 项目目录
         if not self.ifrnet_dir.exists():
-            raise FileNotFoundError(f"IFRNet 目录不存在: {self.ifrnet_dir}")
+            raise FileNotFoundError(
+                f"ifrnet_video 目录不存在: {self.ifrnet_dir}\n"
+                f"请确认 external/ifrnet_video/ 已正确放置。"
+            )
 
-        # 将 IFRNet 加入 Python 路径
-        sys.path.insert(0, str(self.ifrnet_dir))
+        # 将 ifrnet_video 加入 Python 路径：
+        #   1. external/            → 支持包导入 `from ifrnet_video.main import ...`
+        #   2. external/ifrnet_video → 支持包内兄弟模块的平级导入（与 realesrgan_video 一致）
+        _ifrnet_ds_str      = str(self.ifrnet_dir)
+        _ifrnet_pkg_parent  = str(self.ifrnet_dir.parent)
+        for _p in (_ifrnet_ds_str, _ifrnet_pkg_parent):
+            if _p not in sys.path:
+                sys.path.insert(0, _p)
 
         # 临时目录句柄（在 _setup_temp_dirs 中初始化）
         self.temp_base:       Optional[Path] = None
@@ -136,7 +158,7 @@ class IFRNetProcessor:
         self._current_input_video: Optional[str] = None  # 当前输入视频，用于断点指纹
         self._upstream_segments_hash: Optional[str] = None  # 上游分段指纹（process_segments_directly）
 
-        # [v6.4.3 新增] 跟踪是否有分段处理失败，供上游主流程判断是否继续
+        # [v6.4.5.1 新增] 跟踪是否有分段处理失败，供上游主流程判断是否继续
         self._has_failure = False
 
         # [v6.1 新增] 底层 IFRNetVideoProcessor 实例缓存，避免每个分段重新初始化
@@ -145,6 +167,18 @@ class IFRNetProcessor:
     # -------------------------------------------------------------------------
     # 公共接口
     # -------------------------------------------------------------------------
+
+    def _la_is_active(self) -> bool:
+        """检测 NVENC LA 是否实际生效 (仅 VBR_HQ/QVBR, crf>0)。
+
+        NVENC SDK 严格遵守帧数守恒 (Output==Input)，LA 仅引入编码延迟，不增删帧。
+        跨编码会话不可复用 LA FIFO，每个 segment 独立管理其 LA 状态。
+        """
+        if self.crf == 0:
+            return False
+        if self.rate_mode in ("vbr_hq", "qvbr") and self.lookahead_depth > 0:
+            return True
+        return False
 
     def process_video_segments(self, input_video: str) -> List[str]:
         """
@@ -156,7 +190,7 @@ class IFRNetProcessor:
         Returns:
             处理后的分段文件路径列表
         """
-        print(f"\n🎬 IFRNet 插帧处理（分段模式）—— v6.4.3")
+        print(f"\n🎬 IFRNet 插帧处理（分段模式）—— v6.4.5.1")
         print(f"📹 输入: {input_video}")
         print(f"⚡ 插帧倍数: {self.interpolation_factor}x")
         print(f"🖥️  设备: {self.device} | "
@@ -176,6 +210,11 @@ class IFRNetProcessor:
             return []
 
         print(f"📊 时长: {format_time(duration)}, 分段: {self.segment_duration}秒")
+        if self._la_is_active():
+            print(f"   NVENC LA={self.lookahead_depth} 已激活 " +
+                  {True: "(VBR_HQ)", False: "(QVBR)"}.get(
+                      self.rate_mode == 'vbr_hq', "(QVBR)") +
+                  " — NVENC SDK 严格遵守帧数守恒，每段独立排空")
 
         # 视频较短时直接整体处理
         if duration <= self.segment_duration:
@@ -209,10 +248,13 @@ class IFRNetProcessor:
         Returns:
             处理后的分段文件路径列表
         """
-        print(f"\n🎬 IFRNet 插帧处理（接收分段输入）—— v6.4.3")
+        print(f"\n🎬 IFRNet 插帧处理（接收分段输入）—— v6.4.5.1")
         print(f"📹 输入分段数: {len(input_segments)}")
         print(f"⚡ 插帧倍数: {self.interpolation_factor}x")
 
+        # LA 参数透传：NVENC SDK 帧数守恒，每段独立编码+排空，无需禁用 LA
+        if len(input_segments) > 1 and self._la_is_active():
+            print(f"   接收多分段输入 + NVENC LA={self.lookahead_depth} — 每段独立排空，帧数守恒")
         self._setup_temp_dirs(video_name, "ifrnet_from_segments")
         self._upstream_segments_hash = hashlib.md5(
             '|'.join(sorted(input_segments)).encode()
@@ -234,10 +276,11 @@ class IFRNetProcessor:
         """
         from video_utils import (
             VideoInfo, smart_extract_audio, merge_videos_by_codec,
+            build_color_args,
         )
 
         print("\n" + "=" * 65)
-        print("🎬 IFRNet 视频插帧处理（完整流程）—— v6.4.3")
+        print("🎬 IFRNet 视频插帧处理（完整流程）—— v6.4.5.1")
         print(f"📹 输入  : {input_video}")
         print(f"📤 输出  : {output_video}")
         print(f"⚡ 插帧倍数: {self.interpolation_factor}x")
@@ -276,6 +319,12 @@ class IFRNetProcessor:
         # 合并
         print(f"\n🔗 合并 {len(processed_segments)} 个插帧分段...")
         output_config = self.config.get_section("output", {})
+        # [COLOR-FIX] 合并输出注入源视频色彩元数据（有值透传，无值回退 BT.709+Full Range）
+        output_config = {
+            **output_config,
+            "extra_args": list(output_config.get("extra_args", []))
+                          + build_color_args(input_video),
+        }
         success = merge_videos_by_codec(
             processed_segments, output_video,
             audio_path=audio_path,
@@ -405,7 +454,7 @@ class IFRNetProcessor:
             return self._video_processor
 
         # 延迟导入，保证只在需要时加载
-        from process_video_v6_4_3_single import IFRNetVideoProcessor
+        from ifrnet_video.main import IFRNetVideoProcessor
 
         _trt_cache_dir = None
         if self.use_tensorrt:
@@ -429,6 +478,8 @@ class IFRNetProcessor:
             codec          = self.codec,
             crf            = self.crf,
             x264_preset    = self.x264_preset,
+            rate_mode      = self.rate_mode,
+            lookahead_depth = self.lookahead_depth,
             keep_audio     = self.keep_audio,
             ffmpeg_bin     = self.ffmpeg_bin,
             report_json    = self.report_json,
@@ -443,14 +494,28 @@ class IFRNetProcessor:
         [v6.1 新增] 释放底层 processor 并清空缓存。
         通常在完整流程结束后调用，释放 GPU 内存等资源。
         [SEGMENT-REUSE] 先调用 cleanup() 释放跨段缓存的 NVENC/Pool/RingBuffer。
+        [VRAM-CLEANUP] del 后 gc.collect + empty_cache，把 torch reserved 归还驱动，
+        使后续阶段（如 ESRGAN TRT 构建）看到真实空闲显存。
         """
         if self._video_processor is not None:
             try:
-                self._video_processor.cleanup()
+                # release_model=True：阶段/流程已全部结束，连同模型/TRT 一起销毁；
+                # 跨段复用期间本方法不会被调用，复用不受影响。
+                self._video_processor.cleanup(release_model=True)
+            except TypeError:
+                self._video_processor.cleanup()  # 旧版签名无 release_model 参数
             except AttributeError:
                 pass  # 旧版 processor 无 cleanup 方法，忽略
             del self._video_processor
             self._video_processor = None
+            try:
+                import gc as _gc
+                import torch as _torch
+                _gc.collect()
+                if _torch.cuda.is_available():
+                    _torch.cuda.empty_cache()
+            except Exception:
+                pass
 
     def _process_segments(self, segment_files: List[str],
                            checkpoint: dict) -> List[str]:
@@ -520,7 +585,7 @@ class IFRNetProcessor:
                           total_segments: int = 1,
                           segment_index: int = 1) -> bool:
         """
-        调用 process_video_v6_4_3_single.IFRNetVideoProcessor 处理单个分段。
+        调用 ifrnet_video.main.IFRNetVideoProcessor 处理单个分段。
         [v6.1 修改] 复用全局缓存的 processor，避免重复初始化。
 
         Args:
@@ -567,7 +632,7 @@ class IFRNetProcessor:
                 return False
 
         except ImportError as e:
-            print(f"   ❌ 无法导入 process_video_v6_4_3_single: {e}")
+            print(f"   ❌ 无法导入 ifrnet_video.main: {e}")
             return False
         except Exception as e:
             print(f"   ❌ 处理失败: {e}")
@@ -603,7 +668,7 @@ class IFRNetProcessor:
 def main():
     """
     独立调用入口：直接驱动 IFRNetProcessor，
-    底层对接 process_video_v6_4_3_single.IFRNetVideoProcessor。
+    底层对接 ifrnet_video.main.IFRNetVideoProcessor（v6.4.5.1 模块化包）。
 
     示例：
       # 使用默认配置，直接插帧
@@ -646,7 +711,7 @@ def main():
         description="IFRNet 视频插帧处理器 v6（单卡版）—— 独立入口",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-底层脚本：external/IFRNet/process_video_v6_4_3_single.py（v6.4.3）
+底层项目：external/ifrnet_video/（v6.4.5.1，NVENC SDK Level 1 GPU 直通，模块化）
 
 特性：
   · 分段处理 + 断点恢复
@@ -731,6 +796,12 @@ def main():
                         choices=['ultrafast', 'superfast', 'veryfast', 'faster', 'fast',
                                  'medium', 'slow', 'slower', 'veryslow'],
                         help='编码预设（默认 medium，NVENC 自动使用 p4）')
+    parser.add_argument('--rate-mode', type=str,
+                        choices=['constqp', 'vbr_hq', 'qvbr'],
+                        help='NVENC 码率控制模式（默认 qvbr）')
+    parser.add_argument('--lookahead-depth', type=int,
+                        choices=[0, 8, 16, 32],
+                        help='NVENC 前向帧预看深度（默认 8）')
     parser.add_argument("--ffmpeg-bin", type=str,
                         help="ffmpeg 可执行文件路径（默认 ffmpeg）")
 
@@ -843,6 +914,10 @@ def main():
         config.set("models", "ifrnet", "codec",       value=args.codec)
     if args.x264_preset is not None:
         config.set("models", "ifrnet", "x264_preset", value=args.x264_preset)
+    if args.rate_mode:
+        config.set("models", "ifrnet", "rate_mode",       value=args.rate_mode)
+    if args.lookahead_depth is not None:
+        config.set("models", "ifrnet", "lookahead_depth", value=args.lookahead_depth)
     if args.ffmpeg_bin:
         config.set("models", "ifrnet", "ffmpeg_bin",  value=args.ffmpeg_bin)
 

@@ -1,0 +1,1128 @@
+➜  Video_Enhancement git:(main) ✗ python external/IFRNet/process_video_v6_4_5_1_single.py \
+    --input ../input_videos/word_world_2.mp4 \
+    --output output/word_world_2_5.1_fixed.mp4 \
+    --scale 2 --batch-size 24 --no-cuda-graph --no-compile --use-tensorrt \
+    --codec libx264 --crf 21 --x264-preset medium
+=================================================================
+  IFRNet 视频插帧 —— 终极优化版 v6.4.5（单卡版）
+=================================================================
+  模型:   IFRNet_S_Vimeo90K
+  设备:   cuda | GPU: Tesla T4
+  FP16:   True | Compile: False | CUDA Graph: False | TensorRT: True
+  NVDEC:  True | NVENC(h264): True | NVENC(hevc): True
+  编码器: libx264 → 实际: h264_nvenc | CRF: 21 | batch_size: 24
+  TRT 缓存: (自动: /workspace/Video_Enhancement/.trt_cache)
+
+  加载模型: /workspace/Video_Enhancement/models_IFRNet/checkpoints/IFRNet_S_Vimeo90K.pth → cuda
+  [FIX-CU] cudnn.benchmark = True 已启用
+  FP16 推理已启用
+[TensorRT] Engine 已激活，TRT 推理就绪。
+
+[GPU0] NVENC 编码已激活: h264_nvenc
+[NVENCEncoder] NVENC API: 0xd0 = v13.0
+[NVENCEncoder] 使用 primary CUDA context (0x55779f5f5380)
+[NVENCEncoder] OpenEncodeSessionEx OK: apiVersion=0xd0 (13.0)
+[NVENCEncoder] Driver codec GUID: 6bc82762-4e63-4ca4
+[NVENCEncoder] Driver preset GUID: 82e3e450-bdbb-4e40 (index=4/16)
+[NVENCEncoder] GetEncodePresetConfig OK
+[NVENCEncoder] QVBR: crf=21 qvbrQuality=21 maxBitrate=62208kbps
+[NVENCEncoder] 4 pipeline slots created (0x5577a5175ac0..0x5577a518e0c0)
+[NVENCEncoder] Ready: 720x576@50.0fps H.264 QVBR QP=21 preset=medium pipeline=4 tq=21 (GPU direct SDK 13.0)
+   [FIX-T3-V643] Level 1: NVENC GPU 直通编码 (720x576@50.0fps)
+[GPU0] 插帧:   0%|                                                                                                                                                                    | 0/687 [00:00<?, ?帧/s][NVENCEncoder] Cached SPS+PPS: 49 bytes
+[GPU0] 插帧:   0%|▏                                                                                                                                                           | 1/687 [00:00<03:39,  3.13帧/s][T2-CACHE] 加载缓存 T2=333.3ms (key=IFRNet_S_Vimeo90K_576x736_bs24_trt_sm75_teslat4)
+[AUTO-TUNE] Tesla T4 tier=1.0 nvdec=True nvenc=True pcie=16GB/s cpu=32c  backend=trt(×1.0) model=IFRNet_S_Vimeo90K(×1.0)
+  T1=11.2ms  T2[estimated(×1.0, model×1.0)]=340.0ms  T3(NVENC)=16.0ms
+  ratio T2/T1=30.5x T3/T2=0.0x
+  pair_queue=8(~733MB) result_queue=8 pool=10(~305MB pinned)
+[PinnedResultPool] 分配 10 × (24,576,736,3) uint8 pinned，共 305 MB
+[IFRNet-Pipeline] 启动深度流水线 | pair_queue=8 result_queue=8 effective_bs=24 T=1× | D2H=pinned(stream_d2h)
+[GPU0] 插帧:  98%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌  | 673/687 [00:16<00:00, 43.47帧/s, P=1, R=0, eta=0s, fps=48.8, ms=328][AUTO-TUNE-RETUNE] 实测 T2=328.1ms（全段 26 batches 中位数）| 静态估算=340.0ms | 偏差=4% | 当前 result_queue=8 | 校准建议 pair=8 result=8（下次生效）
+[GPU0] 插帧:  98%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌  | 673/687 [00:16<00:00, 40.80帧/s, P=1, R=0, eta=0s, fps=48.8, ms=328]
+[GPU0] 完成 | 原始帧=687 → 输出帧=1373 | 41.3 原始帧/s（含 warmup/初始化）
+
+[GPU-MONITOR] 采样 17 次  时长 16s  VRAM 总量: 14.6 GiB
+  利用率(全程)  均值=61.1%  P50=67.0%  P95=100.0%  峰值=100.0%  σ=33.2%  空闲占比=41.2%
+  利用率(稳定段) 均值=68.6%  P50=72.0%  P95=100.0%  σ=27.8%
+  利用率(最近段) 均值=61.1%  P95=100.0%
+  显存           均值=4.87 GiB  P95=5.16 GiB  峰值=5.16 GiB  (35% 使用  余量 9.4 GiB)
+[GPU-MONITOR] ✅ batch_size=24 配置合适  （稳定利用率 69%，VRAM 占用 35%）
+[GPU-MONITOR] 💡 pair_queue 建议增大: 8 → 8  （利用率波动大 σ=28%、GPU 空闲占比 41%，增大可平滑 H2D 供料气泡）
+[GPU-MONITOR] 💡 result_queue 建议增大: 8 → 16  （P95=100%，σ=28%，T3 可能拖累 T2）
+[ADAPTIVE-QUEUE] 下次将使用 pair_queue=8 result_queue=12  (GPU-MONITOR=16 RETUNE=8 → avg=12)
+
+✅ 插帧完成！
+   原始帧: 687 → 输出帧: 1373 (×2.0)
+   输出: output/word_world_2_5.1_fixed.mp4 (17.8 MB)
+
+⏱️  总耗时（含模型加载）: 0分17秒
+✅ 输出: output/word_world_2_5.1_fixed.mp4 (17.8 MB)
+[NVENCEncoder] Encoder closed
+➜  Video_Enhancement git:(main) ✗ 
+➜  Video_Enhancement git:(main) ✗ 
+➜  Video_Enhancement git:(main) ✗ 
+➜  Video_Enhancement git:(main) ✗ 
+➜  Video_Enhancement git:(main) ✗ 
+➜  Video_Enhancement git:(main) ✗ python benchmark_ifrnet_versions.py --batch-size 24 \    
+    -i ../input_videos/word_world_2.mp4 \     
+    -o benchmark_output/ \                      
+    --crf 21 --preset medium \                                             
+    --versions v6.4.3 v6.4.3.1 v6.4.4 v6.4.4.1 v6.4.5 v6.4.5.1 --no-warmup
+模型: /workspace/Video_Enhancement/models_IFRNet/checkpoints/IFRNet_S_Vimeo90K.pth
+输入: ../input_videos/word_world_2.mp4
+插帧: 2.0x
+batch-size: 24
+crf: 21  |  preset: medium
+版本: v6.4.3, v6.4.3.1, v6.4.4, v6.4.4.1, v6.4.5, v6.4.5.1
+
+⚠️  已跳过 GPU 预热（--no-warmup）
+
+[GPU0] 插帧:  94%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████▍      | 649/687 [00:16<00:00, 39.35帧/s, P=0, R=3, eta=0s, fps=48.4, ms=332]
+OK  (17.757s, 77.3 FPS)
+[GPU0] 插帧:  91%|███████████████████████████████████████████████████████████████████████████████████████████████████████████▎          | 625/687 [00:18<00:01, 34.59帧/s, P=0, R=4, eta=0s, fps=46.2, ms=337]
+OK  (19.029s, 68.9 FPS)
+[GPU0] 插帧:  98%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████▍   | 673/687 [00:16<00:00, 40.02帧/s, P=1, R=0, eta=0s, fps=47.2, ms=335]
+OK  (17.722s, 77.5 FPS)
+[GPU0] 插帧:  98%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████▍   | 673/687 [00:16<00:00, 39.66帧/s, P=1, R=0, eta=0s, fps=48.4, ms=338]
+OK  (18.306s, 74.7 FPS)
+[GPU0] 插帧:  98%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████▍   | 673/687 [00:16<00:00, 39.75帧/s, P=0, R=2, eta=0s, fps=48.4, ms=339]
+OK  (18.082s, 75.9 FPS)
+[GPU0] 插帧:  98%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████▍   | 673/687 [00:16<00:00, 40.11帧/s, P=0, R=2, eta=0s, fps=46.8, ms=339]
+OK  (17.764s, 77.3 FPS)
+
+====================================================================================================
+IFRNet 版本基准测试结果
+====================================================================================================
+  输入: /workspace/input_videos/word_world_2.mp4  |  插帧: 2.0x  |  batch-size: 24  |  模型: IFRNet_S_Vimeo90K  |  crf: 21  |  preset: medium
+
+  版本            耗时    输入帧    输出帧    容器帧       FPS    文件大小    码率模式   平均码率    GPU%    显存  编码器        
+  -------------------------------------------------------------------------------------------------------------------------------
+  v6.4.3         17.8s       687      1373      1373      77.3     11.0 MB     CONSTQP   3361kbps   46.2%   4833M  h264_nvenc    
+  v6.4.3.1       19.0s       687      1311      1311      68.9     16.5 MB      VBR_HQ   5274kbps   51.3%   4840M  h264_nvenc    
+  v6.4.4         17.7s       687      1373      1373      77.5     11.2 MB     CONSTQP   3431kbps   60.7%   4833M  h264_nvenc    
+  v6.4.4.1       18.3s       687      1368      1368      74.7     17.9 MB      VBR_HQ   5498kbps   57.6%   4855M  h264_nvenc    
+  v6.4.5         18.1s       687      1373      1373      75.9     16.3 MB      VBR_HQ   4972kbps   63.8%   4840M  h264_nvenc    
+  v6.4.5.1       17.8s       687      1373      1373      77.3     16.6 MB        QVBR   5068kbps   61.8%   4840M  h264_nvenc    
+
+  最快版本: v6.4.4 (77.5 FPS)
+  性能差异: 12.5% (最快 vs 最慢)
+  耗时范围: 17.7s – 19.0s
+
+  ── Pipeline 帧计数诊断 ──
+  管內期望 = infer对 × scale  (每 pair: T 个插值 + 1 个原始右帧)
+  管內偏移 = writer帧 - 管內期望  (负=丢帧, 正=多帧)
+  校验 = ffprobe − (外部首帧 + writer帧)  (0=一致, 首帧在 pipeline.run 前 NVENC 写入)
+
+  版本          reader对     infer批     infer对    writer帧    管內期望    管內偏移     ffprobe  校验      
+  ----------------------------------------------------------------------------------------------------------
+  v6.4.3             686          29         686        1372        1372          +0        1373  ✓         
+  v6.4.3.1           686          29         686        1341        1372         -31        1311  ⚠ -31     
+  v6.4.4             686          29         686        1372        1372          +0        1373  ✓         
+  v6.4.4.1           686          29         686        1369        1372          -3        1368  ⚠ -2      
+  v6.4.5             686          29         686        1372        1372          +0        1373  ✓         
+  v6.4.5.1           686          29         686        1372        1372          +0        1373  ✓         
+
+  ── NVENC 编码精度诊断 ──
+  编码输出帧 = 管道内产出 H.264 数据的帧总数 (含插值+原始+flush 恢复)
+  管內偏移 = writer帧 − 管內期望 (负=丢帧)
+  空H264 = encode 返回空且重试仍失败, 若 _prev_h264 可用可补偿
+
+  版本           GPU批次  编码输出帧      空H264    管內偏移    Lock降级  说明                          
+  ------------------------------------------------------------------------------------------------------
+  v6.4.3              29        1372           0          +0           0  正常                          
+  v6.4.3.1            29        1372           0         -31           0  丢31帧                        
+  v6.4.4              29        1372           0          +0           0  正常                          
+  v6.4.4.1            29        1397          28          -3           0  空H264=28, 丢3帧 (调用Δ+25)   
+  v6.4.5              29        1372           0          +0           0  正常                          
+  v6.4.5.1            29        1372           0          +0           0  正常                          
+
+  ⚠️  版本间输出帧数不一致 (可能为真实帧丢失 bug):
+      v6.4.3: 1373 帧 (基准)
+      v6.4.3.1: 1311 帧 (-62, -4.5%)
+      v6.4.4: 1373 帧 (基准)
+      v6.4.4.1: 1368 帧 (-5, -0.4%)
+      v6.4.5: 1373 帧 (基准)
+      v6.4.5.1: 1373 帧 (基准)
+
+  ── 编码级别诊断 ──
+  版本            级别  说明
+  --------------------------------------------------
+  v6.4.3         1  NVENC GPU直通 (rc=CONSTQP)
+  v6.4.3.1       1  NVENC GPU直通 (rc=VBR_HQ)
+  v6.4.4         1  NVENC GPU直通 (rc=CONSTQP)
+  v6.4.4.1       1  NVENC GPU直通 (rc=VBR_HQ)
+  v6.4.5         1  NVENC GPU直通 (rc=VBR_HQ)
+  v6.4.5.1       1  NVENC GPU直通 (rc=QVBR)
+====================================================================================================
+➜  Video_Enhancement git:(main) ✗ 
+➜  Video_Enhancement git:(main) ✗ 
+➜  Video_Enhancement git:(main) ✗ python external/IFRNet/process_video_v6_4_5_1_single.py \
+    --input ../input_videos/word_world_2.mp4 \
+    --output output/word_world_2_5.1_fixed_la.mp4 \
+    --scale 2 --batch-size 24 --no-cuda-graph --no-compile --use-tensorrt \
+    --codec libx264 --crf 21 --x264-preset medium                         
+=================================================================
+  IFRNet 视频插帧 —— 终极优化版 v6.4.5（单卡版）
+=================================================================
+  模型:   IFRNet_S_Vimeo90K
+  设备:   cuda | GPU: Tesla T4
+  FP16:   True | Compile: False | CUDA Graph: False | TensorRT: True
+  NVDEC:  True | NVENC(h264): True | NVENC(hevc): True
+  编码器: libx264 → 实际: h264_nvenc | CRF: 21 | batch_size: 24
+  TRT 缓存: (自动: /workspace/Video_Enhancement/.trt_cache)
+
+  加载模型: /workspace/Video_Enhancement/models_IFRNet/checkpoints/IFRNet_S_Vimeo90K.pth → cuda
+  [FIX-CU] cudnn.benchmark = True 已启用
+  FP16 推理已启用
+[TensorRT] Engine 已激活，TRT 推理就绪。
+
+[GPU0] NVENC 编码已激活: h264_nvenc
+[NVENCEncoder] ⚠️  pipeline_depth forced 4→1 (la_depth=8/qvbr, lookahead incompatible with multi-slot for VBR/QVBR)
+[NVENCEncoder] NVENC API: 0xd0 = v13.0
+[NVENCEncoder] 使用 primary CUDA context (0x558237452c30)
+[NVENCEncoder] OpenEncodeSessionEx OK: apiVersion=0xd0 (13.0)
+[NVENCEncoder] Driver codec GUID: 6bc82762-4e63-4ca4
+[NVENCEncoder] Driver preset GUID: 82e3e450-bdbb-4e40 (index=4/16)
+[NVENCEncoder] GetEncodePresetConfig OK
+[NVENCEncoder] QVBR: crf=21 qvbrQuality=21 maxBitrate=62208kbps
+[NVENCEncoder] Ready: 720x576@50.0fps H.264 QVBR QP=21 preset=medium pipeline=1 la=8 tq=21 (GPU direct SDK 13.0)
+   [FIX-T3-V643] Level 1: NVENC GPU 直通编码 (720x576@50.0fps)
+[GPU0] 插帧:   0%|                                                                                                                                                                    | 0/687 [00:00<?, ?帧/s][NVENC-Enc] 前向帧预看缓冲中 (1/8)
+[GPU0] 插帧:   0%|▏                                                                                                                                                           | 1/687 [00:00<03:33,  3.21帧/s][T2-CACHE] 加载缓存 T2=333.3ms (key=IFRNet_S_Vimeo90K_576x736_bs24_trt_sm75_teslat4)
+[AUTO-TUNE] Tesla T4 tier=1.0 nvdec=True nvenc=True pcie=16GB/s cpu=32c  backend=trt(×1.0) model=IFRNet_S_Vimeo90K(×1.0)
+  T1=11.2ms  T2[estimated(×1.0, model×1.0)]=340.0ms  T3(NVENC)=16.0ms
+  ratio T2/T1=30.5x T3/T2=0.0x
+  pair_queue=8(~733MB) result_queue=8 pool=10(~305MB pinned)
+[PinnedResultPool] 分配 10 × (24,576,736,3) uint8 pinned，共 305 MB
+[IFRNet-Pipeline] 启动深度流水线 | pair_queue=8 result_queue=8 effective_bs=24 T=1× | D2H=pinned(stream_d2h)
+[GPU0] 插帧:   4%|████▎                                                                                                                 | 25/687 [00:01<00:49, 13.24帧/s, P=8, R=0, eta=infs, fps=0.0, ms=436][NVENC-Enc] 前向帧预看缓冲中 (2/8)
+[NVENC-Enc] 前向帧预看缓冲中 (3/8)
+[NVENC-Enc] 前向帧预看缓冲中 (8/8)
+[NVENCEncoder] Cached SPS+PPS: 49 bytes
+[GPU0] 插帧:  98%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌  | 673/687 [00:16<00:00, 50.25帧/s, P=1, R=0, eta=0s, fps=48.2, ms=331][AUTO-TUNE-RETUNE] 实测 T2=330.6ms（全段 26 batches 中位数）| 静态估算=340.0ms | 偏差=3% | 当前 result_queue=8 | 校准建议 pair=8 result=8（下次生效）
+[NVENC-FLUSH] slot[0] recovered 2 frames, 3842 bytes
+[NVENC-FLUSH] total recovered: 2 frames, 3842 bytes
+[NVENC-Enc] flush recovered 2 frames, 3842 bytes (written=1367)
+[GPU0] 插帧:  98%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌  | 673/687 [00:16<00:00, 40.02帧/s, P=1, R=0, eta=0s, fps=48.2, ms=331]
+[GPU0] 完成 | 原始帧=687 → 输出帧=1372 (期望≈1373, 差1) | 40.7 原始帧/s（含 warmup/初始化）
+
+[GPU-MONITOR] 采样 17 次  时长 16s  VRAM 总量: 14.6 GiB
+  利用率(全程)  均值=62.4%  P50=75.0%  P95=100.0%  峰值=100.0%  σ=35.6%  空闲占比=35.3%
+  利用率(稳定段) 均值=70.3%  P50=75.0%  P95=100.0%  σ=30.1%
+  利用率(最近段) 均值=62.4%  P95=100.0%
+  显存           均值=4.87 GiB  P95=5.16 GiB  峰值=5.16 GiB  (35% 使用  余量 9.4 GiB)
+[GPU-MONITOR] ✅ batch_size=24 配置合适  （稳定利用率 70%，VRAM 占用 35%）
+[GPU-MONITOR] 💡 pair_queue 建议增大: 8 → 8  （利用率波动大 σ=30%、GPU 空闲占比 35%，增大可平滑 H2D 供料气泡）
+[GPU-MONITOR] 💡 result_queue 建议增大: 8 → 16  （P95=100%，σ=30%，T3 可能拖累 T2）
+[ADAPTIVE-QUEUE] 下次将使用 pair_queue=8 result_queue=12  (GPU-MONITOR=16 RETUNE=8 → avg=12)
+
+✅ 插帧完成！
+   原始帧: 687 → 输出帧: 1372 (期望≈1373, 差 1 帧 ⚠️)
+   输出: output/word_world_2_5.1_fixed_la.mp4 (17.7 MB)
+
+⏱️  总耗时（含模型加载）: 0分17秒
+✅ 输出: output/word_world_2_5.1_fixed_la.mp4 (17.7 MB)
+[NVENCEncoder] Encoder closed
+➜  Video_Enhancement git:(main) ✗ 
+➜  Video_Enhancement git:(main) ✗ python benchmark_ifrnet_versions.py --batch-size 24 \    
+    -i ../input_videos/word_world_2.mp4 \
+    -o benchmark_output/ \
+    --crf 21 --preset medium \
+    --versions v6.4.5 v6.4.5.1 --no-warmup 
+模型: /workspace/Video_Enhancement/models_IFRNet/checkpoints/IFRNet_S_Vimeo90K.pth
+输入: ../input_videos/word_world_2.mp4
+插帧: 2.0x
+batch-size: 24
+crf: 21  |  preset: medium
+版本: v6.4.5, v6.4.5.1
+
+⚠️  已跳过 GPU 预热（--no-warmup）
+
+[GPU0] 插帧:  98%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌  | 673/687 [00:16<00:00, 40.32帧/s, P=1, R=0, eta=0s, fps=48.1, ms=331]
+OK  (17.624s, 77.9 FPS)
+[GPU0] 插帧:  98%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌  | 673/687 [00:16<00:00, 39.94帧/s, P=1, R=0, eta=0s, fps=47.3, ms=335]
+OK  (18.077s, 75.6 FPS)
+
+====================================================================================================
+IFRNet 版本基准测试结果
+====================================================================================================
+  输入: /workspace/input_videos/word_world_2.mp4  |  插帧: 2.0x  |  batch-size: 24  |  模型: IFRNet_S_Vimeo90K  |  crf: 21  |  preset: medium
+
+  版本            耗时    输入帧    输出帧    容器帧       FPS    文件大小    码率模式   平均码率    GPU%    显存  编码器        
+  -------------------------------------------------------------------------------------------------------------------------------
+  v6.4.5         17.6s       687      1373      1373      77.9     16.3 MB      VBR_HQ   4972kbps   57.0%   4840M  h264_nvenc    
+  v6.4.5.1       18.1s       687      1366      1366      75.6     16.5 MB        QVBR   5064kbps   56.0%   4838M  h264_nvenc    
+
+  最快版本: v6.4.5 (77.9 FPS)
+  性能差异: 3.0% (最快 vs 最慢)
+  耗时范围: 17.6s – 18.1s
+
+  ── Pipeline 帧计数诊断 ──
+  管內期望 = infer对 × scale  (每 pair: T 个插值 + 1 个原始右帧)
+  管內偏移 = writer帧 - 管內期望  (负=丢帧, 正=多帧)
+  校验 = ffprobe − (外部首帧 + writer帧)  (0=一致, 首帧在 pipeline.run 前 NVENC 写入)
+
+  版本          reader对     infer批     infer对    writer帧    管內期望    管內偏移     ffprobe  校验      
+  ----------------------------------------------------------------------------------------------------------
+  v6.4.5             686          29         686        1372        1372          +0        1373  ✓         
+  v6.4.5.1           686          29         686        1367        1372          -5        1366  ⚠ -2      
+
+  ── NVENC 编码精度诊断 ──
+  编码输出帧 = 管道内产出 H.264 数据的帧总数 (含插值+原始+flush 恢复)
+  管內偏移 = writer帧 − 管內期望 (负=丢帧)
+  空H264 = encode 返回空且重试仍失败, 若 _prev_h264 可用可补偿
+
+  版本           GPU批次  编码输出帧      空H264    管內偏移    Lock降级  说明                          
+  ------------------------------------------------------------------------------------------------------
+  v6.4.5              29        1372           0          +0           0  正常                          
+  v6.4.5.1            29        1367           0          -5           0  丢5帧 (调用Δ-5)               
+
+  ⚠️  版本间输出帧数不一致 (可能为真实帧丢失 bug):
+      v6.4.5: 1373 帧 (基准)
+      v6.4.5.1: 1366 帧 (-7, -0.5%)
+
+  ── 编码级别诊断 ──
+  版本            级别  说明
+  --------------------------------------------------
+  v6.4.5         1  NVENC GPU直通 (rc=VBR_HQ)
+  v6.4.5.1       1  NVENC GPU直通 (rc=QVBR)
+====================================================================================================
+➜  Video_Enhancement git:(main) ✗ 
+➜  Video_Enhancement git:(main) ✗ # SET _NVENC_LEVEL1_LOOKAHEAD: int = 8
+➜  Video_Enhancement git:(main) ✗ python external/IFRNet/process_video_v6_4_5_1_single.py \
+    --input ../input_videos/word_world_2.mp4 \
+    --output output/word_world_2_5.1_fixed_la_hq.mp4 \
+    --scale 2 --batch-size 24 --no-cuda-graph --no-compile --use-tensorrt \
+    --codec libx264 --crf 21 --x264-preset medium
+=================================================================
+  IFRNet 视频插帧 —— 终极优化版 v6.4.5（单卡版）
+=================================================================
+  模型:   IFRNet_S_Vimeo90K
+  设备:   cuda | GPU: Tesla T4
+  FP16:   True | Compile: False | CUDA Graph: False | TensorRT: True
+  NVDEC:  True | NVENC(h264): True | NVENC(hevc): True
+  编码器: libx264 → 实际: h264_nvenc | CRF: 21 | batch_size: 24
+  TRT 缓存: (自动: /workspace/Video_Enhancement/.trt_cache)
+
+  加载模型: /workspace/Video_Enhancement/models_IFRNet/checkpoints/IFRNet_S_Vimeo90K.pth → cuda
+  [FIX-CU] cudnn.benchmark = True 已启用
+  FP16 推理已启用
+[TensorRT] Engine 已激活，TRT 推理就绪。
+
+[GPU0] NVENC 编码已激活: h264_nvenc
+[NVENCEncoder] ⚠️  pipeline_depth forced 4→1 (la_depth=8/vbr_hq, lookahead incompatible with multi-slot for VBR/QVBR)
+[NVENCEncoder] NVENC API: 0xd0 = v13.0
+[NVENCEncoder] 使用 primary CUDA context (0x559f5e079fa0)
+[NVENCEncoder] OpenEncodeSessionEx OK: apiVersion=0xd0 (13.0)
+[NVENCEncoder] Driver codec GUID: 6bc82762-4e63-4ca4
+[NVENCEncoder] Driver preset GUID: 82e3e450-bdbb-4e40 (index=4/16)
+[NVENCEncoder] GetEncodePresetConfig OK
+[NVENCEncoder] VBR_HQ: crf=21 targetQuality=21 avgBitrate=62208kbps
+[NVENCEncoder] Ready: 720x576@50.0fps H.264 VBR_HQ QP=21 preset=medium pipeline=1 la=8 tq=21 (GPU direct SDK 13.0)
+   [FIX-T3-V643] Level 1: NVENC GPU 直通编码 (720x576@50.0fps)
+[GPU0] 插帧:   0%|                                                                                                                                                                    | 0/687 [00:00<?, ?帧/s][NVENC-Enc] 前向帧预看缓冲中 (1/8)
+[GPU0] 插帧:   0%|▏                                                                                                                                                           | 1/687 [00:00<03:30,  3.26帧/s][T2-CACHE] 加载缓存 T2=333.3ms (key=IFRNet_S_Vimeo90K_576x736_bs24_trt_sm75_teslat4)
+[AUTO-TUNE] Tesla T4 tier=1.0 nvdec=True nvenc=True pcie=16GB/s cpu=32c  backend=trt(×1.0) model=IFRNet_S_Vimeo90K(×1.0)
+  T1=11.2ms  T2[estimated(×1.0, model×1.0)]=340.0ms  T3(NVENC)=16.0ms
+  ratio T2/T1=30.5x T3/T2=0.0x
+  pair_queue=8(~733MB) result_queue=8 pool=10(~305MB pinned)
+[PinnedResultPool] 分配 10 × (24,576,736,3) uint8 pinned，共 305 MB
+[IFRNet-Pipeline] 启动深度流水线 | pair_queue=8 result_queue=8 effective_bs=24 T=1× | D2H=pinned(stream_d2h)
+[GPU0] 插帧:   4%|████▎                                                                                                                 | 25/687 [00:01<00:48, 13.57帧/s, P=8, R=0, eta=infs, fps=0.0, ms=375][NVENC-Enc] 前向帧预看缓冲中 (2/8)
+[NVENC-Enc] 前向帧预看缓冲中 (3/8)
+[NVENC-Enc] 前向帧预看缓冲中 (8/8)
+[NVENCEncoder] Cached SPS+PPS: 49 bytes
+[GPU0] 插帧:  98%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌  | 673/687 [00:16<00:00, 48.69帧/s, P=1, R=0, eta=0s, fps=48.4, ms=330][AUTO-TUNE-RETUNE] 实测 T2=329.7ms（全段 26 batches 中位数）| 静态估算=340.0ms | 偏差=3% | 当前 result_queue=8 | 校准建议 pair=8 result=8（下次生效）
+[NVENC-FLUSH] slot[0] recovered 2 frames, 459 bytes
+[NVENC-FLUSH] total recovered: 2 frames, 459 bytes
+[NVENC-Enc] flush recovered 2 frames, 459 bytes (written=1367)
+[GPU0] 插帧:  98%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌  | 673/687 [00:16<00:00, 40.17帧/s, P=1, R=0, eta=0s, fps=48.4, ms=330]
+[GPU0] 完成 | 原始帧=687 → 输出帧=1372 (期望≈1373, 差1) | 40.8 原始帧/s（含 warmup/初始化）
+
+[GPU-MONITOR] 采样 17 次  时长 16s  VRAM 总量: 14.6 GiB
+  利用率(全程)  均值=68.4%  P50=78.0%  P95=100.0%  峰值=100.0%  σ=34.0%  空闲占比=29.4%
+  利用率(稳定段) 均值=76.9%  P50=88.0%  P95=100.0%  σ=26.2%
+  利用率(最近段) 均值=68.4%  P95=100.0%
+  显存           均值=4.87 GiB  P95=5.16 GiB  峰值=5.16 GiB  (35% 使用  余量 9.4 GiB)
+[GPU-MONITOR] ✅ batch_size=24 配置合适  （稳定利用率 77%，VRAM 占用 35%）
+[GPU-MONITOR] 💡 pair_queue 建议增大: 8 → 8  （利用率波动大 σ=26%，增大可平滑 H2D 供料气泡）
+[GPU-MONITOR] 💡 result_queue 建议增大: 8 → 16  （P95=100%，σ=26%，T3 可能拖累 T2）
+[ADAPTIVE-QUEUE] 下次将使用 pair_queue=8 result_queue=12  (GPU-MONITOR=16 RETUNE=8 → avg=12)
+
+✅ 插帧完成！
+   原始帧: 687 → 输出帧: 1372 (期望≈1373, 差 1 帧 ⚠️)
+   输出: output/word_world_2_5.1_fixed_la_hq.mp4 (17.4 MB)
+
+⏱️  总耗时（含模型加载）: 0分17秒
+✅ 输出: output/word_world_2_5.1_fixed_la_hq.mp4 (17.4 MB)
+[NVENCEncoder] Encoder closed
+➜  Video_Enhancement git:(main) ✗ 
+➜  Video_Enhancement git:(main) ✗ python benchmark_ifrnet_versions.py --batch-size 24 \    
+    -i ../input_videos/word_world_2.mp4 \
+    -o benchmark_output/ \
+    --crf 21 --preset medium \
+    --versions v6.4.5 v6.4.5.1 --no-warmup
+模型: /workspace/Video_Enhancement/models_IFRNet/checkpoints/IFRNet_S_Vimeo90K.pth
+输入: ../input_videos/word_world_2.mp4
+插帧: 2.0x
+batch-size: 24
+crf: 21  |  preset: medium
+版本: v6.4.5, v6.4.5.1
+
+⚠️  已跳过 GPU 预热（--no-warmup）
+
+[GPU0] 插帧:  98%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌  | 673/687 [00:16<00:00, 39.99帧/s, P=1, R=0, eta=0s, fps=47.1, ms=334]
+OK  (17.78s, 77.2 FPS)
+[GPU0] 插帧:  98%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌  | 673/687 [00:17<00:00, 39.01帧/s, P=1, R=0, eta=0s, fps=46.7, ms=336]
+OK  (18.174s, 75.2 FPS)
+
+====================================================================================================
+IFRNet 版本基准测试结果
+====================================================================================================
+  输入: /workspace/input_videos/word_world_2.mp4  |  插帧: 2.0x  |  batch-size: 24  |  模型: IFRNet_S_Vimeo90K  |  crf: 21  |  preset: medium
+
+  版本            耗时    输入帧    输出帧    容器帧       FPS    文件大小    码率模式   平均码率    GPU%    显存  编码器        
+  -------------------------------------------------------------------------------------------------------------------------------
+  v6.4.5         17.8s       687      1373      1373      77.2     16.3 MB      VBR_HQ   4972kbps   58.0%   4840M  h264_nvenc    
+  v6.4.5.1       18.2s       687      1366      1366      75.2     16.1 MB      VBR_HQ   4955kbps   58.8%   4838M  h264_nvenc    
+
+  最快版本: v6.4.5 (77.2 FPS)
+  性能差异: 2.7% (最快 vs 最慢)
+  耗时范围: 17.8s – 18.2s
+
+  ── Pipeline 帧计数诊断 ──
+  管內期望 = infer对 × scale  (每 pair: T 个插值 + 1 个原始右帧)
+  管內偏移 = writer帧 - 管內期望  (负=丢帧, 正=多帧)
+  校验 = ffprobe − (外部首帧 + writer帧)  (0=一致, 首帧在 pipeline.run 前 NVENC 写入)
+
+  版本          reader对     infer批     infer对    writer帧    管內期望    管內偏移     ffprobe  校验      
+  ----------------------------------------------------------------------------------------------------------
+  v6.4.5             686          29         686        1372        1372          +0        1373  ✓         
+  v6.4.5.1           686          29         686        1367        1372          -5        1366  ⚠ -2      
+
+  ── NVENC 编码精度诊断 ──
+  编码输出帧 = 管道内产出 H.264 数据的帧总数 (含插值+原始+flush 恢复)
+  管內偏移 = writer帧 − 管內期望 (负=丢帧)
+  空H264 = encode 返回空且重试仍失败, 若 _prev_h264 可用可补偿
+
+  版本           GPU批次  编码输出帧      空H264    管內偏移    Lock降级  说明                          
+  ------------------------------------------------------------------------------------------------------
+  v6.4.5              29        1372           0          +0           0  正常                          
+  v6.4.5.1            29        1367           0          -5           0  丢5帧 (调用Δ-5)               
+
+  ⚠️  版本间输出帧数不一致 (可能为真实帧丢失 bug):
+      v6.4.5: 1373 帧 (基准)
+      v6.4.5.1: 1366 帧 (-7, -0.5%)
+
+  ── 编码级别诊断 ──
+  版本            级别  说明
+  --------------------------------------------------
+  v6.4.5         1  NVENC GPU直通 (rc=VBR_HQ)
+  v6.4.5.1       1  NVENC GPU直通 (rc=VBR_HQ)
+====================================================================================================
+➜  Video_Enhancement git:(main) ✗ 
+➜  Video_Enhancement git:(main) ✗ # 临时屏蔽 [NVENCEncoder] ⚠️  pipeline_depth forced 4→1 后测试：
+➜  Video_Enhancement git:(main) ✗ python external/IFRNet/process_video_v6_4_5_1_single.py \
+    --input ../input_videos/word_world_2.mp4 \
+    --output output/word_world_2_5.1_fixed_la_pipe.mp4 \
+    --scale 2 --batch-size 24 --no-cuda-graph --no-compile --use-tensorrt \
+    --codec libx264 --crf 21 --x264-preset medium
+=================================================================
+  IFRNet 视频插帧 —— 终极优化版 v6.4.5（单卡版）
+=================================================================
+  模型:   IFRNet_S_Vimeo90K
+  设备:   cuda | GPU: Tesla T4
+  FP16:   True | Compile: False | CUDA Graph: False | TensorRT: True
+  NVDEC:  True | NVENC(h264): True | NVENC(hevc): True
+  编码器: libx264 → 实际: h264_nvenc | CRF: 21 | batch_size: 24
+  TRT 缓存: (自动: /workspace/Video_Enhancement/.trt_cache)
+
+  加载模型: /workspace/Video_Enhancement/models_IFRNet/checkpoints/IFRNet_S_Vimeo90K.pth → cuda
+  [FIX-CU] cudnn.benchmark = True 已启用
+  FP16 推理已启用
+[TensorRT] Engine 已激活，TRT 推理就绪。
+
+[GPU0] NVENC 编码已激活: h264_nvenc
+[NVENCEncoder] NVENC API: 0xd0 = v13.0
+[NVENCEncoder] 使用 primary CUDA context (0x561b4f0a6130)
+[NVENCEncoder] OpenEncodeSessionEx OK: apiVersion=0xd0 (13.0)
+[NVENCEncoder] Driver codec GUID: 6bc82762-4e63-4ca4
+[NVENCEncoder] Driver preset GUID: 82e3e450-bdbb-4e40 (index=4/16)
+[NVENCEncoder] GetEncodePresetConfig OK
+[NVENCEncoder] VBR_HQ: crf=21 targetQuality=21 avgBitrate=62208kbps
+[NVENCEncoder] 4 pipeline slots created (0x561b54c5dbf0..0x561b54c76050)
+[NVENCEncoder] Ready: 720x576@50.0fps H.264 VBR_HQ QP=21 preset=medium pipeline=4 la=8 tq=21 (GPU direct SDK 13.0)
+   [FIX-T3-V643] Level 1: NVENC GPU 直通编码 (720x576@50.0fps)
+[GPU0] 插帧:   0%|                                                                                                                                                                    | 0/687 [00:00<?, ?帧/s][NVENC-Enc] 前向帧预看缓冲中 (1/8)
+[GPU0] 插帧:   0%|▏                                                                                                                                                           | 1/687 [00:00<03:27,  3.31帧/s][T2-CACHE] 加载缓存 T2=333.3ms (key=IFRNet_S_Vimeo90K_576x736_bs24_trt_sm75_teslat4)
+[AUTO-TUNE] Tesla T4 tier=1.0 nvdec=True nvenc=True pcie=16GB/s cpu=32c  backend=trt(×1.0) model=IFRNet_S_Vimeo90K(×1.0)
+  T1=11.2ms  T2[estimated(×1.0, model×1.0)]=340.0ms  T3(NVENC)=16.0ms
+  ratio T2/T1=30.5x T3/T2=0.0x
+  pair_queue=8(~733MB) result_queue=8 pool=10(~305MB pinned)
+[PinnedResultPool] 分配 10 × (24,576,736,3) uint8 pinned，共 305 MB
+[IFRNet-Pipeline] 启动深度流水线 | pair_queue=8 result_queue=8 effective_bs=24 T=1× | D2H=pinned(stream_d2h)
+[GPU0] 插帧:   4%|████▎                                                                                                                 | 25/687 [00:02<00:52, 12.58帧/s, P=8, R=0, eta=infs, fps=0.0, ms=467][NVENC-Enc] 前向帧预看缓冲中 (2/8)
+[NVENC-Enc] 前向帧预看缓冲中 (3/8)
+[NVENC-Enc] 前向帧预看缓冲中 (8/8)
+[NVENC-Enc] ⚠️ 空帧 #1 (ce-pipe fi=7 slot=3 ep_s=0 bs_s=8 la_buf=8)
+[NVENCEncoder] Cached SPS+PPS: 49 bytes
+[GPU0] 插帧:   7%|████████▍                                                                                                              | 49/687 [00:02<00:29, 21.51帧/s, P=8, R=0, eta=7s, fps=88.1, ms=398][NVENC-Enc] ⚠️ 空帧 #2 (ce-pipe fi=5 slot=1 ep_s=0 bs_s=0 la_buf=8)
+[NVENC-Enc] ⚠️ 空帧 #3 (ce-pipe fi=6 slot=2 ep_s=0 bs_s=0 la_buf=8)
+[NVENC-Enc] ⚠️ 空帧 #4 (ce-pipe fi=7 slot=3 ep_s=0 bs_s=0 la_buf=8)
+[NVENC-Enc] ⚠️ 空帧 #5 (encode_frame) frame_idx=99 force_idr=False nv12_mean=119.1 std=41.8 min=16 max=234
+[GPU0] 插帧:  35%|█████████████████████████████████████████▍                                                                            | 241/687 [00:06<00:10, 43.72帧/s, P=8, R=0, eta=9s, fps=49.9, ms=344][NVENC-Enc] ⚠️ 空帧 #50 (ce-pipe fi=5 slot=1 ep_s=0 bs_s=0 la_buf=8)
+[GPU0] 插帧:  63%|██████████████████████████████████████████████████████████████████████████▎                                           | 433/687 [00:11<00:05, 43.74帧/s, P=8, R=0, eta=5s, fps=47.2, ms=338][NVENC-Enc] ⚠️ 空帧 #100 (ce-pipe fi=7 slot=3 ep_s=0 bs_s=0 la_buf=8)
+[GPU0] 插帧:  98%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌  | 673/687 [00:16<00:00, 51.07帧/s, P=1, R=0, eta=0s, fps=47.6, ms=333][AUTO-TUNE-RETUNE] 实测 T2=331.8ms（全段 26 batches 中位数）| 静态估算=340.0ms | 偏差=2% | 当前 result_queue=8 | 校准建议 pair=8 result=8（下次生效）
+[NVENC-Enc] ⚠️ 空帧 #150 (encode_frame) frame_idx=1372 force_idr=False nv12_mean=127.8 std=46.9 min=16 max=235
+[NVENC-FLUSH] slot[0] recovered 2 frames, 2133 bytes
+[NVENC-FLUSH] slot[1] recovered 1 frames, 18593 bytes
+[NVENC-FLUSH] slot[2] recovered 1 frames, 16516 bytes
+[NVENC-FLUSH] slot[3] recovered 1 frames, 14302 bytes
+[NVENC-FLUSH] total recovered: 5 frames, 51544 bytes
+[NVENC-Enc] flush recovered 5 frames, 51544 bytes (written=1370)
+[GPU0] 插帧:  98%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌  | 673/687 [00:17<00:00, 38.79帧/s, P=1, R=0, eta=0s, fps=47.6, ms=333]
+[GPU0] 完成 | 原始帧=687 → 输出帧=1372 (期望≈1373, 差1) | 39.4 原始帧/s（含 warmup/初始化）
+
+[GPU-MONITOR] 采样 18 次  时长 17s  VRAM 总量: 14.6 GiB
+  利用率(全程)  均值=60.9%  P50=61.5%  P95=100.0%  峰值=100.0%  σ=31.4%  空闲占比=38.9%
+  利用率(稳定段) 均值=68.0%  P50=69.5%  P95=100.0%  σ=25.5%
+  利用率(最近段) 均值=60.9%  P95=100.0%
+  显存           均值=4.90 GiB  P95=5.18 GiB  峰值=5.18 GiB  (36% 使用  余量 9.4 GiB)
+[GPU-MONITOR] ✅ batch_size=24 配置合适  （稳定利用率 68%，VRAM 占用 36%）
+[GPU-MONITOR] 💡 pair_queue 建议增大: 8 → 8  （利用率波动大 σ=26%、GPU 空闲占比 39%，增大可平滑 H2D 供料气泡）
+[GPU-MONITOR] 💡 result_queue 建议增大: 8 → 16  （P95=100%，σ=26%，T3 可能拖累 T2）
+[ADAPTIVE-QUEUE] 下次将使用 pair_queue=8 result_queue=12  (GPU-MONITOR=16 RETUNE=8 → avg=12)
+
+✅ 插帧完成！
+   原始帧: 687 → 输出帧: 1372 (期望≈1373, 差 1 帧 ⚠️)
+   输出: output/word_world_2_5.1_fixed_la_pipe.mp4 (19.1 MB)
+
+⏱️  总耗时（含模型加载）: 0分18秒
+✅ 输出: output/word_world_2_5.1_fixed_la_pipe.mp4 (19.1 MB)
+[NVENCEncoder] Encoder closed
+➜  Video_Enhancement git:(main) ✗ 
+➜  Video_Enhancement git:(main) ✗ 
+➜  Video_Enhancement git:(main) ✗ python benchmark_ifrnet_versions.py --batch-size 24 \    
+    -i ../input_videos/word_world_2.mp4 \
+    -o benchmark_output/ \
+    --crf 21 --preset medium \
+    --versions v6.4.5 v6.4.5.1 --no-warmup
+模型: /workspace/Video_Enhancement/models_IFRNet/checkpoints/IFRNet_S_Vimeo90K.pth
+输入: ../input_videos/word_world_2.mp4
+插帧: 2.0x
+batch-size: 24
+crf: 21  |  preset: medium
+版本: v6.4.5, v6.4.5.1
+
+⚠️  已跳过 GPU 预热（--no-warmup）
+
+[GPU0] 插帧:  98%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌  | 673/687 [00:17<00:00, 39.21帧/s, P=0, R=2, eta=0s, fps=45.5, ms=338]
+OK  (18.484s, 74.3 FPS)
+[GPU0] 插帧: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 687/687 [00:17<00:00, 39.43帧/s, P=0, R=1, eta=0s, fps=47.2, ms=338]
+OK  (18.386s, 74.4 FPS)
+
+====================================================================================================
+IFRNet 版本基准测试结果
+====================================================================================================
+  输入: /workspace/input_videos/word_world_2.mp4  |  插帧: 2.0x  |  batch-size: 24  |  模型: IFRNet_S_Vimeo90K  |  crf: 21  |  preset: medium
+
+  版本            耗时    输入帧    输出帧    容器帧       FPS    文件大小    码率模式   平均码率    GPU%    显存  编码器        
+  -------------------------------------------------------------------------------------------------------------------------------
+  v6.4.5         18.5s       687      1373      1373      74.3     16.3 MB      VBR_HQ   4972kbps   50.9%   4840M  h264_nvenc    
+  v6.4.5.1       18.4s       687      1368      1368      74.4     17.9 MB      VBR_HQ   5486kbps   58.4%   4840M  h264_nvenc    
+
+  最快版本: v6.4.5.1 (74.4 FPS)
+  性能差异: 0.1% (最快 vs 最慢)
+  耗时范围: 18.4s – 18.5s
+
+  ── Pipeline 帧计数诊断 ──
+  管內期望 = infer对 × scale  (每 pair: T 个插值 + 1 个原始右帧)
+  管內偏移 = writer帧 - 管內期望  (负=丢帧, 正=多帧)
+  校验 = ffprobe − (外部首帧 + writer帧)  (0=一致, 首帧在 pipeline.run 前 NVENC 写入)
+
+  版本          reader对     infer批     infer对    writer帧    管內期望    管內偏移     ffprobe  校验      
+  ----------------------------------------------------------------------------------------------------------
+  v6.4.5             686          29         686        1372        1372          +0        1373  ✓         
+  v6.4.5.1           686          29         686        1370        1372          -2        1368  ⚠ -3      
+
+  ── NVENC 编码精度诊断 ──
+  编码输出帧 = 管道内产出 H.264 数据的帧总数 (含插值+原始+flush 恢复)
+  管內偏移 = writer帧 − 管內期望 (负=丢帧)
+  空H264 = encode 返回空且重试仍失败, 若 _prev_h264 可用可补偿
+
+  版本           GPU批次  编码输出帧      空H264    管內偏移    Lock降级  说明                          
+  ------------------------------------------------------------------------------------------------------
+  v6.4.5              29        1372           0          +0           0  正常                          
+  v6.4.5.1            29        1398          28          -2           0  空H264=28, 丢2帧 (调用Δ+26)   
+
+  ⚠️  版本间输出帧数不一致 (可能为真实帧丢失 bug):
+      v6.4.5: 1373 帧 (基准)
+      v6.4.5.1: 1368 帧 (-5, -0.4%)
+
+  ── 编码级别诊断 ──
+  版本            级别  说明
+  --------------------------------------------------
+  v6.4.5         1  NVENC GPU直通 (rc=VBR_HQ)
+  v6.4.5.1       1  NVENC GPU直通 (rc=VBR_HQ)
+====================================================================================================
+➜  Video_Enhancement git:(main) ✗ 
+➜  Video_Enhancement git:(main) ✗
+➜  Video_Enhancement git:(main) ✗ # 更新 v6.4.3.1/4.1 修复 SPS/PPS 更新后重新测试：
+➜  Video_Enhancement git:(main) ✗ python benchmark_ifrnet_versions.py --batch-size 24 \    
+    -i ../input_videos/word_world_2.mp4 \
+    -o benchmark_output/ \
+    --crf 21 --preset medium \
+    --versions v6.4.3 v6.4.3.1 v6.4.4 v6.4.4.1 v6.4.5 v6.4.5.1 --no-warmup
+模型: /workspace/Video_Enhancement/models_IFRNet/checkpoints/IFRNet_S_Vimeo90K.pth
+输入: ../input_videos/word_world_2.mp4
+插帧: 2.0x
+batch-size: 24
+crf: 21  |  preset: medium
+版本: v6.4.3, v6.4.3.1, v6.4.4, v6.4.4.1, v6.4.5, v6.4.5.1
+
+⚠️  已跳过 GPU 预热（--no-warmup）
+
+[1/6] 测试 v6.4.3 ...
+[GPU0] 插帧:  94%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████▍      | 649/687 [00:17<00:01, 37.73帧/s, P=0, R=3, eta=0s, fps=46.0, ms=331]
+OK  (18.1s, 75.9 FPS)
+[2/6] 测试 v6.4.3.1 ...
+[GPU0] 插帧:  91%|███████████████████████████████████████████████████████████████████████████████████████████████████████████▎          | 625/687 [00:17<00:01, 36.25帧/s, P=0, R=4, eta=0s, fps=47.3, ms=337]
+OK  (18.198s, 72.0 FPS)
+[3/6] 测试 v6.4.4 ...
+[GPU0] 插帧:  98%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌  | 673/687 [00:16<00:00, 40.27帧/s, P=1, R=0, eta=0s, fps=48.0, ms=337]
+OK  (17.628s, 77.9 FPS)
+[4/6] 测试 v6.4.4.1 ...
+[GPU0] 插帧:  98%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌  | 673/687 [00:17<00:00, 38.26帧/s, P=1, R=0, eta=0s, fps=46.5, ms=337]
+OK  (18.849s, 72.6 FPS)
+[5/6] 测试 v6.4.5 ...
+[GPU0] 插帧:  98%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌  | 673/687 [00:17<00:00, 38.92帧/s, P=1, R=0, eta=0s, fps=45.9, ms=341]
+OK  (18.206s, 75.4 FPS)
+[6/6] 测试 v6.4.5.1 ...
+[GPU0] 插帧:  98%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌  | 673/687 [00:17<00:00, 39.37帧/s, P=1, R=0, eta=0s, fps=47.5, ms=340]
+OK  (18.055s, 75.8 FPS)
+
+====================================================================================================
+IFRNet 版本基准测试结果
+====================================================================================================
+  输入: /workspace/input_videos/word_world_2.mp4  |  插帧: 2.0x  |  batch-size: 24  |  模型: IFRNet_S_Vimeo90K  |  crf: 21  |  preset: medium
+
+  版本            耗时    输入帧    输出帧    容器帧       FPS    文件大小    码率模式   平均码率    GPU%    显存  编码器        
+  -------------------------------------------------------------------------------------------------------------------------------
+  v6.4.3         18.1s       687      1373      1373      75.9     11.0 MB     CONSTQP   3361kbps   46.2%   4833M  h264_nvenc    
+  v6.4.3.1       18.2s       687      1311      1311      72.0     16.5 MB      VBR_HQ   5274kbps   56.0%   4840M  h264_nvenc    
+  v6.4.4         17.6s       687      1373      1373      77.9     11.2 MB     CONSTQP   3431kbps   50.6%   4833M  h264_nvenc    
+  v6.4.4.1       18.8s       687      1368      1368      72.6     17.9 MB      VBR_HQ   5486kbps   55.3%   4840M  h264_nvenc    
+  v6.4.5         18.2s       687      1373      1373      75.4     16.3 MB      VBR_HQ   4972kbps   51.6%   4840M  h264_nvenc    
+  v6.4.5.1       18.1s       687      1368      1368      75.8     18.4 MB        QVBR   5641kbps   53.2%   4840M  h264_nvenc    
+
+  最快版本: v6.4.4 (77.9 FPS)
+  性能差异: 8.2% (最快 vs 最慢)
+  耗时范围: 17.6s – 18.8s
+
+  ── Pipeline 帧计数诊断 ──
+  管內期望 = infer对 × scale  (每 pair: T 个插值 + 1 个原始右帧)
+  管內偏移 = writer帧 - 管內期望  (负=丢帧, 正=多帧)
+  校验 = ffprobe − (外部首帧 + writer帧)  (0=一致, 首帧在 pipeline.run 前 NVENC 写入)
+
+  版本          reader对     infer批     infer对    writer帧    管內期望    管內偏移     ffprobe  校验      
+  ----------------------------------------------------------------------------------------------------------
+  v6.4.3             686          29         686        1372        1372          +0        1373  ✓         
+  v6.4.3.1           686          29         686        1341        1372         -31        1311  ⚠ -31     
+  v6.4.4             686          29         686        1372        1372          +0        1373  ✓         
+  v6.4.4.1           686          29         686        1369        1372          -3        1368  ⚠ -2      
+  v6.4.5             686          29         686        1372        1372          +0        1373  ✓         
+  v6.4.5.1           686          29         686        1370        1372          -2        1368  ⚠ -3      
+
+  ── NVENC 编码精度诊断 ──
+  编码输出帧 = 管道内产出 H.264 数据的帧总数 (含插值+原始+flush 恢复)
+  管內偏移 = writer帧 − 管內期望 (负=丢帧)
+  空H264 = encode 返回空且重试仍失败, 若 _prev_h264 可用可补偿
+
+  版本           GPU批次  编码输出帧      空H264    管內偏移    Lock降级  说明                          
+  ------------------------------------------------------------------------------------------------------
+  v6.4.3              29        1372           0          +0           0  正常                          
+  v6.4.3.1            29        1372           0         -31           0  丢31帧                        
+  v6.4.4              29        1372           0          +0           0  正常                          
+  v6.4.4.1            29        1397          28          -3           0  空H264=28, 丢3帧 (调用Δ+25)   
+  v6.4.5              29        1372           0          +0           0  正常                          
+  v6.4.5.1            29        1398          28          -2           0  空H264=28, 丢2帧 (调用Δ+26)   
+
+  ⚠️  版本间输出帧数不一致 (可能为真实帧丢失 bug):
+      v6.4.3: 1373 帧 (基准)
+      v6.4.3.1: 1311 帧 (-62, -4.5%)
+      v6.4.4: 1373 帧 (基准)
+      v6.4.4.1: 1368 帧 (-5, -0.4%)
+      v6.4.5: 1373 帧 (基准)
+      v6.4.5.1: 1368 帧 (-5, -0.4%)
+
+  ── 编码级别诊断 ──
+  版本            级别  说明
+  --------------------------------------------------
+  v6.4.3         1  NVENC GPU直通 (rc=CONSTQP)
+  v6.4.3.1       1  NVENC GPU直通 (rc=VBR_HQ)
+  v6.4.4         1  NVENC GPU直通 (rc=CONSTQP)
+  v6.4.4.1       1  NVENC GPU直通 (rc=VBR_HQ)
+  v6.4.5         1  NVENC GPU直通 (rc=VBR_HQ)
+  v6.4.5.1       1  NVENC GPU直通 (rc=QVBR)
+====================================================================================================
+➜  Video_Enhancement git:(main) ✗ 
+➜  Video_Enhancement git:(main) ✗ 
+➜  Video_Enhancement git:(main) ✗ python external/IFRNet/process_video_v6_4_3_1_single.py \
+    --input ../input_videos/word_world_2.mp4 \
+    --output output/word_world_2_3.1_fixed.mp4 \        
+    --scale 2 --batch-size 24 --no-cuda-graph --no-compile --use-tensorrt \
+    --codec libx264 --crf 21 --x264-preset medium                         
+=================================================================
+  IFRNet 视频插帧 —— 终极优化版 v6.4.3（单卡版）
+=================================================================
+  模型:   IFRNet_S_Vimeo90K
+  设备:   cuda | GPU: Tesla T4
+  FP16:   True | Compile: False | CUDA Graph: False | TensorRT: True
+  NVDEC:  True | NVENC(h264): True | NVENC(hevc): True
+  编码器: libx264 → 实际: h264_nvenc | CRF: 21 | batch_size: 24
+  TRT 缓存: (自动: /workspace/Video_Enhancement/.trt_cache)
+
+  加载模型: /workspace/Video_Enhancement/models_IFRNet/checkpoints/IFRNet_S_Vimeo90K.pth → cuda
+  [FIX-CU] cudnn.benchmark = True 已启用
+  FP16 推理已启用
+[TensorRT] Engine 已激活，TRT 推理就绪。
+
+[GPU0] NVENC 编码已激活: h264_nvenc
+[NVENCEncoder] VBR_HQ + LA=8 + pipe=4: Tier 1-B/A defense active (empty rate ~0.5%, all recoverable)
+[NVENCEncoder] NVENC API: 0xd0 = v13.0
+[NVENCEncoder] 使用 primary CUDA context (0x55a4505c4a20)
+[NVENCEncoder] OpenEncodeSessionEx OK: apiVersion=0xd0 (13.0)
+[NVENCEncoder] Driver codec GUID: 6bc82762-4e63-4ca4
+[NVENCEncoder] Driver preset GUID: 82e3e450-bdbb-4e40 (index=4/16)
+[NVENCEncoder] GetEncodePresetConfig OK
+[NVENCEncoder] VBR_HQ: crf=21 targetQuality=21 avgBitrate=62208kbps
+[NVENCEncoder] 4 pipeline slots created (0x55a45617b670..0x55a456193ad0)
+[NVENCEncoder] Ready: 720x576@50.0fps H.264 VBR_HQ QP=21 preset=medium pipeline=4 la=8 tq=21 (GPU direct SDK 13.0)
+   [FIX-T3-V643] Level 1: NVENC GPU 直通编码 (720x576@50.0fps)
+[GPU0] 插帧:   0%|                                                                                                                                                                    | 0/687 [00:00<?, ?帧/s][NVENC-Enc] 前向帧预看缓冲中 (1/8)
+[GPU0] 插帧:   0%|▏                                                                                                                                                           | 1/687 [00:00<03:25,  3.34帧/s][T2-CACHE] 加载缓存 T2=333.3ms (key=IFRNet_S_Vimeo90K_576x736_bs24_trt_sm75_teslat4)
+[AUTO-TUNE] Tesla T4 tier=1.0 nvdec=True nvenc=True pcie=16GB/s cpu=32c  backend=trt(×1.0) model=IFRNet_S_Vimeo90K(×1.0)
+  T1=11.2ms  T2[estimated(×1.0, model×1.0)]=340.0ms  T3(NVENC)=16.0ms
+  ratio T2/T1=30.5x T3/T2=0.0x
+  pair_queue=8(~733MB) result_queue=8 pool=10(~305MB pinned)
+[PinnedResultPool] 分配 10 × (24,576,736,3) uint8 pinned，共 305 MB
+[IFRNet-Pipeline] 启动深度流水线 | pair_queue=8 result_queue=8 effective_bs=24 T=1× | D2H=pinned(stream_d2h)
+[NVENC-Enc] 前向帧预看缓冲中 (2/8)
+[NVENC-Enc] 前向帧预看缓冲中 (3/8)
+[NVENC-Enc] 前向帧预看缓冲中 (8/8)
+[NVENC-Enc] ⚠️ 空帧 #1 (ce-pipe fi=7 slot=3 ep_s=0 bs_s=8 la_buf=8)
+[NVENCEncoder] Cached SPS+PPS: 49 bytes
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR]     Last message repeated 1 times
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] non-existing PPS 0 referenced
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] decode_slice_header error
+[FFmpegMuxer ERR] [h264 @ 0x55c9c6af0180] no frame!
+[GPU0] 插帧:   4%|████▎                                                                                                                 | 25/687 [00:02<00:52, 12.68帧/s, P=8, R=0, eta=infs, fps=0.0, ms=362][NVENC-Enc] ⚠️ 空帧 #2 (ce-pipe fi=5 slot=1 ep_s=0 bs_s=0 la_buf=8)
+[NVENC-Enc] ⚠️ 空帧 #3 (ce-pipe fi=6 slot=2 ep_s=0 bs_s=0 la_buf=8)
+[NVENC-Enc] ⚠️ 空帧 #4 (ce-pipe fi=7 slot=3 ep_s=0 bs_s=0 la_buf=8)
+[NVENC-Enc] ⚠️ 空帧 #5 (encode_frame) frame_idx=99 force_idr=False nv12_mean=119.1 std=41.8 min=16 max=234
+[GPU0] 插帧:  32%|████████████████████████████████████▉                                                                                | 217/687 [00:06<00:10, 45.24帧/s, P=8, R=0, eta=10s, fps=49.4, ms=338][NVENC-Enc] ⚠️ 空帧 #50 (ce-pipe fi=5 slot=1 ep_s=0 bs_s=0 la_buf=8)
+[GPU0] 插帧:  60%|██████████████████████████████████████████████████████████████████████▎                                               | 409/687 [00:10<00:06, 45.84帧/s, P=8, R=0, eta=6s, fps=46.7, ms=337][NVENC-Enc] ⚠️ 空帧 #100 (ce-pipe fi=7 slot=3 ep_s=0 bs_s=0 la_buf=8)
+[GPU0] 插帧:  87%|███████████████████████████████████████████████████████████████████████████████████████████████████████▏              | 601/687 [00:15<00:01, 44.24帧/s, P=2, R=0, eta=2s, fps=46.5, ms=335][AUTO-TUNE-RETUNE] 实测 T2=333.3ms（全段 26 batches 中位数）| 静态估算=340.0ms | 偏差=2% | 当前 result_queue=8 | 校准建议 pair=8 result=8（下次生效）
+[NVENC-Enc] ⚠️ 空帧 #150 (encode_frame) frame_idx=1372 force_idr=False nv12_mean=127.8 std=46.9 min=16 max=235
+[GPU0] 插帧:  91%|███████████████████████████████████████████████████████████████████████████████████████████████████████████▎          | 625/687 [00:16<00:02, 28.40帧/s, P=0, R=4, eta=0s, fps=48.0, ms=333][NVENC-FLUSH] slot[0] recovered 1 frames, 2133 bytes
+[NVENC-FLUSH] slot[1] recovered 1 frames, 18593 bytes
+[NVENC-FLUSH] slot[2] recovered 1 frames, 16516 bytes
+[NVENC-FLUSH] slot[3] recovered 1 frames, 14302 bytes
+[NVENC-FLUSH] total recovered: 4 frames, 51544 bytes
+[GPU0] 插帧:  91%|███████████████████████████████████████████████████████████████████████████████████████████████████████████▎          | 625/687 [00:17<00:01, 36.31帧/s, P=0, R=4, eta=0s, fps=48.0, ms=333]
+[GPU0] 完成 | 原始帧=687 → 输出帧=1373 | 39.6 原始帧/s（含 warmup/初始化）
+
+[GPU-MONITOR] 采样 18 次  时长 17s  VRAM 总量: 14.6 GiB
+  利用率(全程)  均值=62.6%  P50=63.0%  P95=100.0%  峰值=100.0%  σ=34.8%  空闲占比=38.9%
+  利用率(稳定段) 均值=69.2%  P50=74.5%  P95=100.0%  σ=31.0%
+  利用率(最近段) 均值=62.6%  P95=100.0%
+  显存           均值=4.93 GiB  P95=5.16 GiB  峰值=5.16 GiB  (35% 使用  余量 9.4 GiB)
+[GPU-MONITOR] ✅ batch_size=24 配置合适  （稳定利用率 69%，VRAM 占用 35%）
+[GPU-MONITOR] 💡 pair_queue 建议增大: 8 → 8  （利用率波动大 σ=31%、GPU 空闲占比 39%，增大可平滑 H2D 供料气泡）
+[GPU-MONITOR] 💡 result_queue 建议增大: 8 → 16  （P95=100%，σ=31%，T3 可能拖累 T2）
+[ADAPTIVE-QUEUE] 下次将使用 pair_queue=8 result_queue=12  (GPU-MONITOR=16 RETUNE=8 → avg=12)
+
+✅ 插帧完成！
+   原始帧: 687 → 输出帧: 1373 (×2.0)
+   输出: output/word_world_2_3.1_fixed.mp4 (17.7 MB)
+
+⏱️  总耗时（含模型加载）: 0分17秒
+✅ 输出: output/word_world_2_3.1_fixed.mp4 (17.7 MB)
+[NVENCEncoder] Encoder closed
+➜  Video_Enhancement git:(main) ✗ 
+➜  Video_Enhancement git:(main) ✗ python external/IFRNet/process_video_v6_4_4_1_single.py \                 
+    --input ../input_videos/word_world_2.mp4 \
+    --output output/word_world_2_4.1_fixed.mp4 \
+    --scale 2 --batch-size 24 --no-cuda-graph --no-compile --use-tensorrt \
+    --codec libx264 --crf 21 --x264-preset medium                         
+=================================================================
+  IFRNet 视频插帧 —— 终极优化版 v6.4.4（单卡版）
+=================================================================
+  模型:   IFRNet_S_Vimeo90K
+  设备:   cuda | GPU: Tesla T4
+  FP16:   True | Compile: False | CUDA Graph: False | TensorRT: True
+  NVDEC:  True | NVENC(h264): True | NVENC(hevc): True
+  编码器: libx264 → 实际: h264_nvenc | CRF: 21 | batch_size: 24
+  TRT 缓存: (自动: /workspace/Video_Enhancement/.trt_cache)
+
+  加载模型: /workspace/Video_Enhancement/models_IFRNet/checkpoints/IFRNet_S_Vimeo90K.pth → cuda
+  [FIX-CU] cudnn.benchmark = True 已启用
+  FP16 推理已启用
+[TensorRT] Engine 已激活，TRT 推理就绪。
+
+[GPU0] NVENC 编码已激活: h264_nvenc
+[NVENCEncoder] VBR_HQ + LA=8 + pipe=4: Tier 1-B/A defense active (empty rate ~0.5%, all recoverable)
+[NVENCEncoder] NVENC API: 0xd0 = v13.0
+[NVENCEncoder] 使用 primary CUDA context (0x55e9c6404850)
+[NVENCEncoder] OpenEncodeSessionEx OK: apiVersion=0xd0 (13.0)
+[NVENCEncoder] Driver codec GUID: 6bc82762-4e63-4ca4
+[NVENCEncoder] Driver preset GUID: 82e3e450-bdbb-4e40 (index=4/16)
+[NVENCEncoder] GetEncodePresetConfig OK
+[NVENCEncoder] VBR_HQ: crf=21 targetQuality=21 avgBitrate=62208kbps
+[NVENCEncoder] 4 pipeline slots created (0x55e9cbfbb7a0..0x55e9cbfd3c00)
+[NVENCEncoder] Ready: 720x576@50.0fps H.264 VBR_HQ QP=21 preset=medium pipeline=4 la=8 tq=21 (GPU direct SDK 13.0)
+   [FIX-T3-V643] Level 1: NVENC GPU 直通编码 (720x576@50.0fps)
+[GPU0] 插帧:   0%|                                                                                                                                                                    | 0/687 [00:00<?, ?帧/s][NVENC-Enc] 前向帧预看缓冲中 (1/8)
+[GPU0] 插帧:   0%|▏                                                                                                                                                           | 1/687 [00:00<03:31,  3.24帧/s][T2-CACHE] 加载缓存 T2=333.3ms (key=IFRNet_S_Vimeo90K_576x736_bs24_trt_sm75_teslat4)
+[AUTO-TUNE] Tesla T4 tier=1.0 nvdec=True nvenc=True pcie=16GB/s cpu=32c  backend=trt(×1.0) model=IFRNet_S_Vimeo90K(×1.0)
+  T1=11.2ms  T2[estimated(×1.0, model×1.0)]=340.0ms  T3(NVENC)=16.0ms
+  ratio T2/T1=30.5x T3/T2=0.0x
+  pair_queue=8(~733MB) result_queue=8 pool=10(~305MB pinned)
+[PinnedResultPool] 分配 10 × (24,576,736,3) uint8 pinned，共 305 MB
+[IFRNet-Pipeline] 启动深度流水线 | pair_queue=8 result_queue=8 effective_bs=24 T=1× | D2H=pinned(stream_d2h)
+[GPU0] 插帧:   4%|████▎                                                                                                                 | 25/687 [00:01<00:50, 13.15帧/s, P=8, R=0, eta=infs, fps=0.0, ms=425][NVENC-Enc] 前向帧预看缓冲中 (2/8)
+[NVENC-Enc] 前向帧预看缓冲中 (3/8)
+[NVENC-Enc] 前向帧预看缓冲中 (8/8)
+[NVENC-Enc] ⚠️ 空帧 #1 (ce-pipe fi=7 slot=3 ep_s=0 bs_s=8 la_buf=8)
+[NVENCEncoder] Cached SPS+PPS: 49 bytes
+[GPU0] 插帧:   7%|████████▍                                                                                                              | 49/687 [00:02<00:28, 22.34帧/s, P=8, R=0, eta=7s, fps=90.0, ms=377][NVENC-Enc] ⚠️ 空帧 #2 (ce-pipe fi=5 slot=1 ep_s=0 bs_s=0 la_buf=8)
+[NVENC-Enc] ⚠️ 空帧 #3 (ce-pipe fi=6 slot=2 ep_s=0 bs_s=0 la_buf=8)
+[NVENC-Enc] ⚠️ 空帧 #4 (ce-pipe fi=7 slot=3 ep_s=0 bs_s=0 la_buf=8)
+[NVENC-Enc] ⚠️ 空帧 #5 (encode_frame) frame_idx=99 force_idr=False nv12_mean=119.1 std=41.8 min=16 max=234
+[GPU0] 插帧:  35%|█████████████████████████████████████████▍                                                                            | 241/687 [00:06<00:10, 43.76帧/s, P=8, R=0, eta=9s, fps=49.8, ms=339][NVENC-Enc] ⚠️ 空帧 #50 (ce-pipe fi=5 slot=1 ep_s=0 bs_s=0 la_buf=8)
+[GPU0] 插帧:  63%|██████████████████████████████████████████████████████████████████████████▎                                           | 433/687 [00:11<00:05, 43.40帧/s, P=8, R=0, eta=5s, fps=47.0, ms=337][NVENC-Enc] ⚠️ 空帧 #100 (ce-pipe fi=7 slot=3 ep_s=0 bs_s=0 la_buf=8)
+[GPU0] 插帧:  98%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌  | 673/687 [00:16<00:00, 50.21帧/s, P=1, R=0, eta=0s, fps=48.1, ms=332][AUTO-TUNE-RETUNE] 实测 T2=332.1ms（全段 26 batches 中位数）| 静态估算=340.0ms | 偏差=2% | 当前 result_queue=8 | 校准建议 pair=8 result=8（下次生效）
+[NVENC-Enc] ⚠️ 空帧 #150 (encode_frame) frame_idx=1372 force_idr=False nv12_mean=127.8 std=46.9 min=16 max=235
+[NVENC-FLUSH] slot[0] recovered 1 frames, 2133 bytes
+[NVENC-FLUSH] slot[1] recovered 1 frames, 18593 bytes
+[NVENC-FLUSH] slot[2] recovered 1 frames, 16516 bytes
+[NVENC-FLUSH] slot[3] recovered 1 frames, 14302 bytes
+[NVENC-FLUSH] total recovered: 4 frames, 51544 bytes
+[NVENC-Enc] flush recovered 4 frames, 51544 bytes (written=1369)
+[GPU0] 插帧:  98%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌  | 673/687 [00:17<00:00, 39.17帧/s, P=1, R=0, eta=0s, fps=48.1, ms=332]
+[GPU0] 完成 | 原始帧=687 → 输出帧=1373 | 39.6 原始帧/s（含 warmup/初始化）
+
+[GPU-MONITOR] 采样 18 次  时长 17s  VRAM 总量: 14.6 GiB
+  利用率(全程)  均值=56.5%  P50=59.0%  P95=100.0%  峰值=100.0%  σ=32.4%  空闲占比=38.9%
+  利用率(稳定段) 均值=63.2%  P50=63.0%  P95=100.0%  σ=27.9%
+  利用率(最近段) 均值=56.5%  P95=100.0%
+  显存           均值=4.90 GiB  P95=5.18 GiB  峰值=5.18 GiB  (36% 使用  余量 9.4 GiB)
+[GPU-MONITOR] ✅ batch_size=24 配置合适  （稳定利用率 63%，VRAM 占用 36%）
+[GPU-MONITOR] 💡 pair_queue 建议增大: 8 → 8  （利用率波动大 σ=28%、GPU 空闲占比 39%，增大可平滑 H2D 供料气泡）
+[GPU-MONITOR] 💡 result_queue 建议增大: 8 → 16  （P95=100%，σ=28%，T3 可能拖累 T2）
+[ADAPTIVE-QUEUE] 下次将使用 pair_queue=8 result_queue=12  (GPU-MONITOR=16 RETUNE=8 → avg=12)
+
+✅ 插帧完成！
+   原始帧: 687 → 输出帧: 1373 (×2.0)
+   输出: output/word_world_2_4.1_fixed.mp4 (19.1 MB)
+
+⏱️  总耗时（含模型加载）: 0分17秒
+✅ 输出: output/word_world_2_4.1_fixed.mp4 (19.1 MB)
+[NVENCEncoder] Encoder closed
+➜  Video_Enhancement git:(main) ✗ 

@@ -1,0 +1,482 @@
+python test_nvenc_completion_event_v4.py
+========================================================================================================================
+4D FULL MATRIX — 720x576@30fps N=2000 batch_size=24 x 3RC — Technique x Pipe x LA — FPS Ranking
+========================================================================================================================
+  Rank  Test Case                                                        CE    Empty  Lost       FPS   Rel% RC  Verdict
+  ----  ------------------------------------------------------- ----------- -------- -----   ------- ------ RC  ----------------
+  👑 1  ce-pipeline: pipe=4 LA=0 p1 QP23                           deferred    0.0%     -   352.9 100.0% vbr_hq  ✅ OK v6.4.3/4/5.1
+     2  ce-pipeline: pipe=4 LA=0 p1 QP23                           deferred    0.0%     -   348.7  98.8% constqp  ✅ OK v6.4.3/4/5.1
+     3  ce-pipeline: pipe=4 LA=0 p1 QP23                           deferred    0.0%     -   344.9  97.7%   qvbr  ✅ OK v6.4.3/4/5.1
+     4  ce-pipeline: pipe=4 LA=8 p1 QP23                           deferred    0.0%     -   340.6  96.5% constqp  ✅ OK v6.4.3.1/4.1
+     5  ce-pipeline: pipe=4 LA=8 p1 QP23                           deferred    0.0%     -   335.0  94.9%   qvbr  ✅ OK v6.4.3.1/4.1
+     6  ce-pipeline: pipe=4 LA=8 p1 QP23                           deferred    0.0%     -   333.7  94.5% vbr_hq  ✅ OK v6.4.3.1/4.1
+     7  ce-pipeline: pipe=1 LA=0 p1 QP23                           deferred    0.0%     -   278.6  78.9%   qvbr  ✅ OK
+     8  batch-ce: pipe=4 LA=0 p1 QP23                                 batch    0.0%     -   277.6  78.6%   qvbr  ✅ OK
+     9  sync-batch: pipe=4 LA=8 p1 QP23                                none    0.0%     -   276.8  78.4%   qvbr  ✅ OK
+    10  sync-batch: pipe=4 LA=0 p1 QP23                                none    0.0%     -   275.7  78.1%   qvbr  ✅ OK
+    11  batch-ce: pipe=1 LA=0 p1 QP23                                 batch    0.0%     -   275.3  78.0%   qvbr  ✅ OK
+    12  single-ce: pipe=4 LA=0 p1 QP23                            per-frame    0.0%     -   275.1  77.9%   qvbr  ✅ OK
+    13  single-ce: pipe=1 LA=0 p1 QP23                            per-frame    0.0%     -   275.0  77.9%   qvbr  ✅ OK
+    14  sync-batch: pipe=1 LA=0 p1 QP23                                none    0.0%     -   273.6  77.5%   qvbr  ✅ OK
+    15  sync-batch: pipe=1 LA=0 p1 QP23                                none    0.0%     -   273.1  77.4% vbr_hq  ✅ OK
+    16  sync-batch: pipe=4 LA=0 p1 QP23                                none    0.0%     -   269.0  76.2% vbr_hq  ✅ OK
+    17  ce-pipeline: pipe=1 LA=8 p1 QP23                           deferred    0.0%     -   268.1  75.9% constqp  ✅ OK pipe1-safe-path
+    18  batch-ce: pipe=4 LA=0 p1 QP23                                 batch    0.0%     -   266.4  75.5% vbr_hq  ✅ OK
+    19  single-ce: pipe=4 LA=0 p1 QP23                            per-frame    0.0%     -   265.4  75.2% vbr_hq  ✅ OK
+    20  single-ce: pipe=1 LA=0 p1 QP23                            per-frame    0.0%     -   263.4  74.6% vbr_hq  ✅ OK
+    21  batch-ce: pipe=4 LA=8 p1 QP23                                 batch    0.0%     -   260.8  73.9% vbr_hq  ✅ OK
+    22  ce-pipeline: pipe=1 LA=0 p1 QP23                           deferred    0.0%     -   260.7  73.9% vbr_hq  ✅ OK
+    23  batch-ce: pipe=4 LA=8 p1 QP23                                 batch    0.0%     -   259.8  73.6%   qvbr  ✅ OK
+    24  batch-ce: pipe=1 LA=0 p1 QP23                                 batch    0.0%     -   258.6  73.3% vbr_hq  ✅ OK
+    25  single-ce: pipe=1 LA=0 p1 QP23                            per-frame    0.0%     -   246.4  69.8% constqp  ✅ OK
+    26  sync-batch: pipe=4 LA=8 p1 QP23                                none    0.0%     -   243.9  69.1% vbr_hq  ✅ OK
+    27  ce-pipeline: pipe=1 LA=0 p1 QP23                           deferred    0.0%     -   241.0  68.3% constqp  ✅ OK
+    28  single-ce: pipe=4 LA=0 p1 QP23                            per-frame    0.0%     -   237.9  67.4% constqp  ✅ OK
+    29  single-ce: pipe=4 LA=8 p1 QP23                            per-frame    0.0%     -   237.0  67.1% constqp  ✅ OK
+    30  single-ce: pipe=1 LA=8 p1 QP23                            per-frame    0.0%     -   236.3  66.9% constqp  ✅ OK
+    31  batch-ce: pipe=1 LA=0 p1 QP23                                 batch    0.0%     -   235.6  66.8% constqp  ✅ OK
+    32  batch-ce: pipe=1 LA=8 p1 QP23                                 batch    0.0%     -   235.6  66.7% constqp  ✅ OK
+    33  batch-ce: pipe=4 LA=8 p1 QP23                                 batch    0.0%     -   234.8  66.5% constqp  ✅ OK
+    34  sync-batch: pipe=1 LA=8 p1 QP23                                none    0.0%     -   234.8  66.5% constqp  ✅ OK
+    35  batch-ce: pipe=4 LA=0 p1 QP23                                 batch    0.0%     -   232.6  65.9% constqp  ✅ OK
+    36  sync-batch: pipe=1 LA=0 p1 QP23                                none    0.0%     -   232.0  65.7% constqp  ✅ OK
+    37  sync-batch: pipe=4 LA=0 p1 QP23                                none    0.0%     -   231.0  65.4% constqp  ✅ OK
+    38  sync-batch: pipe=4 LA=8 p1 QP23                                none    0.0%     -   221.6  62.8% constqp  ✅ OK
+    39  phase4-pfce: pipe=4 LA=0 p1 QP23                          per-frame   16.8%   336   304.4  86.2%   qvbr  🔥 LOST=336
+    40  phase4-pfce: pipe=4 LA=0 p1 QP23                          per-frame   16.8%   336   299.9  85.0% vbr_hq  🔥 LOST=336
+    41  phase4-slot: pipe=4 LA=0 p1 QP23                         slot-reuse   11.8%   236   298.3  84.5%   qvbr  🔥 LOST=236
+    42  phase4-slot: pipe=4 LA=0 p1 QP23                         slot-reuse   12.6%   252   291.5  82.6% vbr_hq  🔥 LOST=252
+    43  phase4-pfce: pipe=4 LA=8 p1 QP23                          per-frame   16.7%   322   288.2  81.7%   qvbr  🔥 LOST=322
+    44  phase4-pfce: pipe=4 LA=8 p1 QP23                          per-frame   16.7%   322   287.7  81.5% vbr_hq  🔥 LOST=322
+    45  ce-pipeline: pipe=1 LA=8 p1 QP23                           deferred    0.0%     4   285.5  80.9%   qvbr  🔥 LOST=4 pipe1-safe-path
+    46  phase4-pfce: pipe=4 LA=8 p1 QP23                          per-frame   16.8%   331   285.1  80.8% constqp  🔥 LOST=331
+    47  phase4-slot: pipe=4 LA=0 p1 QP23                         slot-reuse   11.0%   220   277.1  78.5% constqp  🔥 LOST=220
+    48  phase4-slot: pipe=4 LA=8 p1 QP23                         slot-reuse   10.3%   193   276.1  78.2%   qvbr  🔥 LOST=193
+    49  phase4-slot: pipe=4 LA=8 p1 QP23                         slot-reuse   16.7%   322   272.8  77.3% vbr_hq  🔥 LOST=322
+    50  ce-pipeline: pipe=1 LA=8 p1 QP23                           deferred    0.0%     4   271.6  77.0% vbr_hq  🔥 LOST=4 pipe1-safe-path
+    51  phase4-pfce: pipe=4 LA=0 p1 QP23                          per-frame   16.8%   334   266.1  75.4% constqp  🔥 LOST=334
+    52  single-ce: pipe=1 LA=8 p1 QP23                            per-frame    0.0%     4   261.2  74.0%   qvbr  🔥 LOST=4
+    53  single-ce: pipe=4 LA=8 p1 QP23                            per-frame    0.0%     4   260.5  73.8%   qvbr  🔥 LOST=4
+    54  batch-ce: pipe=1 LA=8 p1 QP23                                 batch    0.0%     4   260.5  73.8%   qvbr  🔥 LOST=4
+    55  batch-ce: pipe=1 LA=8 p1 QP23                                 batch    0.0%     4   260.0  73.7% vbr_hq  🔥 LOST=4
+    56  single-ce: pipe=4 LA=8 p1 QP23                            per-frame    0.0%     4   259.4  73.5% vbr_hq  🔥 LOST=4
+    57  sync-batch: pipe=1 LA=8 p1 QP23                                none    0.0%     4   259.1  73.4% vbr_hq  🔥 LOST=4
+    58  phase4-slot: pipe=4 LA=8 p1 QP23                         slot-reuse   10.3%   207   258.9  73.4% constqp  🔥 LOST=207
+    59  sync-batch: pipe=1 LA=8 p1 QP23                                none    0.0%     4   257.9  73.1%   qvbr  🔥 LOST=4
+    60  single-ce: pipe=1 LA=8 p1 QP23                            per-frame    0.0%     4   238.8  67.7% vbr_hq  🔥 LOST=4
+  ----  ------------------------------------------------------- ----------- -------- -----   ------- ------ RC  ----------------
+  Legend: 👑=fastest, ✅ OK=0% empty, 0 lost, 🛡️ DEF=defended (Tier 1-B retry / 1-A prev_h264) — all empty frames recovered, ⚠️=<2% empty, 0 lost, ❌=broken, 🔥=frames LOST (permanent, unrecoverable), vX.X.X=IFRNet version using this technique/pipe/LA combo
+  Lost = n_submitted − (valid + la_buf + flush_recovered + empty). Frames NVENC encoded but never exposed via LockBitstream.
+  CE: none=sync LockBitstream  per-frame=create/sync/destroy  slot-reuse=pre-created(broken)
+       batch=per-frame across slots  deferred=harvest on next slot reuse
+  🎬=TOPN output  📁=file size (MB)
+  RC modes tested: constqp, vbr_hq, qvbr — column shows per-result RC mode
+
+  ── Cross-RC-Mode Comparison (same technique × pipe × LA) ──
+    batch-ce: pipe=1 LA=0 p1 QP23:
+        constqp: 236fps 0.0%  |    vbr_hq: 259fps 0.0%  |  👑qvbr: 275fps 0.0%
+    batch-ce: pipe=1 LA=8 p1 QP23:
+        constqp: 236fps 0.0%  |    vbr_hq: 260fps 0.0% LOST=4  |  👑qvbr: 260fps 0.0% LOST=4
+    batch-ce: pipe=4 LA=0 p1 QP23:
+        constqp: 233fps 0.0%  |    vbr_hq: 266fps 0.0%  |  👑qvbr: 278fps 0.0%
+    batch-ce: pipe=4 LA=8 p1 QP23:
+        constqp: 235fps 0.0%  |  👑vbr_hq: 261fps 0.0%  |    qvbr: 260fps 0.0%
+    ce-pipeline: pipe=1 LA=0 p1 QP23:
+        constqp: 241fps 0.0%  |    vbr_hq: 261fps 0.0%  |  👑qvbr: 279fps 0.0%
+    ce-pipeline: pipe=1 LA=8 p1 QP23:
+        constqp: 268fps 0.0%  |    vbr_hq: 272fps 0.0% LOST=4  |  👑qvbr: 286fps 0.0% LOST=4
+    ce-pipeline: pipe=4 LA=0 p1 QP23:
+        constqp: 349fps 0.0%  |  👑vbr_hq: 353fps 0.0%  |    qvbr: 345fps 0.0%
+    ce-pipeline: pipe=4 LA=8 p1 QP23:
+      👑constqp: 341fps 0.0%  |    vbr_hq: 334fps 0.0%  |    qvbr: 335fps 0.0%
+    phase4-pfce: pipe=4 LA=0 p1 QP23:
+        constqp: 266fps 16.8% LOST=334  |    vbr_hq: 300fps 16.8% LOST=336  |  👑qvbr: 304fps 16.8% LOST=336
+    phase4-pfce: pipe=4 LA=8 p1 QP23:
+        constqp: 285fps 16.8% LOST=331  |    vbr_hq: 288fps 16.7% LOST=322  |  👑qvbr: 288fps 16.7% LOST=322
+    phase4-slot: pipe=4 LA=0 p1 QP23:
+        constqp: 277fps 11.0% LOST=220  |    vbr_hq: 292fps 12.6% LOST=252  |  👑qvbr: 298fps 11.8% LOST=236
+    phase4-slot: pipe=4 LA=8 p1 QP23:
+        constqp: 259fps 10.3% LOST=207  |    vbr_hq: 273fps 16.7% LOST=322  |  👑qvbr: 276fps 10.3% LOST=193
+    single-ce: pipe=1 LA=0 p1 QP23:
+        constqp: 246fps 0.0%  |    vbr_hq: 263fps 0.0%  |  👑qvbr: 275fps 0.0%
+    single-ce: pipe=1 LA=8 p1 QP23:
+        constqp: 236fps 0.0%  |    vbr_hq: 239fps 0.0% LOST=4  |  👑qvbr: 261fps 0.0% LOST=4
+    single-ce: pipe=4 LA=0 p1 QP23:
+        constqp: 238fps 0.0%  |    vbr_hq: 265fps 0.0%  |  👑qvbr: 275fps 0.0%
+    single-ce: pipe=4 LA=8 p1 QP23:
+        constqp: 237fps 0.0%  |    vbr_hq: 259fps 0.0% LOST=4  |  👑qvbr: 260fps 0.0% LOST=4
+    sync-batch: pipe=1 LA=0 p1 QP23:
+        constqp: 232fps 0.0%  |    vbr_hq: 273fps 0.0%  |  👑qvbr: 274fps 0.0%
+    sync-batch: pipe=1 LA=8 p1 QP23:
+        constqp: 235fps 0.0%  |  👑vbr_hq: 259fps 0.0% LOST=4  |    qvbr: 258fps 0.0% LOST=4
+    sync-batch: pipe=4 LA=0 p1 QP23:
+        constqp: 231fps 0.0%  |    vbr_hq: 269fps 0.0%  |  👑qvbr: 276fps 0.0%
+    sync-batch: pipe=4 LA=8 p1 QP23:
+        constqp: 222fps 0.0%  |    vbr_hq: 244fps 0.0%  |  👑qvbr: 277fps 0.0%
+
+  💡 Best: ce-pipeline: pipe=4 LA=0 p1 QP23 (352.9 FPS, 0.0% empty) [vbr_hq] → v6.4.3/4/5.1
+
+
+python test_nvenc_completion_event_v4.py --plan-a \
+    -i ../input_videos/word_world_2.mp4 \
+    --rate-modes constqp,vbr_hq,qvbr \
+    --crf 23 --num-segments 4
+
+========================================================================================================================
+4D FULL MATRIX — 720x576@25fps N=687 batch_size=24 x 3RC — RC x Technique x Pipe x LA — FPS Ranking
+========================================================================================================================
+  Rank  Test Case                                              CE    Empty  Lost     Def      FPS   Rel%      RC  Verdict
+  ----  --------------------------------------------- ----------- -------- ----- -------  ------- ------      RC  ----------------------
+  👑 1  [constqp] ce-pipeline: pipe=4 LA=8 (x4seg)       deferred    0.0%     -       -     584.2 100.0% constqp  ✅ OK v6.4.3.1/4.1 📁6MB 🎬
+     2  [constqp] ce-pipeline: pipe=4 LA=0 (x4seg)       deferred    0.0%     -       -     578.1  99.0% constqp  ✅ OK v6.4.3/4/5.1 📁6MB 🎬
+     3  [qvbr] ce-pipeline: pipe=4 LA=0 (x4seg)          deferred    0.0%     -       -     556.8  95.3%   qvbr  ✅ OK v6.4.3/4/5.1 📁7MB 🎬
+     4  [constqp] batch-ce: pipe=1 LA=0 (x4seg)             batch    0.0%     -       -     503.3  86.2% constqp  ✅ OK
+     5  [constqp] ce-pipeline: pipe=1 LA=8 (x4seg)       deferred    0.0%     -       -     494.9  84.7% constqp  ✅ OK pipe1-safe-path
+     6  [constqp] batch-ce: pipe=1 LA=8 (x4seg)             batch    0.0%     -       -     494.4  84.6% constqp  ✅ OK
+     7  [constqp] single-ce: pipe=1 LA=8 (x4seg)        per-frame    0.0%     -       -     491.7  84.2% constqp  ✅ OK
+     8  [constqp] single-ce: pipe=4 LA=0 (x4seg)        per-frame    0.0%     -       -     490.5  84.0% constqp  ✅ OK
+     9  [constqp] batch-ce: pipe=4 LA=8 (x4seg)             batch    0.0%     -       -     490.3  83.9% constqp  ✅ OK
+    10  [qvbr] ce-pipeline: pipe=4 LA=8 (x4seg)          deferred    0.0%     -       -     487.9  83.5%   qvbr  ✅ OK v6.4.3.1/4.1
+    11  [constqp] single-ce: pipe=1 LA=0 (x4seg)        per-frame    0.0%     -       -     486.9  83.3% constqp  ✅ OK
+    12  [constqp] single-ce: pipe=4 LA=8 (x4seg)        per-frame    0.0%     -       -     486.7  83.3% constqp  ✅ OK
+    13  [constqp] sync-batch: pipe=1 LA=0 (x4seg)            none    0.0%     -       -     486.0  83.2% constqp  ✅ OK
+    14  [constqp] sync-batch: pipe=1 LA=8 (x4seg)            none    0.0%     -       -     485.9  83.2% constqp  ✅ OK
+    15  [constqp] batch-ce: pipe=4 LA=0 (x4seg)             batch    0.0%     -       -     485.4  83.1% constqp  ✅ OK
+    16  [constqp] ce-pipeline: pipe=1 LA=0 (x4seg)       deferred    0.0%     -       -     477.6  81.8% constqp  ✅ OK
+    17  [qvbr] batch-ce: pipe=4 LA=0 (x4seg)                batch    0.0%     -       -     475.6  81.4%   qvbr  ✅ OK
+    18  [qvbr] batch-ce: pipe=1 LA=0 (x4seg)                batch    0.0%     -       -     475.6  81.4%   qvbr  ✅ OK
+    19  [qvbr] ce-pipeline: pipe=1 LA=0 (x4seg)          deferred    0.0%     -       -     474.3  81.2%   qvbr  ✅ OK
+    20  [constqp] sync-batch: pipe=4 LA=0 (x4seg)            none    0.0%     -       -     473.6  81.1% constqp  ✅ OK
+    21  [qvbr] single-ce: pipe=4 LA=0 (x4seg)           per-frame    0.0%     -       -     471.1  80.6%   qvbr  ✅ OK
+    22  [qvbr] single-ce: pipe=1 LA=0 (x4seg)           per-frame    0.0%     -       -     470.5  80.5%   qvbr  ✅ OK
+    23  [qvbr] sync-batch: pipe=4 LA=0 (x4seg)               none    0.0%     -       -     465.4  79.7%   qvbr  ✅ OK
+    24  [qvbr] sync-batch: pipe=1 LA=0 (x4seg)               none    0.0%     -       -     465.0  79.6%   qvbr  ✅ OK
+    25  [vbr_hq] ce-pipeline: pipe=4 LA=0 (x4seg)        deferred    0.0%     -       -     449.4  76.9% vbr_hq  ✅ OK v6.4.3/4/5.1
+    26  [constqp] sync-batch: pipe=4 LA=8 (x4seg)            none    0.0%     -       -     441.6  75.6% constqp  ✅ OK
+    27  [qvbr] batch-ce: pipe=4 LA=8 (x4seg)                batch    0.0%     -       -     432.3  74.0%   qvbr  ✅ OK
+    28  [qvbr] sync-batch: pipe=4 LA=8 (x4seg)               none    0.0%     -       -     430.6  73.7%   qvbr  ✅ OK
+    29  [qvbr] phase4-pfce: pipe=4 LA=0 (x4seg)         per-frame    0.0%     -     114     364.9  62.5%   qvbr  🛡️ DEF=114 (1B=114 1A=0)
+    30  [vbr_hq] ce-pipeline: pipe=4 LA=8 (x4seg)        deferred    0.0%     -       -     352.3  60.3% vbr_hq  ✅ OK v6.4.3.1/4.1
+    31  [vbr_hq] ce-pipeline: pipe=1 LA=0 (x4seg)        deferred    0.0%     -       -     332.6  56.9% vbr_hq  ✅ OK
+    32  [vbr_hq] batch-ce: pipe=4 LA=0 (x4seg)              batch    0.0%     -       -     330.6  56.6% vbr_hq  ✅ OK
+    33  [vbr_hq] sync-batch: pipe=1 LA=0 (x4seg)             none    0.0%     -       -     329.2  56.4% vbr_hq  ✅ OK
+    34  [vbr_hq] single-ce: pipe=4 LA=0 (x4seg)         per-frame    0.0%     -       -     327.6  56.1% vbr_hq  ✅ OK
+    35  [vbr_hq] sync-batch: pipe=4 LA=0 (x4seg)             none    0.0%     -       -     324.9  55.6% vbr_hq  ✅ OK
+    36  [vbr_hq] single-ce: pipe=1 LA=0 (x4seg)         per-frame    0.0%     -       -     324.3  55.5% vbr_hq  ✅ OK
+    37  [vbr_hq] batch-ce: pipe=1 LA=0 (x4seg)              batch    0.0%     -       -     323.2  55.3% vbr_hq  ✅ OK
+    38  [vbr_hq] batch-ce: pipe=4 LA=8 (x4seg)              batch    0.0%     -       -     314.0  53.7% vbr_hq  ✅ OK
+    39  [vbr_hq] sync-batch: pipe=4 LA=8 (x4seg)             none    0.0%     -       -     308.1  52.7% vbr_hq  ✅ OK
+    40  [vbr_hq] phase4-pfce: pipe=4 LA=0 (x4seg)       per-frame    0.0%     -     114     255.4  43.7% vbr_hq  🛡️ DEF=114 (1B=114 1A=0)
+    41  [qvbr] phase4-pfce: pipe=4 LA=8 (x4seg)         per-frame    0.0%     -     114     172.8  29.6%   qvbr  🛡️ DEF=114 (1B=58 1A=56)
+    42  [vbr_hq] phase4-pfce: pipe=4 LA=8 (x4seg)       per-frame    0.0%     -     114     144.2  24.7% vbr_hq  🛡️ DEF=114 (1B=58 1A=56)
+    43  [constqp] phase4-slot: pipe=4 LA=0 (x4seg)     slot-reuse   11.3%    59       -     511.9  87.6% constqp  🔥 LOST=59
+    44  [constqp] phase4-pfce: pipe=4 LA=0 (x4seg)      per-frame   16.1%    93       -     511.3  87.5% constqp  🔥 LOST=93
+    45  [constqp] phase4-slot: pipe=4 LA=8 (x4seg)     slot-reuse   12.0%    64       -     504.3  86.3% constqp  🔥 LOST=64
+    46  [constqp] phase4-pfce: pipe=4 LA=8 (x4seg)      per-frame   16.1%    93       -     493.4  84.5% constqp  🔥 LOST=93
+    47  [qvbr] phase4-slot: pipe=4 LA=0 (x4seg)        slot-reuse   10.2%    51       -     480.4  82.2%   qvbr  🔥 LOST=51
+    48  [qvbr] phase4-slot: pipe=4 LA=8 (x4seg)        slot-reuse   11.0%    26       -     449.0  76.8%   qvbr  🔥 LOST=26
+    49  [qvbr] single-ce: pipe=1 LA=8 (x4seg)           per-frame    0.0%    16       -     438.9  75.1%   qvbr  🔥 LOST=16
+    50  [qvbr] ce-pipeline: pipe=1 LA=8 (x4seg)          deferred    0.0%    16       -     438.1  75.0%   qvbr  🔥 LOST=16 pipe1-safe-path
+    51  [qvbr] batch-ce: pipe=1 LA=8 (x4seg)                batch    0.0%    16       -     437.8  74.9%   qvbr  🔥 LOST=16
+    52  [qvbr] sync-batch: pipe=1 LA=8 (x4seg)               none    0.0%    16       -     434.3  74.3%   qvbr  🔥 LOST=16
+    53  [qvbr] single-ce: pipe=4 LA=8 (x4seg)           per-frame    0.0%    16       -     434.3  74.3%   qvbr  🔥 LOST=16
+    54  [vbr_hq] ce-pipeline: pipe=1 LA=8 (x4seg)        deferred    0.0%    16       -     355.4  60.8% vbr_hq  🔥 LOST=16 pipe1-safe-path
+    55  [vbr_hq] phase4-slot: pipe=4 LA=0 (x4seg)      slot-reuse   12.0%    64       -     331.8  56.8% vbr_hq  🔥 LOST=64
+    56  [vbr_hq] sync-batch: pipe=1 LA=8 (x4seg)             none    0.0%    16       -     319.7  54.7% vbr_hq  🔥 LOST=16
+    57  [vbr_hq] single-ce: pipe=1 LA=8 (x4seg)         per-frame    0.0%    16       -     310.5  53.2% vbr_hq  🔥 LOST=16
+    58  [vbr_hq] phase4-slot: pipe=4 LA=8 (x4seg)      slot-reuse   15.4%    59       -     309.9  53.0% vbr_hq  🔥 LOST=59
+    59  [vbr_hq] batch-ce: pipe=1 LA=8 (x4seg)              batch    0.0%    16       -     306.1  52.4% vbr_hq  🔥 LOST=16
+    60  [vbr_hq] single-ce: pipe=4 LA=8 (x4seg)         per-frame    0.0%    16       -     305.1  52.2% vbr_hq  🔥 LOST=16
+  ----  --------------------------------------------- ----------- -------- ----- -------  ------- ------      RC  ----------------------
+
+===================================================================================================================
+TOP-N OUTPUT FILES — Detailed Statistics
+===================================================================================================================
+  Rank     Input    Output  Container       FPS   File Size   RC Mode       Encoder  Filename
+  ----  --------  --------  ---------  --------  ----------  --------  ------------  --------------------------------------
+     1       687       687        687     483.8       6.2 MB   CONSTQP    h264_nvenc  rank01_ce-pipeline_pipe4_LA8.mp4
+     2       687       687        687     483.6       6.2 MB   CONSTQP    h264_nvenc  rank02_ce-pipeline_pipe4_LA0.mp4
+     3       687       687        687     486.7       7.2 MB      QVBR    h264_nvenc  rank03_ce-pipeline_pipe4_LA0.mp4
+
+  Legend: 👑=fastest, ✅ OK=0% empty, 0 lost, 🛡️ DEF=defended (Tier 1-B retry / 1-A prev_h264) — all empty frames recovered, ⚠️=<2% empty, 0 lost, ❌=broken, 🔥=frames LOST (permanent, unrecoverable), vX.X.X=IFRNet version using this technique/pipe/LA combo, Def=defended (Tier 1B+1A recovered frames)
+  Lost = n_submitted − (valid + la_buf + flush_recovered + empty). Frames NVENC encoded but never exposed via LockBitstream.
+  CE: none=sync LockBitstream  per-frame=create/sync/destroy  slot-reuse=pre-created(broken)
+       batch=per-frame across slots  deferred=harvest on next slot reuse
+  🎬=TOPN output  📁=file size (MB)
+  Output directory: /workspace/Video_Enhancement/temp
+  RC modes tested: constqp, vbr_hq, qvbr — column shows per-result RC mode
+
+  ── Cross-RC-Mode Comparison (same technique × pipe × LA) ──
+    batch-ce: pipe=1 LA=0 (x4seg):
+      👑constqp: 503fps 0.0%  |    vbr_hq: 323fps 0.0%  |    qvbr: 476fps 0.0%
+    batch-ce: pipe=1 LA=8 (x4seg):
+      👑constqp: 494fps 0.0%  |    vbr_hq: 306fps 0.0% LOST=16  |    qvbr: 438fps 0.0% LOST=16
+    batch-ce: pipe=4 LA=0 (x4seg):
+      👑constqp: 485fps 0.0%  |    vbr_hq: 331fps 0.0%  |    qvbr: 476fps 0.0%
+    batch-ce: pipe=4 LA=8 (x4seg):
+      👑constqp: 490fps 0.0%  |    vbr_hq: 314fps 0.0%  |    qvbr: 432fps 0.0%
+    ce-pipeline: pipe=1 LA=0 (x4seg):
+      👑constqp: 478fps 0.0%  |    vbr_hq: 333fps 0.0%  |    qvbr: 474fps 0.0%
+    ce-pipeline: pipe=1 LA=8 (x4seg):
+      👑constqp: 495fps 0.0%  |    vbr_hq: 355fps 0.0% LOST=16  |    qvbr: 438fps 0.0% LOST=16
+    ce-pipeline: pipe=4 LA=0 (x4seg):
+      👑constqp: 578fps 0.0%  |    vbr_hq: 449fps 0.0%  |    qvbr: 557fps 0.0%
+    ce-pipeline: pipe=4 LA=8 (x4seg):
+      👑constqp: 584fps 0.0%  |    vbr_hq: 352fps 0.0%  |    qvbr: 488fps 0.0%
+    phase4-pfce: pipe=4 LA=0 (x4seg):
+      👑constqp: 511fps 16.1% LOST=93  |    vbr_hq: 255fps 0.0%  |    qvbr: 365fps 0.0%
+    phase4-pfce: pipe=4 LA=8 (x4seg):
+      👑constqp: 493fps 16.1% LOST=93  |    vbr_hq: 144fps 0.0%  |    qvbr: 173fps 0.0%
+    phase4-slot: pipe=4 LA=0 (x4seg):
+      👑constqp: 512fps 11.3% LOST=59  |    vbr_hq: 332fps 12.0% LOST=64  |    qvbr: 480fps 10.2% LOST=51
+    phase4-slot: pipe=4 LA=8 (x4seg):
+      👑constqp: 504fps 12.0% LOST=64  |    vbr_hq: 310fps 15.4% LOST=59  |    qvbr: 449fps 11.0% LOST=26
+    single-ce: pipe=1 LA=0 (x4seg):
+      👑constqp: 487fps 0.0%  |    vbr_hq: 324fps 0.0%  |    qvbr: 471fps 0.0%
+    single-ce: pipe=1 LA=8 (x4seg):
+      👑constqp: 492fps 0.0%  |    vbr_hq: 311fps 0.0% LOST=16  |    qvbr: 439fps 0.0% LOST=16
+    single-ce: pipe=4 LA=0 (x4seg):
+      👑constqp: 490fps 0.0%  |    vbr_hq: 328fps 0.0%  |    qvbr: 471fps 0.0%
+    single-ce: pipe=4 LA=8 (x4seg):
+      👑constqp: 487fps 0.0%  |    vbr_hq: 305fps 0.0% LOST=16  |    qvbr: 434fps 0.0% LOST=16
+    sync-batch: pipe=1 LA=0 (x4seg):
+      👑constqp: 486fps 0.0%  |    vbr_hq: 329fps 0.0%  |    qvbr: 465fps 0.0%
+    sync-batch: pipe=1 LA=8 (x4seg):
+      👑constqp: 486fps 0.0%  |    vbr_hq: 320fps 0.0% LOST=16  |    qvbr: 434fps 0.0% LOST=16
+    sync-batch: pipe=4 LA=0 (x4seg):
+      👑constqp: 474fps 0.0%  |    vbr_hq: 325fps 0.0%  |    qvbr: 465fps 0.0%
+    sync-batch: pipe=4 LA=8 (x4seg):
+      👑constqp: 442fps 0.0%  |    vbr_hq: 308fps 0.0%  |    qvbr: 431fps 0.0%
+
+  💡 Best: [constqp] ce-pipeline: pipe=4 LA=8 (x4seg) (584.2 FPS, 0.0% empty) [constqp] → v6.4.3.1/4.1
+
+
+python test_nvenc_completion_event_v4.py --plan-a \
+    -i ../input_videos/word_world_2.mp4 \
+    --rate-modes constqp,vbr_hq,qvbr \
+    --crf 23 --num-segments 3
+
+========================================================================================================================
+4D FULL MATRIX — 720x576@25fps N=687 batch_size=24 x 3RC — RC x Technique x Pipe x LA — FPS Ranking
+========================================================================================================================
+  Rank  Test Case                                              CE    Empty  Lost     Def      FPS   Rel%       RC  Verdict
+  ----  --------------------------------------------- ----------- -------- ----- -------  ------- ------       RC  ----------------------
+  👑 1  [constqp] ce-pipeline: pipe=4 LA=8 (x3seg)       deferred    0.0%     -       -     584.7 100.0% constqp  ✅ OK v6.4.3.1/4.1 📁6MB 🎬
+     2  [constqp] ce-pipeline: pipe=4 LA=0 (x3seg)       deferred    0.0%     -       -     574.9  98.3% constqp  ✅ OK v6.4.3/4/5.1 📁6MB 🎬
+     3  [qvbr] ce-pipeline: pipe=4 LA=0 (x3seg)          deferred    0.0%     -       -     558.4  95.5%    qvbr  ✅ OK v6.4.3/4/5.1 📁7MB 🎬
+     4  [constqp] ce-pipeline: pipe=1 LA=0 (x3seg)       deferred    0.0%     -       -     498.9  85.3% constqp  ✅ OK
+     5  [constqp] single-ce: pipe=4 LA=0 (x3seg)        per-frame    0.0%     -       -     498.7  85.3% constqp  ✅ OK
+     6  [constqp] ce-pipeline: pipe=1 LA=8 (x3seg)       deferred    0.0%     -       -     497.2  85.0% constqp  ✅ OK pipe1-safe-path
+     7  [constqp] single-ce: pipe=1 LA=8 (x3seg)        per-frame    0.0%     -       -     495.5  84.7% constqp  ✅ OK
+     8  [constqp] sync-batch: pipe=1 LA=0 (x3seg)            none    0.0%     -       -     495.4  84.7% constqp  ✅ OK
+     9  [constqp] batch-ce: pipe=1 LA=8 (x3seg)             batch    0.0%     -       -     495.3  84.7% constqp  ✅ OK
+    10  [constqp] batch-ce: pipe=4 LA=0 (x3seg)             batch    0.0%     -       -     492.2  84.2% constqp  ✅ OK
+    11  [qvbr] ce-pipeline: pipe=4 LA=8 (x3seg)          deferred    0.0%     -       -     491.2  84.0%    qvbr  ✅ OK v6.4.3.1/4.1
+    12  [constqp] batch-ce: pipe=4 LA=8 (x3seg)             batch    0.0%     -       -     490.9  84.0% constqp  ✅ OK
+    13  [constqp] batch-ce: pipe=1 LA=0 (x3seg)             batch    0.0%     -       -     489.3  83.7% constqp  ✅ OK
+    14  [constqp] single-ce: pipe=4 LA=8 (x3seg)        per-frame    0.0%     -       -     488.1  83.5% constqp  ✅ OK
+    15  [constqp] single-ce: pipe=1 LA=0 (x3seg)        per-frame    0.0%     -       -     486.4  83.2% constqp  ✅ OK
+    16  [constqp] sync-batch: pipe=4 LA=0 (x3seg)            none    0.0%     -       -     483.6  82.7% constqp  ✅ OK
+    17  [qvbr] ce-pipeline: pipe=1 LA=0 (x3seg)          deferred    0.0%     -       -     479.1  81.9%    qvbr  ✅ OK
+    18  [qvbr] single-ce: pipe=4 LA=0 (x3seg)           per-frame    0.0%     -       -     476.9  81.6%    qvbr  ✅ OK
+    19  [qvbr] batch-ce: pipe=1 LA=0 (x3seg)                batch    0.0%     -       -     474.6  81.2%    qvbr  ✅ OK
+    20  [qvbr] batch-ce: pipe=4 LA=0 (x3seg)                batch    0.0%     -       -     474.5  81.2%    qvbr  ✅ OK
+    21  [qvbr] single-ce: pipe=1 LA=0 (x3seg)           per-frame    0.0%     -       -     472.0  80.7%    qvbr  ✅ OK
+    22  [qvbr] sync-batch: pipe=4 LA=0 (x3seg)               none    0.0%     -       -     470.9  80.5%    qvbr  ✅ OK
+    23  [constqp] sync-batch: pipe=1 LA=8 (x3seg)            none    0.0%     -       -     468.9  80.2% constqp  ✅ OK
+    24  [qvbr] sync-batch: pipe=1 LA=0 (x3seg)               none    0.0%     -       -     467.5  80.0%    qvbr  ✅ OK
+    25  [constqp] sync-batch: pipe=4 LA=8 (x3seg)            none    0.0%     -       -     464.2  79.4% constqp  ✅ OK
+    26  [qvbr] batch-ce: pipe=4 LA=8 (x3seg)                batch    0.0%     -       -     436.9  74.7%    qvbr  ✅ OK
+    27  [vbr_hq] ce-pipeline: pipe=4 LA=0 (x3seg)        deferred    0.0%     -       -     432.3  73.9%  vbr_hq  ✅ OK v6.4.3/4/5.1
+    28  [qvbr] sync-batch: pipe=4 LA=8 (x3seg)               none    0.0%     -       -     421.1  72.0%    qvbr  ✅ OK
+    29  [vbr_hq] ce-pipeline: pipe=4 LA=8 (x3seg)        deferred    0.0%     -       -     354.9  60.7%  vbr_hq  ✅ OK v6.4.3.1/4.1
+    30  [qvbr] phase4-pfce: pipe=4 LA=0 (x3seg)         per-frame    0.0%     -     120     342.0  58.5%    qvbr  🛡️ DEF=120 (1B=120 1A=0)
+    31  [vbr_hq] sync-batch: pipe=1 LA=0 (x3seg)             none    0.0%     -       -     338.4  57.9%  vbr_hq  ✅ OK
+    32  [vbr_hq] single-ce: pipe=1 LA=0 (x3seg)         per-frame    0.0%     -       -     332.8  56.9%  vbr_hq  ✅ OK
+    33  [vbr_hq] batch-ce: pipe=1 LA=0 (x3seg)              batch    0.0%     -       -     332.2  56.8%  vbr_hq  ✅ OK
+    34  [vbr_hq] batch-ce: pipe=4 LA=0 (x3seg)              batch    0.0%     -       -     331.4  56.7%  vbr_hq  ✅ OK
+    35  [vbr_hq] ce-pipeline: pipe=1 LA=0 (x3seg)        deferred    0.0%     -       -     329.2  56.3%  vbr_hq  ✅ OK
+    36  [vbr_hq] single-ce: pipe=4 LA=0 (x3seg)         per-frame    0.0%     -       -     328.5  56.2%  vbr_hq  ✅ OK
+    37  [vbr_hq] sync-batch: pipe=4 LA=0 (x3seg)             none    0.0%     -       -     325.4  55.7%  vbr_hq  ✅ OK
+    38  [vbr_hq] batch-ce: pipe=4 LA=8 (x3seg)              batch    0.0%     -       -     307.8  52.7%  vbr_hq  ✅ OK
+    39  [vbr_hq] sync-batch: pipe=4 LA=8 (x3seg)             none    0.0%     -       -     299.7  51.3%  vbr_hq  ✅ OK
+    40  [vbr_hq] phase4-pfce: pipe=4 LA=0 (x3seg)       per-frame    0.0%     -     120     248.6  42.5%  vbr_hq  🛡️ DEF=120 (1B=120 1A=0)
+    41  [qvbr] phase4-pfce: pipe=4 LA=8 (x3seg)         per-frame    0.0%     -     120     166.5  28.5%    qvbr  🛡️ DEF=120 (1B=60 1A=60)
+    42  [vbr_hq] phase4-pfce: pipe=4 LA=8 (x3seg)       per-frame    0.0%     -     120     141.9  24.3%  vbr_hq  🛡️ DEF=120 (1B=60 1A=60)
+    43  [constqp] phase4-slot: pipe=4 LA=8 (x3seg)     slot-reuse   11.6%    80       -     513.4  87.8% constqp  🔥 LOST=80
+    44  [constqp] phase4-pfce: pipe=4 LA=0 (x3seg)      per-frame   16.9%    98       -     510.8  87.4% constqp  🔥 LOST=98
+    45  [constqp] phase4-slot: pipe=4 LA=0 (x3seg)     slot-reuse   10.3%    71       -     502.0  85.9% constqp  🔥 LOST=71
+    46  [qvbr] phase4-slot: pipe=4 LA=0 (x3seg)        slot-reuse   11.9%    82       -     493.1  84.3%    qvbr  🔥 LOST=82
+    47  [constqp] phase4-pfce: pipe=4 LA=8 (x3seg)      per-frame   16.9%    99       -     485.9  83.1% constqp  🔥 LOST=99
+    48  [qvbr] phase4-slot: pipe=4 LA=8 (x3seg)        slot-reuse    9.5%    27       -     444.2  76.0%    qvbr  🔥 LOST=27
+    49  [qvbr] batch-ce: pipe=1 LA=8 (x3seg)                batch    0.0%    12       -     440.1  75.3%    qvbr  🔥 LOST=12
+    50  [qvbr] ce-pipeline: pipe=1 LA=8 (x3seg)          deferred    0.0%    12       -     434.5  74.3%    qvbr  🔥 LOST=12 pipe1-safe-path
+    51  [qvbr] single-ce: pipe=1 LA=8 (x3seg)           per-frame    0.0%    12       -     434.4  74.3%    qvbr  🔥 LOST=12
+    52  [qvbr] single-ce: pipe=4 LA=8 (x3seg)           per-frame    0.0%    12       -     426.7  73.0%    qvbr  🔥 LOST=12
+    53  [qvbr] sync-batch: pipe=1 LA=8 (x3seg)               none    0.0%    12       -     424.5  72.6%    qvbr  🔥 LOST=12
+    54  [vbr_hq] ce-pipeline: pipe=1 LA=8 (x3seg)        deferred    0.0%    12       -     353.4  60.4%  vbr_hq  🔥 LOST=12 pipe1-safe-path
+    55  [vbr_hq] phase4-slot: pipe=4 LA=0 (x3seg)      slot-reuse   11.8%    81       -     347.7  59.5%  vbr_hq  🔥 LOST=81
+    56  [vbr_hq] batch-ce: pipe=1 LA=8 (x3seg)              batch    0.0%    12       -     324.3  55.5%  vbr_hq  🔥 LOST=12
+    57  [vbr_hq] phase4-slot: pipe=4 LA=8 (x3seg)      slot-reuse   15.2%    69       -     314.0  53.7%  vbr_hq  🔥 LOST=69
+    58  [vbr_hq] sync-batch: pipe=1 LA=8 (x3seg)             none    0.0%    12       -     310.4  53.1%  vbr_hq  🔥 LOST=12
+    59  [vbr_hq] single-ce: pipe=1 LA=8 (x3seg)         per-frame    0.0%    12       -     309.1  52.9%  vbr_hq  🔥 LOST=12
+    60  [vbr_hq] single-ce: pipe=4 LA=8 (x3seg)         per-frame    0.0%    12       -     302.3  51.7%  vbr_hq  🔥 LOST=12
+  ----  --------------------------------------------- ----------- -------- ----- -------  ------- ------       RC  ----------------------
+
+===================================================================================================================
+TOP-N OUTPUT FILES — Detailed Statistics
+===================================================================================================================
+  Rank     Input    Output  Container       FPS   File Size   RC Mode       Encoder  Filename
+  ----  --------  --------  ---------  --------  ----------  --------  ------------  --------------------------------------
+     1       687       687        687     483.7       6.2 MB   CONSTQP    h264_nvenc  rank01_ce-pipeline_pipe4_LA8.mp4
+     2       687       687        687     483.6       6.2 MB   CONSTQP    h264_nvenc  rank02_ce-pipeline_pipe4_LA0.mp4
+     3       687       687        687     485.0       7.2 MB      QVBR    h264_nvenc  rank03_ce-pipeline_pipe4_LA0.mp4
+
+  Legend: 👑=fastest, ✅ OK=0% empty, 0 lost, 🛡️ DEF=defended (Tier 1-B retry / 1-A prev_h264) — all empty frames recovered, ⚠️=<2% empty, 0 lost, ❌=broken, 🔥=frames LOST (permanent, unrecoverable), vX.X.X=IFRNet version using this technique/pipe/LA combo, Def=defended (Tier 1B+1A recovered frames)
+  Lost = n_submitted − (valid + la_buf + flush_recovered + empty). Frames NVENC encoded but never exposed via LockBitstream.
+  CE: none=sync LockBitstream  per-frame=create/sync/destroy  slot-reuse=pre-created(broken)
+       batch=per-frame across slots  deferred=harvest on next slot reuse
+  🎬=TOPN output  📁=file size (MB)
+  Output directory: /workspace/Video_Enhancement/temp
+  RC modes tested: constqp, vbr_hq, qvbr — column shows per-result RC mode
+
+  ── Cross-RC-Mode Comparison ──
+  Technique / Pipe / LA                     constqp          vbr_hq            qvbr    Best RC
+  ────────────────────────────────────  ──────────────  ──────────────  ──────────────  ────────
+  batch-ce: pipe=1 LA=0 (x3seg)                 489             332             475    constqp
+  batch-ce: pipe=1 LA=8 (x3seg)                 495        324 L=12        440 L=12    constqp
+  batch-ce: pipe=4 LA=0 (x3seg)                 492             331             474    constqp
+  batch-ce: pipe=4 LA=8 (x3seg)                 491             308             437    constqp
+  ce-pipeline: pipe=1 LA=0 (x3seg)              499             329             479    constqp
+  ce-pipeline: pipe=1 LA=8 (x3seg)              497        353 L=12        435 L=12    constqp
+  ce-pipeline: pipe=4 LA=0 (x3seg)              575             432             558    constqp
+  ce-pipeline: pipe=4 LA=8 (x3seg)              585             355             491    constqp
+  phase4-pfce: pipe=4 LA=0 (x3seg)         511 L=98             249             342    constqp
+  phase4-pfce: pipe=4 LA=8 (x3seg)         486 L=99             142             167    constqp
+  phase4-slot: pipe=4 LA=0 (x3seg)         502 L=71        348 L=81        493 L=82    constqp
+  phase4-slot: pipe=4 LA=8 (x3seg)         513 L=80        314 L=69        444 L=27    constqp
+  single-ce: pipe=1 LA=0 (x3seg)                486             333             472    constqp
+  single-ce: pipe=1 LA=8 (x3seg)                495        309 L=12        434 L=12    constqp
+  single-ce: pipe=4 LA=0 (x3seg)                499             329             477    constqp
+  single-ce: pipe=4 LA=8 (x3seg)                488        302 L=12        427 L=12    constqp
+  sync-batch: pipe=1 LA=0 (x3seg)               495             338             467    constqp
+  sync-batch: pipe=1 LA=8 (x3seg)               469        310 L=12        425 L=12    constqp
+  sync-batch: pipe=4 LA=0 (x3seg)               484             325             471    constqp
+  sync-batch: pipe=4 LA=8 (x3seg)               464             300             421    constqp
+
+  💡 Best: [constqp] ce-pipeline: pipe=4 LA=8 (x3seg) (584.7 FPS, 0.0% empty) [constqp] → v6.4.3.1/4.1
+
+python test_nvenc_completion_event_v4.py --plan-a \
+    -i ../input_videos/word_world_2.mp4 \
+    --rate-modes constqp,vbr_hq,qvbr \
+    --crf 23 --num-segments 2
+
+========================================================================================================================
+4D FULL MATRIX — 720x576@25fps N=687 batch_size=24 x 3RC — RC x Technique x Pipe x LA — FPS Ranking
+========================================================================================================================
+  Rank  Test Case                                              CE    Empty  Lost     Def      FPS   Rel%      RC  Verdict
+  ────  ───────────────────────────────────────────── ─────────── ──────── ───── ───────  ─────── ────── ───────  ──────────────────────
+  👑 1  [constqp] ce-pipeline: pipe=4 LA=0 (x2seg)       deferred    0.0%     -       -     582.3 100.0% constqp  ✅ OK v6.4.3/4/5.1 📁6MB 🎬
+     2  [constqp] ce-pipeline: pipe=4 LA=8 (x2seg)       deferred    0.0%     -       -     579.8  99.6% constqp  ✅ OK v6.4.3.1/4.1 📁6MB 🎬
+     3  [qvbr] ce-pipeline: pipe=4 LA=0 (x2seg)          deferred    0.0%     -       -     556.7  95.6%    qvbr  ✅ OK v6.4.3/4/5.1 📁7MB 🎬
+     4  [constqp] batch-ce: pipe=1 LA=0 (x2seg)             batch    0.0%     -       -     500.4  85.9% constqp  ✅ OK
+     5  [qvbr] ce-pipeline: pipe=4 LA=8 (x2seg)          deferred    0.0%     -       -     498.7  85.6%    qvbr  ✅ OK v6.4.3.1/4.1
+     6  [constqp] batch-ce: pipe=1 LA=8 (x2seg)             batch    0.0%     -       -     498.5  85.6% constqp  ✅ OK
+     7  [constqp] sync-batch: pipe=1 LA=0 (x2seg)            none    0.0%     -       -     496.7  85.3% constqp  ✅ OK
+     8  [constqp] ce-pipeline: pipe=1 LA=8 (x2seg)       deferred    0.0%     -       -     494.6  84.9% constqp  ✅ OK pipe1-safe-path
+     9  [constqp] ce-pipeline: pipe=1 LA=0 (x2seg)       deferred    0.0%     -       -     491.2  84.3% constqp  ✅ OK
+    10  [constqp] batch-ce: pipe=4 LA=8 (x2seg)             batch    0.0%     -       -     489.0  84.0% constqp  ✅ OK
+    11  [constqp] single-ce: pipe=4 LA=0 (x2seg)        per-frame    0.0%     -       -     488.5  83.9% constqp  ✅ OK
+    12  [qvbr] batch-ce: pipe=1 LA=0 (x2seg)                batch    0.0%     -       -     483.1  83.0%    qvbr  ✅ OK
+    13  [constqp] batch-ce: pipe=4 LA=0 (x2seg)             batch    0.0%     -       -     482.6  82.9% constqp  ✅ OK
+    14  [qvbr] batch-ce: pipe=4 LA=0 (x2seg)                batch    0.0%     -       -     479.6  82.4%    qvbr  ✅ OK
+    15  [qvbr] single-ce: pipe=4 LA=0 (x2seg)           per-frame    0.0%     -       -     478.1  82.1%    qvbr  ✅ OK
+    16  [qvbr] ce-pipeline: pipe=1 LA=0 (x2seg)          deferred    0.0%     -       -     474.9  81.6%    qvbr  ✅ OK
+    17  [constqp] single-ce: pipe=4 LA=8 (x2seg)        per-frame    0.0%     -       -     474.7  81.5% constqp  ✅ OK
+    18  [qvbr] single-ce: pipe=1 LA=0 (x2seg)           per-frame    0.0%     -       -     473.8  81.4%    qvbr  ✅ OK
+    19  [qvbr] sync-batch: pipe=1 LA=0 (x2seg)               none    0.0%     -       -     473.1  81.2%    qvbr  ✅ OK
+    20  [constqp] sync-batch: pipe=4 LA=0 (x2seg)            none    0.0%     -       -     472.4  81.1% constqp  ✅ OK
+    21  [constqp] sync-batch: pipe=1 LA=8 (x2seg)            none    0.0%     -       -     468.9  80.5% constqp  ✅ OK
+    22  [qvbr] sync-batch: pipe=4 LA=0 (x2seg)               none    0.0%     -       -     464.6  79.8%    qvbr  ✅ OK
+    23  [constqp] single-ce: pipe=1 LA=0 (x2seg)        per-frame    0.0%     -       -     463.1  79.5% constqp  ✅ OK
+    24  [constqp] sync-batch: pipe=4 LA=8 (x2seg)            none    0.0%     -       -     457.0  78.5% constqp  ✅ OK
+    25  [vbr_hq] ce-pipeline: pipe=4 LA=0 (x2seg)        deferred    0.0%     -       -     455.2  78.2%  vbr_hq  ✅ OK v6.4.3/4/5.1
+    26  [constqp] single-ce: pipe=1 LA=8 (x2seg)        per-frame    0.0%     -       -     447.5  76.8% constqp  ✅ OK
+    27  [qvbr] sync-batch: pipe=4 LA=8 (x2seg)               none    0.0%     -       -     443.6  76.2%    qvbr  ✅ OK
+    28  [qvbr] batch-ce: pipe=4 LA=8 (x2seg)                batch    0.0%     -       -     440.4  75.6%    qvbr  ✅ OK
+    29  [qvbr] phase4-pfce: pipe=4 LA=0 (x2seg)         per-frame    0.0%     -     119     385.2  66.2%    qvbr  🛡️ DEF=119 (1B=119 1A=0)
+    30  [vbr_hq] ce-pipeline: pipe=4 LA=8 (x2seg)        deferred    0.0%     -       -     367.5  63.1%  vbr_hq  ✅ OK v6.4.3.1/4.1
+    31  [vbr_hq] ce-pipeline: pipe=1 LA=0 (x2seg)        deferred    0.0%     -       -     364.7  62.6%  vbr_hq  ✅ OK
+    32  [vbr_hq] sync-batch: pipe=4 LA=0 (x2seg)             none    0.0%     -       -     351.1  60.3%  vbr_hq  ✅ OK
+    33  [vbr_hq] batch-ce: pipe=1 LA=0 (x2seg)              batch    0.0%     -       -     349.5  60.0%  vbr_hq  ✅ OK
+    34  [vbr_hq] sync-batch: pipe=1 LA=0 (x2seg)             none    0.0%     -       -     346.2  59.5%  vbr_hq  ✅ OK
+    35  [vbr_hq] single-ce: pipe=1 LA=0 (x2seg)         per-frame    0.0%     -       -     346.2  59.5%  vbr_hq  ✅ OK
+    36  [vbr_hq] batch-ce: pipe=4 LA=0 (x2seg)              batch    0.0%     -       -     340.3  58.4%  vbr_hq  ✅ OK
+    37  [vbr_hq] single-ce: pipe=4 LA=0 (x2seg)         per-frame    0.0%     -       -     331.9  57.0%  vbr_hq  ✅ OK
+    38  [vbr_hq] batch-ce: pipe=4 LA=8 (x2seg)              batch    0.0%     -       -     318.4  54.7%  vbr_hq  ✅ OK
+    39  [vbr_hq] sync-batch: pipe=4 LA=8 (x2seg)             none    0.0%     -       -     310.3  53.3%  vbr_hq  ✅ OK
+    40  [vbr_hq] phase4-pfce: pipe=4 LA=0 (x2seg)       per-frame    0.0%     -     119     262.6  45.1%  vbr_hq  🛡️ DEF=119 (1B=119 1A=0)
+    41  [qvbr] phase4-pfce: pipe=4 LA=8 (x2seg)         per-frame    0.0%     -     119     168.8  29.0%    qvbr  🛡️ DEF=119 (1B=60 1A=59)
+    42  [vbr_hq] phase4-pfce: pipe=4 LA=8 (x2seg)       per-frame    0.0%     -     119     142.4  24.5%  vbr_hq  🛡️ DEF=119 (1B=60 1A=59)
+    43  [constqp] phase4-pfce: pipe=4 LA=0 (x2seg)      per-frame   17.3%   119       -     521.1  89.5% constqp  🔥 LOST=119
+    44  [constqp] phase4-pfce: pipe=4 LA=8 (x2seg)      per-frame   17.3%   119       -     516.5  88.7% constqp  🔥 LOST=119
+    45  [constqp] phase4-slot: pipe=4 LA=0 (x2seg)     slot-reuse   11.4%    78       -     498.1  85.5% constqp  🔥 LOST=78
+    46  [qvbr] phase4-slot: pipe=4 LA=0 (x2seg)        slot-reuse   12.8%    88       -     495.0  85.0%    qvbr  🔥 LOST=88
+    47  [constqp] phase4-slot: pipe=4 LA=8 (x2seg)     slot-reuse   12.1%    83       -     486.4  83.5% constqp  🔥 LOST=83
+    48  [qvbr] phase4-slot: pipe=4 LA=8 (x2seg)        slot-reuse   11.9%    57       -     448.6  77.0%    qvbr  🔥 LOST=57
+    49  [qvbr] sync-batch: pipe=1 LA=8 (x2seg)               none    0.0%     8       -     439.4  75.5%    qvbr  🔥 LOST=8
+    50  [qvbr] single-ce: pipe=4 LA=8 (x2seg)           per-frame    0.0%     8       -     439.3  75.4%    qvbr  🔥 LOST=8
+    51  [qvbr] ce-pipeline: pipe=1 LA=8 (x2seg)          deferred    0.0%     8       -     439.1  75.4%    qvbr  🔥 LOST=8 pipe1-safe-path
+    52  [qvbr] batch-ce: pipe=1 LA=8 (x2seg)                batch    0.0%     8       -     439.0  75.4%    qvbr  🔥 LOST=8
+    53  [qvbr] single-ce: pipe=1 LA=8 (x2seg)           per-frame    0.0%     8       -     428.5  73.6%    qvbr  🔥 LOST=8
+    54  [vbr_hq] ce-pipeline: pipe=1 LA=8 (x2seg)        deferred    0.0%     8       -     380.6  65.4%  vbr_hq  🔥 LOST=8 pipe1-safe-path
+    55  [vbr_hq] phase4-slot: pipe=4 LA=0 (x2seg)      slot-reuse   13.0%    89       -     359.2  61.7%  vbr_hq  🔥 LOST=89
+    56  [vbr_hq] phase4-slot: pipe=4 LA=8 (x2seg)      slot-reuse   16.6%    90       -     336.8  57.8%  vbr_hq  🔥 LOST=90
+    57  [vbr_hq] batch-ce: pipe=1 LA=8 (x2seg)              batch    0.0%     8       -     318.8  54.7%  vbr_hq  🔥 LOST=8
+    58  [vbr_hq] single-ce: pipe=1 LA=8 (x2seg)         per-frame    0.0%     8       -     315.1  54.1%  vbr_hq  🔥 LOST=8
+    59  [vbr_hq] single-ce: pipe=4 LA=8 (x2seg)         per-frame    0.0%     8       -     314.4  54.0%  vbr_hq  🔥 LOST=8
+    60  [vbr_hq] sync-batch: pipe=1 LA=8 (x2seg)             none    0.0%     8       -     309.4  53.1%  vbr_hq  🔥 LOST=8
+  ────  ───────────────────────────────────────────── ─────────── ──────── ───── ───────  ─────── ────── ───────  ──────────────────────
+
+===================================================================================================================
+TOP-N OUTPUT FILES — Detailed Statistics
+===================================================================================================================
+  Rank     Input    Output  Container       FPS   File Size   RC Mode       Encoder  Filename
+  ----  --------  --------  ---------  --------  ----------  --------  ------------  --------------------------------------
+     1       687       687        687     483.7       6.2 MB   CONSTQP    h264_nvenc  rank01_ce-pipeline_pipe4_LA0.mp4
+     2       687       687        687     483.7       6.2 MB   CONSTQP    h264_nvenc  rank02_ce-pipeline_pipe4_LA8.mp4
+     3       687       687        687     484.1       7.2 MB      QVBR    h264_nvenc  rank03_ce-pipeline_pipe4_LA0.mp4
+
+  Legend: 👑=fastest, ✅ OK=0% empty, 0 lost, 🛡️ DEF=defended (Tier 1-B retry / 1-A prev_h264) — all empty frames recovered, ⚠️=<2% empty, 0 lost, ❌=broken, 🔥=frames LOST (permanent, unrecoverable), vX.X.X=IFRNet version using this technique/pipe/LA combo, Def=defended (Tier 1B+1A recovered frames)
+  Lost = n_submitted − (valid + la_buf + flush_recovered + empty). Frames NVENC encoded but never exposed via LockBitstream.
+  CE: none=sync LockBitstream  per-frame=create/sync/destroy  slot-reuse=pre-created(broken)
+       batch=per-frame across slots  deferred=harvest on next slot reuse
+  🎬=TOPN output  📁=file size (MB)
+  Output directory: /workspace/Video_Enhancement/temp
+  RC modes tested: constqp, vbr_hq, qvbr — column shows per-result RC mode
+
+  ── Cross-RC-Mode Comparison ──
+  Technique / Pipe / LA                     constqp          vbr_hq            qvbr    Best RC
+  ────────────────────────────────────  ──────────────  ──────────────  ──────────────  ────────
+  batch-ce: pipe=1 LA=0 (x2seg)                 500             349             483    constqp
+  batch-ce: pipe=1 LA=8 (x2seg)                 499         319 L=8         439 L=8    constqp
+  batch-ce: pipe=4 LA=0 (x2seg)                 483             340             480    constqp
+  batch-ce: pipe=4 LA=8 (x2seg)                 489             318             440    constqp
+  ce-pipeline: pipe=1 LA=0 (x2seg)              491             365             475    constqp
+  ce-pipeline: pipe=1 LA=8 (x2seg)              495         381 L=8         439 L=8    constqp
+  ce-pipeline: pipe=4 LA=0 (x2seg)              582             455             557    constqp
+  ce-pipeline: pipe=4 LA=8 (x2seg)              580             367             499    constqp
+  phase4-pfce: pipe=4 LA=0 (x2seg)        521 L=119             263             385    constqp
+  phase4-pfce: pipe=4 LA=8 (x2seg)        517 L=119             142             169    constqp
+  phase4-slot: pipe=4 LA=0 (x2seg)         498 L=78        359 L=89        495 L=88    constqp
+  phase4-slot: pipe=4 LA=8 (x2seg)         486 L=83        337 L=90        449 L=57    constqp
+  single-ce: pipe=1 LA=0 (x2seg)                463             346             474    qvbr
+  single-ce: pipe=1 LA=8 (x2seg)                447         315 L=8         429 L=8    constqp
+  single-ce: pipe=4 LA=0 (x2seg)                489             332             478    constqp
+  single-ce: pipe=4 LA=8 (x2seg)                475         314 L=8         439 L=8    constqp
+  sync-batch: pipe=1 LA=0 (x2seg)               497             346             473    constqp
+  sync-batch: pipe=1 LA=8 (x2seg)               469         309 L=8         439 L=8    constqp
+  sync-batch: pipe=4 LA=0 (x2seg)               472             351             465    constqp
+  sync-batch: pipe=4 LA=8 (x2seg)               457             310             444    constqp
+
+  💡 Best: [constqp] ce-pipeline: pipe=4 LA=0 (x2seg) (582.3 FPS, 0.0% empty) [constqp] → v6.4.3/4/5.1

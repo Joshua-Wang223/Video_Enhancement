@@ -30,11 +30,11 @@ _NVENC_SURFACES_PIPE: int = 32
 
 # NVENC VBR 模式前向帧预看窗口（-rc-lookahead N）：
 #   仅在 crf>0（-rc:v vbr 模式）下启用。NVENC 默认不使用前向预看（N=0），
-#   设为 16 后编码器可向前分析 16 帧的运动复杂度，进行更精准的码率分配。
+#   设为 8 后编码器可向前分析 8 帧的运动复杂度，进行更精准的码率分配。
 #   典型 PSNR 改善 0.2-0.5 dB（1080p VBR）。
 #   注意：lookahead 需要 N 帧前瞻缓冲，与 -delay 0（零输出延迟）互斥，
 #   故仅在 VBR 路径启用，QP=0 路径改用 -delay 0。
-_NVENC_LOOKAHEAD_VBR: int = 16
+_NVENC_LOOKAHEAD_VBR: int = 8
 
 # [FIX-NVENC-PRESET] x264 → NVENC preset 名称映射。
 # NVENC 使用 p1(最快)~p7(最慢) 命名体系，与 x264 的 ultrafast~veryslow 不兼容。
@@ -130,6 +130,29 @@ def _detect_encode_parallelisms(n_threads_hint: Optional[int] = None) -> dict:
     }
 
 
+# ── [FIX-NVDEC-THREAD-CAP] NVDEC 解码线程钳位 ────────────────────────────────
+# ffmpeg 6.1.1 的 NVDEC 解码 surface 计算公式：
+#   ulNumDecodeSurfaces = ref_frame_count + num_reorder_frames
+#                         + 2(deinterlace) + thread_count + 3(基础工作 surface)
+# 32 是驱动硬上限（cudaVideoDecoder 拒绝），ffmpeg 6.1.1 无 FFMIN(pool,32) 钳位。
+# 实测：-threads 8 → 32 surfaces 成功；-threads 9 → 33 surfaces 被驱动拒绝。
+# 注意：仅影响解码侧命令；编码侧线程由 _detect_encode_parallelisms() 独立控制。
+_MAX_DECODE_THREADS = 8
+_DECODE_THREAD_HINT_SHOWN = False
+
+def _clamp_decode_threads(requested: Optional[int] = None) -> int:
+    """钳位 NVDEC 解码线程数（驱动 32-surface 硬上限），超限时打印一次提示。"""
+    global _DECODE_THREAD_HINT_SHOWN
+    n = int(requested) if requested else (os.cpu_count() or 4)
+    if n > _MAX_DECODE_THREADS:
+        if not _DECODE_THREAD_HINT_SHOWN:
+            print(f"[decode] threads={n} exceeds max {_MAX_DECODE_THREADS}, "
+                  f"clamped (NVDEC 32-surface limit)", flush=True)
+            _DECODE_THREAD_HINT_SHOWN = True
+        n = _MAX_DECODE_THREADS
+    return n
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # M2/M3: 硬件能力探测 — [FIX-NVENC-UNIFIED] 统一 NVENC 双检测路径
 # ─────────────────────────────────────────────────────────────────────────
@@ -164,6 +187,9 @@ class HardwareCapability:
                 return False
             dec_cmd = [
                 'ffmpeg', '-hwaccel', 'cuda',
+                # [FIX-NVDEC-THREAD-CAP] 解码线程钳位到 ≤8，避免多核机上
+                # NVDEC 解码 surface 超过驱动 32 上限。
+                '-threads', str(_clamp_decode_threads()),
                 '-f', 'h264', '-i', 'pipe:0',
                 '-f', 'rawvideo', '-pix_fmt', 'bgr24',
                 '-frames:v', '1', 'pipe:1', '-loglevel', 'error',
@@ -413,7 +439,10 @@ class FFmpegReader:
                     an=None,                               # 不处理音频，顺便消除 [mp3float] Header missing 警告
                     **{'fps_mode': 'passthrough'},         # 替代已弃用的 vsync=0，消除 -vsync deprecated 警告
                 )
-                .global_args('-hide_banner', '-loglevel', 'error', '-nostats')  # 屏蔽 banner / info 行 / 进度行
+                # [FIX-NVDEC-THREAD-CAP] 解码线程钳位到 ≤8，避免多核机上
+                # NVDEC 解码 surface 超过驱动 32 上限（-threads 9 → 33 surfaces 被拒）。
+                .global_args('-hide_banner', '-loglevel', 'error', '-nostats',
+                             '-threads', str(_clamp_decode_threads()))  # 屏蔽 banner / info 行 / 进度行
                 .run_async(pipe_stdout=True, pipe_stderr=True, quiet=False)
             )
             self._ffmpeg_process = process
@@ -706,6 +735,9 @@ class FFmpegWriter:
         video_codec = getattr(self.args, 'video_codec', 'libx264')
         crf = getattr(self.args, 'crf', 23)
         x264_preset = getattr(self.args, 'x264_preset', 'medium')
+        # [V6451-RATEMODE] 从 processor 层透传的 rate_mode / lookahead_depth
+        rc_mode = getattr(self.args, 'rate_mode', 'vbr_hq')
+        rc_lookahead = getattr(self.args, 'lookahead_depth', _NVENC_LOOKAHEAD_VBR)
 
         # [FIX-NVENC-UNIFIED] 统一 NVENC 检测：静态 GPU 型号表 + ffmpeg probe 双路径
         _hw_profile = getattr(self.args, '_hw_profile', None)
@@ -784,14 +816,20 @@ class FFmpegWriter:
                         '-delay', '0',
                     ]
                 else:
-                    # [FIX-NVENC-PIPE] NVENC VBR（cq）模式 pipe 场景优化
+                    # [FIX-NVENC-PIPE] NVENC（cq）模式 pipe 场景优化
                     #   -bf 0 禁用 B 帧，降低流水线缓冲延迟
                     #   -rc-lookahead N 前向帧预看（与 -delay 0 互斥）
+                    # [V6451-RATEMODE] rc_mode / rc_lookahead 由 processor 层透传
+                    # [FIX-QVBR-NVENC] FFmpeg NVENC CLI 不支持 "qvbr" 作为 -rc:v 值，
+                    # 映射到 vbr_hq（语义等价：VBR + -cq:v 质量目标控制）。
+                    _NVENC_RC_MAP = {'constqp': 'constqp', 'vbr_hq': 'vbr_hq', 'qvbr': 'vbr_hq'}
+                    nvenc_rc = _NVENC_RC_MAP.get(rc_mode, 'vbr_hq')
+                    print(f'[FFmpegWriter] rate_mode={rc_mode} rc-lookahead={rc_lookahead}')
                     quality_args = [
                         '-preset', nvenc_preset,
-                        '-rc:v', 'vbr', '-cq:v', str(crf), '-b:v', '0',
+                        '-rc:v', nvenc_rc, '-cq:v', str(crf), '-b:v', '0',
                         '-bf', '0',
-                        '-rc-lookahead', str(_NVENC_LOOKAHEAD_VBR),
+                        '-rc-lookahead', str(rc_lookahead),
                         '-surfaces', str(_NVENC_SURFACES_PIPE),
                     ]
                 cmd_args += ['-vcodec', video_codec, '-pix_fmt', 'yuv420p'] + quality_args
@@ -870,9 +908,9 @@ class FFmpegWriter:
                 )
             else:
                 _enc_info = (
-                    f'[FIX-NVENC-PIPE] NVENC VBR(cq={crf}): '
+                    f'[FIX-NVENC-PIPE] NVENC {rc_mode}(cq={crf}): '
                     f'preset={nvenc_preset}  bf=0  '
-                    f'rc-lookahead={_NVENC_LOOKAHEAD_VBR}  '
+                    f'rc-lookahead={rc_lookahead}  '
                     f'surfaces={_NVENC_SURFACES_PIPE}  '
                     f'ffmpeg_threads={_ft}(全局demux，不影响NVENC硬件单元)'
                 )

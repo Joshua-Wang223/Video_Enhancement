@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 语言偏好 / Language Preference
+
+思考及回答首选**简体中文**，代码和专业技术术语保留英文。
+
 ## Project overview
 
 Video Enhancement is a GPU-accelerated video processing pipeline that integrates **IFRNet frame interpolation** (2x–16x frame rate) and **Real-ESRGAN super-resolution** (2x/4x resolution). It runs on NVIDIA GPUs with optional TensorRT, FP16, CUDA Graph, and torch.compile acceleration.
@@ -25,7 +29,7 @@ To skip a stage: `--skip-interpolate` or `--skip-upscale`. Common flags: `--use-
 ```
 src/main_video_optimized.py          # CLI entry, orchestration, VideoProcessor
   ├── src/processors/ifrnet_processor_v6_1_single.py       # IFRNet processor
-  │     └── external/IFRNet/process_video_v6_3_3_single.py #   IFRNet backend (v6.3.3)
+  │     └── external/IFRNet/process_video_v6_4_5_1_single.py #   IFRNet backend (v6.4.5.1)
   ├── src/processors/realesrgan_processor_video_optimized.py  # Real-ESRGAN processor
   │     └── external/realesrgan_video/main.py            #   Real-ESRGAN backend (v6.4)
   ├── src/utils/config_manager.py   # Config loading, path derivation, CLI override
@@ -53,7 +57,7 @@ This project has accumulated many versioned scripts. Only these are active:
 |---------|-------------|
 | Main entry | `src/main_video_optimized.py` |
 | IFRNet processor | `src/processors/ifrnet_processor_v6_1_single.py` |
-| IFRNet backend | `external/IFRNet/process_video_v6_3_3_single.py` |
+| IFRNet backend | `external/IFRNet/process_video_v6_4_5_1_single.py` |
 | Real-ESRGAN processor | `src/processors/realesrgan_processor_video_optimized.py` |
 | Real-ESRGAN backend | `external/realesrgan_video/main.py` |
 | Config manager | `src/utils/config_manager.py` |
@@ -61,9 +65,9 @@ This project has accumulated many versioned scripts. Only these are active:
 
 Everything else in `external/IFRNet/process_video_v*.py`, `external/Real-ESRGAN/inference_realesrgan_video_v*.py`, `src/main_video_v*.py`, `src/processors/*_v[1-5]*.py` is historical or reference-only. Files with `_bak` or ` - Copy` suffix are development backups safe to delete.
 
-## IFRNet backend (v6.3.3)
+## IFRNet backend (v6.4.5.1)
 
-`external/IFRNet/process_video_v6_3_3_single.py` is a ~2500-line single-GPU script. Key internal architecture:
+`external/IFRNet/process_video_v6_4_5_1_single.py` is the current single-GPU backend. Key internal architecture:
 
 - **Three-stage pipeline**: T1 (Reader: NVDEC decode + frame prep → pair_queue), T2 (GPU: IFRNet model inference), T3 (Writer: FFmpeg H.264 encode from result_queue)
 - Uses dual CUDA transfer streams (`stream_h2d` for prefetch, `stream_d2h` for output) with CudaEventPool
@@ -73,7 +77,7 @@ Everything else in `external/IFRNet/process_video_v*.py`, `external/Real-ESRGAN/
 - Adaptive queue tuning post-segment (pair_queue / result_queue sizing)
 - TRT engine cached under `.trt_cache/` with GPU SM-architecture in filename
 
-The multi-GPU variant `process_video_v6_3_3.py` has equivalent code but with multi-GPU distribution.
+The multi-GPU variant `process_video_v6_3_3.py` (historical) has equivalent code but with multi-GPU distribution.
 
 ## Real-ESRGAN backend (v6.4, realesrgan_video)
 
@@ -102,6 +106,28 @@ Both processors auto-degrade: on CUDA OOM, batch_size is halved and retried, dow
 
 Each processor maintains `temp/{video_name}_ifrnet/checkpoint.json` and `temp/{video_name}_esrgan/checkpoint.json`. Re-running the same command skips completed segments. Delete the checkpoint file to force re-processing.
 
-## Shell environment
+## 跨平台开发与部署 / Cross-Platform Development & Deployment
 
-This project runs on Windows (PowerShell). Paths use backslashes. FFmpeg must be in PATH. Python 3.9+ with CUDA-capable PyTorch.
+- **开发环境**: Windows 11 (PowerShell 5.1 / Bash via Git)，日常编码、调试、本地测试在 Windows 上进行
+- **生产运行环境**: Linux (目标部署服务器)，实际视频处理任务在 Linux 上执行
+- **跨平台要求**: 所有代码必须兼容 Windows 和 Linux，禁止使用平台特定 API 或硬编码路径分隔符
+
+### 必须遵守的跨平台规范
+
+| 场景 | 正确做法 | 禁止做法 |
+|------|---------|----------|
+| 路径操作 | `pathlib.Path` / `os.path.join` | 硬编码 `\` 或 `/`，字符串拼接路径 |
+| 子进程调用 | `subprocess.Popen(..., shell=False)` | `shell=True`（平台注入风险 + 行为差异） |
+| 文件编码 | 明确指定 `encoding='utf-8'` | 依赖系统默认编码 |
+| 换行符 | Python 通用换行模式（默认 `\n`） | 硬编码 `\r\n` 或手动 CRLF 处理 |
+| 可执行文件查找 | `shutil.which('ffmpeg')` | 硬编码路径如 `C:\ffmpeg\bin\ffmpeg.exe` |
+| 临时文件 | `tempfile.gettempdir()` + `pathlib` | 硬编码 `/tmp` 或 `C:\Temp` |
+| 文件权限 | 避免依赖 Unix 权限位（chmod/chown） | `os.chmod` 设置 0o755 等（Windows 无意义） |
+| GPU 检测 | `torch.cuda.is_available()` | 依赖 `/dev/nvidia*` 或 `nvidia-smi` 路径 |
+| 系统信号 | 避免 `signal.SIGUSR1` 等 Unix 特有信号 | Windows 不支持 SIGUSR/SIGTERM 语义 |
+
+### 环境依赖
+- **Python**: 3.9+，Windows 和 Linux 均需安装
+- **PyTorch**: CUDA 版本，需手动安装（匹配目标 CUDA 版本）
+- **FFmpeg**: 必须在 PATH 中可用，版本 ≥ 4.3
+- **TensorRT** (可选): `tensorrt`, `pycuda`, `onnx`, `onnxruntime-gpu` — 切勿调用 `pycuda.autoinit`（与 PyTorch CUDA context 冲突）

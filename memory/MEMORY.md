@@ -1,0 +1,71 @@
+记忆文件位置（canonical）：`D:\Workspace_Python\Video_Enhancement\Video_Enhancement\memory`（仓库根目录 `memory/`）；与 `C:\Users\Administrator\.claude\projects\D--Workspace-Python-Video-Enhancement-Video-Enhancement\memory` 互为镜像——编辑任何一侧后必须同步另一侧
+**工作约定（2026-08-14 用户确认）**：每次新建/修改 `memory/` 下任何文件后，必须**自动同步**到上述 Claude 镜像目录（同名覆盖），不得只改一侧。
+- [项目综合认知入口](project-core-knowledge.md) — opencode/Claude 共享的浓缩认知：架构、活跃文件、NVENC 铁律、关键 offset、生产配置、工作偏好
+- [语言与代码修改偏好](user_language.md) — 只用中英文交流，代码修改保留原有注释
+- [开发与运行环境](project_environment.md) — 开发在 Windows，运行部署在 Linux
+- [Level 1 NVENC 编码数据流](level1-nvenc-encoding-flow.md) — 四级降级架构、GPU 直通 CONSTQP 编码、FFmpegMuxer 注意事项
+- [NVENC ctypes 集成参考](nvenc-ctypes-integration.md) — SDK 13.0 struct 布局、函数索引、版本常量、码率控制、已验证的 bug 模式
+- [NVENC SPS/PPS 跨段修复](nvenc-sps-pps-debugging.md) — ctypes bitfield 布局不匹配导致 repeatSPSPPS 无效，手动缓存方案已 GPU 验证
+- [v6.4.2/v6.4.3 Bug 修复记录](project_v642_v643_bugs.md) — 灰色输出、文件膨胀、Level 1 code=15、Writer 崩溃的全部根因和修复，已 GPU 验证
+- [NVENC ctypes 已验证布局](nvenc_ctypes_verified_layouts.md) — NV_ENC_RC_PARAMS 128B + NV_ENC_CONFIG_H264 布局（encodeCodecConfig@168/level@180 sweep 验证），NV_ENC_QP=12B struct
+- [curl 获取 NVENC 头文件](curl-header-fetch-method.md) — curl 直接下载 nvEncodeAPI.h 可靠；sdk/13.0 分支不存在，用 master
+- [_rgb_to_nv12_gpu BGR 优化](_rgb_to_nv12_gpu-bgr-optimization.md) — input_is_bgr=True 可跳过 numpy BGR→RGB 翻转，省 CPU 拷贝
+- [episodic-memory MCP 修复](episodic-memory-mcp-fix.md) — WPS安装的Claude Code缺少Node.js，postinstall Unix语法Windows不兼容
+- [v6.4.4 隔帧花屏根因与修复](v644-encodethread-cross-stream-race.md) — wait_stream 仅 GPU 侧 barrier，Infer/Writer 线程 per-thread stream 缺 synchronize → Heisenbug；修复：synchronize()
+- [v6.4.3 批首色度撕裂竞态](v643-batch-start-chroma-tearing-race.md) — FIX-ASYNC-COPY non-blocking _stream_encode + 内联 ce-pipeline 无 synchronize → NV12 撕裂（布纹花屏+闪烁+文件 2x）；修复：writer 侧 current_stream().synchronize()；verify 脚本 v6 新增色度检查 4
+- [NVENC 空帧多层防御](nvenc-empty-frame-defense.md) — completionEvent 异步 ~7% 空帧率根因 DMA 竞态假说、同步路径残余空帧、Tier 0/1/3-E 多层防御栈已 GPU 验证
+- [IFRNet v6.4.x 全版本架构矩阵](ifrnet-v6-4x-version-matrix.md) — 6 版本演化路径、3 层架构、收敛状态、场景推荐
+- [IFRNet v6.4.5.1 深度模块化拆分](ifrnet-v6451-modular-split.md) — 8756 行单文件逐字拆分至 external/ifrnet_video/（镜像 realesrgan_video），模块映射、保真保证、无环依赖、处理器适配层与验证状态
+- [NVENC CE-Pipeline 架构](nvenc-ce-pipeline-architecture.md) — 三阶段异步编码设计、GPU 验证性能数据(+13~39%)、LA 兼容性矩阵
+- [CONSTQP 快速路径](constqp-fast-path.md) — 零空帧推导的 LockBitstream 重试缩减 + Tier 1-B 跳过
+- [NVENC RC Params SEQUENTIAL 布局](nvenc-rc-params-sequential-layout.md) — 所有版本可执行代码一致, targetQuality@88, lookaheadDepth@90
+- [_NVENCEncodeThread 架构决策](nvenc-encodethread-architecture-decision.md) — v6.4.3/.1 有意不添加, ce-pipeline 是主要收益
+- [pipe=4+LA=8 Tier 防御验证](pipe4-la8-tier-defense-verified.md) — GPU 验证 Tier 1-B/A 100% 恢复空帧；pipe forced guard 已注释 ([[pipe4-la8-root-cause-fix]])
+- [LA-Aware Harvest 死胡同](la-harvest-dead-end.md) — completion-driven harvest 12-slot 开销+cuEventQuery 轮询反比 pipe=1 慢
+- [v4 生产最优配置](v4-production-best-config.md) — ce-pipeline+pipe=4+LA=8+constqp=584FPS，v4 4D全矩阵180组合GPU验证零丢帧
+- [RC 模式性能排名](rc-mode-performance-ranking.md) — constqp > qvbr > vbr_hq，constqp统一最快(+29~66% vs vbr_hq)且文件最小
+- [LA=8 合成vs真实视频逆转](la8-real-vs-synthetic-reversal.md) — 合成帧LA有害(-3.7%)，真实视频LA有益(+1%)，帧间相关性决定
+- [phase4 constqp 防御失败](phase4-constqp-defense-failure.md) — constqp高速编码缩小DMA竞态窗口，Tier 1-B/A不足覆盖，vbr_hq/qvbr可恢复
+- [pipe=1+LA=8+qvbr 段丢帧](pipe1-la8-qvbr-segment-loss.md) — 固定丢帧LOST=4×Nseg，仅qvbr+pipe=1+LA=8组合，constqp不受影响
+- [4D 空帧丢帧热力图](4d-empty-frame-loss-heatmap.md) — RC×Tech×Pipe×LA 完整矩阵，区分空帧率/LOST/DEF，合成帧+真实视频双数据集
+- [IFRNet v6.4.x 基准综合报告](benchmark-ifrnet-v6.4.x-summary.md) — 六版本性能排名、帧完整性、RC对比、生产推荐
+- [v6.4.5/.1 bitrate=unconstrained 退化](v6.4.5-bitrate-unconstrained-degradation.md) — avgBitrate=0 导致 GPU 65% 空闲、性能塌方 2.2× 慢，根因+修复
+- [T2 静态估算低估 1039%](t2-static-estimation-undershoot.md) — _T2_VAR_MS=25ms vs 实测 335ms，新增 _T2_VAR_MS_TRT=335ms 修复
+- [SPS/PPS LA+pipe4 启动损坏](sps-pps-la-pipe4-startup-corruption.md) — 已确认为 per-slot IDR 症状，根因修复见 [[pipe4-la8-root-cause-fix]]
+- [v6.4.x 基准原始数据速查](v6.4.x-benchmark-raw-data.md) — Batch+Individual 全部数据表、帧计数诊断、编码精度诊断、Auto-Tune 偏差
+- [v6.4.3/3.1/4/4.1 三项修复 backport](v6.4.x-backport-fixes.md) — T2 静态估算、bitrate 天花板、SPS/PPS 启动损坏修复从 v6.4.5.1 backport 到四个旧版本
+- ~~SPS/PPS V2 Writer-thread-side 修复~~ — 文件不存在，内容已由 [[nvenc-la-frame-conservation-fix]] 和 [[sps-pps-la-pipe4-startup-corruption]] 覆盖
+- [pipe=4+LA=8 终极根因与修复](pipe4-la8-root-cause-fix.md) — encode_frame+per-slot IDR 唯一根因，handle共享≠根因，四文件 (v6.4.3.1/4.1/5/5.1) 三处修改 GPU 验证通过 ✅
+- [LA 窗口旋转修复](la-window-rotation-fix.md) — [已废弃] 曾按 9 帧窗口旋转假说重排，实机未修复（双重洗牌）；已由 [[stream-ts-reassociation-fix]] 替代并移除全部代码
+- [stream-LA drain 关联修复](stream-ts-reassociation-fix.md) — FIX-STREAM-TS-REASSOC 真根因（est_fi 顺序假设在冷会话 LA 失效→数据块贴错 fi）+ outputTimeStamp@40 重关联 + writer 流式重排缓冲 + 移除 rotation + BR 钳制；6 版本 backport，段1 frames==packets 修复；tt6 生产确认 @40 回显 18/18、34/34 双射 + 诊断脚本 VCL 过滤判定修复；tt7 实机确认判定生效（LA=8/16 exit 0）+ 辅助块 ts 按 slot 轮转回显细节
+- [pipe=4+LA=8 生产花屏修复](pipe4-la8-production-garbled-fix.md) — [已废弃] 旧方案A/B，被 root-cause-fix 替代
+- [pipe=4+LA=8 教训总结](pipe4-la8-lessons-learned.md) — 三轮分析→实施→失败的完整复盘：根因分析过度泛化、调用链盲区、误用语义等价替代消除
+- [NVENC LA 帧守恒修复](nvenc-la-frame-conservation-fix.md) — SDK 合规排空逻辑的 3 项修复：循环 LockBitstream、pipeline_depth=LA+1、移除 NEED_MORE_INPUT 误弃帧，GPU 验证零丢帧 ✅
+- [CE-Pipeline LA>0 帧守恒模式](ce-pipeline-la-accumulation-pattern.md) — 全段累积+send_eos、global _frame_idx slot 分配、f0 暂存插入累积 batch
+- [ce-pipeline 首帧 f0 丢失修复](f0-first-frame-loss-ce-pipeline.md) — [FIX-PIPE4-LA8] 误删 encode_frame 导致丢失 f0，按 LA depth 分流修复，GPU 验证 ✅
+- [LA Flush Recovery — 帧守恒的必需条件](la-flush-recovery-frame-conservation.md) — 旧结论错判 LA flush 帧为花屏已修正：flush recovery 非 harmful，是实现帧数守恒的必需条件，花屏 100% 来自编码/排空逻辑的 SDK 违规
+- [pipeline_depth 概念混淆分析](pipeline-depth-slot-rotation-confusion.md) — 一个变量三重语义（buffer 数/轮转模数/harvest 周期），因果链条与优化建议
+- [pipeline_depth 概念分离已完成](pipeline-depth-concept-separation-completed.md) — _slot_count/_required_buffers 分离、_pipeline_depth 已删除、常量重命名，全部 3 个生产脚本已实施
+- [realesrgan nvenc_sdk.py 审计](realesrgan-video-nvenc-sdk-audit.md) — 未接入生产管线的独立副本，含全部已知 LA 帧守恒 bug + pipeline_depth 混淆最严重形态
+- [expandable_segments: synchronize 必须在 del 之后](expandable-segments-synchronize-after-del.md) — cudaFreeAsync 排队规则；synchronize 在 del 前只排空计算不排空释放
+- [TRT Batch 恢复反模式](trt-batch-recovery-anti-patterns.md) — _trt_working_bs 清零死亡螺旋、低阈值、无内存守卫、每批 empty_cache 反效
+- [Real-ESRGAN NVENC 模块架构](realesrgan-nvenc-module-architecture.md) — nvenc_sdk 合并 nvenc_writer、模块导入策略、encoder 跨段复用
+- [ESRGAN 跨段复用 _frame_idx 错误重置](esrgan-segment-reuse-frame-idx-reset.md) — [历史] reopen 前时代 _frame_idx 清零 bug，已随 reopen 删除消失
+- [ESRGAN 跨段切换全栈优化完成](esrgan-cross-segment-optimization-complete.md) — 2026-07-29 四级优化 (Phase A/B/C/D)：GFPGAN 保活 + 跳过 reopen + 对齐 IFRNet，段切换几十秒→毫秒级
+- [ESRGAN 跨段 SIGSEGV 修复栈](esrgan-cross-segment-sigsegv-fix-stack.md) — [历史] reopen 时代 SIGSEGV 根因链与修复栈（2026-07-29 架构已演进，见跨段全栈优化）
+- [ESRGAN reopen slot 相位错位](esrgan-reopen-slot-phase-misalignment.md) — [历史] reopen 时代 _output_slot_idx/_frame_idx 相位问题，已随 reopen() 删除消失
+- [ESRGAN Pinned Buffer Pool 竞态](esrgan-pinned-buffer-pool-race.md) — D2H 异步拷贝无同步，读 numpy 早于 GPU 完成 → 帧内容被旧批次顶替
+- [ESRGAN Slot 复用无背压](esrgan-nvenc-slot-backpressure.md) — 物理 bs_buf 提交前无 drain 等待，LA=8/slot=9 仅 1 帧余量 → 帧被覆盖丢失
+- [ESRGAN 空 Final Chunk 跳过 EOS](esrgan-empty-final-chunk-skips-eos.md) — n_frames==0 快速路径无视 send_eos，段总帧数整除 chunk 时 EOS 不发送 → LA 帧泄漏到下一段
+- [CRF=0 LA depth 无视 CLI 双 BUG 修复](crf0-la-depth-cli-ignore-fix.md) — CRF0 分支硬编码 _NVENC_CRF0_LOOKAHEAD 无视 --lookahead-depth-ifrnet（行为BUG）+ constqp 清零未同步 self._la_depth（显示BUG），三个 .1 版本已修
+- [ESRGAN LA NV12 全段累积 OOM](esrgan-la-nv12-accumulation-oom.md) — VBR_HQ+LA=8 NV12 GPU tensor 全段累积 22.8GB → OOM + batch_size 死亡螺旋，分块编码 (CHUNK_SIZE=150) 降至 ~380MB
+- [IFRNet v6.4.5.1 段1花屏修复栈](ifrnet-v6451-seg1-fix-stack.md) — FIX-STREAM-BACKPRESSURE 真根因（drain 数据未消费→相位错位）+ FIX-PIPE4-LA8 加剧因子（per-slot IDR warmup），Linux 生产验证通过
+- [码流验证工具 IDR slice 误报修复](verify-bitstream-idr-slice-fix.md) — NVENC 多 slice/帧聚类统计，同帧 IDR slice 误报为连IDR=3 假阳性修复
+- [ESRGAN 连IDR=3 误报与零传导分析](esrgan-consecutive-idr-false-positive.md) — 超分输出同帧多 slice 统计假象，对 IFRNet 无错误传导，ESRGAN 无需修改
+- [NVENC stream drain 消费铁律](nvenc-stream-drain-backpressure-iron-law.md) — encode_frames_stream 通用规则：drained 数据必须完整消费，丢弃即相位错位
+- [NVENC profileLevel=51 修复](nvenc-profilelevel-51-fix.md) — 结构体写入落保留区不生效根因（_NvEncConfig 错位 884B）+ FIX-SDK13-CODEC 硬编码偏移修复 + sweep 三重旁证
+- [verify v5 mpeg4 VOP 解析](verify-mpeg4-vop-analysis.md) — VOP header 真实位序（vop_coding_type 最前，非 ISO 书面顺序）、连 I 块判定>3、伪 start code 过滤、fixed.avi「21032 连 I」旧结论修正（实为容器 12 垃圾 packet）；v2/v3 多编码容错（非 h264/hevc 提示不判失败）+ HEVC 基础 NAL 分析（nal_unit_type=(b0>>1)&0x3F，IDR 19/20）
+- [IFRNet LA 辅助块槽位清理修复](ifrnet-la-aux-slot-clearing-fix.md) — v6.4.5.1 三层根因链：aux 块清空 _strm_slot_pending → 反压失效 → LA 输入覆盖错位；_reorder_next 指针卡死 → 每 132 帧周期性强制排空放大；EOS while-True 槽位错配。修复 FIX-AUX-NO-CLEAR / FIX-REORDER-NEXT / FIX-EOS-EXPLICIT-SLOT（seg2 干净对照：有 drain 无错位 → 需双条件同时成立才损坏）
+- [IFRNet LA 排空顺序防御](ifrnet-la-drain-order-fix.md) — v6.4.5.1/4.4.1/3.1 三文件修复：EOS 残留 _g NameError、_ensure_slot_free 目标槽排空（FIX-SLOT-DRAIN-TARGET）、drain 顺序一致性防御 + prev 填充（FIX-DRAIN-ORDER-DEFENSE / FIX-EMPTY-PREV-FILL）、编码线程异常上下文（FIX-ENC-EXC-CONTEXT）；test8 复现背景与验证状态
+- [IFRNet LA 辅助块账记修复（test11）](ifrnet-la-aux-no-clear-test11-fix.md) — FIX-AUX-NO-CLEAR 回归与修复：无 VCL 辅助块不再 pop 队首（不占帧槽/不进 pairs/不清 pending），目标槽直探 + 计数器防漂移 + 相位诊断；v6.4.5.1/4.4.1/3.1 + ESRGAN nvenc_sdk.py 同步，test11 生产复验通过
+- [test11 最根本原因与最直接修复（定论）](ifrnet-test11-rootcause-synthesis.md) — 一句话定论：辅助块被当帧消费破坏 FIFO 标签↔数据双射 → 相位偏移 1 槽永久传播；最直接修复 = VCL 分类后辅助块不占帧槽

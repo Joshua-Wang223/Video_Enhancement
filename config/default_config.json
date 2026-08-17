@@ -89,6 +89,12 @@
       "keep_audio":             true,
       "ffmpeg_bin":             "ffmpeg",
 
+      "// ---- v5 NVENC 码率控制 ----": "",
+      "// rate_mode_note":       "NVENC 码率控制模式: constqp(最快/最低延迟) | vbr_hq(CQ质量优先) | qvbr(质量可变VBR)",
+      "rate_mode":               "vbr_hq",
+      "// lookahead_depth_note": "NVENC 前向帧预看深度: 0=禁用 | 8=低延迟 | 16=平衡(推荐) | 32=最高质量。注意：LA 仅在 VBR_HQ/QVBR 模式下生效；CONSTQP 下硬件静默禁用。NVENC SDK 严格遵守帧数守恒 (Output==Input)，LA 跨编码会话不可复用。",
+      "lookahead_depth":         8,
+
       "// ---- v5 性能报告（null 表示不输出）----": "",
       "report_json":            null
     },
@@ -123,11 +129,11 @@
       "// prefetch_factor_note": "读帧预取队列深度；建议 >= batch_size*2",
       "prefetch_factor":       96,
       "// use_compile_note":   "torch.compile reduce-overhead；首次约 1-3 分钟；与 TRT 互斥；需 PyTorch 2.0+；默认开启（与底层 --no-compile 反向）",
-      "use_compile":           true,
+      "use_compile":           false,
       "// use_cuda_graph_note": "手动 CUDA Graph；use_compile=true 时自动禁用（由 compile 接管）；默认开启",
-      "use_cuda_graph":        true,
-      "// use_tensorrt_note":  "TRT Engine 加速；TRT 8.x/10.x 双 API 兼容；需安装 tensorrt pycuda onnx onnxruntime-gpu",
-      "use_tensorrt":          false,
+      "use_cuda_graph":        false,
+      "// use_tensorrt_note":  "TRT Engine 加速；TRT 8.x/10.x 双 API 兼容；需安装 tensorrt pycuda onnx onnxruntime-gpu；与 IFRNet 默认一致",
+      "use_tensorrt":          true,
       "// gfpgan_trt_note":    "GFPGAN 独立 TRT 子进程加速；需同时设 face_enhance=true；启用时自动禁用 FP16 改用 FP32",
       "gfpgan_trt":            false,
 
@@ -161,6 +167,20 @@
       "// crf_note":           "SR 分段输出质量（0-51，越小越好；23=默认均衡，18=近无损）",
       "crf":                   23,
       "ffmpeg_bin":            "ffmpeg",
+
+      "// ---- v6 NVENC 码率控制 ----": "",
+      "// rate_mode_note":       "NVENC 码率控制模式: constqp(最快/最低延迟) | vbr_hq(CQ质量优先) | qvbr(质量可变VBR)；输出≥1080p 时后端自动切 constqp+LA=0（消除 drain 背压）",
+      "rate_mode":               "vbr_hq",
+      "// lookahead_depth_note": "NVENC 前向帧预看深度: 0=禁用 | 8=低延迟 | 16=平衡(推荐) | 32=最高质量",
+      "lookahead_depth":         8,
+
+      "// ---- v6.4.6 流水线队列与延迟解析 ----": "",
+      "// frame_queue_size_note":  "读帧→检测 队列深度（批）；SR 为瓶颈时队列常年全满，过深只增内存压力",
+      "frame_queue_size":          8,
+      "// detect_queue_size_note": "检测→SR 队列深度（批）；4 批已足够吸收检测抖动",
+      "detect_queue_size":         4,
+      "// defer_sr_resolve_note":  "SR 输出延迟解析（D2H等待+CPU拷贝与下一批GPU推理重叠）；false 回退同步路径",
+      "defer_sr_resolve":          true,
 
       "// ---- v6 预览与报告参数 ----": "",
       "// preview_note":       "启用实时预览窗口（显示最终输出结果，按 q 键提前退出）",

@@ -1,0 +1,434 @@
+================================================================================
+NVENC 各 Technique BUG 汇总、问题根源及完整修复方案
+================================================================================
+文件: tests/techniques_bug_fix.txt
+日期: 2026-07-02
+基于: test_nvenc_completion_event_v4.py → v5 修复过程
+参考: test_nvenc_la_frame_conservation.py (MinimalTestEncoder 已验证正确架构)
+      NVENC Lookahead 帧数守恒验证与实现问题的完整总结.txt
+
+================================================================================
+一、测试矩阵（v4 / v5）
+================================================================================
+
+覆盖 6 个 technique:
+
+  名称             描述                        涉及技术
+  ──────────       ──────────                  ──────────
+  sync-batch       同步批量编码，无 CE          NVENCEncoder.encode_frames_batch()
+  single-ce        单 slot per-frame CE         NVENCEncoderMode1.encode_frame_with_ce()
+  batch-ce         多 slot per-frame CE         NVENCEncoderMode2.encode_frames_batch_with_ce()
+  ce-pipeline      延迟收割 CE pipeline         NVENCEncoderMode5.encode_frames_batch_ce_pipeline()
+  la-harvest       LA感知 completion 驱动收割  NVENCEncoderMode6.encode_frames_batch_la_harvest()
+  sync-drain-loop  同步逐帧 drain loop          NVENCEncoderMode8.encode_frames_sync_drain_loop()
+
+矩阵维度: 3 RC 模式 (constqp, vbr_hq, qvbr) × 4 pipe (1,2,4,8) × 3 LA (0,8,16)
+
+================================================================================
+二、BUG 清单
+================================================================================
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ BUG 1: EncodePicture 后未循环排空输出帧（影响所有 technique）                     │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ 严重程度: 🔴 P0 — 致命，导致帧丢失                                              │
+│ 影响范围: sync-batch, single-ce, batch-ce, ce-pipeline, la-harvest             │
+│ 发现时机: v5 全面修复前，VBR_HQ/QVBR + LA>0 必现                                │
+│                                                                               │
+│ 根源:                                                                         │
+│   NVENC SDK 明确要求: 每调用一次 EncodePicture 后，必须反复调用                 │
+│   LockBitstream(阻塞模式)，直到返回 NV_ENC_ERR_NEED_MORE_INPUT，                │
+│   以取走所有已完成的输出帧。                                                    │
+│                                                                               │
+│   v4 中几乎所有 technique 在 EncodePicture 后只执行:                           │
+│     a) 一次 LockBitstream (sync-batch/batch-ce/ce-pipeline/la-harvest)         │
+│     或                                                                        │
+│     b) 一次 LockBitstream + 指数退避重试 (base class + Mode1-Mode7)            │
+│                                                                               │
+│   当 NVENC 硬件在单次 EncodePicture 后同时完成多帧（LA 模式下常见），           │
+│   其他帧滞留在不同 slot 缓冲区中未被取走，导致:                                 │
+│     - 开头帧被滞留 → 输出缺失前 LA 帧画面                                       │
+│     - EOS flush 取回时顺序错乱 → 末尾重复                                       │
+│     - 部分帧在后续轮转中被覆盖 → 永久丢失                                       │
+│                                                                               │
+│ 修复方案:                                                                      │
+│   在 NVENCEncoder 基类新增两个方法:                                             │
+│                                                                                │
+│   1) _lock_bitstream_once_blocking(bs_handle)                                  │
+│      - 单次 blocking LockBitstream (doNotWait=0)                               │
+│      - 替代原有的 _lock_bitstream_with_retry()（指数退避重试仅掩盖症状）         │
+│                                                                                │
+│   2) _drain_outputs()                                                          │
+│      - 循环 blocking Lock 当前 _output_slot_idx 所指 slot 直到 NEED_MORE_INPUT  │
+│      - 每取出一帧推进 _output_slot_idx (保证帧顺序)                             │
+│      - 返回所有取出的 h264 bytes 列表                                          │
+│      - 多 slot 技术调用此方法                                                   │
+│                                                                                │
+│   3) _drain_slot(bs_handle)                                                    │
+│      - 循环 blocking Lock 指定 slot 直到 NEED_MORE_INPUT                        │
+│      - 单 slot 技术 (single-ce) 调用此方法                                     │
+│      - 注意: single-ce 始终用 slot 0，LA>0 时仍可能丢失分布在其他 slot 的帧     │
+│                                                                                │
+│ 修复涉及文件位置:                                                               │
+│   NVENCEncoder._lock_bitstream_once_blocking() — 第 ~1019 行                    │
+│   NVENCEncoder._drain_slot()                      — 第 ~1053 行                 │
+│   NVENCEncoder._drain_outputs()                   — 第 ~1080 行                 │
+│   所有 technique 的 LockBitstream 调用替换为以上方法                             │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ BUG 2: NEED_MORE_INPUT 时强制 Lock/Unlock 丢弃有效帧                            │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ 严重程度: 🔴 P0 — 致命，导致帧静默丢失                                          │
+│ 影响范围: sync-batch (encode_frames_batch), batch-ce (Mode2),                   │
+│          ce-pipeline (Mode5), la-harvest (Mode6)                                │
+│ 发现时机: VBR_HQ/QVBR + LA>0 时与 BUG 1 叠加，开头丢帧加倍                      │
+│                                                                               │
+│ 根源:                                                                         │
+│   v4 中多个 technique 在 EncodePicture 返回 NEED_MORE_INPUT 时，                │
+│   无脑执行 LockBitstream → UnlockBitstream，取回的数据直接被丢弃:               │
+│                                                                               │
+│     if _ep_status == NV_ENC_ERR_NEED_MORE_INPUT:                               │
+│         # ❌ BUG: 强制 Lock/Unlock + 丢弃 h264_data                             │
+│         _lock_bs = ...                                                         │
+│         _lock_bs_fn(enc, ...)          # 取走有效帧                             │
+│         _unlock_bs_fn(enc, bs_handle)  # Unlock                                │
+│         results.append(b"")            # ❌ 帧数据被丢弃!                       │
+│         continue                                                                 │
+│                                                                               │
+│   问题:                                                                        │
+│   - NEED_MORE_INPUT 只表示"当前这次操作需要更多输入才能产生输出"                 │
+│   - 但它不意味着 bitstream buffer 中"没有其他已完成帧"                          │
+│   - 由于 BUG 1 的存在，其他 slot 可能积压了已完成的帧                           │
+│   - 强制 LockBitstream 取走的可能是上一个编码迭代遗留的合法帧                   │
+│   - 该帧被 silent discard → 永久丢失                                           │
+│                                                                               │
+│   NVENC SDK 规范:                                                              │
+│   - NEED_MORE_INPUT 状态码仅表示当前 EncodePicture 需要更多帧                   │
+│   - 此时不应执行任何 LockBitstream/UnlockBitstream — buffer 中无有效输出        │
+│   - 任何 LockBitstream 都应该在 EncodePicture 返回 SUCCESS 后才执行             │
+│                                                                               │
+│ 修复方案:                                                                      │
+│   完全删除 NEED_MORE_INPUT 分支中的 Lock/Unlock 代码。仅记录诊断信息:           │
+│                                                                                │
+│     if _ep_status == NV_ENC_ERR_NEED_MORE_INPUT:                               │
+│         # ✅ FIX: 仅记录，不触碰 bitstream buffer                               │
+│         self.__dict__.setdefault('_la_buffered', 0)                             │
+│         self._la_buffered += 1                                                 │
+│         results.append(b"")                                                    │
+│         continue                                                               │
+│                                                                               │
+│ 修复涉及文件位置:                                                               │
+│   NVENCEncoder.encode_frames_batch()          — 第 ~1185 行 (删除 ~20 行)       │
+│   NVENCEncoderMode2.encode_frames_batch_with_ce() — 第 ~2070 行 (删除 ~15 行)  │
+│   NVENCEncoder.encode_frame()                 — 第 ~1395 行                     │
+│   NVENCEncoderMode1.encode_frame_with_ce()    — 第 ~1923 行                     │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ BUG 3: pipeline_depth < LA+1 — 缓冲区覆盖                                       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ 严重程度: 🔴 P0 — 致命，硬件层面破坏帧数据                                      │
+│ 影响范围: 所有 technique (开启 LA>0 时)                                          │
+│ 发现时机: VBR_HQ/QVBR + LA>0 开头丢帧                                           │
+│                                                                               │
+│ 根源:                                                                         │
+│   NVENC SDK 硬件安全要求:                                                      │
+│     "启用 lookahead 时，输出比特流缓冲区数量至少为 lookaheadDepth + 1"          │
+│                                                                               │
+│   v4 中 pipeline_depth 传入多少就用多少:                                        │
+│     self._pipeline_depth = max(1, min(8, pipeline_depth))                      │
+│                                                                               │
+│   当 --pipe 4 --la 8 时，只有 4 个 slot 轮转。                                 │
+│   NVENC 硬件同时持有 LA=8 个待处理帧，它们的输出可能被分配到                    │
+│   已经被下一轮 slot 轮转复用覆盖的 slot → 帧数据被硬件覆盖 → 永久丢失。         │
+│                                                                               │
+│   与 BUG 1+2 叠加: 开头丢帧 = LA 帧（缓冲区覆盖）+ 前几帧（未排空被丢弃）       │
+│                                                                               │
+│ 修复方案:                                                                      │
+│    在 __init__ 中自动升级 pipeline_depth:                                       │
+│                                                                                │
+│      if la_depth > 0:                                                          │
+│          pipeline_depth = max(pipeline_depth, la_depth + 1)                    │
+│      self._pipeline_depth = max(1, min(32, pipeline_depth))                    │
+│                                                                                │
+│   同时新增 _output_slot_idx 指针追踪输出顺序:                                   │
+│      self._output_slot_idx = 0                                                 │
+│                                                                                │
+│ 修复涉及文件位置:                                                               │
+│   NVENCEncoder.__init__()                   — 第 ~480-489 行                    │
+│   NVENCEncoderMode8.__init__()              — 第 ~3424-3425 行                  │
+│                                                                                │
+│ 注意事项:                                                                       │
+│   constqp 模式下硬件自动禁用 LA (la_depth 实际 = 0)，所以 pipe=1 也能工作。     │
+│   但这只是巧合，不应依赖此行为。                                                 │
+│   LA=0 时 pipeline_depth 不需要 LA+1 约束。                                     │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ BUG 4: EOS flush 使用 doNotWait=1 — 排空不完整                                   │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ 严重程度: 🟠 P1 — 严重，导致 LA 滞留帧无法完整回收                                │
+│ 影响范围: 所有 technique（base class flush() 方法）                               │
+│ 发现时机: 编码结束统计 flush_frames 时发现帧数不对                                │
+│                                                                               │
+│ 根源:                                                                         │
+│   v4 flush() 方法使用 doNotWait=1 (非阻塞) + max 5 次轮询:                     │
+│                                                                                │
+│     cast(byref(lock_raw, 4), c_uint32)[0] = 1  # doNotWait=1                  │
+│     while _slot_empties < 5:                                                   │
+│         ...                                                                    │
+│         time.sleep(0.01)                                                       │
+│                                                                                │
+│   doNotWait=1 + 固定重试次数的问题:                                              │
+│   - LA depth=8 时，硬件可能需要数 ms 才能完成最后一帧的编码                      │
+│   - 5×10ms=50ms 的等待窗口可能不够（大帧更长）                                   │
+│   - 非阻塞 Lock 之后超时即放弃 → LA 尾部帧永久丢失                               │
+│                                                                                │
+│   NVENC SDK 规范:                                                              │
+│     "在发送 EOS 后，应使用 doNotWait=0 (阻塞模式) 反复调用 LockBitstream        │
+│      直到返回 NEED_MORE_INPUT，以取回所有 LA 滞留帧"                            │
+│                                                                               │
+│ 修复方案:                                                                      │
+│   1) 发送 EOS (NULL input + flag=0x8)                                         │
+│   2) 先排空 _pending_outputs_v5 (跨 batch 缓冲的输出)                          │
+│   3) 按 _output_slot_idx 顺序，对每个 slot 循环 blocking Lock 直到               │
+│      NEED_MORE_INPUT                                                           │
+│   4) 存储 _flush_frame_count = 实际取回的帧数                                   │
+│                                                                                │
+│     for slot_idx in drain_order:                                               │
+│         bs_handle = self._slots[slot_idx]['bs_buf']                            │
+│         while True:                                                            │
+│             data, status = self._lock_bitstream_once_blocking(bs_handle)       │
+│             if status == NV_ENC_ERR_NEED_MORE_INPUT:                           │
+│                 break                                                          │
+│             if status != NV_ENC_SUCCESS or not data:                           │
+│                 break                                                          │
+│             result_parts.append(data)                                          │
+│             self._output_slot_idx += 1                                         │
+│                                                                                │
+│ 修复涉及文件位置:                                                               │
+│   NVENCEncoder.flush()                             — 第 ~1449-1520 行           │
+│   NVENCEncoderMode8.flush_eos_sync_drain()         — 第 ~3587 行 (参考实现)     │
+│   _flush_and_count()                               — 第 ~2364 行               │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ BUG 5: 帧数统计将 LA 帧错误标记为"消耗"，EOS flush 帧标记为"碎片"                │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ 严重程度: 🟡 P2 — 误导性统计，掩盖真实丢帧问题                                    │
+│ 影响范围: 测试框架 run_technique() 函数                                          │
+│ 发现时机: 所有 technique 测试结果解读                                             │
+│                                                                               │
+│ 根源:                                                                         │
+│   v4 统计逻辑:                                                                 │
+│                                                                                │
+│     _expected = _submitted - la_count       # ❌ 假设 LA 帧被"消耗"              │
+│     _actual = success_count                 # ❌ 不包含 flush_frames            │
+│     _lost = max(0, _expected - _actual)     # ❌ v4 中总是 0 (安慰剂统计)        │
+│                                                                                │
+│   flush_data 的注释:                                                            │
+│     "flush data contains residual NAL fragments... NOT independently           │
+│      decodable video frames... Do NOT add flush_fragments to success_count"    │
+│                                                                                │
+│   这个注释在 drain loop 未实现的前提下部分正确，但核心逻辑是错误的:               │
+│                                                                                │
+│   - LA 缓冲帧不是"消耗"了 — 它们被硬件延迟处理，最终应通过 drain+flush 收回      │
+│   - EOS flush 帧不是"碎片" — 使用 blocking Lock (BUG 4 修复后) 取回的是          │
+│     完整的 SPS+PPS+IDR 编码帧，独立可解码                                        │
+│   - 真正的期待: submitted == recovered (drain + EOS flush)                      │
+│                                                                                │
+│   v4 的公式 N_output = N_input - LA_depth 本质是"承认丢帧后给自己找台阶"，       │
+│   不符合 NVENC SDK 规范: "输出总帧数等于输入总帧数"                              │
+│                                                                               │
+│ 修复方案:                                                                      │
+│    正确公式:                                                                   │
+│                                                                                │
+│      _total_recovered = success_count + flush_frames                           │
+│      _lost = max(0, _submitted - _total_recovered)                             │
+│                                                                                │
+│    输出信息:                                                                    │
+│      [CONSERVATION] ✅ Frame conservation VERIFIED                              │
+│        (submitted=N recovered=N encode_valid=M LA_buf=L flush_frames=F)         │
+│                                                                                │
+│      [LOSS] 🔥 F frames UNRECOVERABLE                                          │
+│        (submitted=N recovered=M ...)                                            │
+│                                                                                │
+│ 修复涉及文件位置:                                                               │
+│   run_technique() 统计段                        — 第 ~3920-3960 行              │
+│   替换 _expected/_actual 公式，改用 total_recovered = encode + flush             │
+│   _flush_and_count() 也使用 encoder._flush_frame_count 精确计数                 │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ BUG 6 (架构限制): single-ce 无法兼容 LA>0                                       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ 严重程度: 🟡 P2 — 架构限制，非 drain loop 缺陷                                    │
+│ 影响范围: NVENCEncoderMode1 (single-ce) ONLY                                    │
+│ 发现时机: VBR_HQ/QVBR + LA>0 仍丢 ~LA 帧                                        │
+│                                                                               │
+│ 根源:                                                                         │
+│   single-ce 始终使用 slot 0 (self._input_buf_handle / self._bs_handle):        │
+│   - 所有帧的 LockInputBuffer/EncodePicture 都在 slot 0                          │
+│   - _drain_slot(slot 0) 正确排空 slot 0，但 LA>0 时 NVENC 硬件会将             │
+│     输出分配到不同的 slot 缓冲区中                                               │
+│   - slot 1~N-1 中积压的帧无法被 slot 0 的 drain 取走                            │
+│   - EOS flush 即使遍历所有 slot，也因 _output_slot_idx 未推进到这些 slot         │
+│     而可能遗漏（drain_order 依赖 _output_slot_idx 起始位置）                     │
+│                                                                               │
+│ 状态:                                                                          │
+│   - LA=0 时: ✅ 完全兼容 (流水线 = 1 slot)                                       │
+│   - LA>0 时: ⚠️ 架构限制，已记录在 TECHNIQUES registry 中                       │
+│   - 修复方案超出 v5 范围 (需要改为多 slot 提交或 CE pipeline)                    │
+│   - 建议: LA>0 时不应使用 single-ce                                             │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+三、修复前后对比 (GPU 验证，Tesla T4)
+================================================================================
+
+v4 (修复前):
+  ┌──────────────────────┬────────┬──────┬──────────┐
+  │ Technique             │ RC Mode │ Lost │ Verdict  │
+  ├──────────────────────┼────────┼──────┼──────────┤
+  │ sync-batch LA=8       │ vbr_hq │ 200+ │ 🔥 Broken │
+  │ batch-ce LA=8         │ vbr_hq │ 150+ │ 🔥 Broken │
+  │ ce-pipeline LA=8      │ vbr_hq │ 100+ │ 🔥 Broken │
+  │ sync-drain-loop LA=8  │ vbr_hq │ 0    │ ✅ OK     │ ← 唯一正确的
+  │ 所有 technique LA=0   │ any    │ 0    │ ✅ OK     │ ← LA 未激活，巧合
+  └──────────────────────┴────────┴──────┴──────────┘
+
+v5 (修复后):
+  ┌──────────────────────┬────────┬──────┬──────────┐
+  │ Technique             │ RC Mode │ Lost │ Verdict  │
+  ├──────────────────────┼────────┼──────┼──────────┤
+  │ sync-batch LA=8       │ constqp │ 0    │ ✅ OK    │
+  │ sync-batch LA=8       │ vbr_hq │ 0    │ ✅ OK    │
+  │ sync-batch LA=8       │ qvbr   │ 0    │ ✅ OK    │
+  │ batch-ce LA=8         │ constqp │ 0    │ ✅ OK    │
+  │ batch-ce LA=8         │ vbr_hq │ 0    │ ✅ OK    │
+  │ batch-ce LA=8         │ qvbr   │ 0    │ ✅ OK    │
+  │ ce-pipeline LA=8      │ constqp │ 0    │ ✅ OK    │
+  │ ce-pipeline LA=8      │ vbr_hq │ 0    │ ✅ OK    │
+  │ ce-pipeline LA=8      │ qvbr   │ 0    │ ✅ OK    │
+  │ sync-drain-loop LA=8  │ constqp │ 0    │ ✅ OK    │
+  │ sync-drain-loop LA=8  │ vbr_hq │ 0    │ ✅ OK    │
+  │ sync-drain-loop LA=8  │ qvbr   │ 0    │ ✅ OK    │
+  │ single-ce LA=8        │ vbr_hq │ ~8   │ ⚠️ 架构限制 │
+  └──────────────────────┴────────┴──────┴──────────┘
+
+  LA=0 / pipe=1 / pipe=4: 所有 5 个 technique 均 lost=0
+
+
+================================================================================
+四、正确的 NVENC Level 1 编码循环模式
+================================================================================
+
+以下是最小正确实现的核心结构（来自 MinimalTestEncoder，已 GPU 验证）:
+
+  class CorrectNvencEncoder:
+      def __init__(self, ..., la_depth, pipeline_depth):
+          # ★ 规则 1: pipeline_depth = LA+1
+          pipeline_depth = max(pipeline_depth, la_depth + 1)
+          self._output_slot_idx = 0
+
+      def _lock_bitstream_once_blocking(self, bs_handle):
+          # ★ 规则 2: 始终使用 doNotWait=0 (blocking)
+          lock_raw.doNotWait = 0
+          status = nvEncLockBitstream(enc, lock_raw)
+          # 取回 h264_bytes
+          nvEncUnlockBitstream(enc, bs_handle)
+          return h264_bytes, status
+
+      def _drain_outputs(self):
+          # ★ 规则 3: 循环 blocking Lock 直到 NEED_MORE_INPUT
+          outputs = []
+          while True:
+              slot = self._output_slot_idx % pipeline_depth
+              data, status = self._lock_bitstream_once_blocking(slot.bs_buf)
+              if status == NV_ENC_ERR_NEED_MORE_INPUT:
+                  break
+              if status != NV_ENC_SUCCESS or not data:
+                  break
+              outputs.append(data)
+              self._output_slot_idx += 1
+          return outputs
+
+      def encode_frame(self, nv12_gpu):
+          # ★ 规则 4: 送一帧 → 立即排空
+          LockInputBuffer → cuMemcpy2D → UnlockInputBuffer
+          status = nvEncEncodePicture(...)
+          if status == NEED_MORE_INPUT:
+              # ★ 规则 5: NEED_MORE_INPUT 时不做任何 Lock/Unlock
+              record; continue
+          return self._drain_outputs()
+
+      def flush_eos(self):
+          # ★ 规则 6: EOS → 阻塞排空所有 slot
+          nvEncEncodePicture(NULL input, EOS flag)
+          for slot in all_slots_order:
+              while True:
+                  data, status = self._lock_bitstream_once_blocking(slot)
+                  if status == NEED_MORE_INPUT: break
+                  if not data: break
+                  outputs.append(data)
+
+  NVENC SDK 官方声明:
+    "The total number of output frames equals the number of input frames.
+     No frames are discarded by the encoder."
+
+
+================================================================================
+五、关键教训
+================================================================================
+
+1. constqp 模式不能用于验证 LA 逻辑正确性
+   - constqp 下 NVENC 硬件静默禁用 LA (la_depth 实际 = 0)
+   - 即使 drain loop 有 bug，constqp 下也不丢帧
+   - 验证 LA 逻辑必须以 VBR_HQ 或 QVBR 为准
+
+2. doNotWait=1 仅是性能优化，不能用于 EOS flush
+   - 非阻塞 Lock 用于流水线吞吐优化（CE 已触发则取走，否则跳过）
+   - EOS flush 必须用 doNotWait=0 (阻塞)，确保 100% 排空
+
+3. NEED_MORE_INPUT ≠ bitstream buffer 为空
+   - NEED_MORE_INPUT 仅表示"当前这次 submit 还没产生输出"
+   - 不代表 buffer 中没有其他帧的已完成数据
+   - 强制 Lock/Unlock 可能误丢弃这些数据
+
+4. pipeline_depth=LA+1 是硬件安全要求，不是建议
+   - 缓冲区不足 → 硬件覆盖 → 数据永久丢失
+   - 即使 drain loop 100% 正确也无法挽救已覆盖的帧
+
+5. 帧数守恒验证应使用精确的帧计数
+   - 不能将 LA-drained 帧视为"碎片"丢弃
+   - 不能假设 "submitted - LA_buffered = expected output"
+   - 正确公式: lost = submitted - (encode_outputs + eos_flush_outputs)
+
+
+================================================================================
+核心结论
+================================================================================
+
+  ✅ 帧守恒四要素（缺一不可）:
+
+    1. pipeline_depth = LA + 1      — SDK 硬件安全要求，防止缓冲区覆盖
+    2. _drain_outputs() 循环排空    — 每帧 EncodePicture 后反复 blocking Lock
+                                        直到 NEED_MORE_INPUT，取走所有已完成帧
+    3. EOS flush 使用 blocking Lock  — doNotWait=0 逐 slot 排空，回收全部 LA 滞留帧
+    4. 禁用 NEED_MORE_INPUT 强制 Lock  — buffer 中无有效输出，强制操作可能误弃帧
+
+    以上任何一步缺失 → 帧丢失。
+    以上四步全部到位 → 帧守恒 (lost=0)，所有 RC 模式 × LA 深度 × pipe 配置通用。
+
+
+================================================================================
+六、相关文件
+================================================================================
+
+  验证参考:  tests/test_nvenc_la_frame_conservation.py  (MinimalTestEncoder)
+  修复前:    tests/test_nvenc_completion_event_v4.py
+  修复后:    tests/test_nvenc_completion_event_v5.py
+  理论总结:  tests/NVENC Lookahead 帧数守恒验证与实现问题的完整总结.txt
+  本文件:    tests/techniques_bug_fix.txt

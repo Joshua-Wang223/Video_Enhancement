@@ -764,7 +764,9 @@ def split_video_by_time(input_video: str, output_dir: str,
     
     # 使用FFmpeg的segment muxer
     cmd = [
-        'ffmpeg', '-i', input_video,
+        'ffmpeg', '-fflags', '+genpts', '-i', input_video,
+        # -fflags +genpts 是输入选项(须在 -i 前)：老 AVI/mpeg4 常缺 PTS，
+        # segment muxer 依赖包时间戳切分，缺 PTS 会导致整段输出不切分
         '-c', 'copy',  # 复制流，不重新编码
         '-map', '0:v',  # 只映射视频流
         '-f', 'segment',
@@ -1007,6 +1009,114 @@ def get_video_codec(video_file: Union[str, Path]) -> str:
 
     return codec
 
+
+def probe_color_metadata(video_file: Union[str, Path]) -> Optional[Dict[str, str]]:
+    """
+    使用 ffprobe 读取视频第一个视频流的色彩元数据。
+
+    Args:
+        video_file: 视频文件路径，支持字符串或 pathlib.Path 对象。
+
+    Returns:
+        字典 {color_range, color_space, color_primaries, color_transfer}，
+        各项为 ffprobe 输出字符串（可能为 'unknown'）。
+        无法探测（文件缺失/无视频流/ffprobe 异常）时返回 None。
+    """
+    video_path = str(video_file)
+    if not os.path.isfile(video_path):
+        return None
+
+    cmd = [
+        'ffprobe', '-v', 'error',
+        '-select_streams', 'v:0',       # 仅选择第一个视频流
+        '-show_entries',
+        'stream=color_range,color_space,color_primaries,color_transfer',
+        '-of', 'default=noprint_wrappers=1',
+        video_path                      # 使用转换后的字符串路径
+    ]
+    try:
+        probe_out = subprocess.run(
+            cmd, capture_output=True, text=True,
+            encoding='utf-8', timeout=10, check=False,
+        )
+        if probe_out.returncode != 0:
+            return None
+        meta: Dict[str, str] = {}
+        for line in probe_out.stdout.strip().splitlines():
+            if '=' in line:
+                key, value = line.split('=', 1)
+                meta[key] = value
+        return meta if meta else None
+    except Exception:
+        # 任何异常（超时/解析失败等）均容错返回 None，不阻断流程
+        return None
+
+
+def build_color_args(video_file: Union[str, Path]) -> List[str]:
+    """
+    检测源视频色彩元数据并构造 ffmpeg 输出端色彩参数列表。
+
+    有值则逐项透传（color_space→-colorspace 等）；unknown/缺失项
+    回退 BT.709 + Full Range(pc)：-colorspace bt709 -color_primaries bt709
+    -color_trc bt709 -color_range pc（0-255 全范围）。
+
+    Args:
+        video_file: 源视频路径，用于探测色彩元数据。
+
+    Returns:
+        ffmpeg 参数列表，可直接追加到合并/编码命令输出文件之前。
+    """
+    meta = probe_color_metadata(video_file) or {}
+
+    def _pick(key: str, fallback: str) -> str:
+        val = meta.get(key, '')
+        if val and val.lower() not in ('unknown', 'unspecified'):
+            return val
+        return fallback
+
+    return [
+        '-colorspace', _pick('color_space', 'bt709'),
+        '-color_primaries', _pick('color_primaries', 'bt709'),
+        '-color_trc', _pick('color_transfer', 'bt709'),
+        '-color_range', _pick('color_range', 'pc'),
+    ]
+
+
+def _setparams_from_color_args(extra_args: Sequence[str]) -> Optional[str]:
+    """
+    从 build_color_args 生成的色彩参数列表中提取取值，构造 setparams 滤镜字符串。
+
+    原因：libx264 等编码器对输出端 -color_primaries/-color_trc 参数不写入 VUI，
+    重新编码时需用 setparams 滤镜显式注入帧级色彩属性（copy 路径则靠输出端
+    参数写入 MP4 colr box，无需滤镜）。
+
+    Args:
+        extra_args: ffmpeg 输出端参数列表（含 -colorspace/-color_primaries 等）。
+
+    Returns:
+        setparams 滤镜字符串（如 'setparams=colorspace=bt709:color_primaries=bt709:...'），
+        无色彩参数时返回 None。
+    """
+    _color_map = {
+        '-colorspace': 'colorspace',
+        '-color_primaries': 'color_primaries',
+        '-color_trc': 'color_trc',
+        '-color_range': 'range',
+    }
+    vals: Dict[str, str] = {}
+    i = 0
+    while i < len(extra_args) - 1:
+        key = extra_args[i]
+        if key in _color_map:
+            vals[_color_map[key]] = extra_args[i + 1]
+            i += 2
+        else:
+            i += 1
+    if not vals:
+        return None
+    return 'setparams=' + ':'.join(f'{k}={v}' for k, v in vals.items())
+
+
 def merge_videos_by_codec(
     file_list: Sequence[Union[str, Path]],
     output_path: Union[str, Path],
@@ -1178,6 +1288,13 @@ def merge_videos_by_codec(
             '-crf', crf_str,
             '-pix_fmt', params['pix_fmt']
         ]
+        # [COLOR-FIX] 补全 re-encode 路径色彩元数据：
+        # libx264 等编码器对输出端 -color_primaries/-color_trc 不写 VUI，
+        # 需用 setparams 滤镜显式注入（值来自 extra_args，无则跳过）。
+        if '-vf' not in params['extra_args']:
+            _sp = _setparams_from_color_args(params['extra_args'])
+            if _sp:
+                ffmpeg_cmd += ['-vf', _sp]
     else:
         ffmpeg_cmd += ['-c:v', 'copy']
 

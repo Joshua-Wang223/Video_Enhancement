@@ -235,11 +235,11 @@ def _paste_faces_batch(face_data, restored_by_frame, sr_results, face_enhancer):
                 result = sr_frame
 
         except Exception as e:
-            print(f'[face_enhance] 帧{fi} 贴回异常，使用 SR 结果: {e}')
+            print(f'\n[face_enhance] 帧{fi} 贴回异常，使用 SR 结果: {e}')
             result = sr_frame
 
         if result.shape[0] != expected_h or result.shape[1] != expected_w:
-            print(f'[WARN] face_enhance 帧{fi} 尺寸异常 '
+            print(f'\n[WARN] face_enhance 帧{fi} 尺寸异常 '
                   f'{result.shape[:2]} != ({expected_h},{expected_w})，强制 resize')
             result = cv2.resize(result, (expected_w, expected_h),
                                 interpolation=cv2.INTER_LANCZOS4)

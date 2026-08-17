@@ -1,0 +1,9 @@
+{
+    "max_frames": 0,
+    "black_bright": 10.0,
+    "black_var": 10.0,
+    "white_bright": 245.0,
+    "white_var": 10.0,
+    "still_mse": 1.0,
+    "laplacian_var": 600.0
+}

@@ -1,0 +1,67 @@
+@tests\test_nvenc_la_frame_conservation.py 与 @tests\test_nvenc_completion_event_v5.py 均已经完美实现了 NVIDIA NVENC GPU 硬件编码的帧守恒（输入帧数=输出帧数，无花屏乱序重复等视频画面异常），但生产脚本 @external\IFRNet\process_video_v6_4_5_1_single.py 以及 v6.4.5.1/v6.4.3.1 当 LA>0 + QVBR/VBR_HQ 时，IFRNet 插帧处理后输出的视频还没有实现帧守恒且输出视频异常，问题注意出在 NVENC GPU 硬件编码阶段。对比分析原因并参考下面的要点：
+
+要点1：是否混淆了 pipeline_depth 与 multi-slot 轮转的概念
+
+要点2：下面是已经经过验证的针对@test_nvenc_completion_event_v5.py的成功修复方案：
+根因分析：为何 test_nvenc_la_frame_conservation.py 帧守恒而 v5 在 LA>0 + QVBR/VBR_HQ 下失败
+一、Warmup 导致状态断裂（主因）
+conservation test 没有 warmup 阶段——从零开始单次编码，_frame_idx 和 _output_slot_idx 始终同步推进。v5 在正式测量前执行了 30 帧 warmup（v5 lines 3791-3801），warmup 期间调用了 encode_frame()，推进了 _frame_idx 到 30、_output_slot_idx 到约 22（LA=8 时）。但 warmup 与 measurement 之间没有 flush 也没有状态重置。测量开始时：
+_frame_idx = 30 → 首帧提交到 slot 30 % 9 = 3
+_output_slot_idx = 22 → drain 从 slot 22 % 9 = 4 开始
+Slot 4 尚未收到测量帧，LockBitstream 返回 NEED_MORE_INPUT，drain 立即终止——前若干帧的输出被卡住了。
+二、pipeline_depth 与 multi-slot 轮转的概念混淆
+是的，v5 确实混淆了这两个概念：
+pipeline_depth 本意是 CE-pipeline 的异步深度（允许同时 in-flight 的 EncodePicture 数量）
+multi-slot 轮转是 input/output buffer 的循环复用索引
+v5 将两者耦合为同一个变量 pd = max(pipeline_depth, la_depth + 1)，然后用 slot_idx = _frame_idx % pd 做 slot 选择。问题在于：
+warmup 后 _frame_idx 和 _output_slot_idx 不再同步，slot 提交指针和 drain 指针错位
+CE-based 模式（Mode2/batch-ce、Mode5/ce-pipeline）中，CE 触发表示某帧编码完成，但 _drain_outputs() 按 _output_slot_idx 顺序 drain，CE 完成的帧不一定是 _output_slot_idx 指向的帧
+conservation test 不存在这个问题，因为：pipeline_depth = LA + 1，没有 warmup，两个指针始终同步推进。
+三、NEED_MORE_INPUT 处理的微妙差异
+测试	行为
+conservation test	EncodePicture 后无条件调用 _drain_outputs()，drain 内部遇到 NEED_MORE_INPUT 才 break
+v5	encode_frames_batch 中遇到 NEED_MORE_INPUT 直接 continue，跳过 drain
+这意味着：如果 LA 缓冲期间前一帧的输出已就绪，conservation test 会取到它，v5 则会遗漏直到下一个 SUCCESS 帧。
+四、为何 CONSTQP 下不失败
+NVENC 硬件在 rateControlMode=CONSTQP 时会静默禁用 LA，即使 enableLookahead=1 也无效（conservation test line 36-39 有注释）。LA 实际为 0 → 无缓冲延迟 → 两指针始终对齐 → bug 被掩盖。QVBR/VBR_HQ 才会真正激活 LA 硬件 → 前 LA 帧返回 NEED_MORE_INPUT → warmup 偏移暴露。
+五、CE 模式加剧时序失配
+CE-based 模式（Mode2、Mode5）引入额外异步层：
+cuEventSynchronize(ce) 等待的是该帧编码完成
+但 _drain_outputs() 从 _output_slot_idx % pd 开始顺序 drain
+当 CE 完成的帧 ≠ _output_slot_idx 指向的帧时（warmup 偏移导致），drain 找不到输出
+六、其他差异
+差异点	conservation test	v5
+H264 Codec GUID	动态查询 GetEncodeGUIDs	硬编码 0x6b9c211b
+空帧处理哲学	正确 drain 则不应出现空帧	添加 retry/诊断机制，掩盖而非修复根因
+修复建议（按优先级）
+Warmup 后 flush + 重置状态：warmup 完成后调用 flush()，将 _output_slot_idx 和 _frame_idx 重置为 0；或为 measurement 创建新的 encoder 实例
+NEED_MORE_INPUT 后仍调用 drain：将 continue 改为先 _drain_outputs() 再 continue
+CE 模式中确保 drain 对齐：drain 前确认 _output_slot_idx 指向的 slot 确实是 CE 已完成的 slot，而非盲目按序推进
+使用动态 GUID 查询：替换硬编码 GUID 为 GetEncodeGUIDs 查询结果
+执行修复方案
+执行修复方案
+
+Worked on 28 actions
+All fixes complete and verified. Here's the final summary.
+修复完成总结
+对 test_nvenc_completion_event_v5.py 应用了以下修复，使其在 LA>0 + QVBR/VBR_HQ 下实现帧守恒：
+已应用的修复
+修复	内容	解决的问题
+Fix 2	NEED_MORE_INPUT 后仍调用 _drain_outputs()	LA 缓冲期间已就绪的输出帧不再被遗漏
+Fix 4	H264 GUID 改为动态 GetEncodeGUIDs 查询，无匹配时 raise RuntimeError	避免硬编码错误 GUID / 静默使用错误 codec
+Fix 5	encode_frame() 返回 List[bytes]（全部 drained 帧），不再只取 [0]	LA>0 时 drain 返回多帧不再丢失
+Fix 6	encode_frame_with_ce() 改用 _drain_outputs() 替代 _drain_slot()	CE 单帧模式正确 drain 所有 slot，不限于 slot 0
+Fix 7	彻底删除 warmup 代码（N_WARMUP、warmup 循环、warmup encoder、warmup_fn_name）	消除 warmup 对 _frame_idx/_output_slot_idx 的偏移污染，与 conservation test 一致
+构造函数安全	所有 8 个 Mode 子类改为显式参数声明（不再 *args, **kwargs 透传）	防止参数传递错误
+验证结果
+语法检查 PASS
+零 warmup 残留引用
+测量循环从 _frame_idx=0 开始，无偏移
+所有 encode 方法在 NEED_MORE_INPUT 后均执行 drain
+与 test_nvenc_la_frame_conservation.py 的核心模式已对齐
+已知风险
+CE-pipeline slot 覆写保护：当前依赖 FIFO 假设（输出顺序 = 提交顺序）。如果未来引入 B 帧重排序，_output_slot_idx 顺序 drain 可能与编码器实际输出顺序不一致。当前测试配置（I/P 帧）下无此风险。
+
+要点3：参考NVIDIA NVENC SDK 官方分档及 @tests\NVENC Lookahead 帧数守恒验证与实现问题的完整总结.txt
+
+要点4：IFRNet插帧后，总帧数应该是:原视频帧数*SCALE-1，如原输入视频帧数687，采用 LA>0 + VBR_HQ/QVBR + SCALE=2，则插帧2被后输出视频总帧数应该是 687*2-1=1373（同CONSTQP） 才是正确的帧守恒。

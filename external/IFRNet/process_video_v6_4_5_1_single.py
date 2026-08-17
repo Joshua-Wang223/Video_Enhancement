@@ -1,10 +1,102 @@
 """
-IFRNet 视频插帧处理脚本 —— 四级回退统一编码版 v6.4.5（单卡版）
+IFRNet 视频插帧处理脚本 —— 四级回退统一编码版 v6.4.5.1（单卡版）
 ============================================================
 基于 IFRNet（Intermediate Flow-based Recursive Network）的视频帧插值脚本，
 面向单 GPU 生产环境的极致性能实现。
+【2026-08-14 新增修复 — LA 辅助块账记（test11 复现 tt6 根因）】
+  [FIX-AUX-NO-CLEAR] 恢复 _nal_first_vcl_type() VCL/辅助块分类：NVENC LA 冷
+                    会话预热期会把 SPS/PPS/AUD 作为独立无 VCL 辅助块 drain，
+                    旧 FIFO 记账将其当普通帧 pop 队首 → pending 被清空而真实
+                    VCL 数据仍滞留 → 背压失效 → 输入覆盖 → 每 9 帧迟一窗的
+                    frame_num 回退（test11: 549 次、解码 1411/4960）。
+                    修复：辅助块仅缓存参数集，不占 fi、不进 pairs、不清
+                    pending；主 drain / EOS drain / _ensure_slot_free 统一生效。
+  [FIX-SLOT-DRAIN-TARGET] _ensure_slot_free 轮转探测无法触达目标槽时直探
+                    目标槽；guard 超限以空帧占位（prev 填充）消费 pending，
+                    绝不带 pending 复用（宁可写占位也不覆盖未取回码流）。
+  [FIX-DRAIN-COUNTER-DRIFT] _drain_outputs_blocking 在 bitstream 指针为空时
+                    不再推进 _output_slot_idx（消除计数器超前漂移）。
+  [FIX-DRAIN-ORDER-DEFENSE] drain 三元组携带 outputTimeStamp@40（VCL 块
+                    双射已验证），与 FIFO 队首 gfi 比对产生 _diag_phase_shift
+                    诊断；新增 _diag_aux_block / _diag_slot_drain_fallback。
+  同修复已回植 v6.4.4.1 / v6.4.3.1（变量名 _batch_slot_pending）。
+【2026-08-13 新增修复 — LA 排空顺序防御（test8 复现）】
+  [FIX-EOS-LEFTOVER-G-NAMEERROR] 修复 EOS 残留占位路径 _g NameError（确定性崩溃）：
+                    生成器体引用未绑定变量 _g → 改为 _ent[0] - _strm_ts_base。
+  [FIX-SLOT-DRAIN-TARGET] _ensure_slot_free 改为探测目标槽自身（per-slot blocking
+                    LockBitstream），消除单槽探测局限导致的带 pending 槽位复用
+                    覆盖丢帧；guard 超限时以空帧占位（prev 填充）推进 FIFO，
+                    绝不带 pending 复用。
+  [FIX-DRAIN-ORDER-DEFENSE] _apply_drained_entries 增加 deque 空（_diag_slot_mismatch）
+                    与队首 gfi 回退（_diag_gfi_regress）检测计数，错配不再静默；
+                    _last_drained_gfi 段内单调基准，_stream_begin 每段重置。
+  [FIX-EMPTY-PREV-FILL] 空帧占位 b"" → _prev_stream_h264 前一帧码流兜底（编码器级
+                    prev 跟踪，仅用于 EOS 残留/槽位排空超限的真缺失帧，绝不用于
+                    LA 正常缓冲帧）。
+  [FIX-ENC-EXC-CONTEXT] 编码线程异常包装 (frame_idx, pending_slots, pending_count)
+                    诊断上下文后 re-raise，便于定位 LA 路径崩溃。
 
-【v6.4.5 新增修复（基于 v6.4.4）】
+【新增修复（基于 FIX-ASYNC-COPY）】
+  [FIX-FLUSH-GRANULARITY]  修复 FIX-ASYNC-COPY 之后仍残留的周期性 GPU 利用率骤降：
+                     · 根因（与 FIX-ASYNC-COPY 是两个独立问题）：
+                       _NVENCEncodeThread 原设计"攒够 chunk_frames(默认
+                       768=encode_queue_depth×batch_frames)才一次性调用
+                       encode_frames_stream()编码一整块"。即使 FIX-ASYNC-COPY
+                       消除了 cuMemcpy2D 走 legacy stream 造成的跨 stream
+                       隐式全局同步，这个"攒 768 帧再一次性编码"的脉冲本身
+                       仍然是编码线程独占、持续 1-2s+ 的一段连续同步 CPU/
+                       NVENC 调用（LockInputBuffer/Copy/UnlockInputBuffer/
+                       EncodePicture/LockBitstream 逐帧循环）。期间编码线程
+                       输入队列 self._q(maxsize=encode_queue_depth)迅速被
+                       Writer 写满 → Writer 阻塞在 submit() → Writer 无法
+                       消费 result_queue → result_queue 触顶后 T2 推理线程
+                       被阻塞产帧 → GPU 计算利用率骤降。这是**队列反压**，
+                       和 CUDA stream 选择无关，是残留周期性掉底的主因。
+                     · 这也解释了"分段开头平稳、之后才出现周期性凹陷"：
+                       段首 _acc_nv12 从空开始累积，尚未触发第一次 flush，
+                       队列有充足余量吸收 Writer 产出；一旦跨过第一个
+                       chunk 边界、发生第一次同步脉冲，才开始出现反压。
+                     · 修复：新增 flush_chunk_frames 参数（默认 128），把
+                       "触发编码"的粒度从安全上限 768 帧大幅调小，让 NVENC
+                       工作摊薄成许多次小脉冲而非少数几次大脉冲；
+                       _la_chunk_safe(768) 仍保留作为硬上限（三者取最小），
+                       正确性不变（encode_frames_stream 本就为跨 chunk
+                       连续调用设计）。
+                     · 分段之间空闲时间较长（10-20s/段）为另一独立现象：
+                       tqdm 插帧进度 100% 后，仍需同步完成"末块编码 + EOS +
+                       LA(8)窗口全排空 + muxer/ffmpeg 子进程收尾"，且当前
+                       架构下这段收尾与下一分段的 FFmpeg 读取启动完全串行、
+                       无重叠。本次 flush_chunk_frames 调小后，末块残留帧数
+                       上限从 768 降到 128，可缩短收尾尾部，但 LA 窗口排空
+                       与下一段读取启动的串行结构本身未变——若要进一步压缩，
+                       需要"分段间预取重叠"这类更大的架构改动，风险与收益
+                       需要单独评估，本次未纳入。
+
+  [FIX-ASYNC-COPY]  修复 NVENC 编码线程周期性阻塞插帧推理导致的 GPU 利用率
+                     规律性骤降：
+                     · 根因：NVENC 输入拷贝使用同步 cuMemcpy2D_v2（无 stream
+                       参数，走 legacy default/null stream）。该 stream 在
+                       同一 CUDA context 下具有隐式全局同步语义——每次拷贝
+                       都会强制等待推理用的 stream_h2d/stream_compute/
+                       stream_d2h 排空，反之亦然。
+                     · LA>0（VBR_HQ/QVBR + lookahead）模式下 _NVENCEncodeThread
+                       攒够 chunk_frames(=encode_queue_depth×batch_frames，
+                       默认 768 帧)才一次性调用 encode_frames_stream()，
+                       其内部对整块帧连续、逐帧执行该同步拷贝，产生持续
+                       1-2s+ 的连续隐式全局同步脉冲，表现为 nvtop/nvitop
+                       中周期性(约 chunk_frames/当前fps 一个周期)出现的
+                       GPU 利用率骤降，插帧推理与 NVENC 编码并非真正并行。
+                     · 修复：新增专用非默认 CUDA stream(self._stream_encode,
+                       CU_STREAM_NON_BLOCKING) + cuMemcpy2DAsync_v2，拷贝
+                       入队后仅 cuStreamSynchronize 这一个私有 stream，
+                       不再对其他 stream 施加隐式全局屏障。三处 NVENC 输入
+                       拷贝调用点（encode_frames_stream / 
+                       encode_frames_batch_ce_pipeline / encode_frame）统一
+                       改为调用新增的 _copy_into_input_buffer() 辅助方法；
+                       若专用 stream 创建失败自动回退到原同步拷贝，不影响
+                       功能正确性。
+
+【v6.4.5 修复（基于 v6.4.4）】
   [PHASE4-v645] 恢复多 slot 异步流水线 encode_frames_batch()：
                · 根因修复后（v6.4.4 隔帧花屏 → Infer 线程缺少 synchronize），
                  恢复 4-slot 轮转 NVENC 编码，Lock/Copy 与 Encode 跨 slot 并行。
@@ -966,10 +1058,12 @@ _FUNC_IDX = {
 
 # ── _NVENC_VBR_QUALITY_OFFSET ──
 # [已废弃] 旧版 CRF→targetQuality 偏移公式的偏移值。
-# 新公式（2026-06-09）：targetQuality = max(1, 51 - CRF)
-#   · CRF=0 (lossless/best) → tq=51 (max quality)
-#   · CRF=51 (worst)        → tq=1  (min quality)
-#   · CRF=18 → tq=33, CRF=28 → tq=23 （差值 10，应明显区分文件大小）
+# 注意（术语澄清）：targetQuality / qvbrQuality 是 RC 质量参数（CRF 语义，
+# 范围 1-51），【不是】H.264 Level。真正的 Level 是 "H.264 level requested: 51"
+# 与 SPS level_idc=51，二者不可混为一谈。
+# 当前实际行为（与代码 line 1367/1380 一致）：targetQuality = max(1, CRF) 直接映射
+# （CRF=18 → tq=18；CRF=23 → tq=23），并非 51-CRF 反置。
+#   · 值越小质量越高（1=best），越大质量越低（51=worst）
 # 不再使用此常量，保留作为历史参考。
 # 历史值：7（CRF-offset 公式，文件仍偏大）、21（加法公式，文件极大 36.9 MB）、15（CRF-offset 公式）
 _NVENC_VBR_QUALITY_OFFSET: int = 15
@@ -986,9 +1080,62 @@ _PRESET_P_INDEX: dict = {
     "slow": 5, "slower": 6, "veryslow": 6, "placebo": 6,
 }
 
+# [FIX-BR-CLAMP] avgBitrate 估算钳制上限（bps）。驱动对单会话码率有上限，
+# 高分辨率×高帧率（如 720p48 算出 132.6Mbps）超限会触发 InitializeEncoder
+# code=8（关注点4）。目标仅作为 NVENC 的速度天花板（防止无约束质量搜索
+# 导致 GPU 空闲/FPS 塌方），钳制不影响实际编码质量语义。
+_NVENC_BR_CLAMP_MAX: int = 50_000_000   # 50 Mbps
+_NVENC_BR_CLAMP_MIN: int = 5_000_000    # 5 Mbps（保底，同旧 max() 下限）
+
+
+def _clamp_bitrate(raw_bps: int) -> int:
+    """钳制 NVENC avgBitrate 估算值到 [min, max] 区间。"""
+    if raw_bps <= 0:
+        return _NVENC_BR_CLAMP_MIN
+    return max(_NVENC_BR_CLAMP_MIN, min(_NVENC_BR_CLAMP_MAX, raw_bps))
+
+
 # ==============================================================================
 # NVENCEncoder
 # ==============================================================================
+
+class _RotationBitReader:
+    """H.264 RBSP 位读取器（用于 [FIX-LA-WINDOW-ROTATION] 的 slice/SPS 解析）。
+    与 tests/verify_segment_bitstream_v2.py 的 _BitReader 等价：字节序大端，
+    exp-golomb ue(v)/se(v) 支持。payload 必须是已去 emulation prevention 的 RBSP。"""
+
+    __slots__ = ('_data', '_pos')
+
+    def __init__(self, payload: bytes):
+        self._data = payload
+        self._pos = 0
+
+    def _bit(self) -> int:
+        byte_idx = self._pos >> 3
+        if byte_idx >= len(self._data):
+            raise ValueError('RBSP 位越界')
+        v = (self._data[byte_idx] >> (7 - (self._pos & 7))) & 1
+        self._pos += 1
+        return v
+
+    def bits(self, n: int) -> int:
+        v = 0
+        for _ in range(n):
+            v = (v << 1) | self._bit()
+        return v
+
+    def ue(self) -> int:
+        leading = 0
+        while self._bit() == 0:
+            leading += 1
+            if leading > 31:
+                raise ValueError('ue(v) 溢出')
+        return (1 << leading) - 1 + (self.bits(leading) if leading else 0)
+
+    def se(self) -> int:
+        code_num = self.ue()
+        return (code_num + 1) // 2 if code_num & 1 else -(code_num // 2)
+
 
 class NVENCEncoder:
     """GPU direct H.264 hardware encoder via NVENC SDK (ctypes) — SDK 13.0 verified.
@@ -1021,18 +1168,20 @@ class NVENCEncoder:
         self._rate_mode = rate_mode
         self._la_depth = la_depth
 
-        # NVENC SDK 规范: pipeline_depth >= LA+1 (硬件安全要求, 防止缓冲区覆盖)
-        # NVIDIA SDK 声明: "The total number of output frames equals the number of input frames"
+        # ── 概念分离（参见 pipeline-depth-slot-rotation-confusion.md）──
+        # _required_buffers: SDK 硬件安全下限 — la_depth==0 时为 1，否则 >= LA+1
+        # _slot_count: 实际分配的 slot 对数（buffer pool 大小 + 轮转模数）
+        # LA=0 时 _slot_count=2 (ce_pipeline 真正的 2 帧流水线深度)
+        # LA>0 时 _slot_count=max(2, LA+1) (膨胀为 buffer pool，累积模式不参与轮转)
         # CONSTQP 下硬件静默禁用 LA，代码层面清零以与硬件行为一致
-        # VBR_HQ/QVBR 需确保足够 slot 数以容纳 LA 缓冲区
         if rate_mode == "constqp":
             la_depth = 0  # 硬件静默禁用 LA，此处显式清零
-        # pipeline_depth 自动校准为 >= LA+1 (SDK 硬件安全要求)
-        _min_pd = max(1, la_depth + 1)
-        pipeline_depth = max(pipeline_depth, _min_pd)
+            self._la_depth = 0  # 同步更新实例变量，确保后续代码路径与 Ready 日志一致
+        _required_buffers = max(1, la_depth + 1)  # SDK 硬件安全要求: buffer 数 >= LA+1
+        _slot_count = max(pipeline_depth, _required_buffers)
 
-        print("[NVENCEncoder] %s + LA=%d: pipeline_depth=%d (min_pd=LA+1=%d)" %
-              (rate_mode.upper(), la_depth, pipeline_depth, _min_pd), flush=True)
+        print("[NVENCEncoder] %s + LA=%d: %d slots (HW pipeline buffers>=%d)" %
+              (rate_mode.upper(), la_depth, _slot_count, _required_buffers), flush=True)
 
         self._preset_name = preset.lower()
         self._encoder = c_void_p(None)
@@ -1040,10 +1189,45 @@ class NVENCEncoder:
         # [FIX-LA-OUTPTR] 独立输出槽位指针：跟踪下一个预期输出的 slot，
         # 确保 LA 延迟产出帧按正确顺序取回（参照 test_nvenc_la_frame_conservation.py）
         self._output_slot_idx = 0
+        # [FIX-LA-CHUNK-STREAM] LA 分块流式编码的跨调用持久状态。
+        # 原 [FIX-LA-ACCUMULATE] 设计要求整段累积后单次 encode_frames_batch()，
+        # 因为 _slot_pending/_slots_warmed 是批次局部变量，跨批次调用会导致
+        # LA 窗口帧映射失效。现将二者提升为实例状态，配合 _strm_next_fi（流内
+        # 全局帧号），使 lookahead 窗口帧可跨 chunk 正确映射回其帧号，
+        # 从而支持有界分块编码（见 encode_frames_stream）。
+        # [FIX-FIFO-DRAIN] per-slot FIFO deque 表（对齐 realesrgan_video _slot_pending）：
+        # slot_idx -> deque[(gfi, bs_buf, force_idr, ep_status)]。同槽多条记录按提交
+        # 顺序排队，drain 时队首即该槽下一次必取回的帧；append 永不覆盖。
+        self._strm_slot_pending: dict = {}
+        # [FIX-PIPE4-LA8] 原 _strm_slots_warmed per-slot IDR 表已删除（死状态）：
+        # IDR 判定收敛为 fi==0 单 IDR，不再依赖 slot warm 标记。
+        self._strm_next_fi: int = 0    # 当前流内下一个提交帧的流内序号（0 起）
+        self._strm_active: bool = False
+        # [FIX-FIFO-DRAIN] 段首全局 fi 基线（对齐 realesrgan_video chunk_start_global）：
+        # drain 标签 = 队首条目全局 fi - _strm_ts_base = 流内帧号。ts 重关联
+        # （outputTimeStamp 信任机制，[FIX-STREAM-TS-REASSOC]）已整体删除：
+        # 辅助块场景下 ts 回显不可信（test7 seg1 abort 后标签错位根因）。
+        # 原 [FIX-LA-WINDOW-ROTATION] 状态此前已移除（被证明为失败方案）。
+        self._strm_ts_base: int = 0
+        # [FIX-DRAIN-ORDER-DEFENSE] 上次已消费的队首全局 gfi（段内单调检测基准）
+        self._last_drained_gfi = None
+        # [FIX-EMPTY-PREV-FILL] 流内顺序最后一帧的 H.264 码流（空帧兜底填充用）
+        self._prev_stream_h264 = None
+        # [FIX-DRAIN-ORDER-DEFENSE] 一致性诊断计数器（沿用 _diag_empty 命名风格）
+        self._diag_slot_mismatch = 0
+        self._diag_gfi_regress = 0
+        # [FIX-AUX-NO-CLEAR] / [FIX-DRAIN-ORDER-DEFENSE] 诊断计数
+        self._diag_aux_block = 0
+        self._diag_phase_shift = 0
+        self._diag_slot_drain_fallback = 0
         self._lock = threading.Lock()
+        # [FIX-ASYNC-COPY] 专用非默认 CUDA stream，用于 NVENC 输入拷贝
+        # (cuMemcpy2DAsync)。提前声明为 None，防止初始化中途失败时
+        # close() 访问未定义属性。
+        self._stream_encode = c_void_p(None)
 
-        # 多 slot 异步流水线: pipeline_depth >= LA+1 (SDK 硬件安全要求)
-        self._pipeline_depth = pipeline_depth
+        # 多 slot 缓冲池: _slot_count >= _required_buffers (SDK 硬件安全要求)
+        self._slot_count = _slot_count
         self._slots: list = []
 
         # Backward compat: legacy refs (initialized after slot creation)
@@ -1229,10 +1413,24 @@ class NVENCEncoder:
         enc_cfg = cast(byref(preset_config, 8), ctypes.POINTER(_NvEncConfig)).contents
         enc_cfg.gopLength = int(fps)
         enc_cfg.frameIntervalP = 1
-        enc_cfg.encodeCodecConfig.chromaFormatIDC = 1  # [FIX-CHROMA] 显式启用 chroma (1=4:2:0)，防止 SPS 声明为 monochrome → 灰色输出
-        enc_cfg.encodeCodecConfig.idrPeriod = int(fps)
-        enc_cfg.encodeCodecConfig.maxNumRefFramesInDPB = 4   # [FIX-GPU-STAY] 16→4: 减少运动估计开销 ~50%，文件体积更接近 v6.4.2
-        enc_cfg.encodeCodecConfig.repeatSPSPPS = 1  # [SEGMENT-REUSE] 每个 IDR 前重发 SPS/PPS，确保新 muxer 能收到
+        # [FIX-SDK13-CODEC] NV_ENC_CONFIG_H264 字段按 SDK 13.0 真实偏移硬编码写入（对齐 rc_params 模式）。
+        # 背景: _NvEncConfig.encodeCodecConfig@1052 是错误布局 (SDK 真实 @168=绝对 176;
+        #   reserved3[53] 覆盖 rcParams 区 + reserved5[172] 推至 1052)，经结构体写入的
+        #   chromaFormatIDC/idrPeriod/maxNumRefFrames/repeatSPSPPS/profileLevel 全部落在
+        #   NV_ENC_CONFIG.reserved[278] 保留区 → 驱动忽略。sweep 实测: 绝对 180=level 命中
+        #   level_idc=51; 绝对 176=config 起始写坏 → InitializeEncoder 拒绝。
+        # 偏移基准: _h264_cfg_off = 8(presetCfg) + 168(encodeCodecConfig)。
+        _h264_cfg_off = 8 + 168
+        # chromaFormatIDC@192 (VUI 112B 之后): 1=4:2:0，防止 SPS 声明 monochrome → 灰色输出 [FIX-CHROMA]
+        cast(byref(preset_config, _h264_cfg_off + 192), ctypes.POINTER(c_uint32))[0] = 1
+        # idrPeriod@8: IDR 周期 = fps（驱动默认回退 gopLength）
+        cast(byref(preset_config, _h264_cfg_off + 8), ctypes.POINTER(c_uint32))[0] = int(fps)
+        # maxNumRefFrames@60 (DPB): 16→4 减少运动估计开销 ~50% [FIX-GPU-STAY]
+        cast(byref(preset_config, _h264_cfg_off + 60), ctypes.POINTER(c_uint32))[0] = 4
+        # profileLevel@4: H.264 Level 5.1 — 限制 NVENC 自动 level 不超 T4 NVDEC 上限 (L5.2)
+        cast(byref(preset_config, _h264_cfg_off + 4), ctypes.POINTER(c_uint32))[0] = 51
+        # repeatSPSPPS (bitfield@0 bit12) 不写: 历史上从未生效，SPS/PPS 由 _apply_sps_pps()
+        #   手动缓存/预挂替代 ([SEGMENT-REUSE][FIX-SPS-PPS-V2])，行为保持不变。
 
         # [V6441-RC-FIXED] NV_ENC_RC_PARAMS at offset 40 in NV_ENC_CONFIG
         # SDK 13.0 layout (nvEncodeAPI.h, SEQUENTIAL — NO union at offset 8):
@@ -1270,20 +1468,26 @@ class NVENCEncoder:
             # targetQuality 仍主导质量决策，avgBitRate 仅防止 NVENC 在无约束下进入
             # 极慢的质量穷举搜索模式（GPU 闲置 65%，FPS 暴跌 2.2×）。
             # 参考 v6.4.3.1 的 _est_br 计算方式。
-            _est_br = max(50000000, int(width * height * fps * 3.0))
+            # [FIX-BR-CLAMP] avgBitrate 钳制：估算值对高分辨率×帧率会失控（如 720p48
+            # 算出 132.6Mbps），超驱动 NVENC 合法范围可能触发 InitializeEncoder code=8
+            # （关注点4 场景）。钳制到 _NVENC_BR_CLAMP_MAX，maxBitRate 同步。
+            _est_br = _clamp_bitrate(int(width * height * fps * 3.0))
             rc_ptr[5] = _est_br                      # averageBitRate @offset 20 (速度天花板)
             rc_ptr[6] = _est_br * 2                  # maxBitRate @offset 24
             _tq = max(1, _qp_val)  # VBR_HQ targetQuality = CRF (QP标度, 1=最好, 51=最差)
             # targetQuality: uint8_t at rcParams+88 (nvEncodeAPI.h SEQUENTIAL, GPU verified)
             _tq8_ptr = cast(byref(preset_config, 8 + 40 + 88), ctypes.POINTER(c_uint8))
             _tq8_ptr[0] = _tq & 0xFF
-            print(f"[NVENCEncoder] VBR_HQ: crf={_qp_val} targetQuality={_tq} avgBitrate={_est_br//1000}kbps", flush=True)
+            # [DIAG-TERM] targetQuality 是 RC 质量参数（CRF 语义 1-51），不是 H.264 Level。
+            print(f"[NVENCEncoder] VBR_HQ: crf={_qp_val} targetQuality(CRF)={_tq} "
+                  f"avgBitrate={_est_br//1000}kbps", flush=True)
         elif self._rate_mode == 'qvbr':
             # QVBR mode: NV_ENC_PARAMS_RC_QVBR = 64 (0x40)
             rc_ptr[1] = 64                           # NV_ENC_PARAMS_RC_QVBR (0x40)
             # [FIX-BR-CEILING] QVBR 也需要 avgBitRate 作为速度天花板，
             # 防止 NVENC 在无约束下进入极慢的质量搜索。
-            _est_br = max(50000000, int(width * height * fps * 3.0))
+            # [FIX-BR-CLAMP] 同 VBR_HQ：估算值钳制，避免超驱动合法范围触发 code=8。
+            _est_br = _clamp_bitrate(int(width * height * fps * 3.0))
             rc_ptr[5] = _est_br                      # averageBitRate @offset 20 (速度天花板)
             rc_ptr[6] = _est_br * 2                  # maxBitRate @offset 24 (码率上限)
             _tq = max(1, _qp_val)  # QVBR qvbrQuality = CRF (QP标度, 低值=高质量)
@@ -1296,7 +1500,8 @@ class NVENCEncoder:
                     rc_ptr[7] = 4194304              # vbvBufferSize @offset 28
                 if rc_ptr[8] == 0:
                     rc_ptr[8] = 2097152              # vbvInitialDelay @offset 32
-            print(f"[NVENCEncoder] QVBR: crf={_qp_val} qvbrQuality={_tq} maxBitrate={_est_br//1000}kbps", flush=True)
+            # [DIAG-TERM] qvbrQuality 是 RC 质量参数（CRF 语义 1-51），不是 H.264 Level。
+            print(f"[NVENCEncoder] QVBR: crf={_qp_val} qvbrQuality(CRF)={_tq} maxBitrate={_est_br//1000}kbps", flush=True)
         else:
             # CONSTQP mode (default): direct QP control
             rc_ptr[1] = 0                            # NV_ENC_PARAMS_RC_CONSTQP
@@ -1342,7 +1547,24 @@ class NVENCEncoder:
         create_encoder = _NvEncCreateEncoderProto(init_addr)
         status = create_encoder(self._encoder, byref(init_params))
         if status != NV_ENC_SUCCESS:
+            # [FIX-CODEC8-DIAG] code=8=INVALID_PARAM 时输出完整参数诊断，便于定位
+            # 非法组合（高分辨率×高帧率 + 严格 preset + 失控 avgBitrate 等）。
+            # 参考关注点4：IFRNet 720p48 曾因 avgBitrate 估算失控(132.6Mbps) 触发。
+            _diag_rc = getattr(self, '_rate_mode', '?')
+            _diag_br = cast(byref(preset_config, 8 + 40 + 20), ctypes.POINTER(c_uint32))[0]
+            _diag_brmax = cast(byref(preset_config, 8 + 40 + 24), ctypes.POINTER(c_uint32))[0]
+            _diag_tq = cast(byref(preset_config, 8 + 40 + 88), ctypes.POINTER(c_uint8))[0]
+            _diag_la = cast(byref(preset_config, 8 + 40 + 90), ctypes.POINTER(c_uint16))[0]
+            print(f"[NVENCEncoder] InitializeEncoder FAILED code={status} | "
+                  f"cfg: {width}x{height}@{fps:.2f}fps rc={_diag_rc} preset={self._preset_name} "
+                  f"slots={self._slot_count} | avgBR={_diag_br}b maxBR={_diag_brmax}b "
+                  f"targetQuality={_diag_tq} LA={_diag_la}", flush=True)
             raise RuntimeError("[NVENCEncoder] InitializeEncoder failed, code=%d" % status)
+        # [DIAG-LEVEL] 请求的 H.264 level（0=AUTO：NVENC 自动选择可能超 T4 NVDEC 上限 L5.2 → 软解回退）。
+        # 实际生效值见首帧 "[NVENCEncoder] H.264 SPS actual" 日志——两者不一致 = profileLevel 写入未生效。
+        # [FIX-SDK13-CODEC] 请求 level 已硬编码写入 SDK 真实偏移 (绝对 180)，此处直接回显 51。
+        _req_lvl = 51
+        print("[NVENCEncoder] H.264 level requested: %d (0=AUTO; 51=L5.1)" % _req_lvl, flush=True)
 
         # 10. [PHASE4-v645] 创建多 slot 流水线：每 slot = input buffer + bitstream buffer + CUDA event。
         #     根因修复（v6.4.4 synchronize + FIX-ENC-CTX）后恢复，Multi-slot 让 NVENC HW 帧间流水线化：
@@ -1351,7 +1573,7 @@ class NVENCEncoder:
         _CreateInputBufferProto = ctypes.CFUNCTYPE(c_uint32, c_void_p, ctypes.POINTER(c_uint8 * 776))
         _CreateBitstreamBufferProto = ctypes.CFUNCTYPE(c_uint32, c_void_p, ctypes.POINTER(c_uint8 * 776))
 
-        for slot_idx in range(self._pipeline_depth):
+        for slot_idx in range(self._slot_count):
             # 10a. Create input buffer
             create_buf = (c_uint8 * 776)()
             ctypes.memset(create_buf, 0, 776)
@@ -1396,18 +1618,47 @@ class NVENCEncoder:
         self._input_buf_handle = self._slots[0]['input_buf']
         self._bs_handle = self._slots[0]['bs_buf']
 
-        if self._pipeline_depth > 1:
-            print("[NVENCEncoder] %d pipeline slots created (0x%x..0x%x)" %
-                  (self._pipeline_depth, self._slots[0]['input_buf'].value,
+        if self._slot_count > 1:
+            print("[NVENCEncoder] %d slots created (0x%x..0x%x)" %
+                  (self._slot_count, self._slots[0]['input_buf'].value,
                    self._slots[-1]['input_buf'].value), flush=True)
 
         # Setup cuMemcpyDtoD (1D linear, deprecated for pitched buffers)
         self._libcuda.cuMemcpyDtoD_v2.restype = c_uint32
         self._libcuda.cuMemcpyDtoD_v2.argtypes = [c_void_p, c_void_p, c_size_t]
 
-        # Setup cuMemcpy2D_v2 (2D pitch-aware copy)
+        # Setup cuMemcpy2D_v2 (2D pitch-aware copy, SYNC — 仅保留作为异常回退用)
         self._libcuda.cuMemcpy2D_v2.restype = c_uint32
         self._libcuda.cuMemcpy2D_v2.argtypes = [c_void_p]
+
+        # [FIX-ASYNC-COPY] cuMemcpy2D_v2（同步、走 legacy default/null stream）
+        # 会隐式地在本 CUDA context 下的**所有** stream 之间做全局同步——
+        # 每次 NVENC 输入拷贝都会强制等待推理用的 stream_h2d/stream_compute/
+        # stream_d2h 排空，反之亦然。在 LA 分块流式编码（chunk=768 帧）场景下，
+        # 编码线程连续、逐帧执行这个同步拷贝，导致推理线程的 GPU kernel 被
+        # 周期性阻塞，表现为 nvtop/nvitop 中规律出现的 GPU 利用率骤降。
+        #
+        # 修复：改用 cuMemcpy2DAsync_v2 + 专用非默认 CUDA stream
+        # (self._stream_encode)。拷贝仍然入队后立即 cuStreamSynchronize，
+        # 编码线程自身的等待时间不变，但**只同步这一个私有 stream**，
+        # 不再对其他 stream 施加隐式全局屏障，从而让 T2(推理) 与 T3(编码)
+        # 在 GPU 上真正并行重叠。
+        self._libcuda.cuMemcpy2DAsync_v2.restype = c_uint32
+        self._libcuda.cuMemcpy2DAsync_v2.argtypes = [c_void_p, c_void_p]
+        self._libcuda.cuStreamSynchronize.restype = c_uint32
+        self._libcuda.cuStreamSynchronize.argtypes = [c_void_p]
+        self._libcuda.cuStreamCreate.restype = c_uint32
+        self._libcuda.cuStreamCreate.argtypes = [ctypes.POINTER(c_void_p), c_uint32]
+        _CU_STREAM_NON_BLOCKING = 1  # 不与 legacy stream 0 隐式同步
+        _r_stream = self._libcuda.cuStreamCreate(
+            ctypes.byref(self._stream_encode), c_uint32(_CU_STREAM_NON_BLOCKING))
+        if _r_stream != 0 or self._stream_encode.value is None:
+            print(f"[NVENCEncoder] ⚠️ cuStreamCreate 失败(code={_r_stream})，"
+                  f"回退到同步 cuMemcpy2D（可能出现周期性 GPU 阻塞）", flush=True)
+            self._stream_encode = c_void_p(None)
+        else:
+            print(f"[NVENCEncoder] [FIX-ASYNC-COPY] 专用编码拷贝 stream 已创建 "
+                  f"(0x{self._stream_encode.value:x}, non-blocking)", flush=True)
 
         # Setup context push/pop helpers
         self._libcuda.cuCtxPopCurrent.restype = c_uint32
@@ -1421,8 +1672,33 @@ class NVENCEncoder:
         if self._rate_mode in ('vbr_hq', 'qvbr'):
             _tq = max(1, _qp_val)  # QVBR qvbrQuality = CRF (QP标度)
             _extra += " tq=%d" % _tq
-        print("[NVENCEncoder] Ready: %dx%d@%.1ffps H.264 %s QP=%d preset=%s pipeline=%d%s (GPU direct SDK 13.0)" %
-              (width, height, fps, _mode_label, _qp_val, self._preset_name, self._pipeline_depth, _extra), flush=True)
+        print("[NVENCEncoder] Ready: %dx%d@%.1ffps H.264 %s QP=%d preset=%s slots=%d%s (GPU direct SDK 13.0)" %
+              (width, height, fps, _mode_label, _qp_val, self._preset_name, self._slot_count, _extra), flush=True)
+
+    def _copy_into_input_buffer(self, cpy2d_struct) -> int:
+        """[FIX-ASYNC-COPY] 把 NV12 源数据拷贝进 NVENC 输入缓冲区。
+
+        优先走 cuMemcpy2DAsync_v2 + 专用非默认 stream(self._stream_encode)，
+        入队后立即 cuStreamSynchronize —— 编码线程自身仍然同步等待拷贝完成
+        (语义与之前一致，帧顺序/正确性不变)，但只同步这一个私有 stream，
+        不再像 cuMemcpy2D_v2(legacy null stream) 那样对同 context 下所有
+        stream(包括推理用的 stream_h2d/stream_compute/stream_d2h)施加隐式
+        全局屏障。这是解决"推理 GPU 利用率周期性骤降"的核心修复点。
+
+        若专用 stream 创建失败(见 __init__)，回退到原始同步 cuMemcpy2D_v2，
+        保证功能不中断，仅退化为修复前的行为。
+
+        Returns:
+            CUDA error code (0 = success)，语义与原 cuMemcpy2D_v2 返回值一致。
+        """
+        _ptr = cast(cpy2d_struct, c_void_p)
+        if self._stream_encode.value is not None:
+            r = self._libcuda.cuMemcpy2DAsync_v2(_ptr, self._stream_encode)
+            if r != 0:
+                return r
+            return self._libcuda.cuStreamSynchronize(self._stream_encode)
+        # Fallback: 专用 stream 不可用，退回同步拷贝（旧行为）。
+        return self._libcuda.cuMemcpy2D_v2(_ptr)
 
     def set_muxer_ref(self, muxer: object) -> None:
         """[FIX-SPS-PPS] 设置 muxer 引用，供 _cached_sps_pps 首次缓存时预注入用。"""
@@ -1544,6 +1820,59 @@ class NVENCEncoder:
             return b''.join(result_parts)
         return None
 
+    @staticmethod
+    def _has_sps_pps(h264_data: bytes) -> bool:
+        """检测 H.264 ES 是否已含 SPS/PPS NAL（避免与 NVENC 原生参数集重复注入 avcC）。
+
+        NVENC 原生 IDR 帧已自带 SPS/PPS（repeatSPSPPS 或首帧行为），再手动 prepend
+        _cached_sps_pps 会导致 ffmpeg muxer 把两份参数集收进 avcC → numSPS/numPPS=2
+        → NVDEC cuvidCreateDecoder 初始化失败。注入前先探测原生是否已含。
+        """
+        pos = 0
+        n = len(h264_data)
+        while pos < n - 3:
+            if h264_data[pos:pos+4] == b'\x00\x00\x00\x01':
+                pos += 4
+            elif h264_data[pos:pos+3] == b'\x00\x00\x01':
+                pos += 3
+            else:
+                pos += 1
+                continue
+            if pos < n and (h264_data[pos] & 0x1f) in (7, 8):
+                return True
+        return False
+
+    @staticmethod
+    def _nal_first_vcl_type(h264_data: bytes) -> Optional[int]:
+        """[FIX-AUX-NO-CLEAR] 返回码流块中第一个 VCL NAL 类型（1=P / 5=IDR），
+        无 VCL 时返回 None。NVENC LA 预热期会把 SPS/PPS/AUD 作为独立辅助块
+        drain 出来，不对应任何已提交帧：VCL 块占帧槽，辅助块仅缓存参数集、
+        不占 fi、不进 pairs、不清 pending（tt6 FIX-AUX-NO-CLEAR）。
+        """
+        pos = 0
+        n = len(h264_data)
+        while pos < n - 3:
+            if h264_data[pos:pos+4] == b'\x00\x00\x00\x01':
+                pos += 4
+            elif h264_data[pos:pos+3] == b'\x00\x00\x01':
+                pos += 3
+            else:
+                pos += 1
+                continue
+            if pos >= n:
+                break
+            nal_type = h264_data[pos] & 0x1f
+            if nal_type in (1, 5):
+                return nal_type
+            end = pos
+            while end < n - 3:
+                if h264_data[end:end+4] == b'\x00\x00\x00\x01' or \
+                        h264_data[end:end+3] == b'\x00\x00\x01':
+                    break
+                end += 1
+            pos = end
+        return None
+
     def _drain_outputs_blocking(self, max_slots: int = None) -> list:
         """[FIX-LA-REDRAIN] 按 _output_slot_idx 顺序循环 blocking LockBitstream
         排空所有已完成 slot，直到遇到 NEED_MORE_INPUT。
@@ -1553,11 +1882,14 @@ class NVENCEncoder:
         - 每成功取回一帧则推进 _output_slot_idx
         - 遇到 NEED_MORE_INPUT 时退出循环
 
-        返回 [(frame_index_estimate, h264_bytes), ...] 列表。
+        返回 [(frame_index_estimate, output_timestamp, h264_bytes), ...] 列表。
         frame_index 为估算值（基于 output_slot_idx 和 pipeline_depth）。
+        output_timestamp 为 NV_ENC_LOCK_BITSTREAM.outputTimeStamp@40 回显的
+        提交时 inputTimeStamp（仅用于 [FIX-DRAIN-ORDER-DEFENSE] 相位漂移诊断，
+        不作为标签来源 —— 标签一律来自 per-slot FIFO 记账）。
         """
         if max_slots is None:
-            max_slots = self._pipeline_depth
+            max_slots = self._slot_count
         outputs = []
         _LockBS = ctypes.CFUNCTYPE(c_uint32, c_void_p, ctypes.POINTER(c_uint8 * 1544))
         _UnlockBS = ctypes.CFUNCTYPE(c_uint32, c_void_p, c_void_p)
@@ -1565,7 +1897,7 @@ class NVENCEncoder:
         unlock_fn = _UnlockBS(self._func_ptrs[_FUNC_IDX["UnlockBitstream"]])
 
         for _ in range(max_slots):
-            slot_idx = self._output_slot_idx % self._pipeline_depth
+            slot_idx = self._output_slot_idx % self._slot_count
             bs_handle = self._slots[slot_idx]['bs_buf']
 
             lock_raw = (c_uint8 * 1544)()
@@ -1587,20 +1919,182 @@ class NVENCEncoder:
 
             _raw_bsptr = cast(byref(lock_raw, 56), ctypes.POINTER(c_void_p))[0]
             bitstream_ptr_val = _raw_bsptr if isinstance(_raw_bsptr, int) else (_raw_bsptr.value or 0)
+            out_ts = int(cast(byref(lock_raw, 40), ctypes.POINTER(c_uint64))[0])
             if bitstream_ptr_val:
                 buf_type = c_uint8 * bitstream_size
                 h264_data = bytes(buf_type.from_address(bitstream_ptr_val))
-                # 估算 frame_index: 当前 output_slot_idx 对应的帧序号
+                # 估算 frame_index: 当前 output_slot_idx 对应的 slot（物理槽位指针）
                 est_fi = self._output_slot_idx
-                outputs.append((est_fi, h264_data))
-            unlock_fn(self._encoder, bs_handle)
-            self._output_slot_idx += 1
+                outputs.append((est_fi, out_ts, h264_data))
+                unlock_fn(self._encoder, bs_handle)
+                self._output_slot_idx += 1
+            else:
+                # [FIX-DRAIN-COUNTER-DRIFT] size>0 但数据指针为空：未取到码流。
+                # 此时推进 _output_slot_idx 会造成"帧计数超前于实际取回"的
+                # 相位漂移（记忆文件审核观察），必须 break 且不推进。
+                unlock_fn(self._encoder, bs_handle)
+                break
 
         return outputs
 
     def _reset_output_slot_idx(self, start: int = 0):
         """[FIX-LA-OUTPTR] 重置输出槽位指针（新批次开始时调用）。"""
         self._output_slot_idx = start
+
+    def _apply_drained_entries(self, drained: list, pairs: list) -> None:
+        """[FIX-FIFO-DRAIN] 把 _drain_outputs_blocking() 返回的条目按
+        per-slot FIFO 队首映射分发到 pairs（对齐 realesrgan_video _apply_drained_entries）。
+
+        与 ESRGAN 已验证设计逐条对齐（同驱动同配置 5099/5099 解码级干净）：
+        - drain 条目顺序 = LockBitstream 顺序 = 物理槽位轮转顺序；
+        - 每物理 slot 的未决记录为 FIFO deque，队首 = 最旧提交 = 该槽下一次
+          必然取回的帧（驱动按提交顺序输出，辅助块也按数据流顺序消费）；
+        - 标签 = 队首条目全局 fi - _strm_ts_base（段基线）= 流内帧号。
+          绝不读取 outputTimeStamp：ts 回显在辅助块场景下不可信（V2 重关联
+          已被 test7 证伪）；
+        - 无 VCL 辅助块（独立 SPS/PPS AU）按数据消费：pop 队首条目并缓存参数集，
+          不占 fi、不进 pairs —— 与 FIX-AUX-NO-CLEAR（保留 pending 致提交 9
+          反压死锁 → 槽位带病复用 → 帧序错位）完全相反；
+        - 数据块永不丢弃：有数据必进 pairs（标签 = 队首 fi）；
+        - is_idr 用 pending 记录的 force_idr（提交时确定，队列顺序与提交一致，
+          不再依赖 NAL 实测 —— _nal_first_vcl_type 已删除）。
+
+        [FIX-AUX-NO-CLEAR]（2026-08-14，test11 复现 tt6 根因）：
+        - 无 VCL 辅助块（独立 SPS/PPS/AUD）**必须保留 pending 记录**，仅缓存
+          参数集，不占 fi、不进 pairs。若像旧代码那样 pop 队首，则该槽真实
+          帧的 VCL 数据仍滞留在驱动输出队列中，pending 却已清空 →
+          _ensure_slot_free 误判槽位空闲 → 输入 buffer 未排空即复用 → LA
+          延迟消费读到被覆盖的像素 → 数据与标签错位 → 每 9 帧迟一窗的
+          frame_num 回退（test11: 549 次、解码 1411/4960）。
+        """
+        for _est_fi, _out_ts, _h264_data in drained:
+            # [FIX-AUX-NO-CLEAR] 先判 VCL 再消费：辅助块不占帧槽。
+            if self._nal_first_vcl_type(_h264_data) is None:
+                self.__dict__.setdefault('_diag_aux_block', 0)
+                self._diag_aux_block += 1
+                if self._diag_aux_block <= 5 or self._diag_aux_block % 50 == 0:
+                    print(f'[NVENC-Enc] ℹ️ 辅助块 #{self._diag_aux_block} '
+                          f'(est={_est_fi} slot={_est_fi % self._slot_count} '
+                          f'{len(_h264_data)}B) 仅缓存参数集，不占帧槽', flush=True)
+                if self._cached_sps_pps is None:
+                    _sps_a = self._extract_sps_pps(_h264_data)
+                    if _sps_a:
+                        self._cached_sps_pps = _sps_a
+                        print("[NVENCEncoder] Cached SPS+PPS: %d bytes" % len(_sps_a),
+                              flush=True)
+                        if self._muxer_ref is not None:
+                            try:
+                                self._muxer_ref.write_sps_pps(_sps_a)
+                                self._sps_pps_injected = True
+                            except Exception:
+                                pass
+                continue
+            _drain_slot = _est_fi % self._slot_count
+            _entry_deque = self._strm_slot_pending.get(_drain_slot)
+            if not _entry_deque:
+                # [FIX-DRAIN-ORDER-DEFENSE] 原静默 continue：驱动输出槽与 FIFO 记账
+                # 错位（LA 重路由）时无痕错配 → 帧序损坏。计数 + 诊断可见。
+                self.__dict__.setdefault('_diag_slot_mismatch', 0)
+                self._diag_slot_mismatch += 1
+                if self._diag_slot_mismatch <= 5 or self._diag_slot_mismatch % 50 == 0:
+                    print(f'[NVENC-Enc] ⚠️ slot 记账错配 #{self._diag_slot_mismatch} '
+                          f'(drain_slot={_drain_slot} 无 pending，est_fi={_est_fi} '
+                          f'out_slot={self._output_slot_idx})', flush=True)
+                continue
+            _global_fi, _, _is_idr, _ep_s = _entry_deque[0]  # peek 最旧条目
+            _actual_fi = _global_fi - self._strm_ts_base
+            # [FIX-DRAIN-ORDER-DEFENSE] 相位漂移检测：VCL 块 outputTimeStamp@40
+            # 回显提交时 inputTimeStamp（tt6/tt7 生产双射验证 18/18、34/34）。
+            # 与 FIFO 队首 gfi 不一致 = LA 重路由/输入覆盖征兆；标签仍以 FIFO
+            # 队首为准（对齐 ESRGAN），但错配不再静默。
+            if _out_ts is not None and _out_ts != _global_fi:
+                self.__dict__.setdefault('_diag_phase_shift', 0)
+                self._diag_phase_shift += 1
+                if self._diag_phase_shift <= 5 or self._diag_phase_shift % 50 == 0:
+                    print(f'[NVENC-Enc] ⚠️ 相位漂移 #{self._diag_phase_shift} '
+                          f'(ts={_out_ts} != fifo_gfi={_global_fi} '
+                          f'slot={_drain_slot} est={_est_fi})', flush=True)
+            # [FIX-DRAIN-ORDER-DEFENSE] gfi 回退检测：LA 重路由使驱动输出顺序 ≠
+            # 提交顺序时，队首 gfi 可能 ≤ 上一已消费 gfi。仍按 FIFO popleft 消费
+            # 推进（不丢数据、不卡死），但错配不再静默。
+            _last = getattr(self, '_last_drained_gfi', None)
+            if _last is not None and _global_fi <= _last:
+                self.__dict__.setdefault('_diag_gfi_regress', 0)
+                self._diag_gfi_regress += 1
+                if self._diag_gfi_regress <= 5 or self._diag_gfi_regress % 50 == 0:
+                    print(f'[NVENC-Enc] ⚠️ gfi 回退 #{self._diag_gfi_regress} '
+                          f'(gfi={_global_fi} <= last={_last} slot={_drain_slot})', flush=True)
+            self._last_drained_gfi = _global_fi
+            if _h264_data:
+                _out_data = self._apply_sps_pps(_h264_data, _is_idr)
+                pairs.append((_actual_fi, _out_data))
+                # [FIX-EMPTY-PREV-FILL] 跟踪流内顺序最后一帧（空帧兜底填充基准）
+                self._prev_stream_h264 = _out_data
+            else:
+                self.__dict__.setdefault('_diag_empty', 0)
+                self._diag_empty += 1
+                if self._diag_empty <= 5 or self._diag_empty % 50 == 0:
+                    print(f'[NVENC-Enc] ⚠️ 空帧 #{self._diag_empty} (stream fi={_actual_fi} '
+                          f'slot={_drain_slot} fidr={_is_idr} '
+                          f'la_buf={getattr(self, "_la_buffered", 0)})', flush=True)
+                # [FIX-EMPTY-PREV-FILL] b"" → 前一帧码流兜底（仅"真缺失"帧走此分支：
+                # EOS 残留 / 槽位排空超限占位；LA 正常缓冲帧不会产出 b""）。
+                pairs.append((_actual_fi, self._prev_stream_h264 or b""))
+            _entry_deque.popleft()
+            if not _entry_deque:
+                del self._strm_slot_pending[_drain_slot]
+
+    def _ensure_slot_free(self, slot_idx: int, pairs: list) -> None:
+        """[FIX-ENSURE-SLOT-ROTATION] Drain pending outputs in output-slot
+        rotation order before reusing a physical bitstream buffer.
+
+        This mirrors the verified realesrgan_video implementation: repeatedly
+        drain via _drain_outputs_blocking(max_slots=1) until the target slot
+        per-slot FIFO is empty. Never lock the target slot directly and never
+        advance _output_slot_idx manually.
+        """
+        _guard = 0
+        while self._strm_slot_pending.get(slot_idx):
+            _drained = self._drain_outputs_blocking(max_slots=1)
+            if _drained:
+                # [FIX-AUX-NO-CLEAR] 辅助块会被 _apply_drained_entries 跳过
+                # （不 pop），但物理轮转指针已推进 —— 循环继续直至目标槽排空。
+                _guard = 0
+                self._apply_drained_entries(_drained, pairs)
+                continue
+            _guard += 1
+            if _guard > self._slot_count * 4:
+                # [FIX-SLOT-DRAIN-TARGET] 轮转探测无法触达目标槽（LA 重路由/
+                # 辅助块使目标槽输出晚于其他槽就绪）→ 直接对目标槽自身做
+                # blocking LockBitstream（doNotWait=0）。
+                _h264_t, _st_t = self._lock_bitstream_blocking(
+                    self._slots[slot_idx]['bs_buf'], timeout_ms=2000)
+                if _h264_t:
+                    self._apply_drained_entries([(slot_idx, None, _h264_t)], pairs)
+                    _guard = 0
+                    continue
+                # [FIX-SLOT-BACKPRESSURE-B] 硬件仍无数据：绝不带 pending 复用，
+                # 将目标槽 pending 逐条以空帧占位（prev 填充）消费并推进 FIFO；
+                # 宁可写占位也绝不覆盖未取回的码流。
+                _dq = self._strm_slot_pending.get(slot_idx)
+                if _dq:
+                    self.__dict__.setdefault('_diag_slot_drain_fallback', 0)
+                    self._diag_slot_drain_fallback += 1
+                    if self._diag_slot_drain_fallback <= 5 or \
+                            self._diag_slot_drain_fallback % 50 == 0:
+                        print(f'[NVENC-Enc] ⚠️ slot={slot_idx} 排空超限 '
+                              f'#{self._diag_slot_drain_fallback}：'
+                              f'空帧占位兜底（prev 填充）', flush=True)
+                    _n_fill = len(_dq)
+                    while _dq:
+                        _gfi_f, _, _is_idr_f, _ep_s_f = _dq[0]
+                        _actual_fi_f = _gfi_f - self._strm_ts_base
+                        pairs.append((_actual_fi_f, self._prev_stream_h264 or b""))
+                        _dq.popleft()
+                    del self._strm_slot_pending[slot_idx]
+                    self._output_slot_idx += _n_fill
+                break
+            continue
 
     def _lock_bitstream_blocking(self, bs_handle, timeout_ms: int = 500):
         """[FIX-LA-BLOCKING] Blocking LockBitstream (doNotWait=0)。
@@ -1702,8 +2196,10 @@ class NVENCEncoder:
                              send_eos: bool = False) -> list:
         """Encode multiple NV12 frames using synchronous per-slot encoding.
 
-        Uses blocking EncodePicture (no completionEvent) + LockBitstream with retry.
-        Frames distributed across pipeline slots round-robin to reduce buffer contention.
+        [FIX-LA-CHUNK-STREAM] 本方法现在是 encode_frames_stream() 的兼容封装：
+        整个批次视为一个独立流（调用前强制 _stream_begin 重置），返回值与输入
+        逐帧对齐；未取回数据的帧（LA 窗口滞留 / 真空帧）以 b"" 占位，语义与
+        原实现一致。
 
         Args:
             send_eos: If True, send EOS after all frames and drain ALL LA-buffered
@@ -1713,7 +2209,108 @@ class NVENCEncoder:
         Returns list of H.264 bytes in the same order as input tensors.
         """
         n_frames = len(nv12_tensors)
-        if n_frames == 0:
+        # [FIX-EOS-EMPTY-CHUNK] 空批次快速路径不能无视 send_eos：
+        # 当 segment 总帧数恰好被 chunk size 整除时最终块可能为空，
+        # 但 send_eos=True 仍需往下走到 EOS 发送+per-slot 阻塞 drain。
+        if n_frames == 0 and not send_eos:
+            return []
+
+        self._stream_begin(force=True)
+        pairs = self.encode_frames_stream(nv12_tensors, force_idr_first=force_idr_first,
+                                          send_eos=send_eos)
+        results = [b""] * n_frames
+        for _fi, _data in pairs:
+            if 0 <= _fi < n_frames and _data:
+                results[_fi] = _data
+        return results
+
+    def _stream_begin(self, force: bool = False):
+        """[FIX-LA-CHUNK-STREAM] 开始一个新的流式编码序列（每段一次）。
+
+        重置跨 chunk 持久的 slot 未决表 / 流内帧号。
+        [FIX-PIPE4-LA8] IDR 判定基于 fi==0，故 _strm_next_fi 必须每段归零，
+        保证新段首帧（fi=0）强制 IDR 重建 DPB（防止跨段污染花屏）。
+        EOS 完整排空后 encode_frames_stream 会将 _strm_active 置 False；
+        下一段首块前必须重新 begin。
+        """
+        if force or not self._strm_active:
+            self._strm_slot_pending.clear()
+            self._strm_next_fi = 0
+            self._strm_active = True
+            # [FIX-FIFO-DRAIN] 段首基线：drain 标签 = 队首全局 fi - _strm_ts_base
+            # （对齐 realesrgan_video 的 chunk_start_global 语义）。_frame_idx
+            # 跨段单调（严禁重置），段首提交前记录即可。ts 重关联
+            # （[FIX-STREAM-TS-REASSOC] outputTimeStamp 信任机制）已整体删除：
+            # 辅助块场景下 ts 回显不可信（test7 seg1 abort 后标签错位），标签
+            # 一律来自自身 FIFO 记账。原 [FIX-LA-WINDOW-ROTATION] 状态此前已
+            # 移除（失败方案，见 memory/stream-ts-reassociation-fix.md）。
+            self._strm_ts_base = self._frame_idx
+            # [FIX-OUTSLOT-SEGMENT-RESET] cross-segment reset: EOS leftover empty
+            # frames do not advance _output_slot_idx; without reset the next segment
+            # drains the wrong physical slot (segment-boundary frame_num regression).
+            # Slot assignment is _frame_idx % _slot_count, so align = _frame_idx.
+            self._output_slot_idx = self._frame_idx
+            # [FIX-DRAIN-ORDER-DEFENSE] / [FIX-EMPTY-PREV-FILL] 每段重置：
+            # gfi 单调基准、prev 填充缓存与错配诊断计数。
+            self._last_drained_gfi = None
+            self._prev_stream_h264 = None
+            self._diag_slot_mismatch = 0
+            self._diag_gfi_regress = 0
+            self._diag_aux_block = 0
+            self._diag_phase_shift = 0
+            self._diag_slot_drain_fallback = 0
+
+    def _apply_sps_pps(self, h264_data: bytes, is_idr: bool) -> bytes:
+        """[SEGMENT-REUSE] SPS/PPS 缓存、预挂与 muxer 预注入（drain 路径统一入口）。
+
+        - IDR 且已有缓存：缓存 SPS+PPS 预挂到帧前（NVENC repeatSPSPPS 不可靠）。
+          若原生已含 SPS/PPS（NVENC 自带），跳过 prepend 避免 avcC 重复参数集。
+        - 首次见到数据（无论是否 IDR）：提取并缓存；IDR 时额外预注入 muxer。
+          首帧本身已含 NVENC 初始化 SPS+PPS，不再预挂（[FIX-SPS-PPS-V3]）。
+        """
+        if is_idr and self._cached_sps_pps is not None and \
+                not self._has_sps_pps(h264_data):
+            return self._cached_sps_pps + h264_data
+        if self._cached_sps_pps is None:
+            _sps = self._extract_sps_pps(h264_data)
+            if _sps:
+                self._cached_sps_pps = _sps
+                print("[NVENCEncoder] Cached SPS+PPS: %d bytes" % len(_sps), flush=True)
+                if is_idr and self._muxer_ref is not None:
+                    try:
+                        self._muxer_ref.write_sps_pps(_sps)
+                        self._sps_pps_injected = True
+                    except Exception:
+                        pass
+        return h264_data
+
+    # ── [FIX-FIFO-DRAIN] 已删除的失败方案 ──────────────────────────────
+    # [FIX-LA-WINDOW-ROTATION]（9 帧窗口旋转假说 → 双重洗牌）与
+    # [FIX-STREAM-TS-REASSOC]（outputTimeStamp 重关联）均被证伪并移除：
+    # 标签一律来自 per-slot FIFO 记账（见 _apply_drained_entries）。
+    # _RotationBitReader 类保留供备用方向 B（frame_num 码内解析重关联）复用。
+
+    def encode_frames_stream(self, nv12_tensors: list, force_idr_first: bool = False,
+                             send_eos: bool = False) -> list:
+        """[FIX-LA-CHUNK-STREAM] LA 有界分块流式编码（核心实现）。
+
+        与原 encode_frames_batch() 相同的逐帧同步编码 + 每帧后全局 drain 逻辑，
+        但 _slot_pending/_slots_warmed 为实例持久状态，帧以流内全局帧号
+        (_strm_next_fi) 标识，因此 lookahead 窗口帧可跨调用正确取回——
+        调用方可将一个 segment 分成多个有界 chunk 顺序提交（中间不得发送
+        EOS/flush），消除段末一次性编码脉冲及其 pinned host 内存峰值。
+
+        Args:
+            send_eos: 段末最后一块必须 True：发送 EOS 并完整排空所有 slot，
+                      保证流内全部已提交帧都被取回（帧数守恒）。
+
+        Returns:
+            [(fi, h264_bytes), ...]，按取回顺序（即提交顺序）排列。
+            仅包含本次调用期间实际取回数据的帧；LA 窗口滞留帧由后续调用或
+            EOS 取回。EOS 后仍无数据的帧以 (fi, b"") 占位（调用方做空帧防御）。
+        """
+        n_frames = len(nv12_tensors)
+        if n_frames == 0 and not send_eos:
             return []
 
         # [FIX-GPU-STAY] 跨线程 CUDA context 保护
@@ -1733,27 +2330,42 @@ class NVENCEncoder:
                 if self._encoder.value is None:
                     raise RuntimeError("[NVENCEncoder] Encoder not initialized or already closed")
 
-                results = [None] * n_frames
-                # [FIX-LA-DRAIN-SYNC] _slot_pending maps drained output to actual frame index.
-                # 参照 test_nvenc_la_frame_conservation.py: 每送入一帧后循环 LockBitstream
-                # 直到 NEED_MORE_INPUT，收集所有已完成 slot 的输出。
-                _slot_pending = [None] * self._pipeline_depth  # (fi, bs_buf, force_idr, ep_status)
-                # [FIX-PERSLOT-IDR] 每槽首帧强制 IDR 以初始化独立 DPB（pipeline_depth>1 时 slot 1/2/3 需各自 IDR）
-                _slots_warmed = set()
+                if not self._strm_active:
+                    self._stream_begin()
+
+                # (fi, h264) 取回对；LA 滞留帧不在本次返回中
+                pairs = []
                 W = self._width
                 nv12_h = self._height + self._height // 2
 
                 _LockInputBufferProto = ctypes.CFUNCTYPE(c_uint32, c_void_p, ctypes.POINTER(c_uint8 * 1544))
                 _UnlockInputBufferProto = ctypes.CFUNCTYPE(c_uint32, c_void_p, c_void_p)
                 _LockBitstreamProto_raw = ctypes.CFUNCTYPE(c_uint32, c_void_p, ctypes.POINTER(c_uint8 * 1544))
+                _CU_MEMORYTYPE_HOST   = 1
                 _CU_MEMORYTYPE_DEVICE = 2
 
-                for fi in range(n_frames):
+                for _i in range(n_frames):
+                    fi = self._strm_next_fi
+                    # [FIX-FIFO-DRAIN] 全局提交序号（= EncodePicture inputTimeStamp，
+                    # 段内单调；_frame_idx 在 EncodePicture 后自增，此处先取用）。
+                    fi_global = self._frame_idx
                     # [FIX-F0-MISSING] 使用全局 _frame_idx 分配 slot，
                     # 与 encode_frame 首帧编码的 slot 0 不冲突。
-                    slot_idx = self._frame_idx % self._pipeline_depth
+                    slot_idx = self._frame_idx % self._slot_count
                     slot = self._slots[slot_idx]
-                    force_idr = force_idr_first and (slot_idx not in _slots_warmed)
+                    # [FIX-PIPE4-LA8] fi==0 only force_idr（单 IDR 替代 per-slot IDR）。
+                    # 原 [FIX-PERSLOT-IDR] 以 slot 是否 warm 判定：LA 预热期前帧返回
+                    # NEED_MORE_INPUT 使 slot 永不 warm → 首 LA+1 帧全强制 IDR →
+                    # 触发 NVENC LA 输出 buffer 重路由错位 → 帧序乱 → 段首花屏。
+                    # 与 ce_pipeline 已验证方案（line 2274）对齐。
+                    force_idr = force_idr_first and (fi == 0)
+
+                    # [FIX-SLOT-BACKPRESSURE] 复用物理 slot bs_buf 前，强制确保
+                    # 上一次占用者的码流已被排空，避免硬件层面覆盖丢帧。
+                    # [FIX-FIFO-DRAIN] 对齐 realesrgan_video _ensure_slot_free()：
+                    # 排出的帧经 _apply_drained_entries 按 per-slot FIFO 队首消费
+                    # （写入 pairs 并 pop 队首），guard 超限仅告警不 abort。
+                    self._ensure_slot_free(slot_idx, pairs)
 
                     # ── LockInputBuffer ──
                     lock_buf = (c_uint8 * 1544)()
@@ -1775,12 +2387,21 @@ class NVENCEncoder:
                             self._encoder, slot['input_buf'])
                         raise RuntimeError("[NVENCEncoder] LockInputBuffer[%d] returned NULL mapped ptr" % slot_idx)
 
-                    # ── GPU→GPU copy (cuMemcpy2D, pitch-aware) ──
+                    # ── GPU / host → GPU copy (cuMemcpy2D, pitch-aware) ──
+                    # [FIX-LA-ACC-HOST] LA>0 累积模式下 nv12_tensors 可能已被 writer 线程
+                    # 搬到 pinned host 内存（见 _writer_loop [FIX-LA-ACC-HOST]），
+                    # 此处按来源张量是否仍在 GPU 决定 srcMemoryType。
+                    _src_t = nv12_tensors[_i]
+                    _src_is_cuda = _src_t.is_cuda
                     _cpy2d = (c_uint8 * 128)()
                     ctypes.memset(_cpy2d, 0, 128)
-                    src_ptr = nv12_tensors[fi].data_ptr()
-                    cast(byref(_cpy2d, 16), ctypes.POINTER(c_uint32))[0] = _CU_MEMORYTYPE_DEVICE
-                    cast(byref(_cpy2d, 32), ctypes.POINTER(c_void_p))[0] = c_void_p(src_ptr)
+                    src_ptr = _src_t.data_ptr()
+                    if _src_is_cuda:
+                        cast(byref(_cpy2d, 16), ctypes.POINTER(c_uint32))[0] = _CU_MEMORYTYPE_DEVICE
+                        cast(byref(_cpy2d, 32), ctypes.POINTER(c_void_p))[0] = c_void_p(src_ptr)  # srcDevice
+                    else:
+                        cast(byref(_cpy2d, 16), ctypes.POINTER(c_uint32))[0] = _CU_MEMORYTYPE_HOST
+                        cast(byref(_cpy2d, 24), ctypes.POINTER(c_void_p))[0] = c_void_p(src_ptr)  # srcHost
                     cast(byref(_cpy2d, 48), ctypes.POINTER(c_size_t))[0] = W
                     cast(byref(_cpy2d, 72), ctypes.POINTER(c_uint32))[0] = _CU_MEMORYTYPE_DEVICE
                     cast(byref(_cpy2d, 88), ctypes.POINTER(c_void_p))[0] = c_void_p(mapped_ptr)
@@ -1788,11 +2409,14 @@ class NVENCEncoder:
                         actual_pitch if actual_pitch > 0 else W)
                     cast(byref(_cpy2d, 112), ctypes.POINTER(c_size_t))[0] = W
                     cast(byref(_cpy2d, 120), ctypes.POINTER(c_size_t))[0] = nv12_h
-                    r = self._libcuda.cuMemcpy2D_v2(cast(_cpy2d, c_void_p))
+                    r = self._copy_into_input_buffer(_cpy2d)  # [FIX-ASYNC-COPY]
                     if r != 0:
                         _UnlockInputBufferProto(self._func_ptrs[_FUNC_IDX["UnlockInputBuffer"]])(
                             self._encoder, slot['input_buf'])
                         raise RuntimeError("[NVENCEncoder] cuMemcpy2D[%d] failed, code=%d" % (slot_idx, r))
+                    # [FIX-LA-ACC-HOST] 该帧数据已提交给 NVENC（H2D/D2D 拷贝已同步完成），
+                    # 立即释放累积列表里对应元素的引用，降低峰值内存。
+                    nv12_tensors[_i] = None
 
                     # ── UnlockInputBuffer ──
                     _UnlockInputBufferProto(self._func_ptrs[_FUNC_IDX["UnlockInputBuffer"]])(
@@ -1809,7 +2433,19 @@ class NVENCEncoder:
                     cast(byref(pic_buf, 24), ctypes.POINTER(c_uint64))[0] = self._frame_idx
                     cast(byref(pic_buf, 40), ctypes.POINTER(c_void_p))[0] = slot['input_buf']
                     cast(byref(pic_buf, 48), ctypes.POINTER(c_void_p))[0] = slot['bs_buf']
-                    # NO completionEvent at offset 56 — synchronous encode
+                    # [FIX-CONSTQP-FRAME-CE] constqp+la=0: set completionEvent before
+                    # EncodePicture（同 encode_frame 已验证模式）。无 CE 的同步 EncodePicture
+                    # 在 Tesla T4 上 LockBitstream 时 segfault。
+                    _ep_ce = c_void_p(None)
+                    if (self._rate_mode, self._la_depth) == ('constqp', 0):
+                        try:
+                            self._libcuda.cuEventCreate.restype = c_uint32
+                            self._libcuda.cuEventCreate.argtypes = [ctypes.POINTER(c_void_p), c_uint32]
+                            self._libcuda.cuEventCreate(ctypes.byref(_ep_ce), 0)
+                            if _ep_ce.value is not None:
+                                cast(byref(pic_buf, 56), ctypes.POINTER(c_void_p))[0] = _ep_ce
+                        except Exception:
+                            _ep_ce = c_void_p(None)
                     cast(byref(pic_buf, 64), ctypes.POINTER(c_uint32))[0] = NV_ENC_BUFFER_FORMAT_NV12
                     cast(byref(pic_buf, 68), ctypes.POINTER(c_uint32))[0] = NV_ENC_PIC_STRUCT_FRAME
                     if force_idr:
@@ -1818,10 +2454,30 @@ class NVENCEncoder:
                     encode_picture = _NvEncEncodePictureProto(self._func_ptrs[_FUNC_IDX["EncodePicture"]])
                     _ep_status = encode_picture(self._encoder, cast(pic_buf, ctypes.POINTER(_NvEncPicParams)))
                     self._frame_idx += 1
+                    self._strm_next_fi += 1
+
+                    # [FIX-CONSTQP-FRAME-CE] sync completionEvent for constqp+la=0
+                    if _ep_ce.value is not None:
+                        try:
+                            self._libcuda.cuEventSynchronize.restype = c_uint32
+                            self._libcuda.cuEventSynchronize.argtypes = [c_void_p]
+                            self._libcuda.cuEventSynchronize(_ep_ce)
+                            self._libcuda.cuEventDestroy.restype = c_uint32
+                            self._libcuda.cuEventDestroy.argtypes = [c_void_p]
+                            self._libcuda.cuEventDestroy(_ep_ce)
+                        except Exception:
+                            pass
+                        cast(byref(pic_buf, 56), ctypes.POINTER(c_void_p))[0] = c_void_p(None)
 
                     # [FIX-LA-DRAIN-SYNC] 保存提交上下文，供 drain 映射实际帧索引。
-                    # NEED_MORE_INPUT 帧也记录到 _slot_pending，后续 drain 时正确取回。
-                    _slot_pending[slot_idx] = (fi, slot['bs_buf'], force_idr, _ep_status)
+                    # NEED_MORE_INPUT 帧也记录到 pending，后续 drain 时正确取回。
+                    # [FIX-FIFO-DRAIN] per-slot FIFO deque（对齐 ESRGAN）：同槽可
+                    # 累积多条记录，append 永不覆盖 —— 单元组覆盖会丢失辅助块
+                    # 滞留期间的提交记录（test7 seg1 帧序错位根因之一）。
+                    _entry = (fi_global, slot['bs_buf'], force_idr, _ep_status)
+                    if slot_idx not in self._strm_slot_pending:
+                        self._strm_slot_pending[slot_idx] = deque()
+                    self._strm_slot_pending[slot_idx].append(_entry)
 
                     if _ep_status == NV_ENC_ERR_NEED_MORE_INPUT:
                         # LA 缓冲: 编码器需要更多帧填入前向预看窗口才能产出数据。
@@ -1838,66 +2494,17 @@ class NVENCEncoder:
                     elif _ep_status != NV_ENC_SUCCESS:
                         raise RuntimeError("[NVENCEncoder] EncodePicture[%d] failed, code=%d" % (slot_idx, _ep_status))
                     else:
-                        # [FIX-PERSLOT-IDR] 标记该 slot 已初始化 DPB（后续帧不再 IDR）
-                        _slots_warmed.add(slot_idx)
+                        pass  # [FIX-PIPE4-LA8] 单 IDR 由 fi==0 控制，无需 per-slot 标记
 
                     # ── [FIX-LA-DRAIN-SYNC] ★ 全局 drain: 循环 LockBitstream 排空所有已完成 slot ──
-                    # 参照 test_nvenc_la_frame_conservation.py 验证模式：
-                    #   每送入一帧后立即循环 blocking LockBitstream 直到 NEED_MORE_INPUT，
-                    #   收集所有已完成 slot 的输出帧，保证帧数守恒。
-                    _drained = self._drain_outputs_blocking()
-                    for _est_fi, _h264_data in _drained:
-                        _drain_slot = _est_fi % self._pipeline_depth
-                        _pending = _slot_pending[_drain_slot]
-                        if _pending is None:
-                            continue
-                        _actual_fi, _, _is_idr, _ep_s = _pending
-                        if _actual_fi >= n_frames:
-                            continue
-                        # 已填充的有效帧不覆盖
-                        if results[_actual_fi] is not None and results[_actual_fi] != b"":
-                            continue
-
-                        if not _h264_data:
-                            # 空帧诊断
-                            self.__dict__.setdefault('_diag_empty', 0)
-                            self._diag_empty += 1
-                            _nv12_t = nv12_tensors[_actual_fi]
-                            _nv12_mean = float(_nv12_t.float().mean())
-                            _nv12_std  = float(_nv12_t.float().std())
-                            _nv12_min  = int(_nv12_t.min())
-                            _nv12_max  = int(_nv12_t.max())
-                            _la_buf = getattr(self, '_la_buffered', 0)
-                            if self._diag_empty <= 5 or self._diag_empty % 50 == 0:
-                                print(f'[NVENC-Enc] ⚠️ 空帧 #{self._diag_empty} (batch fi={_actual_fi}/{n_frames} '
-                                      f'slot={_drain_slot} fidr={_is_idr} ep_status={_ep_s} '
-                                      f'la_buf={_la_buf} frame_idx={_actual_fi}) '
-                                      f'nv12_mean={_nv12_mean:.1f} std={_nv12_std:.1f} '
-                                      f'min={_nv12_min} max={_nv12_max}', flush=True)
-                            results[_actual_fi] = b"" if _ep_s == NV_ENC_ERR_NEED_MORE_INPUT else None
-                        else:
-                            # [SEGMENT-REUSE] SPS/PPS caching and pre-pending
-                            if _is_idr and self._cached_sps_pps is not None:
-                                _h264_data = self._cached_sps_pps + _h264_data
-                            elif _is_idr and self._cached_sps_pps is None:
-                                self._cached_sps_pps = self._extract_sps_pps(_h264_data)
-                                if self._cached_sps_pps:
-                                    print("[NVENCEncoder] Cached SPS+PPS: %d bytes" %
-                                          len(self._cached_sps_pps), flush=True)
-                                    # [FIX-SPS-PPS-V3] 首帧已含 NVENC 初始化 SPS+PPS, 不 prepend, 仅预注入 muxer
-                                    if self._muxer_ref is not None:
-                                        try:
-                                            self._muxer_ref.write_sps_pps(self._cached_sps_pps)
-                                            self._sps_pps_injected = True
-                                        except Exception:
-                                            pass
-                            elif not _is_idr and self._cached_sps_pps is None:
-                                self._cached_sps_pps = self._extract_sps_pps(_h264_data)
-                                if self._cached_sps_pps:
-                                    print("[NVENCEncoder] Cached SPS+PPS: %d bytes" %
-                                          len(self._cached_sps_pps), flush=True)
-                            results[_actual_fi] = _h264_data
-                        _slot_pending[_drain_slot] = None
+                    # [FIX-DRAIN-UNSUBMITTED-SLOT] 只 drain 已提交但未排空的 slot。
+                    # CONSTQP+LA=0 下 LockBitstream 未提交的 bitstream buffer 会导致
+                    # NVENC driver segfault（不返回 NEED_MORE_INPUT）。
+                    _pending_cnt = self._frame_idx - self._output_slot_idx
+                    _max_drain = min(_pending_cnt, self._slot_count)
+                    _drained = self._drain_outputs_blocking(max_slots=_max_drain) if _max_drain > 0 else []
+                    # [FIX-FIFO-DRAIN] 统一经 _apply_drained_entries 消费（FIFO 队首映射）
+                    self._apply_drained_entries(_drained, pairs)
 
                 # ── [FIX-LA-DRAIN-SYNC] 最终排空 ──
                 if send_eos:
@@ -1917,9 +2524,9 @@ class NVENCEncoder:
                     # 按 _output_slot_idx 起始顺序逐 slot blocking LockBitstream 排空
                     _LockBS = ctypes.CFUNCTYPE(c_uint32, c_void_p, ctypes.POINTER(c_uint8 * 1544))
                     _UnlockBS = ctypes.CFUNCTYPE(c_uint32, c_void_p, c_void_p)
-                    _start_slot = self._output_slot_idx % self._pipeline_depth
-                    _drain_order = [(_start_slot + i) % self._pipeline_depth
-                                    for i in range(self._pipeline_depth)]
+                    _start_slot = self._output_slot_idx % self._slot_count
+                    _drain_order = [(_start_slot + i) % self._slot_count
+                                    for i in range(self._slot_count)]
                     for _ds in _drain_order:
                         _bs_h = self._slots[_ds]['bs_buf']
                         while True:
@@ -1942,50 +2549,81 @@ class NVENCEncoder:
                             if _ptr_val:
                                 _buf = c_uint8 * _bs_size
                                 _eos_data = bytes(_buf.from_address(_ptr_val))
-                                # 通过 _slot_pending 找到对应帧索引
-                                _pend = _slot_pending[_ds]
-                                if _pend is not None:
-                                    _actual_fi_d, _, _is_idr_d, _ep_s_d = _pend
-                                    if _actual_fi_d < n_frames and (results[_actual_fi_d] is None or results[_actual_fi_d] == b""):
-                                        if _is_idr_d and self._cached_sps_pps is not None:
-                                            _eos_data = self._cached_sps_pps + _eos_data
-                                        elif _is_idr_d and self._cached_sps_pps is None:
-                                            self._cached_sps_pps = self._extract_sps_pps(_eos_data)
-                                            if self._cached_sps_pps:
-                                                print("[NVENCEncoder] Cached SPS+PPS: %d bytes" %
-                                                      len(self._cached_sps_pps), flush=True)
-                                                if self._muxer_ref is not None:
-                                                    try:
-                                                        self._muxer_ref.write_sps_pps(self._cached_sps_pps)
-                                                        self._sps_pps_injected = True
-                                                    except Exception:
-                                                        pass
-                                        results[_actual_fi_d] = _eos_data
-                                        _slot_pending[_ds] = None
-                                        self._output_slot_idx += 1
+                                # [FIX-AUX-NO-CLEAR] EOS 排空同样先判 VCL：
+                                # 无 VCL 辅助块仅缓存参数集，不 pop pending、
+                                # 不写 pairs、不推进帧计数（保留队首供真实帧）。
+                                if self._nal_first_vcl_type(_eos_data) is None:
+                                    self.__dict__.setdefault('_diag_aux_block', 0)
+                                    self._diag_aux_block += 1
+                                    if self._diag_aux_block <= 5 or \
+                                            self._diag_aux_block % 50 == 0:
+                                        print(f'[NVENC-Enc] ℹ️ EOS 辅助块 '
+                                              f'#{self._diag_aux_block} '
+                                              f'(slot={_ds}) 跳过帧记账', flush=True)
+                                    if self._cached_sps_pps is None:
+                                        _sps_e = self._extract_sps_pps(_eos_data)
+                                        if _sps_e:
+                                            self._cached_sps_pps = _sps_e
+                                            print("[NVENCEncoder] Cached SPS+PPS: %d bytes"
+                                                  % len(_sps_e), flush=True)
+                                    _UnlockBS(self._func_ptrs[_FUNC_IDX["UnlockBitstream"]])(self._encoder, _bs_h)
+                                    continue
+                                # [FIX-FIFO-DRAIN] EOS 排空同样按 per-slot FIFO 队首消费
+                                # （物理 slot = _ds；while True 同槽连续取回多帧时，
+                                # 队首即该槽下一次必取回的帧，与驱动输出顺序一致）。
+                                _entry_deque = self._strm_slot_pending.get(_ds)
+                                if _entry_deque:
+                                    _gfi_e, _, _idr_e, _ = _entry_deque[0]
+                                    _eos_out = self._apply_sps_pps(_eos_data, _idr_e)
+                                    pairs.append((_gfi_e - self._strm_ts_base, _eos_out))
+                                    # [FIX-EMPTY-PREV-FILL] advance prev cache so later
+                                    # leftover empty placeholders use the correct prev frame.
+                                    if _eos_out:
+                                        self._prev_stream_h264 = _eos_out
+                                    _entry_deque.popleft()
+                                    if not _entry_deque:
+                                        del self._strm_slot_pending[_ds]
+                                    self._output_slot_idx += 1
+                                else:
+                                    # [FIX-DRAIN-ORDER-DEFENSE] slot has data but FIFO
+                                    # empty: misrouted (LA reorder). Do not advance
+                                    # _output_slot_idx, to avoid amplifying misalignment.
+                                    self.__dict__.setdefault('_diag_slot_mismatch', 0)
+                                    self._diag_slot_mismatch += 1
+                                    if self._diag_slot_mismatch <= 5 or self._diag_slot_mismatch % 50 == 0:
+                                        print('[NVENC-Enc] WARN EOS slot accounting mismatch #%d (slot=%d no pending)'
+                                              % (self._diag_slot_mismatch, _ds), flush=True)
                             _UnlockBS(self._func_ptrs[_FUNC_IDX["UnlockBitstream"]])(self._encoder, _bs_h)
-                    # EOS 已发送 + 全槽排空，残留 None 为真正的空帧
+                    # EOS 已发送 + 全槽排空，残留未决为真正的空帧 → (fi, b"") 占位
+                    # [FIX-EOS-LEFTOVER-G-NAMEERROR] _g → _ent[0]（4 元组首元素 gfi）
+                    _leftover_fis = sorted(
+                        _ent[0] - self._strm_ts_base
+                        for _dq in self._strm_slot_pending.values()
+                        for _ent in _dq)
+                    for _fi_lo in _leftover_fis:
+                        self.__dict__.setdefault('_diag_empty', 0)
+                        self._diag_empty += 1
+                        if self._diag_empty <= 5 or self._diag_empty % 50 == 0:
+                            print(f'[NVENC-Enc] ⚠️ EOS 后仍无数据帧 (stream fi={_fi_lo})，'
+                                  f'记为空帧 #{self._diag_empty}', flush=True)
+                        # [FIX-EMPTY-PREV-FILL] EOS 残留占位用前一帧码流兜底
+                        pairs.append((_fi_lo, self._prev_stream_h264 or b""))
+                    # [FIX-ENSURE-SLOT-ROTATION] EOS output order is
+                    # defined by _drain_outputs_blocking rotation; do not
+                    # re-sort H.264 elementary stream.
+                    self._strm_slot_pending.clear()
+                    self._strm_active = False
                 else:
-                    # 原有路径：最终尝试排空（无 EOS，LA 缓冲帧可能尚未就绪）
-                    _drained_final = self._drain_outputs_blocking()
-                    for _est_fi, _h264_data in _drained_final:
-                        _drain_slot = _est_fi % self._pipeline_depth
-                        _pending = _slot_pending[_drain_slot]
-                        if _pending is None:
-                            continue
-                        _actual_fi, _, _is_idr, _ep_s = _pending
-                        if _actual_fi < n_frames and (results[_actual_fi] is None or results[_actual_fi] == b""):
-                            if _h264_data:
-                                results[_actual_fi] = _h264_data
-                            _slot_pending[_drain_slot] = None
+                    # 非 EOS：最终尝试排空（LA 窗口帧可能尚未就绪，由后续 chunk 取回）
+                    # [FIX-DRAIN-UNSUBMITTED-SLOT] 限制只 drain 剩余未排空的帧
+                    _final_pending = self._frame_idx - self._output_slot_idx
+                    _final_max = min(_final_pending, self._slot_count)
+                    _drained_final = self._drain_outputs_blocking(
+                        max_slots=_final_max) if _final_max > 0 else []
+                    # [FIX-FIFO-DRAIN] 统一经 _apply_drained_entries 消费（FIFO 队首映射）
+                    self._apply_drained_entries(_drained_final, pairs)
 
-                # [FIX-LA-DRAIN-SYNC] 填充未被 drain 覆盖的 None 占位符为 b""
-                # send_eos=True 时 EOS 已排空所有槽位，不应有残留 None（若有则为真正空帧）
-                for _fi in range(n_frames):
-                    if results[_fi] is None:
-                        results[_fi] = b""
-
-                return results
+                return pairs
         finally:
             if _need_pop:
                 try:
@@ -2030,7 +2668,7 @@ class NVENCEncoder:
                 if self._encoder.value is None:
                     raise RuntimeError("[NVENCEncoder] Encoder not initialized or already closed")
 
-                pd = self._pipeline_depth
+                pd = self._slot_count
                 W = self._width
                 nv12_h = self._height + self._height // 2
                 results = [None] * n_frames
@@ -2070,7 +2708,8 @@ class NVENCEncoder:
                         h264_data, bs_status = self._lock_bitstream_with_retry(_prev_bs)
                         if h264_data:
                             # [SEGMENT-REUSE] SPS/PPS caching and pre-pending
-                            if _prev_idr and self._cached_sps_pps is not None:
+                            if _prev_idr and self._cached_sps_pps is not None and \
+                                    not self._has_sps_pps(h264_data):
                                 h264_data = self._cached_sps_pps + h264_data
                             elif _prev_idr and self._cached_sps_pps is None and h264_data:
                                 self._cached_sps_pps = self._extract_sps_pps(h264_data)
@@ -2175,7 +2814,7 @@ class NVENCEncoder:
                         actual_pitch if actual_pitch > 0 else W)
                     cast(byref(_cpy2d, 112), ctypes.POINTER(c_size_t))[0] = W
                     cast(byref(_cpy2d, 120), ctypes.POINTER(c_size_t))[0] = nv12_h
-                    r = self._libcuda.cuMemcpy2D_v2(cast(_cpy2d, c_void_p))
+                    r = self._copy_into_input_buffer(_cpy2d)  # [FIX-ASYNC-COPY]
                     if r != 0:
                         _UnlockIB(self._func_ptrs[_FUNC_IDX["UnlockInputBuffer"]])(
                             self._encoder, slot['input_buf'])
@@ -2247,7 +2886,7 @@ class NVENCEncoder:
                     # 参照 tests/test_nvenc_la_frame_conservation.py _drain_outputs()。
                     if self._la_depth > 0:
                         _inlined = self._drain_outputs_blocking()
-                        for _est_fi, _h264_data in _inlined:
+                        for _est_fi, _out_ts_i, _h264_data in _inlined:
                             # [FIX-LA-INDEX] 通过 _slot_pending 获取实际帧索引，
                             # 替代 _output_slot_idx 计数器估算。当 Phase 1 harvest
                             # 已消费部分 slot 时 _output_slot_idx≠实际帧序 → 花屏。
@@ -2259,7 +2898,8 @@ class NVENCEncoder:
                             # [FIX-LA-INLINE-OVERWRITE] LA 缓冲帧被预设为 b""
                             if _actual_fi < n_frames and (results[_actual_fi] is None or results[_actual_fi] == b""):
                                 # [FIX-LA-SPS-PPS] inline drain 必须同步做 SPS/PPS 缓存
-                                if _actual_idr and self._cached_sps_pps is not None:
+                                if _actual_idr and self._cached_sps_pps is not None and \
+                                        not self._has_sps_pps(_h264_data):
                                     _h264_data = self._cached_sps_pps + _h264_data
                                 elif _actual_idr and self._cached_sps_pps is None:
                                     self._cached_sps_pps = self._extract_sps_pps(_h264_data)
@@ -2303,7 +2943,8 @@ class NVENCEncoder:
                         h264_data, bs_status = self._lock_bitstream_with_retry(_pending_bs)
                         if h264_data:
                             # [SEGMENT-REUSE] SPS/PPS caching
-                            if _pending_idr and self._cached_sps_pps is not None:
+                            if _pending_idr and self._cached_sps_pps is not None and \
+                                    not self._has_sps_pps(h264_data):
                                 h264_data = self._cached_sps_pps + h264_data
                             elif _pending_idr and self._cached_sps_pps is None and h264_data:
                                 self._cached_sps_pps = self._extract_sps_pps(h264_data)
@@ -2368,7 +3009,7 @@ class NVENCEncoder:
                     _redrained = self._drain_outputs_blocking()
                     if _redrained:
                         _recovered = 0
-                        for _est_fi, _h264_data in _redrained:
+                        for _est_fi, _out_ts_r, _h264_data in _redrained:
                             if _est_fi < n_frames and (results[_est_fi] is None or results[_est_fi] == b""):
                                 # [FIX-LA-SPS-REDRAIN] 二次排空安全网取回的帧也需
                                 # SPS/PPS 缓存，作为所有路径均已失败的最终兜底
@@ -2467,18 +3108,26 @@ class NVENCEncoder:
                         self._encoder, self._input_buf_handle)
                     raise RuntimeError("[NVENCEncoder] LockInputBuffer returned NULL mapped ptr")
 
-                # ── GPU→GPU copy (cuMemcpy2D, pitch-aware) ──
+                # ── GPU / host → GPU copy (cuMemcpy2D, pitch-aware) ──
+                # [FIX-LA-ACC-HOST] LA>0 累积模式下 nv12_gpu_tensor 可能已被 writer 线程
+                # 搬到 pinned host 内存，此处按来源张量是否仍在 GPU 决定 srcMemoryType。
                 # CUDA_MEMCPY2D (128B): srcX@0,srcY@8,srcMemType@16,srcHost@24,
                 #   srcDevice@32,srcArray@40,srcPitch@48,
                 #   dstX@56,dstY@64,dstMemType@72,dstHost@80,
                 #   dstDevice@88,dstArray@96,dstPitch@104,
                 #   WidthInBytes@112,Height@120
+                _CU_MEMORYTYPE_HOST   = 1
                 _CU_MEMORYTYPE_DEVICE = 2
                 _cpy2d = (c_uint8 * 128)()
                 ctypes.memset(_cpy2d, 0, 128)
+                _src_is_cuda = nv12_gpu_tensor.is_cuda
                 src_ptr = nv12_gpu_tensor.data_ptr()
-                cast(byref(_cpy2d, 16), ctypes.POINTER(c_uint32))[0] = _CU_MEMORYTYPE_DEVICE
-                cast(byref(_cpy2d, 32), ctypes.POINTER(c_void_p))[0] = c_void_p(src_ptr)
+                if _src_is_cuda:
+                    cast(byref(_cpy2d, 16), ctypes.POINTER(c_uint32))[0] = _CU_MEMORYTYPE_DEVICE
+                    cast(byref(_cpy2d, 32), ctypes.POINTER(c_void_p))[0] = c_void_p(src_ptr)  # srcDevice
+                else:
+                    cast(byref(_cpy2d, 16), ctypes.POINTER(c_uint32))[0] = _CU_MEMORYTYPE_HOST
+                    cast(byref(_cpy2d, 24), ctypes.POINTER(c_void_p))[0] = c_void_p(src_ptr)  # srcHost
                 cast(byref(_cpy2d, 48), ctypes.POINTER(c_size_t))[0] = W
                 cast(byref(_cpy2d, 72), ctypes.POINTER(c_uint32))[0] = _CU_MEMORYTYPE_DEVICE
                 cast(byref(_cpy2d, 88), ctypes.POINTER(c_void_p))[0] = c_void_p(mapped_ptr)
@@ -2486,7 +3135,7 @@ class NVENCEncoder:
                     actual_pitch if actual_pitch > 0 else W)
                 cast(byref(_cpy2d, 112), ctypes.POINTER(c_size_t))[0] = W
                 cast(byref(_cpy2d, 120), ctypes.POINTER(c_size_t))[0] = nv12_h
-                r = self._libcuda.cuMemcpy2D_v2(cast(_cpy2d, c_void_p))
+                r = self._copy_into_input_buffer(_cpy2d)  # [FIX-ASYNC-COPY]
                 if r != 0:
                     _UnlockInputBufferProto(self._func_ptrs[_FUNC_IDX["UnlockInputBuffer"]])(
                         self._encoder, self._input_buf_handle)
@@ -2545,7 +3194,7 @@ class NVENCEncoder:
                 # 应优先使用 encode_frames_batch() 或 encode_frames_batch_ce_pipeline()。
                 _drained = self._drain_outputs_blocking()
                 if _drained:
-                    h264_data = _drained[0][1]
+                    h264_data = _drained[0][2]
                 if not h264_data:
                     h264_data = b""
 
@@ -2575,7 +3224,8 @@ class NVENCEncoder:
                     raise RuntimeError("[NVENCEncoder] EncodePicture failed, code=%d" % status)
 
                 # [SEGMENT-REUSE] 首段首次编码时缓存 SPS+PPS，后续段 force_idr 帧预挂
-                if force_idr and self._cached_sps_pps is not None:
+                if force_idr and self._cached_sps_pps is not None and \
+                        not self._has_sps_pps(h264_data):
                     h264_data = self._cached_sps_pps + h264_data
                 elif force_idr and self._cached_sps_pps is None and h264_data:
                     # [FIX-SPS-CACHE] 首个 IDR 帧: 从码流提取并缓存 SPS+PPS
@@ -2649,9 +3299,9 @@ class NVENCEncoder:
                 # [FIX-LA-FLUSH] 按 _output_slot_idx 起始顺序排空所有 slot，
                 # 保证 EOS flush 的输出顺序与编码器内部输出顺序严格一致。
                 # 参照 tests/test_nvenc_la_frame_conservation.py flush_eos()。
-                _start_slot = self._output_slot_idx % self._pipeline_depth
-                _drain_order = [(_start_slot + i) % self._pipeline_depth
-                                for i in range(self._pipeline_depth)]
+                _start_slot = self._output_slot_idx % self._slot_count
+                _drain_order = [(_start_slot + i) % self._slot_count
+                                for i in range(self._slot_count)]
                 for _slot_idx in _drain_order:
                     _slot = self._slots[_slot_idx]
                     _bs_handle = _slot['bs_buf']
@@ -2726,6 +3376,16 @@ class NVENCEncoder:
 
             self._destroy_all_slots()
 
+            # [FIX-ASYNC-COPY] 销毁专用编码拷贝 stream
+            if self._stream_encode.value is not None:
+                try:
+                    self._libcuda.cuStreamDestroy_v2.restype = c_uint32
+                    self._libcuda.cuStreamDestroy_v2.argtypes = [c_void_p]
+                    self._libcuda.cuStreamDestroy_v2(self._stream_encode)
+                except Exception:
+                    pass
+                self._stream_encode = c_void_p(None)
+
             destroy_addr = self._func_ptrs[_FUNC_IDX["DestroyEncoder"]]
             if destroy_addr:
                 _NvEncDestroyEncoderProto(destroy_addr)(self._encoder)
@@ -2768,22 +3428,65 @@ class _NVENCEncodeThread:
       · T3 Writer 在调用 submit() 之前必须先调用
         torch.cuda.current_stream().synchronize()，确保 NV12 GPU tensor
         数据已完全写入 VRAM，防止编码线程 cuMemcpy2D 读到未完成的数据（静默花帧）。
-      · encode_queue_depth=4：限制 VRAM 中积压的 NV12 tensor 批次数。
-        T4 16GB 下每批约 300MB，depth=2 最多多占 ~600MB，不挤压 T2 推理空间。
+      · encode_queue_depth: 编码线程内部排队批次数。
+        LA=0: 4 (VRAM NV12 tensors, ~1.2GB on T4 16GB)
+        LA>0: 默认自适应增大（pinned host NV12 tensors），见 [FIX-LA-QUEUE-DEPTH]
       · 编码线程是 FFmpegMuxer pipe 的唯一写入者（GPU_RAW 路径），保证写入顺序正确。
       · 编码线程为 daemon 线程；正常路径通过 flush_and_join() 完成收尾。
     """
 
     _SENTINEL = object()
 
-    def __init__(self, nvenc_encoder, writer, encode_queue_depth: int = 4):
+    def __init__(self, nvenc_encoder, writer, encode_queue_depth: int = 4,
+                 batch_frames: int = 48,  # [FIX-CHUNK-SAFE] 新增参数
+                 flush_chunk_frames: int = 128):  # [FIX-FLUSH-GRANULARITY]
         self._nvenc   = nvenc_encoder
         self._writer  = writer
+        # [FIX-LA-QUEUE-DEPTH] LA>0 chunk encoding batches can be queued while
+        # a chunk is being encoded. Default depth=4 is too small for LA>0 mode.
+        # Increase to 16 so chunk≤16×batch_frames = zero Writer blocking.
+        # Explicitly-passed encode_queue_depth is always honored (no override).
+        _la = getattr(nvenc_encoder, '_la_depth', 0)
+        if _la > 0 and encode_queue_depth == 4:
+            encode_queue_depth = 16
         self._q: queue.Queue = queue.Queue(maxsize=encode_queue_depth)
+        # [FIX-CHUNK-SAFE] chunk ≤ queue_depth × batch_frames → Writer 永不阻塞
+        # 16×48=768 帧，在 640×360 下 ≈ 3.8s 编码时间，result_queue(15) 不溢出
+        # （安全上限，防止累积无界；不再作为实际触发编码的粒度，见下方
+        #  [FIX-FLUSH-GRANULARITY]）。
+        self._la_chunk_safe = encode_queue_depth * batch_frames
+        # [FIX-FLUSH-GRANULARITY] v6.4.5.1: 原设计"攒够 768 帧才编码一整块"
+        # 会把 NVENC 的 Lock/Copy/Encode/LockBitstream 逐帧同步调用压缩成一次
+        # 持续 1-2s+ 的连续脉冲。即使 [FIX-ASYNC-COPY] 消除了 cuMemcpy2D 走
+        # legacy stream 造成的跨 stream 隐式全局同步，这个脉冲本身仍然是
+        # encode 线程独占、持续较长时间的一段串行 CPU/NVENC 工作——期间
+        # self._q（编码线程输入队列，maxsize=encode_queue_depth）迅速被
+        # Writer 写满，Writer 阻塞在 submit()，进而阻塞它消费 result_queue，
+        # result_queue 触顶后 T2 推理线程也被阻塞产帧，GPU 计算利用率随之
+        # 骤降——这是队列反压（backpressure），与 CUDA stream 选择无关，
+        # 是 FIX-ASYNC-COPY 修复后残留周期性掉底的主因。
+        #
+        # 段首之所以平稳：_acc_nv12 从空开始累积，尚未触发第一次 flush，
+        # 期间队列有充足余量吸收 Writer 的产出，因此看不到反压。一旦跨过
+        # 第一个 chunk 边界、出现第一次同步脉冲，才开始出现周期性凹陷。
+        #
+        # 修复：把"触发编码"的粒度从安全上限(768)大幅调小到
+        # flush_chunk_frames(默认 128 ≈ 1 batch 的 2-3 倍)，让 NVENC 工作
+        # 均匀摊薄到许多次小脉冲上，而不是少数几次大脉冲。_la_chunk_safe
+        # 仍然保留作为硬上限（三者取最小值），双重保险，正确性不变——
+        # encode_frames_stream() 本就是为跨 chunk 连续调用设计的
+        # （slot_pending/slots_warmed 已提升为实例状态）。
+        self._flush_chunk_frames = flush_chunk_frames
         self.error: Optional[Exception] = None
         self._written = 0
         self._empty   = 0
         self._prev_h264: Optional[bytes] = None  # Tier 1-A: 空帧补偿用前一帧 H.264 数据
+        # [FIX-DYN-TIMEOUT] 已提交给编码线程但不一定已编码完成的帧数，供外层
+        # （_writer_loop 内的 flush_and_join 调用 / run() 里的 writer 线程 join）
+        # 动态估算等待超时，替代原先针对"段末编码脉冲"的固定 150s。
+        # 单线程生产者（本 Writer 线程）+ CPython GIL 下的 += 足够安全，
+        # 读者（run() 所在的 T2 主线程）读到的是近似值，允许有少量滞后。
+        self.submitted_frames = 0
         self._th = threading.Thread(target=self._loop, daemon=True, name='NVENC-Enc')
         self._th.start()
 
@@ -2796,6 +3499,24 @@ class _NVENCEncodeThread:
         if self.error is not None:
             raise self.error
         self._q.put((nv12_list, force_idr_first))
+        # [FIX-DYN-TIMEOUT] 提交即计数（而非编码完成后才计数），这样在 SENTINEL
+        # 尚未处理完、编码线程仍在追赶队列积压时，外层也能读到接近真实的总量。
+        self.submitted_frames += len(nv12_list)
+
+    def estimate_timeout(self, min_timeout: float = 30.0,
+                          floor_timeout: float = 120.0,
+                          assumed_fps: float = 200.0,
+                          margin: float = 0.0) -> float:
+        """[FIX-DYN-TIMEOUT] 按已提交帧数动态估算编码线程收尾还需要的等待时间。
+
+        assumed_fps=200 为 NVENC VBR_HQ + LA 编码吞吐的保守下限估算
+        （实测通常远高于此值，取保守值避免误判超时）。
+        floor_timeout 保证短分段/低帧数场景下也至少留出与旧固定值相当的余量，
+        避免因估算过短引入新的误报。
+        LA=0（无段末编码脉冲）时不需要这条估算，调用方应直接使用 min_timeout。
+        """
+        _est = self.submitted_frames / assumed_fps + min_timeout
+        return max(min_timeout, floor_timeout, _est) + margin
 
     def _loop(self):
         """编码线程主循环：阻塞等待帧批次，同步编码后写入 muxer。"""
@@ -2816,20 +3537,28 @@ class _NVENCEncodeThread:
                           f'编码线程可能缺少有效 CUDA context', flush=True)
             except Exception as _e:
                 print(f'[NVENC-Enc] ⚠️ cuCtxSetCurrent 异常: {_e}', flush=True)
-        # [FIX-LA-ACCUMULATE] LA>0 时跨批次累积帧，保证 LA 缓冲区连续性。
-        # 原实现在每个 batch 内独立调用 encode_frames_batch()，导致：
-        #   1) local fi%pd 分配 slot 复位 → 覆盖上一批次的 LA 缓冲帧
-        #   2) _slot_pending 是批次局部变量 → 跨批次帧映射失效
-        #   3) 批次末尾未排空的 LA 帧被设为 b"" → 静默丢帧
-        #   4) 最终 EOS flush 回收的帧被写在 segment 末尾 → 帧序错乱 + GOP 损坏
-        # 修复：LA>0 时累积所有帧，segment 结束时一次性编码，保证 LA 连续流。
-        # LA=0 继续使用 per-batch ce_pipeline 以利用 CE 异步流水线性能优势。
+        # [FIX-LA-CHUNK-STREAM] LA>0 有界分块流式编码。
+        # 原 [FIX-LA-ACCUMULATE] 为避免 per-batch 编码破坏 LA 连续性
+        # （_slot_pending 批次局部 → 跨批次帧映射失效 → 静默丢帧/帧序错乱），
+        # 将整段帧全部累积、段末一次性编码。长分段（如 300s）下产生两大问题：
+        #   1) 段末编码脉冲：14k+ 帧一次性编码耗时 25-35s，超过主线程 writer
+        #      join 30s 超时 → muxer 被提前关闭 → write to closed file
+        #      → 输出静默截断；
+        #   2) pinned host 内存随段长线性增长（14k 帧 ≈ 5GB），挤压系统内存。
+        # 现 NVENCEncoder 的 slot 未决表已提升为实例持久状态
+        # （encode_frames_stream + _stream_begin），lookahead 窗口帧可跨 chunk
+        # 正确取回，因此改为有界分块：累积满 _chunk_frames 即编码一块
+        # （不发送 EOS，编码器看到的仍是连续流），仅段末最后一块
+        # send_eos=True 完整排空。LA=0 继续 per-batch ce_pipeline。
         _la_mode = (self._nvenc._la_depth > 0)
         _acc_nv12: list = []
         _acc_force_idr = False
         _first_batch = True
+        _chunk_frames = 2000   # 首块时按帧字节数重算（~1.5GB pinned 预算）
+        _strm_submitted = 0    # 本段已提交编码帧数（帧数守恒诊断）
+        _strm_returned  = 0    # 本段已取回帧数（帧数守恒诊断）
         # [FIX-F0-IN-BATCH] 从 encoder 取出暂存的 f0 NV12 tensor，
-        # 在累积 batch 开头插入，确保首帧参与 LA 缓冲 + EOS flush。
+        # 在首个 chunk 开头插入，确保首帧参与 LA 缓冲 + EOS flush。
         _pending_f0 = getattr(self._nvenc, '_pending_f0_nv12', None)
         if _pending_f0 is not None:
             self._nvenc._pending_f0_nv12 = None
@@ -2837,17 +3566,94 @@ class _NVENCEncodeThread:
             self._nvenc._pending_f0_force_idr = False
         else:
             _f0_idr = False
+
+        # [FIX-FIFO-DRAIN] 流式重排缓冲已整体删除（对齐 realesrgan_video 已验证设计）：
+        # drain 顺序 = per-slot FIFO 队首映射顺序 = 提交顺序 → 各 chunk 的 pairs 已
+        # 严格按流内帧号递增（LA 滞留帧在后续 chunk 以连续 fi 接续写出），跨 chunk
+        # 无需重排。旧重排缓冲在标签错位时每 ~132 帧触发一次强制排空风暴
+        # （test7 seg0/seg1 frame_num 回退 76/74 次的周期来源）。
+        def _wrap_exc(e, where):
+            # [FIX-ENC-EXC-CONTEXT] 编码线程异常包装 (frame_idx, pending_slots,
+            # pending 计数) 诊断上下文，便于定位 LA 路径崩溃（裸 e 丢失现场）。
+            _pending = getattr(self._nvenc, '_strm_slot_pending', {})
+            _p_cnt = sum(len(_dq) for _dq in _pending.values())
+            return RuntimeError(
+                f'[NVENC-Enc] 编码线程异常({where}) '
+                f'frame_idx={getattr(self._nvenc, "_frame_idx", -1)} '
+                f'pending_slots={len(_pending)} pending_count={_p_cnt}: {e}')
+
+        def _drain_write(pairs):
+            """[FIX-SPS-PPS-V2] 写入任何帧之前确保 muxer 已收到 SPS+PPS；
+            随后按 pairs 顺序直接写入（fi 严格递增），空帧执行 Tier 1-A 前一帧补偿。"""
+            if not self._nvenc._sps_pps_injected:
+                _sps = getattr(self._nvenc, '_cached_sps_pps', None)
+                if _sps:
+                    self._writer.write_sps_pps(_sps)
+                    self._nvenc._sps_pps_injected = True
+            for _fi, _h264 in pairs:
+                if not _h264:
+                    self._empty += 1
+                    if self._prev_h264 is not None:
+                        self._writer.write(self._prev_h264)
+                        self._written += 1
+                else:
+                    self._writer.write(_h264)
+                    self._written += 1
+                    self._prev_h264 = _h264
+
+        def _encode_chunk(send_eos: bool):
+            """编码当前累积块。send_eos=True 仅用于段末最后一块：
+            发送 EOS 并完整排空所有 slot，保证帧数守恒。"""
+            nonlocal _acc_force_idr, _strm_submitted, _strm_returned
+            if not _acc_nv12 and not send_eos:
+                return
+            pairs = self._nvenc.encode_frames_stream(_acc_nv12, _acc_force_idr,
+                                                     send_eos=send_eos)
+            _strm_submitted += len(_acc_nv12)
+            _strm_returned  += len(pairs)
+            # 各元素已被 encoder 提交后置 None（释放 pinned 引用），此处丢弃列表
+            _acc_nv12.clear()
+            _acc_force_idr = False
+            _drain_write(pairs)
+
         while True:
             item = self._q.get()
             if item is self._SENTINEL:
                 break
             nv12_list, force_idr = item
             if _la_mode:
-                # LA>0: 累积帧，收到 SENTINEL 后一次性编码
+                # LA>0: 有界累积，满一块编码一块（不发送 EOS，LA 状态连续）
                 if _first_batch:
-                    _acc_force_idr = force_idr
+                    # 每段新流：重置 slot 未决表 / 流内帧号（IDR 由 fi==0 判定）
+                    self._nvenc._stream_begin(force=True)
+                    _fb = nv12_list[0].numel() if nv12_list else 0
+                    if _fb > 0:
+                        _mem_budget = max(200, int(5e8 / _fb))  # ~500MB pinned 内存
+                        # [FIX-FLUSH-GRANULARITY] 三者取最小：内存预算 / 队列安全上限 /
+                        # 期望的小粒度 flush 阈值。默认情况下 flush_chunk_frames(128)
+                        # 远小于 la_chunk_safe(768)，实际生效值 = flush_chunk_frames，
+                        # 把大脉冲拆成多次小脉冲，避免编码线程长时间独占导致
+                        # 下游队列反压、阻塞 T2 推理产帧。
+                        _chunk_frames = min(_mem_budget, self._la_chunk_safe,
+                                             self._flush_chunk_frames)
+                    print(f'\n[NVENC-Enc] LA={self._nvenc._la_depth} 分块流式编码: '
+                          f'chunk={_chunk_frames} 帧/块 (mem≤{_mem_budget if _fb>0 else "?"} '
+                          f'safe≤{self._la_chunk_safe} flush≤{self._flush_chunk_frames} '
+                          f'qd={self._q.maxsize})', flush=True)
+                    if _pending_f0 is not None:
+                        _acc_nv12.append(_pending_f0)
+                        # f0 编码时的 force_idr 优先于 batch 的 force_idr_first
+                        if _f0_idr:
+                            _acc_force_idr = True
+                    _acc_force_idr = _acc_force_idr or force_idr
                     _first_batch = False
                 _acc_nv12.extend(nv12_list)
+                if len(_acc_nv12) >= _chunk_frames:
+                    try:
+                        _encode_chunk(send_eos=False)
+                    except Exception as e:
+                        self.error = _wrap_exc(e, 'LA chunk encode')
+                        return
             else:
                 # LA=0: per-batch ce_pipeline（原有路径）
                 try:
@@ -2871,52 +3677,26 @@ class _NVENCEncodeThread:
                             self._written += 1
                             self._prev_h264 = h264_data
                 except Exception as e:
-                    self.error = e
+                    self.error = _wrap_exc(e, 'LA=0 ce_pipeline')
                     return
 
-        # [FIX-LA-ACCUMULATE] LA>0: 编码所有累积帧 + 内置 EOS flush
-        if _la_mode and _acc_nv12:
-            # [FIX-F0-IN-BATCH] 将暂存的 f0 NV12 插入累积 batch 开头
-            if _pending_f0 is not None:
-                _acc_nv12.insert(0, _pending_f0)
-                # f0 编码时的 force_idr 优先于 batch 的 force_idr_first
-                if _f0_idr:
-                    _acc_force_idr = True  # 若 f0 需要 IDR，首个 batch 帧也需 IDR
+        # [FIX-LA-CHUNK-STREAM] 段末：最后一块 + EOS 完整排空 LA 滞留帧。
+        # 即使 _acc_nv12 为空（总帧数恰被整除）也必须走 send_eos=True，
+        # 以取回上一块滞留在 LA 窗口的帧（[FIX-EOS-EMPTY-CHUNK]）。
+        if _la_mode and not _first_batch:
             try:
-                # [FIX-LA-EOS-IN-BATCH] send_eos=True: encode_frames_batch 内部
-                # 发送 EOS 并完整排空所有 slot，保证帧数守恒。
-                # 返回的 h264_list 包含 EOS flush 回收的全部 LA 滞留帧（在正确位置）。
-                h264_list = self._nvenc.encode_frames_batch(_acc_nv12, _acc_force_idr,
-                                                             send_eos=True)
-                # [FIX-SPS-PPS-V2] 写入任何帧之前确保 muxer 已收到 SPS+PPS
-                if not self._nvenc._sps_pps_injected:
-                    _sps = getattr(self._nvenc, '_cached_sps_pps', None)
-                    if _sps:
-                        self._writer.write_sps_pps(_sps)
-                        self._nvenc._sps_pps_injected = True
-                for i, h264_data in enumerate(h264_list):
-                    if h264_data is None:
-                        self._empty += 1
-                        if self._prev_h264 is not None:
-                            self._writer.write(self._prev_h264)
-                            self._written += 1
-                    elif not h264_data:
-                        # EOS 已排空所有 slot，不应再出现 LA 缓冲空帧
-                        # 若出现 b""，可能为空帧（NV12 全零等），按空帧处理
-                        self._empty += 1
-                        if self._prev_h264 is not None:
-                            self._writer.write(self._prev_h264)
-                            self._written += 1
-                    else:
-                        self._writer.write(h264_data)
-                        self._written += 1
-                        self._prev_h264 = h264_data
+                _encode_chunk(send_eos=True)
+                # 帧数守恒诊断：取回数应等于提交数（不等则说明有静默丢帧）
+                if _strm_returned != _strm_submitted:
+                    print(f'[NVENC-Enc] ⚠️ 帧数守恒校验失败: 提交 {_strm_submitted} '
+                          f'vs 取回 {_strm_returned} (差 {_strm_submitted - _strm_returned})',
+                          flush=True)
             except Exception as e:
-                self.error = e
+                self.error = _wrap_exc(e, 'EOS final chunk')
                 return
 
         # EOS flush: LA=0 (ce_pipeline) 路径的残余帧排空。
-        # LA>0 路径已在 encode_frames_batch(send_eos=True) 中完成 EOS + 全槽排空，
+        # LA>0 路径已在 encode_frames_stream(send_eos=True) 中完成 EOS + 全槽排空，
         # 此处仅处理 LA=0 的情况。
         if not _la_mode:
             try:
@@ -2951,7 +3731,7 @@ class _NVENCEncodeThread:
 # ==============================================================================
 
 def _rgb_to_nv12_gpu(rgb_tensor, input_is_bgr: bool = False):
-    # input: (H, W, 3) uint8 GPU tensor, RGB channel order (or BGR if input_is_bgr=True)
+    # input: (H, W, 3) uint8 GPU tensor, RGB channel order (or BGR if input_is_bgr=False)
     # output: (H + H//2, W) uint8 GPU tensor, NV12 layout
     import torch
 
@@ -3063,7 +3843,10 @@ class FFmpegMuxer:
             cmd += ["-i", audio_src, "-c:a", "copy", "-map", "0:v", "-map", "1:a?"]
         cmd += ["-c:v", "copy"]
         cmd += ["-f", "mp4"]
-        cmd += ["-movflags", "faststart"]
+        # [FIX-FASTSTART] 中间分段文件不需要 faststart（moov 二次写入可能
+        # 因磁盘 I/O 波动超过 60s 超时被 SIGKILL，导致 "moov atom not found"）。
+        # 最终合并步骤会重新生成完整的输出文件，moov atom 由合并步骤正确写入。
+        cmd += ["-movflags", "+faststart"]
         cmd += ["-loglevel", "error"]
         cmd += [output_path]
 
@@ -3176,7 +3959,7 @@ class PinnedResultPool:
         self.pool_size = pool_size
         _mb = pool_size * max_BT * H_pad * W_pad * 3 / 1e6
         print(
-            f'[PinnedResultPool] 分配 {pool_size} × ({max_BT},{H_pad},{W_pad},3) '
+            f'\n[PinnedResultPool] 分配 {pool_size} × ({max_BT},{H_pad},{W_pad},3) '
             f'uint8 pinned，共 {_mb:.0f} MB', flush=True,
         )
         for _ in range(pool_size):
@@ -3735,7 +4518,9 @@ class GPUMonitor:
             _pq_reasons.append(f'GPU 空闲占比 {low_frac*100:.0f}%')
 
         if _pq_reasons:
-            sug_pq = min(8, current_pair_q + 2)
+            # [FIX-MAXPQ-DYNAMIC] 建议上限随绝对上限 24 提升（原硬编码 8）；
+            # 内存安全约束在消费端（ADAPTIVE-QUEUE 决策块）由 _compute_max_pair_queue 执行
+            sug_pq = min(_PAIR_Q_ABS_CAP, current_pair_q + 2)
             print(f'[GPU-MONITOR] 💡 pair_queue 建议增大: {current_pair_q} → {sug_pq}'
                   f'  （{"、".join(_pq_reasons)}，增大可平滑 H2D 供料气泡）')
         elif stable_std < 10.0 and low_frac < 0.10 and current_pair_q > 4:
@@ -3817,8 +4602,9 @@ class GPUMonitor:
         stable_p95   = stats.stable_p95
 
         # pair_queue 建议（T3-bottleneck 不影响 pair_queue 逻辑）
+        # [FIX-MAXPQ-DYNAMIC] 建议上限随绝对上限 24 提升（原硬编码 8）
         if stable_std > 25.0 or low_frac > 0.30:
-            pair_q = min(8, current_pair_q + 2)
+            pair_q = min(_PAIR_Q_ABS_CAP, current_pair_q + 2)
         elif stable_std < 10.0 and low_frac < 0.10 and current_pair_q > 4:
             pair_q = max(3, current_pair_q - 1)
 
@@ -4099,6 +4885,51 @@ def _compute_max_result_queue(
     return max(floor_by_t3, min(cap_by_ram, abs_cap))
 
 
+# [FIX-MAXPQ-DYNAMIC] pair_queue 绝对上限（原硬编码 8 的提升值）
+_PAIR_Q_ABS_CAP: int = 24
+
+
+def _compute_max_pair_queue(
+    slot_mb: float,
+    mem_avail_gb: float,
+    ram_budget_fraction: float = 0.15,
+    abs_cap: int = _PAIR_Q_ABS_CAP,
+) -> int:
+    """
+    [FIX-MAXPQ-DYNAMIC] 动态计算 pair_queue 安全上限（两轴联合约束）。
+
+    与 _compute_max_result_queue 同构，但有两处关键差异：
+      1) pair slot 是普通 numpy 数组（pageable RAM），非 pinned 锁页内存，
+         不参与 DMA 带宽竞争，因此预算比从 6% 放宽到 15%；
+      2) pair_queue 缓冲的是 "T1(读取) 远快于 T2(推理)"（T2/T1 高达 25-30×），
+         稳态下 8 槽已足够，更深的意义在于：
+           · 吸收 T1 的瞬时 stall（pad CPU 突发 / NVDEC 抖动 / 预取槽竞争）；
+           · 支撑 P 跟随 R 的对称缓冲（result_queue 可达 24-48 时 P 需 12-24）。
+         因此需求下限固定为 8（实测无饥饿基线），不设 T2/T1 比例轴，
+         由 GPU-MONITOR/RETUNE 建议驱动实际深度。
+
+    轴1 RAM 上限：cap_by_ram = mem_avail_gb × ram_budget_fraction / slot_mb
+    轴2 绝对上限：abs_cap（默认 24，替换原硬编码 8）
+
+    参数
+    ─────────────────────────────────────────────────────────────────────────
+    slot_mb            : 每个 pair slot 的内存占用（MiB），
+                         = effective_bs × 3帧(raw+2×pad) × H_pad × W_pad × 3 / 1e6
+    mem_avail_gb       : 系统当前可用 RAM（GiB），来自 _detect_encode_parallelism()
+    ram_budget_fraction: pair 缓冲允许占用可用 RAM 的比例（默认 15%，pageable）
+    abs_cap            : pair_queue 绝对上限（默认 24）
+    """
+    if slot_mb <= 0.0:
+        return abs_cap
+
+    # 轴1: RAM 上限（可用内存 × 预算比 / 每槽大小），下限 8
+    ram_budget_mb = mem_avail_gb * 1024.0 * ram_budget_fraction
+    cap_by_ram = max(8, int(ram_budget_mb / slot_mb))
+
+    # 轴2: 绝对上限兜底，防止内存估算失控
+    return max(8, min(cap_by_ram, abs_cap))
+
+
 _X264_PRESET_FACTOR = {
     'ultrafast': 8.0, 'superfast': 6.0, 'veryfast': 4.0,
     'faster': 2.5, 'fast': 2.0, 'medium': 1.0,
@@ -4315,7 +5146,7 @@ _NVENC_LOOKAHEAD_VBR: int = 16
 _NVENC_LEVEL1_RATE_MODE: str = "vbr_hq"
 _NVENC_LEVEL1_LOOKAHEAD: int = 8  # LA depth for VBR_HQ/QVBR. range 0-30.
 # CE-pipeline 初始 slot 数，运行时会 auto-calibrate 为 >= LA+1 (SDK 硬件安全要求)
-_NVENC_LEVEL1_PIPELINE_DEPTH: int = 2
+_NVENC_LEVEL1_DEFAULT_SLOTS: int = 4
 
 # ── _NVENC_CRF0_FORCE_CONSTQP ──
 # crf=0 时是否强制使用 CONSTQP + 禁用 lookahead。
@@ -4333,7 +5164,9 @@ _NVENC_CRF0_FORCE_CONSTQP: bool = True   # crf=0 时强制 CONSTQP qp=0（真无
 #   不可改为 1：会破坏 CONSTQP 模式下的真无损（qp=0 变 qp=1 近无损）。
 _NVENC_CRF0_QUALITY: int = 0
 # crf=0 且 _NVENC_CRF0_FORCE_CONSTQP=False 时的 lookahead 深度。
-_NVENC_CRF0_LOOKAHEAD: int = 0
+# 默认 8 与 _NVENC_LEVEL1_LOOKAHEAD 一致，FORCE_CONSTQP=False 时
+# vbr_hq/qvbr 享有正常前向预看质量提升。
+_NVENC_CRF0_LOOKAHEAD: int = 8
 
 # ── _NVENC_QVBR_ENABLE_VBV ──
 # QVBR 模式是否启用 VBV 缓冲合规约束（vbvBufferSize / vbvInitialDelay）。
@@ -4401,7 +5234,18 @@ def _auto_queue_depths(
         t3_ms   = out_frames / fps_est * 1000.0
         t3_src  = f'{codec}({x264_preset}, crf={crf})'
 
-    pair_depth   = max(2, min(int(_math.ceil(t2_ms / max(t1_ms, 0.1))) + 2, 8))
+    # [FIX-MAXPQ-DYNAMIC] pair 上限由动态两轴函数决定（RAM 约束 + 绝对上限 24），
+    # 替换原硬编码 8：T2/T1 高达 25-30× 时 8 槽对 T1 瞬时 stall 余量不足，
+    # 且无法支撑 P 跟随 R 的对称缓冲（result_queue 可达 24-48 → P 需 12-24）。
+    _pair_slot_mb = effective_bs * 3 * H_pad * W_pad * 3 / 1e6  # 每 pair slot 的 MiB
+    if _pair_slot_mb > 0.0:
+        _pair_cap = _compute_max_pair_queue(
+            slot_mb      = _pair_slot_mb,
+            mem_avail_gb = _detect_encode_parallelism()['mem_avail_gb'],
+        )
+    else:
+        _pair_cap = _PAIR_Q_ABS_CAP
+    pair_depth   = max(2, min(int(_math.ceil(t2_ms / max(t1_ms, 0.1))) + 2, _pair_cap))
     result_depth = max(8, min(int(_math.ceil(t3_ms / max(t2_ms, 0.1))) + 3, 64))
 
     # [FIX-T3-MEMCAP / FIX-POOL-AUTOSCALE / FIX-MAXRQ-DYNAMIC] 动态约束 result_depth。
@@ -4425,7 +5269,7 @@ def _auto_queue_depths(
     if verbose:
         pair_mb = pair_depth * effective_bs * 3 * H_pad * W_pad * 3 / 1e6
         pool_mb = pool_size  * effective_bs * T * H_pad * W_pad * 3 / 1e6
-        print(f'[AUTO-TUNE] {profile}  backend={infer_backend}(×{infer_factor}) model={model_name}(×{model_factor})\n'
+        print(f'\n[AUTO-TUNE] {profile}  backend={infer_backend}(×{infer_factor}) model={model_name}(×{model_factor})\n'
               f'  T1={t1_ms:.1f}ms  T2[{t2_src}]={t2_ms:.1f}ms  T3({t3_src})={t3_ms:.1f}ms\n'
               f'  ratio T2/T1={t2_ms/max(t1_ms,0.1):.1f}x T3/T2={t3_ms/max(t2_ms,0.1):.1f}x\n'
               f'  pair_queue={pair_depth}(~{pair_mb:.0f}MB) '
@@ -4638,14 +5482,14 @@ class IFRNetPipelineRunner:
             try:
                 if stream_h2d is not None:
                     with torch.cuda.stream(stream_h2d):
-                        img0_pin = pool.get_for_frames(img0_pad, to_rgb=True, slot=slot_base)
+                        img0_pin = pool.get_for_frames(img0_pad, to_rgb=False, slot=slot_base)
                         img0_t   = img0_pin.to(device, non_blocking=True, dtype=dtype)
-                        img1_pin = pool.get_for_frames(img1_pad, to_rgb=True, slot=slot_base + 1)
+                        img1_pin = pool.get_for_frames(img1_pad, to_rgb=False, slot=slot_base + 1)
                         img1_t   = img1_pin.to(device, non_blocking=True, dtype=dtype)
                 else:
-                    img0_t = pool.get_for_frames(img0_pad, to_rgb=True, slot=slot_base).to(
+                    img0_t = pool.get_for_frames(img0_pad, to_rgb=False, slot=slot_base).to(
                         device, dtype=dtype)
-                    img1_t = pool.get_for_frames(img1_pad, to_rgb=True, slot=slot_base + 1).to(
+                    img1_t = pool.get_for_frames(img1_pad, to_rgb=False, slot=slot_base + 1).to(
                         device, dtype=dtype)
                 self._prefetch_deque.append((item, img0_t, img1_t))
                 self._prefetch_slot = 1 - self._prefetch_slot   # 切换到另一 slot 组
@@ -4678,6 +5522,8 @@ class IFRNetPipelineRunner:
         _t3_t_last:  Optional[float] = None
         # [FIX-ENC-THREAD] 独立 NVENC 编码线程句柄（GPU_RAW 路径惰性初始化，其余路径为 None）
         _enc_thread: Optional[_NVENCEncodeThread] = None
+        # [FIX-WRITTEN-TRUTH] 编码线程计数是否已汇总进 written（防止异常路径重复计数）
+        _enc_counted = False
         try:
             while self.running or not self.result_queue.empty():
                 try:
@@ -4755,6 +5601,35 @@ class IFRNetPipelineRunner:
                         all_nv12 = _rgb_to_nv12_gpu_batch(all_frames)
                         n_interp = rB * rT
 
+                        # [FIX-ENC-THREAD] CRITICAL: 等待当前 PyTorch stream 完成 NV12 写入，
+                        # 再交给编码线程的 cuMemcpy2D 读取，防止 GPU 数据未就绪导致静默花帧。
+                        torch.cuda.current_stream().synchronize()
+
+                        # [FIX-LA-ACC-HOST] LA>0 时 _NVENCEncodeThread._loop() 会把整个 segment
+                        # 的所有批次累积到 _acc_nv12（[FIX-LA-ACCUMULATE] 设计，为保证 LA FIFO
+                        # 连续性 / _slot_pending 不跨批次错位，这是必要的正确性约束，不能改回
+                        # per-batch 编码）。但若累积的元素继续是 GPU tensor，几千帧 NV12 数据
+                        # （单帧约 (H+H//2)*W 字节，7000+ 帧可达 8~10GB+）会常驻显存不释放，
+                        # 与 T2 推理批次抢显存，形成阶梯状显存上升直至 OOM。此处在入队前立即 D2H
+                        # 搬到 pinned host 内存，GPU 侧引用随本次循环结束即可被 PyTorch allocator
+                        # 回收复用；encode_frames_batch() 的 cuMemcpy2D 已同步支持 host 源
+                        # （见 [FIX-LA-ACC-HOST] 在 encode_frames_batch 内的改动）。
+                        # LA=0 走 per-batch ce_pipeline，帧不会跨批次滞留，无需搬移，继续留在 GPU
+                        # 以保留原有 GPU-STAY 零拷贝性能。
+                        if _nvenc._la_depth > 0:
+                            # [FIX-LA-ACC-HOST-V2] 直接分配 pinned 缓冲区，一次 D2H 拷贝直接落地，
+                            # 代替 .cpu().pin_memory() 的两步搬运（先 D2H→pageable，再 CPU
+                            # pageable→pinned memcpy）。
+                            try:
+                                _pinned = torch.empty(all_nv12.shape, dtype=all_nv12.dtype,
+                                                       device='cpu', pin_memory=True)
+                                _pinned.copy_(all_nv12, non_blocking=False)
+                                all_nv12 = _pinned
+                            except RuntimeError:
+                                # pinned 内存分配失败（如系统锁页内存额度耗尽），退化为普通
+                                # 可分页内存，仅牺牲部分 H2D 拷贝带宽，正确性不受影响。
+                                all_nv12 = all_nv12.cpu()
+
                         # [FIX-ENC-THREAD] 构建交叉交错顺序的帧列表，提交给独立编码线程。
                         # T3 Writer 做 RGB→NV12 kernel，编码线程做 encode_frames_batch，
                         # 两者在 T4 SM（CUDA 计算）与 NVENC 固定功能硬件上真正并行。
@@ -4768,13 +5643,19 @@ class IFRNetPipelineRunner:
                         self.__dict__.setdefault('_diag_nvenc_frames', 0)
                         # 惰性初始化编码线程（首次 GPU_RAW 时创建）
                         if _enc_thread is None:
-                            _enc_thread = _NVENCEncodeThread(_nvenc, writer)
+                            _enc_thread = _NVENCEncodeThread(
+                                _nvenc, writer, batch_frames=len(encode_order))  # [FIX-CHUNK-SAFE]
+                            # [FIX-DYN-TIMEOUT] 暴露到 pipeline 实例，run() 所在的主线程
+                            # 据此读取 submitted_frames 动态估算 writer 线程 join 超时。
+                            self._enc_thread_ref = _enc_thread
                         _is_first_submit = (_enc_thread._written == 0 and _enc_thread._empty == 0)
-                        # [FIX-ENC-THREAD] CRITICAL: 等待当前 PyTorch stream 完成 NV12 写入，
-                        # 再交给编码线程的 cuMemcpy2D 读取，防止 GPU 数据未就绪导致静默花帧。
-                        torch.cuda.current_stream().synchronize()
                         _enc_thread.submit(encode_order, force_idr_first=_is_first_submit)
                         _n_pairs_total += rB
+                        # [FIX-LA-ACC-HOST] all_nv12/encode_order 的 GPU 版本源（all_frames/
+                        # interp_gpu/img1_rgb）在 LA>0 时已不再需要，显式断开引用而不是等待
+                        # 下一轮循环变量被覆盖，缩短显存峰值持有窗口。
+                        if _nvenc._la_depth > 0:
+                            all_frames = None
                         continue
                     # NVENC 直通编码 H.264 ES 输出
                     if isinstance(_item, tuple) and len(_item) == 5:
@@ -4812,9 +5693,9 @@ class IFRNetPipelineRunner:
                             interp_end   = (i + 1) * _rT * frame_sz
                             _batch_data.extend(mv_flat[interp_start:interp_end])
                             written += _rT
-                            # img1_raw: 来自 reader (BGR)，翻转为 RGB 以匹配 rgb24
+                            # img1_raw: 来自 reader (RGB)，直接写入 rgb24
                             if i < len(_img1l):
-                                _batch_data.extend(_img1l[i][:, :, ::-1].copy().tobytes())
+                                _batch_data.extend(_img1l[i].copy().tobytes())
                                 written += 1
                         writer.write_direct(bytes(_batch_data))
                         _rb.reader_release(_sid)
@@ -4832,8 +5713,8 @@ class IFRNetPipelineRunner:
                                     fr = np.ascontiguousarray(fr)
                                 writer.write(fr)
                                 written += 1
-                            # img1_raw: 来自 reader (BGR)，翻转为 RGB
-                            writer.write(_item.img1_raw[i][:, :, ::-1].copy())
+                            # img1_raw: 来自 reader (RGB)，直接写入 rgb24
+                            writer.write(_item.img1_raw[i].copy())
                             written += 1
                         # [EVENT-POOL] 写完后归还 Event 和 buffer
                         self._event_pool.release(_item.event)
@@ -4846,8 +5727,8 @@ class IFRNetPipelineRunner:
                             for fr in interps:
                                 writer.write(fr)
                                 written += 1
-                            # img1_raw: 来自 reader (BGR)，翻转为 RGB
-                            writer.write(img1_raw_list[i][:, :, ::-1].copy())
+                            # img1_raw: 来自 reader (RGB)，直接写入 rgb24
+                            writer.write(img1_raw_list[i].copy())
                             written += 1
 
                 if _has_sentinel:
@@ -4876,8 +5757,18 @@ class IFRNetPipelineRunner:
             #               并汇总写入计数到 written 及诊断计数器。
             # Level 2/3/4 路径（_enc_thread is None）：原逻辑直接 flush NVENC（如有）。
             if _enc_thread is not None:
-                _enc_written, _enc_empty = _enc_thread.flush_and_join()
+                # [FIX-DYN-TIMEOUT] 内层等待就是真正阻塞编码收尾的地方，必须先在这里
+                # 动态放宽，外层 run() 的 writer 线程 join 才有意义（否则内层仍按旧的
+                # 固定 120s 提前放弃、外层放再宽的超时也等不到真正编码完成）。
+                # LA=0 无段末编码脉冲，沿用原 30s 语义（走 estimate_timeout 的 min_timeout 分支）。
+                _la_for_timeout = getattr(_enc_thread._nvenc, '_la_depth', 0) > 0
+                if _la_for_timeout:
+                    _flush_timeout = _enc_thread.estimate_timeout()
+                else:
+                    _flush_timeout = 30.0
+                _enc_written, _enc_empty = _enc_thread.flush_and_join(timeout=_flush_timeout)
                 written += _enc_written
+                _enc_counted = True
                 self._diag_empty_h264   = getattr(self, '_diag_empty_h264',   0) + _enc_empty
                 self._diag_nvenc_frames = getattr(self, '_diag_nvenc_frames',  0) + _enc_written + _enc_empty
             else:
@@ -4897,6 +5788,11 @@ class IFRNetPipelineRunner:
             print(f'\n[IFRNet-Writer] 写线程异常: {type(e).__name__}: {e}', flush=True)
             traceback.print_exc()
         finally:
+            # [FIX-WRITTEN-TRUTH] 异常路径下 flush_and_join 抛出导致计数未汇总，
+            # 直接并入编码线程实际成功写入 muxer 的帧数，避免 pipeline._written=0
+            # 触发理论值回退、掩盖输出截断。
+            if _enc_thread is not None and not _enc_counted:
+                written += getattr(_enc_thread, '_written', 0)
             if not self.proc.quiet:
                 print(f'\n[IFRNet-Writer] 退出，已写 {written} 输出帧', flush=True)
             # [FIX-T3-FPS] 计算并存储 T3 实测 fps（写入时长 < 1s 时视为不可靠）
@@ -4964,7 +5860,7 @@ class IFRNetPipelineRunner:
                 _pd = self._pair_queue_override
                 _rd = self._result_queue_override
                 if not self.proc.quiet and proc._is_first_segment():
-                    print(f'[AUTO-TUNE] 使用外部建议队列: pair={_pd} result={_rd}')
+                    print(f'\n[AUTO-TUNE] 使用外部建议队列: pair={_pd} result={_rd}')
             else:
                 _pd, _rd, _ = _auto_queue_depths(
                     self._hw_profile, self.codec, self.x264_preset, self.crf,
@@ -4974,6 +5870,12 @@ class IFRNetPipelineRunner:
                     t3_fps_measured=self._t3_fps_measured_input,   # [FIX-T3-FPS]
                 )
             self.pair_queue   = queue.Queue(maxsize=_pd)
+            # [FIX-LA-RQ-BURST] LA>0 chunk encoding produces bursty consumption
+            # from result_queue. Add headroom to prevent T2 blocking during
+            # _encode_chunk() bursts (chunk≤1000 frames, ~5s each).
+            _nvenc_la = getattr(getattr(self.proc, '_cached_nvenc_encoder', None), '_la_depth', 0)
+            if _nvenc_la > 0 and _rd > 0:
+                _rd = min(_rd + max(4, _rd // 4), 48)
             self.result_queue = queue.Queue(maxsize=_rd)
 
             if self._hw_profile.t2_measured_ms > 0:
@@ -5113,9 +6015,49 @@ class IFRNetPipelineRunner:
                 )
 
         if self._writer_th and self._writer_th.is_alive():
-            self._writer_th.join(timeout=30.0)
+            # [FIX-LA-JOIN-TIMEOUT][FIX-DYN-TIMEOUT] LA>0 时段末需等待编码线程完成
+            # 最后一块编码 + EOS 排空。30s 硬超时对长分段不可靠（段末收尾一旦超过
+            # 30s，主线程放行后 writer.close() 会关闭 muxer stdin → 编码线程
+            # write to closed file → 输出静默截断）。
+            #
+            # 原固定 150s 只是"看起来比 flush_and_join 内层 120s 上限宽"，但内层
+            # 若真的按固定 120s 提前放弃，外层再宽的固定值也等不到真正编码完成——
+            # 编码线程的自身 _th 会在后台继续跑，而 writer 线程却已经"正常退出"，
+            # 段照样带着截断风险往下走。现改为按 _enc_thread.submitted_frames
+            # 动态估算（与 _writer_loop 内 flush_and_join 调用处使用同一套
+            # estimate_timeout 逻辑），外层在内层估算值基础上再加调度/收尾余量，
+            # 确保外层等待窗口始终 ≥ 内层实际会等待的时长。
+            _nv_join = getattr(self.proc, '_cached_nvenc_encoder', None)
+            _la_join = getattr(_nv_join, '_la_depth', 0) if _nv_join is not None else 0
+            if _la_join > 0:
+                _enc_ref = getattr(self, '_enc_thread_ref', None)
+                if _enc_ref is not None:
+                    # 复用与内层完全一致的估算函数，外层额外加 20s 调度/收尾余量
+                    # （线程唤醒、GIL 争用、flush_and_join 自身非编码开销等）。
+                    _w_timeout = _enc_ref.estimate_timeout(margin=20.0)
+                else:
+                    # 理论上不应发生（LA>0 必走 GPU_RAW/_enc_thread 路径），
+                    # 保底退回旧的固定值，不让超时估算缺失阻塞收尾判断。
+                    _w_timeout = 150.0
+            else:
+                _w_timeout = 30.0
+            self._writer_th.join(timeout=_w_timeout)
             if self._writer_th.is_alive():
-                print('\n[IFRNet-Writer] ⚠️ 线程未在 30s 内退出', flush=True)
+                # [FIX-WRITER-TIMEOUT-FAIL] 超时仍存活 = 段失败：
+                # 绝不在 writer/编码线程存活时放行继续收尾（muxer 会被提前关闭），
+                # 标记错误并向上抛出，防止截断输出被误判成功写入 checkpoint。
+                self._error = RuntimeError(
+                    f'写线程在 {_w_timeout:.0f}s 内未退出（疑似死锁），段处理失败')
+                print(f'\n[IFRNet-Writer] ❌ {self._error}', flush=True)
+
+        # [FIX-WRITER-ERROR-PROP] writer join 之后必须复查错误：
+        # _writer_loop 的异常（flush_and_join 抛出等）发生在推理线程 join 后的
+        # 错误检查点之后，若不在此传播，段会被误判成功 → 截断文件带着
+        # checkpoint 流入下游。
+        if self._error is not None:
+            raise RuntimeError(
+                f'流水线处理异常: {type(self._error).__name__}: {self._error}'
+            ) from self._error
 
         if self._reader_th and self._reader_th.is_alive():
             self._reader_th.join(timeout=10.0)
@@ -5236,7 +6178,7 @@ class IFRNetPipelineRunner:
                             if _old <= 0 or abs(t2_actual - _old) / max(_old, 1.0) > 0.10:
                                 _c[self._cache_key] = round(t2_actual, 1)
                                 _save_t2_cache(self.t2_cache_dir, _c)
-                                print(f'[T2-CACHE] 已更新缓存 T2={t2_actual:.1f}ms '
+                                print(f'\n[T2-CACHE] 已更新缓存 T2={t2_actual:.1f}ms '
                                       f'(key={self._cache_key})', flush=True)
                         # 队列建议不在此处输出，由 run() 完成后统一处理
 
@@ -5270,9 +6212,9 @@ class IFRNetPipelineRunner:
                             h264_data = nvenc_encoder.encode_frame(nv12_gpu)
                             h264_frames.append(h264_data)
                         # Encode img1_raw (original frame) through NVENC too
-                        # img1_raw 来自 reader (BGR)，用 input_is_bgr=True 跳过 numpy BGR→RGB 翻转
+                        # img1_raw 来自 reader (RGB)，input_is_bgr=False 直接写 NV12
                         img1_gpu = torch.from_numpy(img1_raw[bi].copy()).cuda()
-                        img1_nv12 = _rgb_to_nv12_gpu(img1_gpu, input_is_bgr=True)
+                        img1_nv12 = _rgb_to_nv12_gpu(img1_gpu, input_is_bgr=False)
                         h264_data = nvenc_encoder.encode_frame(img1_nv12)
                         h264_frames.append(h264_data)
                     out_item = (h264_frames, results.B, results.T,
@@ -5363,7 +6305,7 @@ class PinnedBufferPool:
         self._out_buf: Optional[torch.Tensor] = None
 
     def get_for_frames(self, frames: List[np.ndarray],
-                       to_rgb: bool = True, slot: int = 0) -> torch.Tensor:
+                       to_rgb: bool = False, slot: int = 0) -> torch.Tensor:
         # [FIX-DOUBLEBUF-SLOT] 动态扩容：slot 超界时自动增长，永不 IndexError
         while len(self._bufs) <= slot:
             self._bufs.append(None)
@@ -5412,7 +6354,7 @@ def pad_to_stride(arr: np.ndarray, stride: int = MODEL_STRIDE):
 
 def frames_to_tensor(frames, device, stream=None, dtype=torch.float32, slot: int = 0):
     pool  = _get_pinned_pool()
-    cpu_t = pool.get_for_frames(frames, to_rgb=True, slot=slot)
+    cpu_t = pool.get_for_frames(frames, to_rgb=False, slot=slot)
     ctx   = torch.cuda.stream(stream) if stream is not None else nullcontext()
     with ctx:
         return cpu_t.to(device, non_blocking=True, dtype=dtype)
@@ -5457,6 +6399,28 @@ class TensorPool:
 # M2: FFmpeg Pipe 帧读取器
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ── [FIX-NVDEC-THREAD-CAP] NVDEC 解码线程钳位 ────────────────────────────────
+# ffmpeg 6.1.1 的 NVDEC 解码 surface 计算公式：
+#   ulNumDecodeSurfaces = ref_frame_count + num_reorder_frames
+#                         + 2(deinterlace) + thread_count + 3(基础工作 surface)
+# 32 是驱动硬上限（cudaVideoDecoder 拒绝），ffmpeg 6.1.1 无 FFMIN(pool,32) 钳位。
+# 实测：-threads 8 → 32 surfaces 成功；-threads 9 → 33 surfaces 被驱动拒绝。
+# 注意：仅影响解码侧命令；编码侧线程数由 _detect_encode_parallelism() 独立控制。
+_MAX_DECODE_THREADS = 8
+_DECODE_THREAD_HINT_SHOWN = False
+
+def _clamp_decode_threads(requested: Optional[int] = None) -> int:
+    """钳位 NVDEC 解码线程数（驱动 32-surface 硬上限），超限时打印一次提示。"""
+    global _DECODE_THREAD_HINT_SHOWN
+    n = int(requested) if requested else (os.cpu_count() or 4)
+    if n > _MAX_DECODE_THREADS:
+        if not _DECODE_THREAD_HINT_SHOWN:
+            print(f"[decode] threads={n} exceeds max {_MAX_DECODE_THREADS}, "
+                  f"clamped (NVDEC 32-surface limit)", flush=True)
+            _DECODE_THREAD_HINT_SHOWN = True
+        n = _MAX_DECODE_THREADS
+    return n
+
 class FFmpegFrameReader:
     _SENTINEL = object()
 
@@ -5500,7 +6464,7 @@ class FFmpegFrameReader:
             # hw_args = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'nv12']
             # ✅ 正确：nv12 是 NVDEC 合法的 hwaccel_output_format
             # FFmpeg 会先将 CUDA NV12 surface download 到 CPU，
-            # 再由 swscale 自动转换为 -pix_fmt bgr24 输出到管道
+            # 再由 swscale 自动转换为 -pix_fmt rgb24 输出到管道
             hw_args = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'nv12']
 
         if frame_start == 0 and frame_end < 0:
@@ -5512,12 +6476,15 @@ class FFmpegFrameReader:
                 '-vsync', '0',
             ]
 
+        # [FIX-NVDEC-THREAD-CAP] 解码线程钳位到 ≤8，避免多核机上
+        # NVDEC 解码 surface 超过驱动 32 上限（-threads 9 → 33 surfaces 被拒）。
         cmd = (
             [ffmpeg_bin]
             + hw_args
+            + ['-threads', str(_clamp_decode_threads())]
             + ['-i', video_path]
             + vf_args
-            + ['-f', 'rawvideo', '-pix_fmt', 'bgr24', '-loglevel', 'error', 'pipe:1']
+            + ['-f', 'rawvideo', '-pix_fmt', 'rgb24', '-loglevel', 'error', 'pipe:1']
         )
         self._proc   = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
@@ -6433,7 +7400,7 @@ class IFRNetVideoProcessor:
                 )
                 interp_gpu = pred_u8[:, :orig_H, :orig_W, :].contiguous()
                 # img1 (原始帧): 同样在 GPU 上做量化 + 裁剪
-                # img1 来自 prefetch (已 to_rgb=True)，形状 (B, C, H_pad, W_pad)
+                # img1 来自 prefetch (数据已是 RGB，无需翻转)，形状 (B, C, H_pad, W_pad)
                 if self.use_fp16:
                     img1_gpu = img1.float()
                 else:
@@ -6687,13 +7654,12 @@ class IFRNetVideoProcessor:
     def _is_first_segment(self) -> bool:
         return self._segment_index <= 1
 
-    def _is_last_segment(self) -> bool:
-        return self._segment_index >= self._total_segments
+    # 帧数守恒确保每段独立排空，无需 _is_last_segment
 
     def _get_or_create_nvenc_encoder(self, W: int, H: int, fps: float,
                                       preset: str, qp: int,
                                       rate_mode: str = "vbr_hq", la_depth: int = 0,
-                                      pipeline_depth: int = _NVENC_LEVEL1_PIPELINE_DEPTH) -> 'NVENCEncoder':
+                                      pipeline_depth: int = _NVENC_LEVEL1_DEFAULT_SLOTS) -> 'NVENCEncoder':
         """跨段复用 NVENC 编码器，参数不变时跳过 11 行初始化日志和 DLL 加载。"""
         key = (W, H, fps, preset, qp, rate_mode, la_depth, pipeline_depth)
         if self._cached_nvenc_encoder is not None and self._cached_nvenc_key == key:
@@ -6740,8 +7706,15 @@ class IFRNetVideoProcessor:
         self._cached_ring_key = key
         return ring, True
 
-    def cleanup(self):
-        """统一释放所有跨段缓存资源。由处理器层在全部流程结束后调用。"""
+    def cleanup(self, release_model: bool = False):
+        """统一释放所有跨段缓存资源。由处理器层在全部流程结束后调用。
+
+        Args:
+            release_model: False（默认）仅释放跨段缓存的 NVENC/Pool/RingBuffer，
+                完整保留模型/TRT Engine/CUDA Graph —— 跨段复用与历史行为不变；
+                True 追加销毁模型/TRT/CUDA Graph，仅供处理器层在全部阶段结束、
+                实例即将销毁时调用（_cleanup_video_processor）。
+        """
         if self._cached_nvenc_encoder is not None:
             self._cached_nvenc_encoder.close()
             self._cached_nvenc_encoder = None
@@ -6755,6 +7728,28 @@ class IFRNetVideoProcessor:
             self._cached_ring_buf.free()
             self._cached_ring_buf = None
             self._cached_ring_key = None
+        if not release_model:
+            return
+        # [VRAM-CLEANUP] 仅 release_model=True 时执行：进一步释放重量级 GPU 资源。
+        # 释放顺序：CUDA Graph 静态缓冲 → TRT context（依赖 engine，先销毁）→ TRT engine → torch 模型。
+        # 仅在全部阶段处理完成后调用，不影响分段间的 TRT Engine 复用；
+        # 处理器层 del 本实例后不会复用（_video_processor=None 时按需重建，TRT 引擎从 .trt_cache 反序列化）。
+        # empty_cache 由处理器层在 del 实例后统一调用，此处不重复。
+        try:
+            self._graph.clear()
+            self._graph_inputs.clear()
+        except Exception:
+            pass
+        if getattr(self, '_trt_context', None) is not None:
+            del self._trt_context
+            self._trt_context = None
+        if getattr(self, '_trt_engine', None) is not None:
+            del self._trt_engine
+            self._trt_engine = None
+        self._trt_ok = False
+        if getattr(self, 'model', None) is not None:
+            del self.model
+            self.model = None
 
     def _process_segment(
         self,
@@ -6901,7 +7896,7 @@ class IFRNetVideoProcessor:
         # 现在通过 _NVENC_CRF0_FORCE_CONSTQP 常量控制该行为。
         # True (默认) → 行为与当前 100% 一致。
         # False → crf=0 不覆盖 rate_mode/lookahead，使用独立 quality 常量。
-        _level1_pd = getattr(self, '_pipeline_depth', _NVENC_LEVEL1_PIPELINE_DEPTH)
+        _level1_pd = getattr(self, '_slot_count', _NVENC_LEVEL1_DEFAULT_SLOTS)
         if self.crf == 0 and _NVENC_CRF0_FORCE_CONSTQP:
             _level1_qp = 0
             _level1_rate = "constqp"
@@ -6909,11 +7904,16 @@ class IFRNetVideoProcessor:
         elif self.crf == 0:
             _level1_qp = _NVENC_CRF0_QUALITY
             _level1_rate = getattr(self, '_rate_mode', _NVENC_LEVEL1_RATE_MODE)
-            _level1_la = _NVENC_CRF0_LOOKAHEAD
+            _level1_la = getattr(self, '_la_depth', _NVENC_CRF0_LOOKAHEAD)
         else:
             _level1_qp = self.crf
             _level1_rate = getattr(self, '_rate_mode', _NVENC_LEVEL1_RATE_MODE)
             _level1_la = getattr(self, '_la_depth', _NVENC_LEVEL1_LOOKAHEAD)
+
+        # CONSTQP 硬件静默禁用 LA；决策层清零避免 [NVENC] 日志和 cache key 携
+        # 带无意义的 LA 值（NVENCEncoder 内部也会清零，但决策层需保证自身一致性）。
+        if _level1_rate == "constqp":
+            _level1_la = 0
 
         # [V6451-CRF0-LOG] 打印 CRF=0 时的 rate_mode 决策日志
         if self.crf == 0:
@@ -6927,15 +7927,17 @@ class IFRNetVideoProcessor:
 
         # ── Level 1: NVENC SDK GPU 直通编码 ──
         if 'nvenc' in use_codec:
+            _level1_preset = self.x264_preset if self.x264_preset else 'p1'
             try:
                 _nvenc_encoder = self._get_or_create_nvenc_encoder(
                     W, H, new_fps,
-                    preset=self.x264_preset if self.x264_preset else 'p1',
+                    preset=_level1_preset,
                     qp=_level1_qp,
                     rate_mode=_level1_rate,
                     la_depth=_level1_la,
                     pipeline_depth=_level1_pd,
                 )
+                os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
                 writer = FFmpegMuxer(
                     output_path, new_fps,
                     audio_src=audio_src,
@@ -6948,8 +7950,55 @@ class IFRNetVideoProcessor:
                 if self._is_first_segment():
                     print(f'[NVENCEncoder] Level 1: NVENC GPU 直通编码 ({W}x{H}@{new_fps:.1f}fps)', flush=True)
             except Exception as _nv_err:
-                if self._is_first_segment():
-                    print(f'[NVENCEncoder] Level 1 失败: {_nv_err}', flush=True)
+                _err_str = str(_nv_err)
+                # [V6451-CODEC8-FALLBACK] 严格 preset（slow/slower/veryslow=p6/p7）组合
+                # 高帧率/高分辨率时 InitializeEncoder code=8 拒绝。保持 CRF/RC/LA 不变，
+                # 仅降级到更宽松的 p4/medium 重试一次，仍留在 SDK Level 1。
+                _p_idx = _PRESET_P_INDEX.get(_level1_preset, 4)
+                if ('InitializeEncoder failed, code=8' in _err_str
+                        and _p_idx >= 5
+                        and _active_level == 4):  # 尚未成功
+                    _fallback_preset = 'p4'
+                    try:
+                        if self._is_first_segment():
+                            print(f'[NVENCEncoder] 严格 preset p{_p_idx+1} 初始化失败 (code=8)，'
+                                  f'降级到 {_fallback_preset} 重试 (保持 RC={_level1_rate} LA={_level1_la})',
+                                  flush=True)
+                        _nvenc_encoder = self._get_or_create_nvenc_encoder(
+                            W, H, new_fps,
+                            preset=_fallback_preset,
+                            qp=_level1_qp,
+                            rate_mode=_level1_rate,
+                            la_depth=_level1_la,
+                            pipeline_depth=_level1_pd,
+                        )
+                        os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+                        writer = FFmpegMuxer(
+                            output_path, new_fps,
+                            audio_src=audio_src,
+                            ffmpeg_bin=self.ffmpeg_bin,
+                            quiet=self.quiet,
+                        )
+                        _nvenc_encoder.set_muxer_ref(writer)
+                        _use_nvenc_direct = True
+                        _active_level = 1
+                        if self._is_first_segment():
+                            print(f'[NVENCEncoder] Level 1: NVENC GPU 直通编码 ({W}x{H}@{new_fps:.1f}fps) '
+                                  f'preset={_fallback_preset}', flush=True)
+                    except Exception as _retry_err:
+                        if self._is_first_segment():
+                            print(f'[NVENCEncoder] Level 1 降级重试仍失败: {_retry_err}', flush=True)
+                        # [FIX-PRESET-DEGRADE-CACHE] 降级也失败：清空 cache，防止
+                        # 后续段同参数命中返回半初始化失败 encoder（隐患 B）。
+                        self._cached_nvenc_encoder = None
+                        self._cached_nvenc_key = None
+                else:
+                    if self._is_first_segment():
+                        print(f'[NVENCEncoder] Level 1 失败: {_nv_err}', flush=True)
+                    # [FIX-PRESET-DEGRADE-CACHE] 非降级路径（p1-p4 失败或非 code=8）：
+                    # 同样清空 cache，防止后续段复用失败 encoder。
+                    self._cached_nvenc_encoder = None
+                    self._cached_nvenc_key = None
 
         # [DIAG] 记录最终激活的编码级别，供 benchmark 诊断使用
         self._diag_active_level = _active_level
@@ -7019,7 +8068,7 @@ class IFRNetVideoProcessor:
         if not skip_first_output:
             if _nvenc_encoder is not None:
                 first_gpu = torch.from_numpy(first).cuda()
-                first_nv12 = _rgb_to_nv12_gpu(first_gpu, input_is_bgr=True)
+                first_nv12 = _rgb_to_nv12_gpu(first_gpu, input_is_bgr=False)
                 force_idr_f0 = not self._is_first_segment()
                 if _nvenc_encoder._la_depth > 0:
                     # [FIX-F0-IN-BATCH] LA>0 时 encode_frame 返回 0 bytes（LA 缓冲），
@@ -7094,6 +8143,11 @@ class IFRNetVideoProcessor:
             self._last_pool_slot_mb = (
                 _max_BT * (H + pad_h) * (W + pad_w) * 3 / 1e6
             )
+            # [FIX-MAXPQ-DYNAMIC] 记录每个 pair slot 的 MiB（raw+2×pad 共 3 帧），
+            # 供 ADAPTIVE-QUEUE 决策块的 _compute_max_pair_queue 内存约束使用
+            self._last_pair_slot_mb = (
+                effective_bs * 3 * (H + pad_h) * (W + pad_w) * 3 / 1e6
+            )
             # [FIX-T3-FPS] 保存实测 T3 fps + 编码分辨率，供 process_video 报告使用
             self._last_t3_fps_measured = getattr(pipeline, '_t3_fps_measured', 0.0)
             self._last_encode_hw = (H, W)
@@ -7112,7 +8166,14 @@ class IFRNetVideoProcessor:
             # Writer 线程已正确排除。pipeline._written 在 writer thread join 后可用。
             if _nvenc_encoder is not None:
                 _actual_written = getattr(pipeline, '_written', 0)
-                if _actual_written > 0:
+                # [FIX-MUXER-COUNT] Level 1 GPU_RAW 路径以 muxer 实际写入帧数为
+                # 最高优先级：writer/编码线程异常时 pipeline._written 可能为 0 或
+                # 只反映提交数，FFmpegMuxer._write_count 记录真正写入 stdin 的帧数，
+                # 是输出文件实际帧数的直接度量。
+                _muxer_written = getattr(writer, '_write_count', 0) if _active_level == 1 else 0
+                if _muxer_written > 0:
+                    output_count += _muxer_written
+                elif _actual_written > 0:
                     output_count += _actual_written  # [FIX-F0] 累加(含f0)，不再替换
                 else:
                     output_count += oc_extra
@@ -7192,11 +8253,10 @@ class IFRNetVideoProcessor:
                 )
 
         elapsed = time.time() - t_start
-        # 期望帧数 = 插值理论值 (fc-1 对产生 scale× 新帧) - NVENC前向预看帧损
-        # LA 帧损是设计行为（见 memory/la-flush-recovery-is-harmful）, 非 bug
+        # 期望帧数 = 插值理论值: (fc-1) 对 插值产生 scale 倍, 加首帧 = (fc-1)*scale + 1
         _nvenc = getattr(self, '_cached_nvenc_encoder', None)
         _la_depth = getattr(_nvenc, '_la_depth', 0) if _nvenc is not None else 0
-        _expected_out = (frame_count - 1) * scale  # NVENC 帧数守恒: Output == Input
+        _expected_out = (frame_count - 1) * scale + 1  # 帧数守恒: 输出=输入*Scale-(Scale-1)
         _out_loss = _expected_out - output_count
         if _out_loss == 0:
             _out_disp = f'{output_count}'
@@ -7207,6 +8267,14 @@ class IFRNetVideoProcessor:
         if preview_interrupted:
             print(f'[{worker_label}] ⚠️  用户按 q 提前退出预览，输出不完整')
             return False, 0, 0
+        # [FIX-FRAME-CONSERVATION] 帧数守恒硬校验（Level 1 GPU_RAW 路径）：
+        # 实际写入与期望差异 >2 帧说明发生了截断/丢帧（如 muxer 被提前关闭、
+        # 编码线程异常），必须判段失败，防止截断文件带着 checkpoint 流入
+        # 后续阶段。容差 2 帧豁免既有 f0 计数口径差。
+        if _active_level == 1 and _out_loss > 2:
+            print(f'[{worker_label}] ❌ 输出帧数严重不足: 实际 {output_count} vs '
+                  f'期望 {_expected_out} (缺 {_out_loss} 帧)，段处理失败', flush=True)
+            return False, frame_count, output_count
         return True, frame_count, output_count
 
     # ── 对外公开接口 ──────────────────────────────────────────────────────────
@@ -7334,7 +8402,7 @@ class IFRNetVideoProcessor:
                             f'NVENC 已激活但 T3 仍为瓶颈（实测 {_t3_fps_meas:.0f} fps）。'
                             f'建议：1) 尝试 --x264-preset p1（最快 NVENC preset） '
                             f'2) 尝试 --crf 0 无损模式（跳过 VBR 前向预看） '
-                            f'3) bgr24→yuv420p CPU 格式转换 / pipe 写入带宽 / 非标准分辨率'
+                            f'3) rgb24→yuv420p CPU 格式转换 / pipe 写入带宽 / 非标准分辨率'
                         )
                     elif _has_nvenc_h264 and _t3_fps_meas > 0:
                         _nvenc_fps = 3000.0
@@ -7359,20 +8427,63 @@ class IFRNetVideoProcessor:
                 # [FIX-T3-FPS] 保存实测 T3 fps 供下段使用
                 self._next_t3_fps_measured = _t3_fps_meas
             else:
-                # 正常路径：综合 GPU-MONITOR 和 RETUNE 两方建议，取整数均值
-                final_pair_q = max(
-                    pair_gpu_sug,
-                    retune_pair_q if retune_pair_q is not None else 0,
-                    _cur_pair_q,    # 保持不低于当前
-                )
-                _rq_retune = retune_result_q if retune_result_q is not None else _cur_result_q
-                _rq_combined_raw = max(
-                    (result_gpu_sug + _rq_retune) // 2,
-                    _cur_result_q,
-                )
-                final_result_q = _rq_combined_raw
-                # 硬上限
-                final_pair_q   = min(final_pair_q, 8)
+                # 正常路径：综合 GPU-MONITOR 和 RETUNE 两方建议（双向调优版）
+                # [FIX-ADAPTIVE-BIDIR] 三项改造（根治单向只增不减 + 均值半吊子调优）：
+                #   1) 校准信号去冲突：按 GPU 稳定段 σ 加权合并 result 建议——
+                #      σ>25%（不稳定）取大（信任 GPU-MONITOR 扩容建议）；
+                #      σ≤15%（稳定）取小（信任 RETUNE 收缩建议）；中间区取均值。
+                #   2) R 带迟滞收缩：合并建议连续 2 段低于当前值才允许收缩，
+                #      步长 ≤25%/段，下限 8，避免单段抖动引发队列震荡。
+                #   3) P 跟随 R：P = clamp(max(R//2, P建议), 8, 动态上限)，
+                #      保持输入/输出缓冲对称；P 不再 max(..., current)，可随 R 下降。
+                _sigma = getattr(_gpu_stats, 'stable_std', 0.0) or 0.0
+                _rq_retune = retune_result_q if retune_result_q is not None else None
+                if _rq_retune is None:
+                    _rq_merged    = result_gpu_sug
+                    _merge_reason = 'GPU-MONITOR 唯一来源'
+                elif _sigma > 25.0:
+                    _rq_merged    = max(result_gpu_sug, _rq_retune)
+                    _merge_reason = f'σ={_sigma:.0f}%>25%，取大（信任 GPU-MONITOR）'
+                elif _sigma <= 15.0:
+                    _rq_merged    = min(result_gpu_sug, _rq_retune)
+                    _merge_reason = f'σ={_sigma:.0f}%≤15%，取小（信任 RETUNE）'
+                else:
+                    _rq_merged    = (result_gpu_sug + _rq_retune) // 2
+                    _merge_reason = f'σ={_sigma:.0f}% 中间区，取均值'
+
+                # R 迟滞收缩：连续 2 段建议低于当前才收缩，步长 ≤25%，下限 8
+                _shrink_streak = getattr(self, '_rq_shrink_streak', 0)
+                if _rq_merged < _cur_result_q:
+                    _shrink_streak += 1
+                    if _shrink_streak >= 2:
+                        _rq_floor      = max(8, int(_cur_result_q * 0.75))
+                        final_result_q = max(_rq_merged, _rq_floor)
+                        _shrink_note   = f'连续{_shrink_streak}段收缩建议，R 下降（步长≤25%）'
+                    else:
+                        final_result_q = _cur_result_q
+                        _shrink_note   = f'收缩建议第{_shrink_streak}段，迟滞保持'
+                else:
+                    _shrink_streak = 0
+                    final_result_q = _rq_merged
+                    _shrink_note   = 'R 维持/增大'
+                self._rq_shrink_streak = _shrink_streak
+                _rq_combined_raw = _rq_merged   # 供下方推导链路打印复用
+
+                # P 跟随 R：对称缓冲；叠加 P 侧建议（σ 大/空闲高时 GPU-MONITOR 建议加深）
+                _pq_sug      = max(pair_gpu_sug,
+                                   retune_pair_q if retune_pair_q is not None else 0)
+                final_pair_q = max(final_result_q // 2, _pq_sug)
+
+                # 硬上限（[FIX-MAXPQ-DYNAMIC] pair 上限改为动态两轴函数，替换原硬编码 8）
+                _pair_slot_mb_aq = getattr(self, '_last_pair_slot_mb', 0.0)
+                if _pair_slot_mb_aq > 0.0:
+                    _pair_cap_aq = _compute_max_pair_queue(
+                        slot_mb      = _pair_slot_mb_aq,
+                        mem_avail_gb = _detect_encode_parallelism()['mem_avail_gb'],
+                    )
+                else:
+                    _pair_cap_aq = _PAIR_Q_ABS_CAP
+                final_pair_q   = max(8, min(final_pair_q, _pair_cap_aq))
                 final_result_q = min(final_result_q, 64)
                 # [FIX-T3-MEMCAP / FIX-POOL-AUTOSCALE / FIX-MAXRQ-DYNAMIC]
                 # PinnedPool 内存上限约束：改用三轴动态函数，并显式 log 截断原因。
@@ -7402,7 +8513,8 @@ class IFRNetVideoProcessor:
                     print(
                         f'[ADAPTIVE-QUEUE] 下次将使用 pair_queue={final_pair_q} '
                         f'result_queue={final_result_q}'
-                        f'  (GPU-MONITOR={result_gpu_sug} {_retune_str} → avg={_rq_combined_raw})'
+                        f'  (GPU-MONITOR={result_gpu_sug} {_retune_str} → 合并={_rq_combined_raw}'
+                        f'  [{_merge_reason}；{_shrink_note}])'
                     )
                 # [FIX-T3-FPS] 非 T3-bottleneck 时也更新实测 T3 fps（更可靠）
                 self._next_t3_fps_measured = getattr(self, '_last_t3_fps_measured', 0.0)
@@ -7426,11 +8538,10 @@ class IFRNetVideoProcessor:
     def _print_summary(self, input_path, output_path, fc, oc, scale):
         print(f'\n✅ 插帧完成！')
         if oc > 0:
-            # 期望帧数 = 插值理论值 (fc-1 对产生 scale× 新帧) - NVENC前向预看帧损
-            # LA 帧损是设计行为（见 memory/la-flush-recovery-is-harmful）, 非 bug
+            # 期望帧数 = 插值理论值: (fc-1) 对 插值产生 scale 倍, 加首帧 = (fc-1)*scale + 1
             _nvenc = getattr(self, '_cached_nvenc_encoder', None)
             _la_depth = getattr(_nvenc, '_la_depth', 0) if _nvenc is not None else 0
-            _expected = (fc - 1) * scale  # NVENC 帧数守恒: Output == Input
+            _expected = (fc - 1) * scale + 1  # 帧数守恒: 输出=输入*Scale-(Scale-1)
             _loss = _expected - oc
             if _loss == 0:
                 print(f'   原始帧: {fc} → 输出帧: {oc} (×{scale:.1f}, LA={_la_depth})')

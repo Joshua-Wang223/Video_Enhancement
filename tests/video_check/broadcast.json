@@ -1,0 +1,8 @@
+{
+    "black_bright": 10.0,
+    "black_var": 8.0,
+    "white_bright": 240.0,
+    "white_var": 8.0,
+    "still_mse": 1.5,
+    "laplacian_var": 700.0
+}
