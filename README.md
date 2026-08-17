@@ -79,6 +79,7 @@ graph TD
         IFRNET_TRT["tensorrt_accel.py<br/>TensorRTAccelMixin<br/>TRT Engine 构建/推理"]
         IFRNET_CONFIG["config.py · ifrnet_utils.py<br/>路径/模型常量 · 池 · tensor 辅助"]
         DUAL_STREAM["双 CUDA Transfer Stream<br/>stream_h2d (预取) · stream_d2h (输出)<br/>CudaEventPool"]
+        NVENC_DIRECT["NVENC SDK ctypes 直通<br/>4-slot 环形 · cuMemcpy2D<br/>per-frame CE 异步流水线"]
         GPU_MON["GPU 监测线程<br/>2s 采样 · batch 建议"]
 
         IFRNET_CORE --> IFRNET_PIPELINE

@@ -7,6 +7,7 @@ __pycache__/
 .vscode/
 .idea/
 .trt_cache/
+.t2_cache/
 _bak*
 *.bak*
 *_bak*
@@ -18,3 +19,20 @@ output/
 temp/
 output*.txt
 Video_Enhancement_github_token.txt
+
+# Unversioned files/folders
+CLAUDE.md
+benchmark_output/
+memory/
+tests/
+.claude/
+log/
+
+# Copy files
+* - Copy.py
+*- Copy.py
+**/* - Copy.py
+**/*- Copy.py
+
+# Misc
+convert_memory.py

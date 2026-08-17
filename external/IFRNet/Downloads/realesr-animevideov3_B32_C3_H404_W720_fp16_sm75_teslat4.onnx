@@ -1,1460 +1,0 @@
-
-pytorch2.10.0+cu128:ŒÇ
-ô
-input
-body.0.weight
-body.0.biasconv2dnode_conv2d"Conv*
-group *
-pads@@@@ *
-auto_pad"NOTSET *
-strides@@ *
-	dilations@@ J{
-	namespacen: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.0: torch.nn.modules.conv.Conv2d/conv2d: aten.conv2d.defaultJˆ
-pkg.torch.onnx.class_hierarchyf['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.conv.Conv2d', 'aten.conv2d.default']J´
-pkg.torch.onnx.fx_node™%conv2d : [num_users=1] = call_function[target=torch.ops.aten.conv2d.default](args = (%x, %p_body_0_weight, %p_body_0_bias, [1, 1], [1, 1]), kwargs = {})J6
-pkg.torch.onnx.name_scopes['', 'body.0', 'conv2d']JŞ
-pkg.torch.onnx.stack_trace¿File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/conv.py", line 553, in forward
-    return self._conv_forward(input, self.weight, self.bias)
-Ú
-conv2d
-val_1prelu
-node_prelu"PReluJ~
-	namespaceq: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.1: torch.nn.modules.activation.PReLU/prelu: aten.prelu.defaultJŒ
-pkg.torch.onnx.class_hierarchyj['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.activation.PReLU', 'aten.prelu.default']J–
-pkg.torch.onnx.fx_node|%prelu : [num_users=1] = call_function[target=torch.ops.aten.prelu.default](args = (%conv2d, %p_body_1_weight), kwargs = {})J5
-pkg.torch.onnx.name_scopes['', 'body.1', 'prelu']JÏ
-pkg.torch.onnx.stack_trace°File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/activation.py", line 1641, in forward
-    return F.prelu(input, self.weight)
-‚
-prelu
-body.2.weight
-body.2.biasconv2d_1node_conv2d_1"Conv*
-group *
-pads@@@@ *
-auto_pad"NOTSET *
-strides@@ *
-	dilations@@ J}
-	namespacep: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.2: torch.nn.modules.conv.Conv2d/conv2d_1: aten.conv2d.defaultJˆ
-pkg.torch.onnx.class_hierarchyf['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.conv.Conv2d', 'aten.conv2d.default']Jº
-pkg.torch.onnx.fx_nodeŸ%conv2d_1 : [num_users=1] = call_function[target=torch.ops.aten.conv2d.default](args = (%prelu, %p_body_2_weight, %p_body_2_bias, [1, 1], [1, 1]), kwargs = {})J8
-pkg.torch.onnx.name_scopes['', 'body.2', 'conv2d_1']JŞ
-pkg.torch.onnx.stack_trace¿File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/conv.py", line 553, in forward
-    return self._conv_forward(input, self.weight, self.bias)
-ê
-conv2d_1
-val_2prelu_1node_prelu_1"PReluJ€
-	namespaces: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.3: torch.nn.modules.activation.PReLU/prelu_1: aten.prelu.defaultJŒ
-pkg.torch.onnx.class_hierarchyj['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.activation.PReLU', 'aten.prelu.default']J›
-pkg.torch.onnx.fx_node€%prelu_1 : [num_users=1] = call_function[target=torch.ops.aten.prelu.default](args = (%conv2d_1, %p_body_3_weight), kwargs = {})J7
-pkg.torch.onnx.name_scopes['', 'body.3', 'prelu_1']JÏ
-pkg.torch.onnx.stack_trace°File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/activation.py", line 1641, in forward
-    return F.prelu(input, self.weight)
-†
-prelu_1
-body.4.weight
-body.4.biasconv2d_2node_conv2d_2"Conv*
-group *
-pads@@@@ *
-auto_pad"NOTSET *
-strides@@ *
-	dilations@@ J}
-	namespacep: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.4: torch.nn.modules.conv.Conv2d/conv2d_2: aten.conv2d.defaultJˆ
-pkg.torch.onnx.class_hierarchyf['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.conv.Conv2d', 'aten.conv2d.default']J¼
-pkg.torch.onnx.fx_node¡%conv2d_2 : [num_users=1] = call_function[target=torch.ops.aten.conv2d.default](args = (%prelu_1, %p_body_4_weight, %p_body_4_bias, [1, 1], [1, 1]), kwargs = {})J8
-pkg.torch.onnx.name_scopes['', 'body.4', 'conv2d_2']JŞ
-pkg.torch.onnx.stack_trace¿File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/conv.py", line 553, in forward
-    return self._conv_forward(input, self.weight, self.bias)
-ê
-conv2d_2
-val_3prelu_2node_prelu_2"PReluJ€
-	namespaces: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.5: torch.nn.modules.activation.PReLU/prelu_2: aten.prelu.defaultJŒ
-pkg.torch.onnx.class_hierarchyj['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.activation.PReLU', 'aten.prelu.default']J›
-pkg.torch.onnx.fx_node€%prelu_2 : [num_users=1] = call_function[target=torch.ops.aten.prelu.default](args = (%conv2d_2, %p_body_5_weight), kwargs = {})J7
-pkg.torch.onnx.name_scopes['', 'body.5', 'prelu_2']JÏ
-pkg.torch.onnx.stack_trace°File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/activation.py", line 1641, in forward
-    return F.prelu(input, self.weight)
-†
-prelu_2
-body.6.weight
-body.6.biasconv2d_3node_conv2d_3"Conv*
-group *
-pads@@@@ *
-auto_pad"NOTSET *
-strides@@ *
-	dilations@@ J}
-	namespacep: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.6: torch.nn.modules.conv.Conv2d/conv2d_3: aten.conv2d.defaultJˆ
-pkg.torch.onnx.class_hierarchyf['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.conv.Conv2d', 'aten.conv2d.default']J¼
-pkg.torch.onnx.fx_node¡%conv2d_3 : [num_users=1] = call_function[target=torch.ops.aten.conv2d.default](args = (%prelu_2, %p_body_6_weight, %p_body_6_bias, [1, 1], [1, 1]), kwargs = {})J8
-pkg.torch.onnx.name_scopes['', 'body.6', 'conv2d_3']JŞ
-pkg.torch.onnx.stack_trace¿File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/conv.py", line 553, in forward
-    return self._conv_forward(input, self.weight, self.bias)
-ê
-conv2d_3
-val_4prelu_3node_prelu_3"PReluJ€
-	namespaces: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.7: torch.nn.modules.activation.PReLU/prelu_3: aten.prelu.defaultJŒ
-pkg.torch.onnx.class_hierarchyj['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.activation.PReLU', 'aten.prelu.default']J›
-pkg.torch.onnx.fx_node€%prelu_3 : [num_users=1] = call_function[target=torch.ops.aten.prelu.default](args = (%conv2d_3, %p_body_7_weight), kwargs = {})J7
-pkg.torch.onnx.name_scopes['', 'body.7', 'prelu_3']JÏ
-pkg.torch.onnx.stack_trace°File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/activation.py", line 1641, in forward
-    return F.prelu(input, self.weight)
-†
-prelu_3
-body.8.weight
-body.8.biasconv2d_4node_conv2d_4"Conv*
-group *
-pads@@@@ *
-auto_pad"NOTSET *
-strides@@ *
-	dilations@@ J}
-	namespacep: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.8: torch.nn.modules.conv.Conv2d/conv2d_4: aten.conv2d.defaultJˆ
-pkg.torch.onnx.class_hierarchyf['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.conv.Conv2d', 'aten.conv2d.default']J¼
-pkg.torch.onnx.fx_node¡%conv2d_4 : [num_users=1] = call_function[target=torch.ops.aten.conv2d.default](args = (%prelu_3, %p_body_8_weight, %p_body_8_bias, [1, 1], [1, 1]), kwargs = {})J8
-pkg.torch.onnx.name_scopes['', 'body.8', 'conv2d_4']JŞ
-pkg.torch.onnx.stack_trace¿File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/conv.py", line 553, in forward
-    return self._conv_forward(input, self.weight, self.bias)
-ê
-conv2d_4
-val_5prelu_4node_prelu_4"PReluJ€
-	namespaces: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.9: torch.nn.modules.activation.PReLU/prelu_4: aten.prelu.defaultJŒ
-pkg.torch.onnx.class_hierarchyj['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.activation.PReLU', 'aten.prelu.default']J›
-pkg.torch.onnx.fx_node€%prelu_4 : [num_users=1] = call_function[target=torch.ops.aten.prelu.default](args = (%conv2d_4, %p_body_9_weight), kwargs = {})J7
-pkg.torch.onnx.name_scopes['', 'body.9', 'prelu_4']JÏ
-pkg.torch.onnx.stack_trace°File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/activation.py", line 1641, in forward
-    return F.prelu(input, self.weight)
-Œ
-prelu_4
-body.10.weight
-body.10.biasconv2d_5node_conv2d_5"Conv*
-group *
-pads@@@@ *
-auto_pad"NOTSET *
-strides@@ *
-	dilations@@ J~
-	namespaceq: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.10: torch.nn.modules.conv.Conv2d/conv2d_5: aten.conv2d.defaultJˆ
-pkg.torch.onnx.class_hierarchyf['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.conv.Conv2d', 'aten.conv2d.default']J¾
-pkg.torch.onnx.fx_node£%conv2d_5 : [num_users=1] = call_function[target=torch.ops.aten.conv2d.default](args = (%prelu_4, %p_body_10_weight, %p_body_10_bias, [1, 1], [1, 1]), kwargs = {})J9
-pkg.torch.onnx.name_scopes['', 'body.10', 'conv2d_5']JŞ
-pkg.torch.onnx.stack_trace¿File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/conv.py", line 553, in forward
-    return self._conv_forward(input, self.weight, self.bias)
-í
-conv2d_5
-val_6prelu_5node_prelu_5"PReluJ
-	namespacet: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.11: torch.nn.modules.activation.PReLU/prelu_5: aten.prelu.defaultJŒ
-pkg.torch.onnx.class_hierarchyj['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.activation.PReLU', 'aten.prelu.default']Jœ
-pkg.torch.onnx.fx_node%prelu_5 : [num_users=1] = call_function[target=torch.ops.aten.prelu.default](args = (%conv2d_5, %p_body_11_weight), kwargs = {})J8
-pkg.torch.onnx.name_scopes['', 'body.11', 'prelu_5']JÏ
-pkg.torch.onnx.stack_trace°File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/activation.py", line 1641, in forward
-    return F.prelu(input, self.weight)
-Œ
-prelu_5
-body.12.weight
-body.12.biasconv2d_6node_conv2d_6"Conv*
-group *
-pads@@@@ *
-auto_pad"NOTSET *
-strides@@ *
-	dilations@@ J~
-	namespaceq: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.12: torch.nn.modules.conv.Conv2d/conv2d_6: aten.conv2d.defaultJˆ
-pkg.torch.onnx.class_hierarchyf['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.conv.Conv2d', 'aten.conv2d.default']J¾
-pkg.torch.onnx.fx_node£%conv2d_6 : [num_users=1] = call_function[target=torch.ops.aten.conv2d.default](args = (%prelu_5, %p_body_12_weight, %p_body_12_bias, [1, 1], [1, 1]), kwargs = {})J9
-pkg.torch.onnx.name_scopes['', 'body.12', 'conv2d_6']JŞ
-pkg.torch.onnx.stack_trace¿File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/conv.py", line 553, in forward
-    return self._conv_forward(input, self.weight, self.bias)
-í
-conv2d_6
-val_7prelu_6node_prelu_6"PReluJ
-	namespacet: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.13: torch.nn.modules.activation.PReLU/prelu_6: aten.prelu.defaultJŒ
-pkg.torch.onnx.class_hierarchyj['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.activation.PReLU', 'aten.prelu.default']Jœ
-pkg.torch.onnx.fx_node%prelu_6 : [num_users=1] = call_function[target=torch.ops.aten.prelu.default](args = (%conv2d_6, %p_body_13_weight), kwargs = {})J8
-pkg.torch.onnx.name_scopes['', 'body.13', 'prelu_6']JÏ
-pkg.torch.onnx.stack_trace°File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/activation.py", line 1641, in forward
-    return F.prelu(input, self.weight)
-Œ
-prelu_6
-body.14.weight
-body.14.biasconv2d_7node_conv2d_7"Conv*
-group *
-pads@@@@ *
-auto_pad"NOTSET *
-strides@@ *
-	dilations@@ J~
-	namespaceq: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.14: torch.nn.modules.conv.Conv2d/conv2d_7: aten.conv2d.defaultJˆ
-pkg.torch.onnx.class_hierarchyf['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.conv.Conv2d', 'aten.conv2d.default']J¾
-pkg.torch.onnx.fx_node£%conv2d_7 : [num_users=1] = call_function[target=torch.ops.aten.conv2d.default](args = (%prelu_6, %p_body_14_weight, %p_body_14_bias, [1, 1], [1, 1]), kwargs = {})J9
-pkg.torch.onnx.name_scopes['', 'body.14', 'conv2d_7']JŞ
-pkg.torch.onnx.stack_trace¿File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/conv.py", line 553, in forward
-    return self._conv_forward(input, self.weight, self.bias)
-í
-conv2d_7
-val_8prelu_7node_prelu_7"PReluJ
-	namespacet: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.15: torch.nn.modules.activation.PReLU/prelu_7: aten.prelu.defaultJŒ
-pkg.torch.onnx.class_hierarchyj['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.activation.PReLU', 'aten.prelu.default']Jœ
-pkg.torch.onnx.fx_node%prelu_7 : [num_users=1] = call_function[target=torch.ops.aten.prelu.default](args = (%conv2d_7, %p_body_15_weight), kwargs = {})J8
-pkg.torch.onnx.name_scopes['', 'body.15', 'prelu_7']JÏ
-pkg.torch.onnx.stack_trace°File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/activation.py", line 1641, in forward
-    return F.prelu(input, self.weight)
-Œ
-prelu_7
-body.16.weight
-body.16.biasconv2d_8node_conv2d_8"Conv*
-group *
-pads@@@@ *
-auto_pad"NOTSET *
-strides@@ *
-	dilations@@ J~
-	namespaceq: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.16: torch.nn.modules.conv.Conv2d/conv2d_8: aten.conv2d.defaultJˆ
-pkg.torch.onnx.class_hierarchyf['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.conv.Conv2d', 'aten.conv2d.default']J¾
-pkg.torch.onnx.fx_node£%conv2d_8 : [num_users=1] = call_function[target=torch.ops.aten.conv2d.default](args = (%prelu_7, %p_body_16_weight, %p_body_16_bias, [1, 1], [1, 1]), kwargs = {})J9
-pkg.torch.onnx.name_scopes['', 'body.16', 'conv2d_8']JŞ
-pkg.torch.onnx.stack_trace¿File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/conv.py", line 553, in forward
-    return self._conv_forward(input, self.weight, self.bias)
-í
-conv2d_8
-val_9prelu_8node_prelu_8"PReluJ
-	namespacet: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.17: torch.nn.modules.activation.PReLU/prelu_8: aten.prelu.defaultJŒ
-pkg.torch.onnx.class_hierarchyj['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.activation.PReLU', 'aten.prelu.default']Jœ
-pkg.torch.onnx.fx_node%prelu_8 : [num_users=1] = call_function[target=torch.ops.aten.prelu.default](args = (%conv2d_8, %p_body_17_weight), kwargs = {})J8
-pkg.torch.onnx.name_scopes['', 'body.17', 'prelu_8']JÏ
-pkg.torch.onnx.stack_trace°File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/activation.py", line 1641, in forward
-    return F.prelu(input, self.weight)
-Œ
-prelu_8
-body.18.weight
-body.18.biasconv2d_9node_conv2d_9"Conv*
-group *
-pads@@@@ *
-auto_pad"NOTSET *
-strides@@ *
-	dilations@@ J~
-	namespaceq: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.18: torch.nn.modules.conv.Conv2d/conv2d_9: aten.conv2d.defaultJˆ
-pkg.torch.onnx.class_hierarchyf['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.conv.Conv2d', 'aten.conv2d.default']J¾
-pkg.torch.onnx.fx_node£%conv2d_9 : [num_users=1] = call_function[target=torch.ops.aten.conv2d.default](args = (%prelu_8, %p_body_18_weight, %p_body_18_bias, [1, 1], [1, 1]), kwargs = {})J9
-pkg.torch.onnx.name_scopes['', 'body.18', 'conv2d_9']JŞ
-pkg.torch.onnx.stack_trace¿File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/conv.py", line 553, in forward
-    return self._conv_forward(input, self.weight, self.bias)
-î
-conv2d_9
-val_10prelu_9node_prelu_9"PReluJ
-	namespacet: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.19: torch.nn.modules.activation.PReLU/prelu_9: aten.prelu.defaultJŒ
-pkg.torch.onnx.class_hierarchyj['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.activation.PReLU', 'aten.prelu.default']Jœ
-pkg.torch.onnx.fx_node%prelu_9 : [num_users=1] = call_function[target=torch.ops.aten.prelu.default](args = (%conv2d_9, %p_body_19_weight), kwargs = {})J8
-pkg.torch.onnx.name_scopes['', 'body.19', 'prelu_9']JÏ
-pkg.torch.onnx.stack_trace°File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/activation.py", line 1641, in forward
-    return F.prelu(input, self.weight)
-‘
-prelu_9
-body.20.weight
-body.20.bias	conv2d_10node_conv2d_10"Conv*
-group *
-pads@@@@ *
-auto_pad"NOTSET *
-strides@@ *
-	dilations@@ J
-	namespacer: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.20: torch.nn.modules.conv.Conv2d/conv2d_10: aten.conv2d.defaultJˆ
-pkg.torch.onnx.class_hierarchyf['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.conv.Conv2d', 'aten.conv2d.default']J¿
-pkg.torch.onnx.fx_node¤%conv2d_10 : [num_users=1] = call_function[target=torch.ops.aten.conv2d.default](args = (%prelu_9, %p_body_20_weight, %p_body_20_bias, [1, 1], [1, 1]), kwargs = {})J:
-pkg.torch.onnx.name_scopes['', 'body.20', 'conv2d_10']JŞ
-pkg.torch.onnx.stack_trace¿File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/conv.py", line 553, in forward
-    return self._conv_forward(input, self.weight, self.bias)
-õ
-	conv2d_10
-val_11prelu_10node_prelu_10"PReluJ‚
-	namespaceu: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.21: torch.nn.modules.activation.PReLU/prelu_10: aten.prelu.defaultJŒ
-pkg.torch.onnx.class_hierarchyj['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.activation.PReLU', 'aten.prelu.default']J
-pkg.torch.onnx.fx_nodeƒ%prelu_10 : [num_users=1] = call_function[target=torch.ops.aten.prelu.default](args = (%conv2d_10, %p_body_21_weight), kwargs = {})J9
-pkg.torch.onnx.name_scopes['', 'body.21', 'prelu_10']JÏ
-pkg.torch.onnx.stack_trace°File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/activation.py", line 1641, in forward
-    return F.prelu(input, self.weight)
-“
-prelu_10
-body.22.weight
-body.22.bias	conv2d_11node_conv2d_11"Conv*
-group *
-pads@@@@ *
-auto_pad"NOTSET *
-strides@@ *
-	dilations@@ J
-	namespacer: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.22: torch.nn.modules.conv.Conv2d/conv2d_11: aten.conv2d.defaultJˆ
-pkg.torch.onnx.class_hierarchyf['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.conv.Conv2d', 'aten.conv2d.default']JÀ
-pkg.torch.onnx.fx_node¥%conv2d_11 : [num_users=1] = call_function[target=torch.ops.aten.conv2d.default](args = (%prelu_10, %p_body_22_weight, %p_body_22_bias, [1, 1], [1, 1]), kwargs = {})J:
-pkg.torch.onnx.name_scopes['', 'body.22', 'conv2d_11']JŞ
-pkg.torch.onnx.stack_trace¿File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/conv.py", line 553, in forward
-    return self._conv_forward(input, self.weight, self.bias)
-õ
-	conv2d_11
-val_12prelu_11node_prelu_11"PReluJ‚
-	namespaceu: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.23: torch.nn.modules.activation.PReLU/prelu_11: aten.prelu.defaultJŒ
-pkg.torch.onnx.class_hierarchyj['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.activation.PReLU', 'aten.prelu.default']J
-pkg.torch.onnx.fx_nodeƒ%prelu_11 : [num_users=1] = call_function[target=torch.ops.aten.prelu.default](args = (%conv2d_11, %p_body_23_weight), kwargs = {})J9
-pkg.torch.onnx.name_scopes['', 'body.23', 'prelu_11']JÏ
-pkg.torch.onnx.stack_trace°File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/activation.py", line 1641, in forward
-    return F.prelu(input, self.weight)
-“
-prelu_11
-body.24.weight
-body.24.bias	conv2d_12node_conv2d_12"Conv*
-group *
-pads@@@@ *
-auto_pad"NOTSET *
-strides@@ *
-	dilations@@ J
-	namespacer: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.24: torch.nn.modules.conv.Conv2d/conv2d_12: aten.conv2d.defaultJˆ
-pkg.torch.onnx.class_hierarchyf['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.conv.Conv2d', 'aten.conv2d.default']JÀ
-pkg.torch.onnx.fx_node¥%conv2d_12 : [num_users=1] = call_function[target=torch.ops.aten.conv2d.default](args = (%prelu_11, %p_body_24_weight, %p_body_24_bias, [1, 1], [1, 1]), kwargs = {})J:
-pkg.torch.onnx.name_scopes['', 'body.24', 'conv2d_12']JŞ
-pkg.torch.onnx.stack_trace¿File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/conv.py", line 553, in forward
-    return self._conv_forward(input, self.weight, self.bias)
-õ
-	conv2d_12
-val_13prelu_12node_prelu_12"PReluJ‚
-	namespaceu: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.25: torch.nn.modules.activation.PReLU/prelu_12: aten.prelu.defaultJŒ
-pkg.torch.onnx.class_hierarchyj['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.activation.PReLU', 'aten.prelu.default']J
-pkg.torch.onnx.fx_nodeƒ%prelu_12 : [num_users=1] = call_function[target=torch.ops.aten.prelu.default](args = (%conv2d_12, %p_body_25_weight), kwargs = {})J9
-pkg.torch.onnx.name_scopes['', 'body.25', 'prelu_12']JÏ
-pkg.torch.onnx.stack_trace°File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/activation.py", line 1641, in forward
-    return F.prelu(input, self.weight)
-“
-prelu_12
-body.26.weight
-body.26.bias	conv2d_13node_conv2d_13"Conv*
-group *
-pads@@@@ *
-auto_pad"NOTSET *
-strides@@ *
-	dilations@@ J
-	namespacer: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.26: torch.nn.modules.conv.Conv2d/conv2d_13: aten.conv2d.defaultJˆ
-pkg.torch.onnx.class_hierarchyf['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.conv.Conv2d', 'aten.conv2d.default']JÀ
-pkg.torch.onnx.fx_node¥%conv2d_13 : [num_users=1] = call_function[target=torch.ops.aten.conv2d.default](args = (%prelu_12, %p_body_26_weight, %p_body_26_bias, [1, 1], [1, 1]), kwargs = {})J:
-pkg.torch.onnx.name_scopes['', 'body.26', 'conv2d_13']JŞ
-pkg.torch.onnx.stack_trace¿File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/conv.py", line 553, in forward
-    return self._conv_forward(input, self.weight, self.bias)
-õ
-	conv2d_13
-val_14prelu_13node_prelu_13"PReluJ‚
-	namespaceu: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.27: torch.nn.modules.activation.PReLU/prelu_13: aten.prelu.defaultJŒ
-pkg.torch.onnx.class_hierarchyj['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.activation.PReLU', 'aten.prelu.default']J
-pkg.torch.onnx.fx_nodeƒ%prelu_13 : [num_users=1] = call_function[target=torch.ops.aten.prelu.default](args = (%conv2d_13, %p_body_27_weight), kwargs = {})J9
-pkg.torch.onnx.name_scopes['', 'body.27', 'prelu_13']JÏ
-pkg.torch.onnx.stack_trace°File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/activation.py", line 1641, in forward
-    return F.prelu(input, self.weight)
-“
-prelu_13
-body.28.weight
-body.28.bias	conv2d_14node_conv2d_14"Conv*
-group *
-pads@@@@ *
-auto_pad"NOTSET *
-strides@@ *
-	dilations@@ J
-	namespacer: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.28: torch.nn.modules.conv.Conv2d/conv2d_14: aten.conv2d.defaultJˆ
-pkg.torch.onnx.class_hierarchyf['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.conv.Conv2d', 'aten.conv2d.default']JÀ
-pkg.torch.onnx.fx_node¥%conv2d_14 : [num_users=1] = call_function[target=torch.ops.aten.conv2d.default](args = (%prelu_13, %p_body_28_weight, %p_body_28_bias, [1, 1], [1, 1]), kwargs = {})J:
-pkg.torch.onnx.name_scopes['', 'body.28', 'conv2d_14']JŞ
-pkg.torch.onnx.stack_trace¿File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/conv.py", line 553, in forward
-    return self._conv_forward(input, self.weight, self.bias)
-õ
-	conv2d_14
-val_15prelu_14node_prelu_14"PReluJ‚
-	namespaceu: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.29: torch.nn.modules.activation.PReLU/prelu_14: aten.prelu.defaultJŒ
-pkg.torch.onnx.class_hierarchyj['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.activation.PReLU', 'aten.prelu.default']J
-pkg.torch.onnx.fx_nodeƒ%prelu_14 : [num_users=1] = call_function[target=torch.ops.aten.prelu.default](args = (%conv2d_14, %p_body_29_weight), kwargs = {})J9
-pkg.torch.onnx.name_scopes['', 'body.29', 'prelu_14']JÏ
-pkg.torch.onnx.stack_trace°File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/activation.py", line 1641, in forward
-    return F.prelu(input, self.weight)
-“
-prelu_14
-body.30.weight
-body.30.bias	conv2d_15node_conv2d_15"Conv*
-group *
-pads@@@@ *
-auto_pad"NOTSET *
-strides@@ *
-	dilations@@ J
-	namespacer: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.30: torch.nn.modules.conv.Conv2d/conv2d_15: aten.conv2d.defaultJˆ
-pkg.torch.onnx.class_hierarchyf['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.conv.Conv2d', 'aten.conv2d.default']JÀ
-pkg.torch.onnx.fx_node¥%conv2d_15 : [num_users=1] = call_function[target=torch.ops.aten.conv2d.default](args = (%prelu_14, %p_body_30_weight, %p_body_30_bias, [1, 1], [1, 1]), kwargs = {})J:
-pkg.torch.onnx.name_scopes['', 'body.30', 'conv2d_15']JŞ
-pkg.torch.onnx.stack_trace¿File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/conv.py", line 553, in forward
-    return self._conv_forward(input, self.weight, self.bias)
-õ
-	conv2d_15
-val_16prelu_15node_prelu_15"PReluJ‚
-	namespaceu: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.31: torch.nn.modules.activation.PReLU/prelu_15: aten.prelu.defaultJŒ
-pkg.torch.onnx.class_hierarchyj['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.activation.PReLU', 'aten.prelu.default']J
-pkg.torch.onnx.fx_nodeƒ%prelu_15 : [num_users=1] = call_function[target=torch.ops.aten.prelu.default](args = (%conv2d_15, %p_body_31_weight), kwargs = {})J9
-pkg.torch.onnx.name_scopes['', 'body.31', 'prelu_15']JÏ
-pkg.torch.onnx.stack_trace°File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/activation.py", line 1641, in forward
-    return F.prelu(input, self.weight)
-“
-prelu_15
-body.32.weight
-body.32.bias	conv2d_16node_conv2d_16"Conv*
-group *
-pads@@@@ *
-auto_pad"NOTSET *
-strides@@ *
-	dilations@@ J
-	namespacer: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.32: torch.nn.modules.conv.Conv2d/conv2d_16: aten.conv2d.defaultJˆ
-pkg.torch.onnx.class_hierarchyf['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.conv.Conv2d', 'aten.conv2d.default']JÀ
-pkg.torch.onnx.fx_node¥%conv2d_16 : [num_users=1] = call_function[target=torch.ops.aten.conv2d.default](args = (%prelu_15, %p_body_32_weight, %p_body_32_bias, [1, 1], [1, 1]), kwargs = {})J:
-pkg.torch.onnx.name_scopes['', 'body.32', 'conv2d_16']JŞ
-pkg.torch.onnx.stack_trace¿File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/conv.py", line 553, in forward
-    return self._conv_forward(input, self.weight, self.bias)
-õ
-	conv2d_16
-val_17prelu_16node_prelu_16"PReluJ‚
-	namespaceu: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.33: torch.nn.modules.activation.PReLU/prelu_16: aten.prelu.defaultJŒ
-pkg.torch.onnx.class_hierarchyj['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.activation.PReLU', 'aten.prelu.default']J
-pkg.torch.onnx.fx_nodeƒ%prelu_16 : [num_users=1] = call_function[target=torch.ops.aten.prelu.default](args = (%conv2d_16, %p_body_33_weight), kwargs = {})J9
-pkg.torch.onnx.name_scopes['', 'body.33', 'prelu_16']JÏ
-pkg.torch.onnx.stack_trace°File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/activation.py", line 1641, in forward
-    return F.prelu(input, self.weight)
-“
-prelu_16
-body.34.weight
-body.34.bias	conv2d_17node_conv2d_17"Conv*
-group *
-pads@@@@ *
-auto_pad"NOTSET *
-strides@@ *
-	dilations@@ J
-	namespacer: realesrgan.archs.srvgg_arch.SRVGGNetCompact/body.34: torch.nn.modules.conv.Conv2d/conv2d_17: aten.conv2d.defaultJˆ
-pkg.torch.onnx.class_hierarchyf['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.conv.Conv2d', 'aten.conv2d.default']JÀ
-pkg.torch.onnx.fx_node¥%conv2d_17 : [num_users=1] = call_function[target=torch.ops.aten.conv2d.default](args = (%prelu_16, %p_body_34_weight, %p_body_34_bias, [1, 1], [1, 1]), kwargs = {})J:
-pkg.torch.onnx.name_scopes['', 'body.34', 'conv2d_17']JŞ
-pkg.torch.onnx.stack_trace¿File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 63, in forward
-    out = self.body[i](out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/conv.py", line 553, in forward
-    return self._conv_forward(input, self.weight, self.bias)
-à
-	conv2d_17pixel_shufflenode_pixel_shuffle"DepthToSpace*
-mode"CRD *
-	blocksize J›
-	namespace: realesrgan.archs.srvgg_arch.SRVGGNetCompact/upsampler: torch.nn.modules.pixelshuffle.PixelShuffle/pixel_shuffle: aten.pixel_shuffle.defaultJ
-pkg.torch.onnx.class_hierarchy{['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'torch.nn.modules.pixelshuffle.PixelShuffle', 'aten.pixel_shuffle.default']J›
-pkg.torch.onnx.fx_node€%pixel_shuffle : [num_users=1] = call_function[target=torch.ops.aten.pixel_shuffle.default](args = (%conv2d_17, 4), kwargs = {})J@
-pkg.torch.onnx.name_scopes"['', 'upsampler', 'pixel_shuffle']Já
-pkg.torch.onnx.stack_traceÂFile "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 65, in forward
-    out = self.upsampler(out)
-  File "/root/.pyenv/versions/3.11.1/lib/python3.11/site-packages/torch/nn/modules/pixelshuffle.py", line 62, in forward
-    return F.pixel_shuffle(input, self.upscale_factor)
-Ï
-input
- 
-val_18upsample_nearest2dnode_upsample_nearest2d"Resize*&
-keep_aspect_ratio_policy"stretch *
-	antialias  *
-extrapolation_value     *
-exclude_outside  *
-nearest_mode"floor */
-coordinate_transformation_mode"
-asymmetric *
-cubic_coeff_a  @¿ *
-mode"nearest Jj
-	namespace]: realesrgan.archs.srvgg_arch.SRVGGNetCompact/upsample_nearest2d: aten.upsample_nearest2d.vecJp
-pkg.torch.onnx.class_hierarchyN['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'aten.upsample_nearest2d.vec']J¨
-pkg.torch.onnx.fx_node%upsample_nearest2d : [num_users=1] = call_function[target=torch.ops.aten.upsample_nearest2d.vec](args = (%x, None, [4.0, 4.0]), kwargs = {})J8
-pkg.torch.onnx.name_scopes['', 'upsample_nearest2d']JÚ
-pkg.torch.onnx.stack_trace»File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 67, in forward
-    base = F.interpolate(x, scale_factor=self.upscale, mode='nearest')
-á
-pixel_shuffle
-upsample_nearest2doutputnode_add"AddJO
-	namespaceB: realesrgan.archs.srvgg_arch.SRVGGNetCompact/add: aten.add.TensorJd
-pkg.torch.onnx.class_hierarchyB['realesrgan.archs.srvgg_arch.SRVGGNetCompact', 'aten.add.Tensor']Jœ
-pkg.torch.onnx.fx_node%add : [num_users=1] = call_function[target=torch.ops.aten.add.Tensor](args = (%pixel_shuffle, %upsample_nearest2d), kwargs = {})J)
-pkg.torch.onnx.name_scopes['', 'add']J£
-pkg.torch.onnx.stack_trace„File "/workspace/Video_Enhancement/external/realesrgan_video_ds/realesrgan/archs/srvgg_arch.py", line 68, in forward
-    out += base
-main_graph*‡@
-Bbody.0.weightjM
-locationArealesr-animevideov3_B32_C3_H404_W720_fp16_sm75_teslat4.onnx.dataj
-offset0j
-length3456p*”@
-Bbody.0.biasJ€Í2á,“D¬È6J(ç6o2ë-Ô0XÈQ6=˜6±6q!Ä|9`©7ÒÂ.8şÃ·G*û1ê:‚2‡ÇÔ)38“8@³ ÂS¿2gÀç,$»¡0=±GBùÃØ2×1¬Ê?•º¢¥„.:]­1·07+Êİ3.É;€6 ­0?4 À*Œ@@
-Bbody.2.weightjM
-locationArealesr-animevideov3_B32_C3_H404_W720_fp16_sm75_teslat4.onnx.dataj
-offset58752j
-length73728p*”@
-Bbody.2.biasJ€`?^½PE’:Z» H8â;•H¬G@BîÎ2ï;!ÊWÉ^AJE´l»BIJJDD€FB¤ªà@°DÉ8ø>pH«<ÊAú±Á¤ÄkÁ`E	9¹: B4Fe@Ï?Ç>»9QAU°wB7ä@†CI½ÍL@š½‹5»>É¾eI?D*@@
-Bbody.4.weightjM
-locationArealesr-animevideov3_B32_C3_H404_W720_fp16_sm75_teslat4.onnx.dataj
-offset132480j
-length73728p*”@
-Bbody.4.biasJ€Ì:5­¶&?MÀ÷Bè·ü´³8=?³@©¸ÕCs>Ğ·ººX¿iªF½©;tµzÃNBN½=•8¹²>
-DCC¸¨ÆW@6¹·@·4>;Z8É=L=‚4@A>Ú6ª>1¾9é=9g=Á7ˆ15®ß:Å8ê¯¢;=€@ù0I5@¼î>?*@@
-Bbody.6.weightjM
-locationArealesr-animevideov3_B32_C3_H404_W720_fp16_sm75_teslat4.onnx.dataj
-offset206208j
-length73728p*”@
-Bbody.6.biasJ€(¹AÅ@B»>AB>6‚5¯BOAAÃ¼qA2¤,:h»a¾©ÁÅ¾µ:ÌÄïE°AF»{¹Í9w:eD¢DØ¸dµ*?7¹§6âÂ´9–B}´C5Å¼!µA~E|AœÂ²D@Ô=9Â¢·,9¸^µ­·¼9-1ı??®<R½{$¦CÑ»*@@
-Bbody.8.weightjM
-locationArealesr-animevideov3_B32_C3_H404_W720_fp16_sm75_teslat4.onnx.dataj
-offset279936j
-length73728p*”@
-Bbody.8.biasJ€
-;ù;ÊC <*;u°
-À‹4”BCå@Â~? F6|7«ºƒ@h?ECÀ @@¸e2r:f2êA°@Ñ?­9¿:<E<>­9? >A/E¹®Ão<=½2?V<¦ØA¡@—@u<22×»	G+B%Bí@o¹~@Ö5Ü¶y½Ñ2F@*@@
-Bbody.10.weightjM
-locationArealesr-animevideov3_B32_C3_H404_W720_fp16_sm75_teslat4.onnx.dataj
-offset353664j
-length73728p*•@
-Bbody.10.biasJ€Ü¯ÑAFDA9:<fC•<Â@ó9JC£>Ã¼ÁG|±ÖDDÀá8¢á8
-¹B$Fm¸Ê¶¾Ï<6¸BœH\C”HİB5=l¥e=©@®¹@A¬C#CÍEÏ¸e?lBø@×0@‰<Ÿ>8-`4Ï:@ôF ErGø?3w>®<€ºöEÈD*@@
-Bbody.12.weightjM
-locationArealesr-animevideov3_B32_C3_H404_W720_fp16_sm75_teslat4.onnx.dataj
-offset427392j
-length73728p*•@
-Bbody.12.biasJ€7­–A ¹‰C»@IÄr¶AÍ4-;˜=[EGùÛº9º7<«A`EA¢¾Ğ=E…¹Á=`¶¸p¼TDB=ôC#@=@ÿ@{;Œ»3F¥@ä<%-+·½øCİ:‚AB)­¶WG¾E:ëªVÀ%¾ÂDò?ÙDGUÄ@DºÜ>F*@@
-Bbody.14.weightjM
-locationArealesr-animevideov3_B32_C3_H404_W720_fp16_sm75_teslat4.onnx.dataj
-offset501120j
-length73728p*•@
-Bbody.14.biasJ€;¼ÙA†¸¬A6½ç5ÂŠ¬¶?ë5VDä¸38G¹W6¢;;A>;@6½œ8VAº<8 2ÎDİ1iE«Á°E+Q:8@ç@æ;*@É;~ÆÕ³ªÂ³¶5ú:ÀR½œ£.A‘¸ÀşÀªv4SÂ%D&HÿEæ¼¿Â’;¸=,©Å¿sC*@@
-Bbody.16.weightjM
-locationArealesr-animevideov3_B32_C3_H404_W720_fp16_sm75_teslat4.onnx.dataj
-offset574848j
-length73728p*•@
-Bbody.16.biasJ€·4³B<Í=AÂ•;¶Z¼Ä½vFu40¸¿gµqÂ‹B£8½¿À¾2¸¼Aœ;f:Ğ=Dªq¸1A•C"8*Ac8‰A3Dk91F A@r?—Bô9¦DÀš:'¼Æ¡œ=Œ8>h½± »‚¼‘<6BBCÏ•á@T2ñ=l½M:T¿*@@
-Bbody.18.weightjM
-locationArealesr-animevideov3_B32_C3_H404_W720_fp16_sm75_teslat4.onnx.dataj
-offset648576j
-length73728p*•@
-Bbody.18.biasJ€Ô1¤B©8u¹'ÂvÆm½·ªï<Õ8[?8¼ãCÁ½:·¡8 @ş¾š@Ø¼¾>T:e09´F)ÖBÄ‰By=Ï?û³¼?ã;nº,F:Cê@åBã¼0'=«9B¾–ªl0G¼÷¾ƒ¹ú®!=q<I5õ?s<è>T?iBú5»=è9ã¼*@@
-Bbody.20.weightjM
-locationArealesr-animevideov3_B32_C3_H404_W720_fp16_sm75_teslat4.onnx.dataj
-offset722304j
-length73728p*•@
-Bbody.20.biasJ€%3˜<)³T<¿@¾+ÀL½±=ã¸‚@Ï@–@¶6^@Æµ¨Ä;/¾¹›Eå9J< <ı8lEÔ¾º>úA¿w7	<@€A´;ã7|CÌC µG@~µtº¦B¹4á¸7…4Ò?ëAµ¶h¸RÀeÄ~¿›Bg¸Ë¸¹KEÊ»ì?0"¸*@@
-Bbody.22.weightjM
-locationArealesr-animevideov3_B32_C3_H404_W720_fp16_sm75_teslat4.onnx.dataj
-offset796032j
-length73728p*•@
-Bbody.22.biasJ€¬¹dD7QFCBA³=HÁÅ8î½#B8UAV<”µg9E&Ã¸]'›¹­?<²=ô¸Éº}ÁÎ?â<oEÇ@¾;`<J7eAĞÀ§´8~:>0Q-&48§/­5Ï5Ä<Iµ^Æ¹¤É<§><=@CæB}®z=ã¿Z>¤<M=*@@
-Bbody.24.weightjM
-locationArealesr-animevideov3_B32_C3_H404_W720_fp16_sm75_teslat4.onnx.dataj
-offset869760j
-length73728p*•@
-Bbody.24.biasJ€R´BÛ¼®+é@K¼º>Ã¼˜A&?)0»h8à<b6vBTFË>:Â‘6ÕÁ7EØ7½ƒ=¾“1“;á>P0#BÁASA°¹$¾6<½´°2›@´T8»´ç¶µ›G@¸H9½=³=ö8w15Ôµó7/DTAÈ@¹9·:Î=‡@9*@@
-Bbody.26.weightjM
-locationArealesr-animevideov3_B32_C3_H404_W720_fp16_sm75_teslat4.onnx.dataj
-offset943488j
-length73728p*•@
-Bbody.26.biasJ€¼Ÿ<¿À=‡@È?8²µÉ=œ/EÃİµÑ¼“@´¸“??8­8³4®7H<v¹R5ï7y¾0c¸Ê¾l5æ?³8ñª„¶l7…4G¥‡´£2b:Öµy=MÀş1;¹];]8ü¸>· »·u7¾­r:¦?l)'5„7:Æ=9Ë:94è1*@@
-Bbody.28.weightjM
-locationArealesr-animevideov3_B32_C3_H404_W720_fp16_sm75_teslat4.onnx.dataj
-offset1017216j
-length73728p*•@
-Bbody.28.biasJ€¸@7¹+¯ˆ¼-¢¸p2¥¸!´2½ß¹´²²Î©±’¬ü5)/İ0¼a(›5
-²Õ½Ú¸—5ğÂ¸ê1ß­:b¹¢»9=6Ë=–µ4¶¸Ò7š³£¶W=,ï2D½–±J3é-Á5843Xµ^:Ò°Àà0g;ª®E,”7&­8*@@
-Bbody.30.weightjM
-locationArealesr-animevideov3_B32_C3_H404_W720_fp16_sm75_teslat4.onnx.dataj
-offset1090944j
-length73728p*•@
-Bbody.30.biasJ€Ù/Y.Û+!°ª2i´4µ2?1Â/µ¶4À3g0ôµr(¡6W5[8)˜¶Ä+Q/ü4'¬À1‘8k,§³‚4;­²-¯µ‚8y¯%4~¹­+õ1](Î²Îº˜9¹6Ä6ü4ù°õ*>3ñ5‡7-d°o·²œ.Å3T®ã¨24j2İ3*@@
-Bbody.32.weightjM
-locationArealesr-animevideov3_B32_C3_H404_W720_fp16_sm75_teslat4.onnx.dataj
-offset1164672j
-length73728p*•@
-Bbody.32.biasJ€¿/À'"ù®ª%È °-M®n(°,]¯Ğ«¸³@œ!.y*= ?¯´¶0î°À-÷0ëâ/F™}©®,ªäªÒ«à«™&_¯_¨ëV©å c¦3¦sœ,*Š',…¦¢®Y&¨­#·°ª; í­ñ§·%h¦ª.ÔK©j-;'b.*Œ0@
-Bbody.34.weightjM
-locationArealesr-animevideov3_B32_C3_H404_W720_fp16_sm75_teslat4.onnx.dataj
-offset3456j
-length55296p*t0
-Bbody.34.biasJ`'$'$S$%$<$($B$F$O$]$Y$4$$?$6$*$¹$¢$¤$¤$£$$æ$«$ª$Á$”$$¦$¢$²$µ$}"ƒ"a"$"©"Å"ä"”"œ"}"D#›"Á"p"é"f"*”@
-Bval_1J€ ƒº×9”˜»#·o®*¸¼Ù7p¦Œ1•š'¼\4[°@³‚½ú¹78;Ã!½9´&2Ø;š¶©;Í•V®v¶™@,Ñ—Ô§Ù¸¼!h·1³&91 ö¶±®º;>´”T8¢³y4B¼¸´;V¹Ùºnºm—Ş¸	 Z˜o·¨3Á;¿®*”@
-Bval_2J€R8:-.7­´±7º¹–­c,>6_Ó"•§/ú;–(U5ß°f¸·-£š¸©$¤¸ª0<³³5¦4)¡n0@2^%¨>·Ÿµ´æ-‘²¹šÔ±
-®5­Ï¬‚¸Ów¯Ô;ó¤È²‘¸V,<_ª¬6´‚/ä±Œ¬:³È¶±Â­“"½¸*”@
-Bval_3J€Æ:»A<´–4ı8Ï¶Ş4k±à:£. ºZ8'7“<0á;Õ·eºƒ»2¬©7:5:«8Î8D±{8`5Uºœ®r°j3P¥ÚµH·¦0¸g6//é.¾0Rº¶0H°§;Í6î0÷1Ã¸ò;C¹ ²›4‰³Ÿ6Av"¹ºä°Ù0…°*”@
-Bval_4J€°<,¦[.‘::{7v6†°#ª%5e5ó(ü·Õ9<µ-v9;°³s%z¥K8z2ï<&/5½3u94¥,63x509A7<°È5í²¸;8µ4 3v.’®ó;Ö4Î49S¸^<÷µ–°”´©t6a9"«Æ5ª··63ã9*”@
-Bval_5J€o<(©„0
-5c*K°s;1<Ê5…6¥¯w²»¶d/@<$0™6;Æ:y72:«±º7[ ¿;ˆ4<c19ó7910Ö±ù,‘¬°<Y¶ô9m9Ì;ëµ±¼/"0å8q±q<¤¬G2[:ÿ:ÿ;G;-Ø8­=İ9\4û´ ©I·V758*”@
-Bval_6J€6:‚!R8…´Ş:¬{:ëºt±¯e3“7/&Ñ9m2Š´<ª<š5¾9o³Ú!´:(;K8ı»¨/®€0!b2†«Ï¢ß7,<¶3
-<D07389­ç9Ï6;4:.<N9-¯±9q;09Î82k9Ü7m®I/…¶•²š1´36*”@
-Bval_7J€Ê;4­A83:Ø®Ö;Æ<!<§8ş:W(Ñ58T=U·<Ç; ;‘7‘6Å(à4Ò5¶<Ö;“=Ê(ó:ç9A·}®Ò´Ê8<80;W¸ü:·³†4E¬Z¶yµ9:6£6·;Z¨D4—# ;x;B:C;4<6;1G)„ªU«´à.İ9è8*”@
-Bval_8J€=´u1#24;85ë;ó9Ş9/²…5ùµ :2;¿> ®Ù,ø7#<²8Ñ-!79–:\<¹;ô9œ3%¨Š4C-M0F°$4~4/<·4ç°¿0à¬Yz6™/p:;Ë¯q;6‰³9å;‘=ø9r0$5F:ı2¬.è²|8"î¹e.‹:*”@
-Bval_9J€	9™7r0 3°¤,<'8«9ñ/·:C±©5$Â8W®Í1K¬i;Å£¯6Å-4Ï;®:<;|8²0—9<%ã)U°Ú2‚1;&4¢/ 9b1ì8ñ+<;";±½;×5o³„1\;=n:sªá«¥6 6K6õ4/³p«ä,–8¬;*•@
-Bval_10J€›>ø2c7ò-¾«+²:;2Æ3C58;}¹‚4^±x9Œ5®5z.§;&5}1w8ü4¦:I<<à6e±7®«N,œ3S:%.Ê/O<É.Ê1N.ã.—,§¹Z;å:y´W;3È(Ï:=<!;^3,¶;°-8 £¢-õ¬¹8‡±Hµ4;;*•@
-Bval_11J€;:ˆ8Ï0%ºŞ#ß£<`8Ø6‡-,9y7¡5¯2O=íŸ]­µ5¹;6µ/ã¶A7';;Œ:l9ÄšC4ã:9N-v8q6È3ë;„19Úµd´;¸™/Ş6-<®¹!<Ö±À¨¸7	<c9.;Š¶ç³;.ºå/9°ª6l¸08v5;*•@
-Bval_12J€<@*l+¬7U®q¥b:×8É0‡.l8y²4Â³ó;Ü­^0Wµ\;÷¸_;Ï©G7N92<Ì«V9…1!*…8t°”¶z7: ’0€<?·’c¬‹3w¬f¼†µ=;
-© ¹v<¬|°ò¶"<†=/;X°/§5É,76h9’µˆ7º9Ó9*•@
-Bval_13J€;h5V³¹®è¤M°Ğ;!:Ğ9|)÷6¹•µe$/;Å7¨2–888×¯p4Ñ/:½;à:I:v²À2®ß¹z08Â1¼0X<Ë1	¶¦µ*5^¸¯g¸R:68S,<\0Ô-2;Â;ñ³
- &°5ø50´p5:µ.Á#Ñ±*•@
-Bval_14J€F:22>V¡æ5¨â:å:ú µë¸8œ*+<F7L6Æ7š9¢œå¯_´6µ®8§:`8š:%¹è6v1C¹Qº_ºë°$;µµŠ7±k°À%‹6®0;83´<´9ñ9Ç;¢;%5r8Ÿ·ğ´>.²×2ú:6¸6·¸s8*•@
-Bval_15J€C;}6^°¹i2˜¶±:m;J0p°<5®0¦|4ƒ;‹4Ë2'2Ã6é¥¿#Ê¤²b:‰89 ;?¨ıµù9~¬:%¼"²¯17ù.ñªÄ¤†¹ô¯­=¶Š¡œ7y¶ö:¸±;<ï;¯±µ¬ë6éµä¨h²|5x;*4H1
--à4*•@
-Bval_16J€E;-ã22äµu2Ö:š:E0*©Y0z4E.8;Ä-ÿ°×5Ÿ¡Á:%1E;Ò¬fªÌ8¬$J;ü:¶5!3U19æ*û¬İ©²’9f´û´œ¤áx;å:´k46'¦‰1;D´8í;î:66Å¶ 2Ûµe2€°¥:;µê©6ªc:*•@
-Bval_17J€Á %å$#Uf&“µ4^!ö%;ò;;X938ë/7‹q!!y4÷(Õ5¥7 ÈM*  ?¨-i9$‹:8 Š(‹%:x%V‘˜(Òš`+¢•&% ı*Û)ºÒ(Š(Ğ"ƒ9D‡"ø.‡÷5*Bval_18J  €?  €?  €@  €@ZÇ
-input
-
-
- 
-
-”
-Ğ"=
-/pkg.torch.export.graph_signature.InputSpec.kind
-USER_INPUT"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"&
-!pkg.torch.onnx.original_node_namexb
-output
-
-
- 
-
-Ğ
-À"?
-0pkg.torch.export.graph_signature.OutputSpec.kindUSER_OUTPUT"(
-!pkg.torch.onnx.original_node_nameaddjÚ
-body.0.weight
-
-
-@
-
-
-"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"4
-!pkg.torch.onnx.original_node_namep_body_0_weightjÊ
-body.0.bias
-
-
-
-@"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"2
-!pkg.torch.onnx.original_node_namep_body_0_biasjÚ
-body.2.weight
-
-
-@
-@
-
-"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"4
-!pkg.torch.onnx.original_node_namep_body_2_weightjÊ
-body.2.bias
-
-
-
-@"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"2
-!pkg.torch.onnx.original_node_namep_body_2_biasjÚ
-body.4.weight
-
-
-@
-@
-
-"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"4
-!pkg.torch.onnx.original_node_namep_body_4_weightjÊ
-body.4.bias
-
-
-
-@"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"2
-!pkg.torch.onnx.original_node_namep_body_4_biasjÚ
-body.6.weight
-
-
-@
-@
-
-"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"4
-!pkg.torch.onnx.original_node_namep_body_6_weightjÊ
-body.6.bias
-
-
-
-@"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"2
-!pkg.torch.onnx.original_node_namep_body_6_biasjÚ
-body.8.weight
-
-
-@
-@
-
-"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"4
-!pkg.torch.onnx.original_node_namep_body_8_weightjÊ
-body.8.bias
-
-
-
-@"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"2
-!pkg.torch.onnx.original_node_namep_body_8_biasjÜ
-body.10.weight
-
-
-@
-@
-
-"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"5
-!pkg.torch.onnx.original_node_namep_body_10_weightjÌ
-body.10.bias
-
-
-
-@"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"3
-!pkg.torch.onnx.original_node_namep_body_10_biasjÜ
-body.12.weight
-
-
-@
-@
-
-"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"5
-!pkg.torch.onnx.original_node_namep_body_12_weightjÌ
-body.12.bias
-
-
-
-@"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"3
-!pkg.torch.onnx.original_node_namep_body_12_biasjÜ
-body.14.weight
-
-
-@
-@
-
-"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"5
-!pkg.torch.onnx.original_node_namep_body_14_weightjÌ
-body.14.bias
-
-
-
-@"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"3
-!pkg.torch.onnx.original_node_namep_body_14_biasjÜ
-body.16.weight
-
-
-@
-@
-
-"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"5
-!pkg.torch.onnx.original_node_namep_body_16_weightjÌ
-body.16.bias
-
-
-
-@"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"3
-!pkg.torch.onnx.original_node_namep_body_16_biasjÜ
-body.18.weight
-
-
-@
-@
-
-"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"5
-!pkg.torch.onnx.original_node_namep_body_18_weightjÌ
-body.18.bias
-
-
-
-@"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"3
-!pkg.torch.onnx.original_node_namep_body_18_biasjÜ
-body.20.weight
-
-
-@
-@
-
-"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"5
-!pkg.torch.onnx.original_node_namep_body_20_weightjÌ
-body.20.bias
-
-
-
-@"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"3
-!pkg.torch.onnx.original_node_namep_body_20_biasjÜ
-body.22.weight
-
-
-@
-@
-
-"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"5
-!pkg.torch.onnx.original_node_namep_body_22_weightjÌ
-body.22.bias
-
-
-
-@"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"3
-!pkg.torch.onnx.original_node_namep_body_22_biasjÜ
-body.24.weight
-
-
-@
-@
-
-"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"5
-!pkg.torch.onnx.original_node_namep_body_24_weightjÌ
-body.24.bias
-
-
-
-@"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"3
-!pkg.torch.onnx.original_node_namep_body_24_biasjÜ
-body.26.weight
-
-
-@
-@
-
-"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"5
-!pkg.torch.onnx.original_node_namep_body_26_weightjÌ
-body.26.bias
-
-
-
-@"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"3
-!pkg.torch.onnx.original_node_namep_body_26_biasjÜ
-body.28.weight
-
-
-@
-@
-
-"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"5
-!pkg.torch.onnx.original_node_namep_body_28_weightjÌ
-body.28.bias
-
-
-
-@"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"3
-!pkg.torch.onnx.original_node_namep_body_28_biasjÜ
-body.30.weight
-
-
-@
-@
-
-"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"5
-!pkg.torch.onnx.original_node_namep_body_30_weightjÌ
-body.30.bias
-
-
-
-@"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"3
-!pkg.torch.onnx.original_node_namep_body_30_biasjÜ
-body.32.weight
-
-
-@
-@
-
-"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"5
-!pkg.torch.onnx.original_node_namep_body_32_weightjÌ
-body.32.bias
-
-
-
-@"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"3
-!pkg.torch.onnx.original_node_namep_body_32_biasjÜ
-body.34.weight
-
-
-0
-@
-
-"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"5
-!pkg.torch.onnx.original_node_namep_body_34_weightjÌ
-body.34.bias
-
-
-
-0"<
-/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
-5pkg.torch.export.graph_signature.InputSpec.persistentNone"3
-!pkg.torch.onnx.original_node_namep_body_34_biasjc
-val_1
-
-
-
-@
-
-"B
-$pkg.onnxscript.optimizer.folded_from['body.1.weight', 'val_0']jc
-val_2
-
-
-
-@
-
-"B
-$pkg.onnxscript.optimizer.folded_from['body.3.weight', 'val_0']jc
-val_3
-
-
-
-@
-
-"B
-$pkg.onnxscript.optimizer.folded_from['body.5.weight', 'val_0']jc
-val_4
-
-
-
-@
-
-"B
-$pkg.onnxscript.optimizer.folded_from['body.7.weight', 'val_0']jc
-val_5
-
-
-
-@
-
-"B
-$pkg.onnxscript.optimizer.folded_from['body.9.weight', 'val_0']jd
-val_6
-
-
-
-@
-
-"C
-$pkg.onnxscript.optimizer.folded_from['body.11.weight', 'val_0']jd
-val_7
-
-
-
-@
-
-"C
-$pkg.onnxscript.optimizer.folded_from['body.13.weight', 'val_0']jd
-val_8
-
-
-
-@
-
-"C
-$pkg.onnxscript.optimizer.folded_from['body.15.weight', 'val_0']jd
-val_9
-
-
-
-@
-
-"C
-$pkg.onnxscript.optimizer.folded_from['body.17.weight', 'val_0']je
-val_10
-
-
-
-@
-
-"C
-$pkg.onnxscript.optimizer.folded_from['body.19.weight', 'val_0']je
-val_11
-
-
-
-@
-
-"C
-$pkg.onnxscript.optimizer.folded_from['body.21.weight', 'val_0']je
-val_12
-
-
-
-@
-
-"C
-$pkg.onnxscript.optimizer.folded_from['body.23.weight', 'val_0']je
-val_13
-
-
-
-@
-
-"C
-$pkg.onnxscript.optimizer.folded_from['body.25.weight', 'val_0']je
-val_14
-
-
-
-@
-
-"C
-$pkg.onnxscript.optimizer.folded_from['body.27.weight', 'val_0']je
-val_15
-
-
-
-@
-
-"C
-$pkg.onnxscript.optimizer.folded_from['body.29.weight', 'val_0']je
-val_16
-
-
-
-@
-
-"C
-$pkg.onnxscript.optimizer.folded_from['body.31.weight', 'val_0']je
-val_17
-
-
-
-@
-
-"C
-$pkg.onnxscript.optimizer.folded_from['body.33.weight', 'val_0']j
-val_18
-
-
-j"
-conv2d
-
-
- 
-@
-”
-Ğj!
-prelu
-
-
- 
-@
-”
-Ğj$
-conv2d_1
-
-
- 
-@
-”
-Ğj#
-prelu_1
-
-
- 
-@
-”
-Ğj$
-conv2d_2
-
-
- 
-@
-”
-Ğj#
-prelu_2
-
-
- 
-@
-”
-Ğj$
-conv2d_3
-
-
- 
-@
-”
-Ğj#
-prelu_3
-
-
- 
-@
-”
-Ğj$
-conv2d_4
-
-
- 
-@
-”
-Ğj#
-prelu_4
-
-
- 
-@
-”
-Ğj$
-conv2d_5
-
-
- 
-@
-”
-Ğj#
-prelu_5
-
-
- 
-@
-”
-Ğj$
-conv2d_6
-
-
- 
-@
-”
-Ğj#
-prelu_6
-
-
- 
-@
-”
-Ğj$
-conv2d_7
-
-
- 
-@
-”
-Ğj#
-prelu_7
-
-
- 
-@
-”
-Ğj$
-conv2d_8
-
-
- 
-@
-”
-Ğj#
-prelu_8
-
-
- 
-@
-”
-Ğj$
-conv2d_9
-
-
- 
-@
-”
-Ğj#
-prelu_9
-
-
- 
-@
-”
-Ğj%
-	conv2d_10
-
-
- 
-@
-”
-Ğj$
-prelu_10
-
-
- 
-@
-”
-Ğj%
-	conv2d_11
-
-
- 
-@
-”
-Ğj$
-prelu_11
-
-
- 
-@
-”
-Ğj%
-	conv2d_12
-
-
- 
-@
-”
-Ğj$
-prelu_12
-
-
- 
-@
-”
-Ğj%
-	conv2d_13
-
-
- 
-@
-”
-Ğj$
-prelu_13
-
-
- 
-@
-”
-Ğj%
-	conv2d_14
-
-
- 
-@
-”
-Ğj$
-prelu_14
-
-
- 
-@
-”
-Ğj%
-	conv2d_15
-
-
- 
-@
-”
-Ğj$
-prelu_15
-
-
- 
-@
-”
-Ğj%
-	conv2d_16
-
-
- 
-@
-”
-Ğj$
-prelu_16
-
-
- 
-@
-”
-Ğj%
-	conv2d_17
-
-
- 
-0
-”
-Ğj)
-pixel_shuffle
-
-
- 
-
-Ğ
-Àj.
-upsample_nearest2d
-
-
- 
-
-Ğ
-À‚Ç
-0pkg.torch.export.ExportedProgram.graph_signature’
-# inputs
-p_body_0_weight: PARAMETER target='body.0.weight'
-p_body_0_bias: PARAMETER target='body.0.bias'
-p_body_1_weight: PARAMETER target='body.1.weight'
-p_body_2_weight: PARAMETER target='body.2.weight'
-p_body_2_bias: PARAMETER target='body.2.bias'
-p_body_3_weight: PARAMETER target='body.3.weight'
-p_body_4_weight: PARAMETER target='body.4.weight'
-p_body_4_bias: PARAMETER target='body.4.bias'
-p_body_5_weight: PARAMETER target='body.5.weight'
-p_body_6_weight: PARAMETER target='body.6.weight'
-p_body_6_bias: PARAMETER target='body.6.bias'
-p_body_7_weight: PARAMETER target='body.7.weight'
-p_body_8_weight: PARAMETER target='body.8.weight'
-p_body_8_bias: PARAMETER target='body.8.bias'
-p_body_9_weight: PARAMETER target='body.9.weight'
-p_body_10_weight: PARAMETER target='body.10.weight'
-p_body_10_bias: PARAMETER target='body.10.bias'
-p_body_11_weight: PARAMETER target='body.11.weight'
-p_body_12_weight: PARAMETER target='body.12.weight'
-p_body_12_bias: PARAMETER target='body.12.bias'
-p_body_13_weight: PARAMETER target='body.13.weight'
-p_body_14_weight: PARAMETER target='body.14.weight'
-p_body_14_bias: PARAMETER target='body.14.bias'
-p_body_15_weight: PARAMETER target='body.15.weight'
-p_body_16_weight: PARAMETER target='body.16.weight'
-p_body_16_bias: PARAMETER target='body.16.bias'
-p_body_17_weight: PARAMETER target='body.17.weight'
-p_body_18_weight: PARAMETER target='body.18.weight'
-p_body_18_bias: PARAMETER target='body.18.bias'
-p_body_19_weight: PARAMETER target='body.19.weight'
-p_body_20_weight: PARAMETER target='body.20.weight'
-p_body_20_bias: PARAMETER target='body.20.bias'
-p_body_21_weight: PARAMETER target='body.21.weight'
-p_body_22_weight: PARAMETER target='body.22.weight'
-p_body_22_bias: PARAMETER target='body.22.bias'
-p_body_23_weight: PARAMETER target='body.23.weight'
-p_body_24_weight: PARAMETER target='body.24.weight'
-p_body_24_bias: PARAMETER target='body.24.bias'
-p_body_25_weight: PARAMETER target='body.25.weight'
-p_body_26_weight: PARAMETER target='body.26.weight'
-p_body_26_bias: PARAMETER target='body.26.bias'
-p_body_27_weight: PARAMETER target='body.27.weight'
-p_body_28_weight: PARAMETER target='body.28.weight'
-p_body_28_bias: PARAMETER target='body.28.bias'
-p_body_29_weight: PARAMETER target='body.29.weight'
-p_body_30_weight: PARAMETER target='body.30.weight'
-p_body_30_bias: PARAMETER target='body.30.bias'
-p_body_31_weight: PARAMETER target='body.31.weight'
-p_body_32_weight: PARAMETER target='body.32.weight'
-p_body_32_bias: PARAMETER target='body.32.bias'
-p_body_33_weight: PARAMETER target='body.33.weight'
-p_body_34_weight: PARAMETER target='body.34.weight'
-p_body_34_bias: PARAMETER target='body.34.bias'
-x: USER_INPUT
-
-# outputs
-add: USER_OUTPUT
-‚8
-2pkg.torch.export.ExportedProgram.range_constraints{}B
- 
