@@ -19,7 +19,7 @@ _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
 if _PKG_DIR not in sys.path:
     sys.path.insert(0, _PKG_DIR)
 
-from ifrnet_utils import _clamp_decode_threads
+from ifrnet_video.ifrnet_utils import _clamp_decode_threads
 
 
 # ─────────────────────────────────────────────────────────────────────────────

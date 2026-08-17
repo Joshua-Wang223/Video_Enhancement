@@ -22,7 +22,7 @@ _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
 if _PKG_DIR not in sys.path:
     sys.path.insert(0, _PKG_DIR)
 
-from config import MODEL_MODULE_MAP, MODEL_STRIDE
+from ifrnet_video.config import MODEL_MODULE_MAP, MODEL_STRIDE
 
 import torch.nn.functional as _F_warp
 

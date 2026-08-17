@@ -13,7 +13,7 @@
   "IFRNet_S_Vimeo90K_576x768_bs24_trt_sm75_teslat4": 260.0,
   "IFRNet_S_Vimeo90K_736x1280_bs6_trt_sm75_teslat4": 158.2,
   "IFRNet_S_Vimeo90K_1152x1440_bs6_trt_sm75_teslat4": 268.4,
-  "IFRNet_S_Vimeo90K_384x640_bs24_trt_sm75_teslat4": 205.9,
+  "IFRNet_S_Vimeo90K_384x640_bs24_trt_sm75_teslat4": 180.4,
   "IFRNet_S_Vimeo90K_1152x1536_bs8_trt_sm75_teslat4": 454.4,
   "IFRNet_S_Vimeo90K_1152x1536_bs6_trt_sm75_teslat4": 294.3,
   "IFRNet_S_Vimeo90K_1152x1440_bs8_trt_sm75_teslat4": 16.3,

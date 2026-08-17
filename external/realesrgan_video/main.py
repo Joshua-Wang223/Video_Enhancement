@@ -38,19 +38,19 @@ if _script_dir not in sys.path:
 
 from basicsr.utils.download_util import load_file_from_url
 from realesrgan import RealESRGANer
-from config import MODEL_CONFIG, models_RealESRGAN, models_GFPGAN, gfpgan_weights_dir
-from realesrgan_utils import get_video_meta_info, _build_upsampler
-from ffmpeg_io import (FFmpegReader, FFmpegWriter, HardwareCapability,
+from realesrgan_video.config import MODEL_CONFIG, models_RealESRGAN, models_GFPGAN, gfpgan_weights_dir
+from realesrgan_video.realesrgan_utils import get_video_meta_info, _build_upsampler
+from realesrgan_video.ffmpeg_io import (FFmpegReader, FFmpegWriter, HardwareCapability,
                         _NVENC_LOOKAHEAD_VBR, _X264_TO_NVENC_PRESET)
-from tensorrt_accel import TensorRTAccelerator
-from gfpgan_subprocess import GFPGANSubprocess
-from pipeline import DeepPipelineOptimizer
+from realesrgan_video.tensorrt_accel import TensorRTAccelerator
+from realesrgan_video.gfpgan_subprocess import GFPGANSubprocess
+from realesrgan_video.pipeline import DeepPipelineOptimizer
 
 # [SDK-NVENC] 条件导入 SDK Level 1 NVENC 模块
 # 从 nvenc_sdk 统一导入（NVENCEncoder + NVENCWriter 同文件），
 # 不再依赖 nvenc_writer.py（死代码）。
 try:
-    from nvenc_sdk import NVENCEncoder, NVENCWriter
+    from realesrgan_video.nvenc_sdk import NVENCEncoder, NVENCWriter
     _SDK_NVENC_AVAILABLE = True
 except ImportError:
     NVENCEncoder = NVENCWriter = None

@@ -8,7 +8,7 @@ import queue
 import threading
 from typing import Dict, Any, Optional
 
-from gfpgan_subprocess import SharedMemoryDoubleBuffer
+from realesrgan_video.gfpgan_subprocess import SharedMemoryDoubleBuffer
 
 
 class AsyncGFPGANDispatcher:

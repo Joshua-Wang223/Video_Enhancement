@@ -24,7 +24,7 @@ except ImportError:
 from facexlib.utils.face_restoration_helper import FaceRestoreHelper
 
 # GFPGAN 辅助模型（facexlib 人脸检测/解析）统一存放目录
-from config import gfpgan_weights_dir
+from realesrgan_video.config import gfpgan_weights_dir
 
 
 def _make_detect_helper(face_enhancer, device):

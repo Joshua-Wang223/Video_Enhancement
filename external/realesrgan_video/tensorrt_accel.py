@@ -15,7 +15,7 @@ import torch.nn as nn
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import models_RealESRGAN
+from realesrgan_video.config import models_RealESRGAN
 
 _TRT_LOGGER = None
 

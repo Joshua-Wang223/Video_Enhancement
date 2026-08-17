@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from basicsr.utils.download_util import load_file_from_url
 from realesrgan import RealESRGANer
-from config import MODEL_CONFIG, models_RealESRGAN
+from realesrgan_video.config import MODEL_CONFIG, models_RealESRGAN
 
 _thread_local = threading.local()
 

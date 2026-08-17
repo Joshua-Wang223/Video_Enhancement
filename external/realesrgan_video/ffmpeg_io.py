@@ -17,7 +17,7 @@ import re
 import numpy as np
 import ffmpeg
 
-from realesrgan_utils import get_video_meta_info
+from realesrgan_video.realesrgan_utils import get_video_meta_info
 
 # ── [FIX-NVENC-PIPE] NVENC pipe 模式参数常量 ──────────────────────────────────
 # NVENC 内部帧缓冲数（-surfaces N）：

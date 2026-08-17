@@ -26,10 +26,10 @@ _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
 if _PKG_DIR not in sys.path:
     sys.path.insert(0, _PKG_DIR)
 
-from config import base_dir
-from ifrnet_utils import CudaEventPool, _PinnedResultItem, _get_pinned_pool
-from ffmpeg_io import _detect_encode_parallelism, _software_encode_fps
-from nvenc_sdk import (
+from ifrnet_video.config import base_dir
+from ifrnet_video.ifrnet_utils import CudaEventPool, _PinnedResultItem, _get_pinned_pool
+from ifrnet_video.ffmpeg_io import _detect_encode_parallelism, _software_encode_fps
+from ifrnet_video.nvenc_sdk import (
     _NVENCEncodeThread,
     _rgb_to_nv12_gpu,
     _rgb_to_nv12_gpu_batch,

@@ -440,8 +440,8 @@ _script_dir = os.path.dirname(os.path.abspath(__file__))
 if _script_dir not in sys.path:
     sys.path.insert(0, _script_dir)
 
-from config import MODEL_NAME_MAP, MODEL_STRIDE, base_dir, models_ifrnet
-from ifrnet_utils import (
+from ifrnet_video.config import MODEL_NAME_MAP, MODEL_STRIDE, base_dir, models_ifrnet
+from ifrnet_video.ifrnet_utils import (
     PinnedResultPool,
     PinnedRingBuffer,
     TensorPool,
@@ -451,7 +451,7 @@ from ifrnet_utils import (
     frames_to_tensor,
     tensor_to_np,
 )
-from ffmpeg_io import (
+from ifrnet_video.ffmpeg_io import (
     FFmpegFrameReader,
     FFmpegWriter,
     HardwareCapability,
@@ -459,7 +459,7 @@ from ffmpeg_io import (
     _probe_video,
     _software_encode_fps,
 )
-from nvenc_sdk import (
+from ifrnet_video.nvenc_sdk import (
     FFmpegMuxer,
     NVENCEncoder,
     _NVENC_CRF0_FORCE_CONSTQP,
@@ -471,7 +471,7 @@ from nvenc_sdk import (
     _PRESET_P_INDEX,
     _rgb_to_nv12_gpu,
 )
-from pipeline import (
+from ifrnet_video.pipeline import (
     GPUMonitor,
     IFRNetPipelineRunner,
     _PAIR_Q_ABS_CAP,
@@ -480,7 +480,7 @@ from pipeline import (
     _compute_max_result_queue,
     _detect_hw_profile,
 )
-from tensorrt_accel import TensorRTAccelMixin
+from ifrnet_video.tensorrt_accel import TensorRTAccelMixin
 
 
 Model, _ifrnet_s_mod = _load_ifrnet_module('IFRNet_S_Vimeo90K')

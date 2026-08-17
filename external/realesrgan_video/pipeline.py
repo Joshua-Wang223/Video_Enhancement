@@ -28,10 +28,10 @@ import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from realesrgan_utils import ThroughputMeter, _get_pinned_pool
-from face_utils import _detect_faces_batch, _paste_faces_batch, _make_detect_helper
-from async_dispatcher import AsyncGFPGANDispatcher
-from gfpgan_subprocess import SharedMemoryDoubleBuffer
+from realesrgan_video.realesrgan_utils import ThroughputMeter, _get_pinned_pool
+from realesrgan_video.face_utils import _detect_faces_batch, _paste_faces_batch, _make_detect_helper
+from realesrgan_video.async_dispatcher import AsyncGFPGANDispatcher
+from realesrgan_video.gfpgan_subprocess import SharedMemoryDoubleBuffer
 
 
 def _sr_infer_batch(
@@ -350,7 +350,7 @@ class DeepPipelineOptimizer:
             if not getattr(args, '_gfpgan_trt_failed', False):
                 self._vlog('[优化架构] 启用子进程GFPGAN TRT加速（非预启动路径）')
                 try:
-                    from gfpgan_subprocess import GFPGANSubprocess
+                    from realesrgan_video.gfpgan_subprocess import GFPGANSubprocess
                     self.gfpgan_subprocess = GFPGANSubprocess(
                         face_enhancer=face_enhancer, device=device,
                         gfpgan_weight=args.gfpgan_weight,
@@ -1550,7 +1550,7 @@ class DeepPipelineOptimizer:
                             all_restored = self.gfpgan_subprocess.infer(all_crops)
                             restored_by_frame = self._split_restored(all_restored, crops_per_frame, face_data)
                     elif _gfpgan_main_ok and all_crops:
-                        from face_utils import _gfpgan_infer_batch
+                        from realesrgan_video.face_utils import _gfpgan_infer_batch
                         restored_by_frame, _ = _gfpgan_infer_batch(
                             face_data, self.face_enhancer, self.device,
                             None, self.args.gfpgan_weight,

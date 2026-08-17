@@ -167,10 +167,14 @@ class RealESRGANVideoProcessor:
                 f"请确认 external/realesrgan_video/ 已正确放置。"
             )
 
-        # 将底层脚本目录加入 Python 路径（其内部模块如 config, utils, ffmpeg_io 等需要）
-        _esrgan_ds_str = str(self.esrgan_dir)
-        if _esrgan_ds_str not in sys.path:
-            sys.path.insert(0, _esrgan_ds_str)
+        # 将底层脚本目录加入 Python 路径（其内部模块如 config, utils, ffmpeg_io 等需要）：
+        #   1. external/realesrgan_video → 支持包内平级导入（与 IFRNet 一致，沿用模块名）
+        #   2. external/                 → 支持包导入 `from realesrgan_video.config import ...`
+        _esrgan_ds_str     = str(self.esrgan_dir)
+        _esrgan_pkg_parent = str(self.esrgan_dir.parent)
+        for _p in (_esrgan_ds_str, _esrgan_pkg_parent):
+            if _p not in sys.path:
+                sys.path.insert(0, _p)
 
     # -------------------------------------------------------------------------
     # 公共接口

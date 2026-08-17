@@ -25,7 +25,7 @@ import numpy as np
 import torch
 
 # 从同目录导入 SDK 模块
-from nvenc_sdk import (
+from realesrgan_video.nvenc_sdk import (
     NVENCEncoder,
     _NVENCEncodeThread,
     FFmpegMuxer,
