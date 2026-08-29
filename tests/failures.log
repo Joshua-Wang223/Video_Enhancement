@@ -1,0 +1,91 @@
+
+[2a] crf=0 默认强制 CONSTQP LA=0 — 未匹配: CONSTQP.*LA=0
+Traceback (most recent call last):
+  File "/test_output/.tmp_shadow_ifrnet.py", line 7, in <module>
+    import process_video_v6_4_5_1_single  # pre-cache in sys.modules
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/test_output/.tmp_ifrnet_constqp_true/process_video_v6_4_5_1_single.py", line 377, in <module>
+    Model, _ifrnet_s_mod = _load_ifrnet_module('IFRNet_S_Vimeo90K')
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/test_output/.tmp_ifrnet_constqp_true/process_video_v6_4_5_1_single.py", line 373, in _load_ifrnet_module
+    mod = importlib.import_module(module_name)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.pyenv/versions/3.11.1/lib/python3.11/importlib/__init__.py", line 126, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'models'
+[2b] crf=0 解除强制 — VBR_HQ LA=8 — 未匹配: VBR_HQ.*LA=8
+Traceback (most recent call last):
+  File "/test_output/.tmp_shadow_ifrnet.py", line 7, in <module>
+    import process_video_v6_4_5_1_single  # pre-cache in sys.modules
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/test_output/.tmp_ifrnet_shadow_false/process_video_v6_4_5_1_single.py", line 377, in <module>
+    Model, _ifrnet_s_mod = _load_ifrnet_module('IFRNet_S_Vimeo90K')
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/test_output/.tmp_ifrnet_shadow_false/process_video_v6_4_5_1_single.py", line 373, in _load_ifrnet_module
+    mod = importlib.import_module(module_name)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.pyenv/versions/3.11.1/lib/python3.11/importlib/__init__.py", line 126, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'models'
+[2c] crf=0 默认强制 CONSTQP LA=0 — 未匹配: CONSTQP.*LA=0
+Traceback (most recent call last):
+  File "/test_output/.tmp_shadow_ifrnet.py", line 7, in <module>
+    import process_video_v6_4_5_1_single  # pre-cache in sys.modules
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/test_output/.tmp_ifrnet_constqp_true/process_video_v6_4_5_1_single.py", line 377, in <module>
+    Model, _ifrnet_s_mod = _load_ifrnet_module('IFRNet_S_Vimeo90K')
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/test_output/.tmp_ifrnet_constqp_true/process_video_v6_4_5_1_single.py", line 373, in _load_ifrnet_module
+    mod = importlib.import_module(module_name)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.pyenv/versions/3.11.1/lib/python3.11/importlib/__init__.py", line 126, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'models'
+[2g] crf=0 + NVENC: NVENCEncoder 应输出 CONSTQP — 未匹配: CONSTQP
+Traceback (most recent call last):
+  File "/test_output/.tmp_shadow_ifrnet.py", line 7, in <module>
+    import process_video_v6_4_5_1_single  # pre-cache in sys.modules
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/test_output/.tmp_ifrnet_constqp_true/process_video_v6_4_5_1_single.py", line 377, in <module>
+    Model, _ifrnet_s_mod = _load_ifrnet_module('IFRNet_S_Vimeo90K')
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/test_output/.tmp_ifrnet_constqp_true/process_video_v6_4_5_1_single.py", line 373, in _load_ifrnet_module
+    mod = importlib.import_module(module_name)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.pyenv/versions/3.11.1/lib/python3.11/importlib/__init__.py", line 126, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'models'
+[8a] crf=0 + LA=16 → 仍强制 CONSTQP LA=0 — 未匹配: CONSTQP.*LA=0
+Traceback (most recent call last):
+  File "/test_output/.tmp_shadow_ifrnet.py", line 7, in <module>
+    import process_video_v6_4_5_1_single  # pre-cache in sys.modules
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/test_output/.tmp_ifrnet_constqp_true/process_video_v6_4_5_1_single.py", line 377, in <module>
+    Model, _ifrnet_s_mod = _load_ifrnet_module('IFRNet_S_Vimeo90K')
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/test_output/.tmp_ifrnet_constqp_true/process_video_v6_4_5_1_single.py", line 373, in _load_ifrnet_module
+    mod = importlib.import_module(module_name)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.pyenv/versions/3.11.1/lib/python3.11/importlib/__init__.py", line 126, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'models'
+[10c] LA+分段: crf=0 应输出 CONSTQP LA=0 — 未匹配: CONSTQP.*LA=0
+Traceback (most recent call last):
+  File "/test_output/.tmp_shadow_ifrnet.py", line 7, in <module>
+    import process_video_v6_4_5_1_single  # pre-cache in sys.modules
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/test_output/.tmp_ifrnet_constqp_true/process_video_v6_4_5_1_single.py", line 377, in <module>
+    Model, _ifrnet_s_mod = _load_ifrnet_module('IFRNet_S_Vimeo90K')
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/test_output/.tmp_ifrnet_constqp_true/process_video_v6_4_5_1_single.py", line 373, in _load_ifrnet_module
+    mod = importlib.import_module(module_name)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.pyenv/versions/3.11.1/lib/python3.11/importlib/__init__.py", line 126, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'models'

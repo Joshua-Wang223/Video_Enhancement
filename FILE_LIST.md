@@ -48,7 +48,7 @@ logging           日志级别、是否写入文件/控制台
 
 | 文件 | 状态 | 说明 |
 |------|------|------|
-| `src/main_video_optimized.py` | ★ **当前主入口** | 统一调度 IFRNet（`ifrnet_processor_v6_1_single`）+ Real-ESRGAN DS（`realesrgan_processor_video_optimized` → `external/realesrgan_video`）。**新增特性：** FIX-C 分段 timescale 归一化（`_normalize_segs_for_copy`）、`--report` 流水线报告（`_write_final_report`）、`--skip-seg-normalize` 跳过开关 |
+| `src/main_video_optimized.py` | ★ **当前主入口** | 统一调度 IFRNet（`ifrnet_processor_video_optimized` → `external/ifrnet_video`）+ Real-ESRGAN DS（`realesrgan_processor_video_optimized` → `external/realesrgan_video`）。**新增特性：** FIX-C 分段 timescale 归一化（`_normalize_segs_for_copy`）、`--report` 流水线报告（`_write_final_report`）、`--skip-seg-normalize` 跳过开关 |
 | `src/main_video_v6_single.py` | ⚠️ 对照 | v6 单卡主流程：对接 `ifrnet_processor_v6_single` + `realesrgan_processor_video_v6_single`（底层分别为 IFRNet v6.2.x 脚本与 `external/Real-ESRGAN` 推理脚本） |
 | `src/main_video_v5_single.py` | ⚠️ 历史 | VideoProcessor v5，分段流水线 |
 | `src/main_video_v3.py` | ⚠️ 历史 | VideoProcessor v3 |
@@ -64,10 +64,12 @@ logging           日志级别、是否写入文件/控制台
 
 | 文件 | 状态 | 说明 |
 |------|------|------|
-| `ifrnet_processor_v6_1_single.py` | ★ **当前** | IFRNet 插帧；底层 **`external/IFRNet/process_video_v6_3_5_single.py`（v6.3.5）** |
+| `ifrnet_processor_video_optimized.py` | ★ **当前** | IFRNet 插帧；底层 **`external/ifrnet_video/main.py`（v6.4.5.1，模块化包）** |
+| `ifrnet_processor_v6_4_single.py` | ⚠️ 历史 | 前一适配层（`ifrnet_processor_video_optimized.py` 的复制源，对接单文件 `process_video_v6_4_5_1_single.py`） |
+| `ifrnet_processor_v6_1_single.py` | ⚠️ 历史 | 更早的 IFRNet 适配层 |
 | `realesrgan_processor_video_optimized.py` | ★ **当前** | Real-ESRGAN 视频超分；底层 **`external/realesrgan_video/main.py`**，支持 **`create_video_enhancer` / `run_pipeline_for_video`** 多片段复用 |
 | `realesrgan_processor_video_v6_single.py` | ⚠️ 历史 | 对接 `external/Real-ESRGAN` 下各版 `inference_realesrgan_video_*.py` |
-| `ifrnet_processor_v6_single.py` | ⚠️ 历史 | 对接较早 IFRNet 脚本（如 `process_video_v6_2_2_single.py`），非 v6.3.5 主线 |
+| `ifrnet_processor_v6_single.py` | ⚠️ 历史 | 对接较早 IFRNet 脚本（如 `process_video_v6_2_2_single.py`），非 v6.4.5.1 主线 |
 | `ifrnet_processor_v5_single.py` | ⚠️ 历史 | IFRNet 处理器 v5 |
 | `realesrgan_processor_video_v5_single.py` | ⚠️ 历史 | Real-ESRGAN 处理器 v5 |
 | `ifrnet_processor_v3.py` | ⚠️ 历史 | IFRNet 处理器 v3 |
@@ -80,7 +82,7 @@ logging           日志级别、是否写入文件/控制台
 | `realesrgan_processor.py` | ⚠️ 历史 | Real-ESRGAN 图像处理器 v1 |
 | `__init__.py` | — | 包初始化 |
 
-#### `ifrnet_processor_v6_1_single.py` 主要接口
+#### `ifrnet_processor_video_optimized.py` 主要接口
 
 ```python
 class IFRNetProcessor:
@@ -154,11 +156,26 @@ def format_time(seconds) -> str
 
 ## `external/` — 外部后端
 
+### `external/ifrnet_video/` — IFRNet 模块化流水线（当前插帧后端）
+
+| 文件 | 状态 | 说明 |
+|------|------|------|
+| `main.py` | ★ **当前后端** | `IFRNetVideoProcessor`（继承 `TensorRTAccelMixin`）+ 入口，四级编码回退 Level 选择逻辑 |
+| `pipeline.py` | ✅ 当前 | `IFRNetPipelineRunner` + GPU 监测 + 硬件画像/队列调优 |
+| `nvenc_sdk.py` | ✅ 当前 | NVENC ctypes SDK + `NVENCEncoder` / `_NVENCEncodeThread` / `FFmpegMuxer` |
+| `ffmpeg_io.py` | ✅ 当前 | `FFmpegFrameReader` / `FFmpegWriter` + `HardwareCapability` |
+| `tensorrt_accel.py` | ✅ 当前 | `TensorRTAccelMixin`（TRT Engine 构建 + 推理分支） |
+| `ifrnet_utils.py` | ✅ 当前 | 模型加载、pinned 池、tensor 辅助 |
+| `config.py` | ✅ 当前 | 路径与模型常量（`MODEL_NAME_MAP` 等） |
+| `__init__.py` | — | 包初始化（`__version__ = "6.4.5.1"`） |
+
+> 由单文件 `external/IFRNet/process_video_v6_4_5_1_single.py`（8756 行）逐字拆分而来，目录布局镜像 `external/realesrgan_video/`；原单文件保留为参考源。
+
 ### `external/IFRNet/`
 
 | 文件 | 状态 | 说明 |
 |------|------|------|
-| `process_video_v6_3_5_single.py` | ★ **当前后端** | 单卡 IFRNet 推理主实现（**v6.3.5**；当前处理器默认对接） |
+| `process_video_v6_4_5_1_single.py` | ✅ 参考源 | 单卡 IFRNet 推理主实现（**v6.4.5.1**）；**已逐字拆分至 `external/ifrnet_video/`**，原文件保留为参考源/回滚参照 |
 | `process_video_v6_3_2_single.py` | ⚠️ 历史 | v6.3.2 迭代版本 |
 | `process_video_v6_3_1_single.py` | ⚠️ 历史 | v6.3.1 迭代版本 |
 | `process_video_v6_3_0_single.py` | ⚠️ 历史 | v6.3.0（较早迭代，非当前主线） |
@@ -249,7 +266,7 @@ class PreviewWriter:
 | `IFRNet_S_Vimeo90K.pth` | ~10 MB | **默认配置推荐**（`model_name`: `IFRNet_S_Vimeo90K`）；旧发行包中同名可为 `IFRNet_S.pth` | [GitHub Releases](https://github.com/ltkong218/IFRNet/releases/download/v1.0/IFRNet_S.pth) |
 | `IFRNet_L_Vimeo90K.pth` / `IFRNet_L.pth` | ~25 MB | Large，质量更高 | [GitHub Releases](https://github.com/ltkong218/IFRNet/releases/download/v1.0/IFRNet_L.pth) |
 
-> 实际文件名以 **`models.ifrnet.model_name`** 与 **`ifrnet_processor_v6_1_single.MODEL_NAME_MAP`** 为准。
+> 实际文件名以 **`models.ifrnet.model_name`** 与 **`ifrnet_processor_video_optimized.MODEL_NAME_MAP`** 为准。
 
 ### `models_RealESRGAN/`
 

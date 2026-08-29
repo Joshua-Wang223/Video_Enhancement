@@ -1,0 +1,92 @@
+方案原理：最新的 Codex CLI 则通过开源模式（OSS）原生支持了任意开源大模型和自定义 OpenAI 兼容服务 。
+
+配置方式：
+Codex CLI (OSS)：直接在配置文件（如  config.toml ）中定义  model_providers ，设置  base_url  和  wire_api = "responses" ，并利用 Profiles 机制实现多模型一键切换 。
+
+优势：
+深度集成：直接在 Codex 客户端或终端内完成切换，无需依赖外部代理软件。
+
+灵活性强：CLI 的 OSS 模式允许极高的自定义，支持本地模型（如 Ollama）和云端网关（如 OpenRouter），且支持根据任务复杂度（如日常小改动 vs 复杂架构设计）灵活切换不同大小的模型 。
+当然。在 Codex CLI 的 OSS（开源）模式下，您可以通过编辑其配置文件  config.toml ，轻松地将 OpenAI Codex 与国产大模型如通义千问、DeepSeek 等集成。以下是具体的配置方案和步骤。
+
+1. 核心配置文件： config.toml 
+
+首先，您需要找到或创建 Codex CLI 的配置文件  config.toml 。其默认位置通常在：
+
+macOS:  ~/Library/Application Support/codex 
+
+Linux:  ~/.config/codex 
+
+Windows:  %APPDATA%\codex 
+
+如果目录或文件不存在，请手动创建。
+
+2. 配置国产大模型供应商
+
+打开  config.toml  文件，在其中添加或修改  model_providers  配置块。这里以 通义千问 和 DeepSeek 为例，展示如何进行配置。
+[model_providers]
+
+  # --- 通义千问 (Qwen) 配置 ---
+  # 使用阿里云百炼或DashScope的API
+  [model_providers.qwen]
+  base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1" # 通义千问的API端点
+  api_key = "YOUR_DASHSCOPE_API_KEY" # 替换为你的DashScope API Key
+  wire_api = "responses" # 关键！声明此端点使用Responses API协议
+
+  # --- DeepSeek 配置 ---
+  # 使用硅基流动或DeepSeek官方API
+  [model_providers.deepseek]
+  base_url = "https://api.siliconflow.cn/v1" # 硅基流动的API端点
+  api_key = "YOUR_SILICONFLOW_API_KEY" # 替换为你的硅基流动API Key
+  wire_api = "responses" # 关键！声明此端点使用Responses API协议
+
+  # --- OpenAI Codex 原始配置 (可选) ---
+  # 如果您仍想保留原始Codex作为选项
+  [model_providers.openai]
+  base_url = "https://api.openai.com/v1"
+  api_key = "YOUR_OPENAI_API_KEY"
+  # wire_api 默认为 openai_chat_completions，无需特别指定
+
+请注意：
+
+请务必将  YOUR_DASHSCOPE_API_KEY  和  YOUR_SILICONFLOW_API_KEY  替换为您在相应平台获取的真实 API Key。
+
+配置中的  wire_api = "responses"  是关键，它告诉 Codex CLI 这个国产模型端点需要使用与原生 OpenAI 不同的  Responses API  协议进行通信。
+
+3. 使用 Profiles 快捷切换模型
+
+配置好供应商后，您可以通过 Codex CLI 的  profile  功能来快速切换和使用不同的模型。在  config.toml  中，您可以定义不同的 profile，每个 profile 指向一个具体的模型供应商和模型ID。
+[profiles]
+
+  # 定义一个名为 'qwen-coder' 的profile
+  [profiles.qwen-coder]
+  model_provider = "qwen" # 指向上面定义的 qwen 供应商
+  model = "qwen-coder-max" # 指定要使用的具体模型ID
+
+  # 定义一个名为 'deepseek-coder' 的profile
+  [profiles.deepseek-coder]
+  model_provider = "deepseek" # 指向上面定义的 deepseek 供应商
+  model = "deepseek-coder-v4-pro" # 指定要使用的具体模型ID
+
+  # 定义一个名为 'openai-codex' 的profile (可选)
+  [profiles.openai-codex]
+  model_provider = "openai"
+  model = "gpt-4o" # 或者您想用的其他OpenAI模型
+
+4. 在终端中使用
+完成以上配置后，您就可以在终端中通过简单的命令来切换和使用不同的大模型了。
+
+查看所有可用的 Profiles:
+
+codex profile list
+
+切换到指定的 Profile (例如使用通义千问):
+
+codex profile use qwen-coder
+
+切换到另一个 Profile (例如使用 DeepSeek):
+
+codex profile use deepseek-coder
+
+执行代码生成或补全任务:
+切换好 profile 后，直接使用  codex  命令即可，它会自动使用当前激活的 profile 所指定的模型和配置

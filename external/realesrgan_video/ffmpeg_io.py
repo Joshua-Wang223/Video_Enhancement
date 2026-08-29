@@ -17,7 +17,14 @@ import re
 import numpy as np
 import ffmpeg
 
-from realesrgan_utils import get_video_meta_info
+from realesrgan_video.realesrgan_utils import get_video_meta_info
+from realesrgan_video.nvenc_sdk import _PRESET_P_INDEX
+
+# [P1-FIX-WIN-SELECT] Windows 的 select() 仅支持 socket fd，传入 subprocess
+# 管道 fd 会抛 OSError(10038)。原 _write_with_timeout 把该异常吞成"写入失败"，
+# 导致 FFmpegWriter（软编回退链）在 Windows 上整体不可用。按平台分流：
+# POSIX 走 select 高性能路径，Windows 走常驻写线程 + 带超时等待。
+_SELECT_SUPPORTS_PIPES = (os.name == 'posix')
 
 # ── [FIX-NVENC-PIPE] NVENC pipe 模式参数常量 ──────────────────────────────────
 # NVENC 内部帧缓冲数（-surfaces N）：
@@ -30,26 +37,16 @@ _NVENC_SURFACES_PIPE: int = 32
 
 # NVENC VBR 模式前向帧预看窗口（-rc-lookahead N）：
 #   仅在 crf>0（-rc:v vbr 模式）下启用。NVENC 默认不使用前向预看（N=0），
-#   设为 16 后编码器可向前分析 16 帧的运动复杂度，进行更精准的码率分配。
+#   设为 8 后编码器可向前分析 8 帧的运动复杂度，进行更精准的码率分配。
 #   典型 PSNR 改善 0.2-0.5 dB（1080p VBR）。
 #   注意：lookahead 需要 N 帧前瞻缓冲，与 -delay 0（零输出延迟）互斥，
 #   故仅在 VBR 路径启用，QP=0 路径改用 -delay 0。
-_NVENC_LOOKAHEAD_VBR: int = 16
+_NVENC_LOOKAHEAD_VBR: int = 8
 
-# [FIX-NVENC-PRESET] x264 → NVENC preset 名称映射。
+# [FIX-PRESET-UNIFY] x264 名称 → NVENC p-index 统一映射（复用 nvenc_sdk._PRESET_P_INDEX）。
 # NVENC 使用 p1(最快)~p7(最慢) 命名体系，与 x264 的 ultrafast~veryslow 不兼容。
-# 当用户通过 --x264-preset 传入 x264 风格名称 + --video-codec h264_nvenc 时自动转换。
-_X264_TO_NVENC_PRESET = {
-    'ultrafast': 'p1',
-    'superfast': 'p2',
-    'veryfast':  'p3',
-    'faster':    'p4',
-    'fast':      'p5',
-    'medium':    'p6',
-    'slow':      'p7',
-    'slower':    'p7',
-    'veryslow':  'p7',
-}
+# 统一口径后与 SDK Level 1 直通路径完全一致（medium→p5、fast→p4、slow→p6 等），
+# 避免 FFmpeg CLI 层与 SDK 层映射不一致导致的后端降级档位跳变。
 
 
 # ── [FIX-SLICE-THREAD] 编码并行度自动探测 ──────────────────────────────────────
@@ -130,6 +127,29 @@ def _detect_encode_parallelisms(n_threads_hint: Optional[int] = None) -> dict:
     }
 
 
+# ── [FIX-NVDEC-THREAD-CAP] NVDEC 解码线程钳位 ────────────────────────────────
+# ffmpeg 6.1.1 的 NVDEC 解码 surface 计算公式：
+#   ulNumDecodeSurfaces = ref_frame_count + num_reorder_frames
+#                         + 2(deinterlace) + thread_count + 3(基础工作 surface)
+# 32 是驱动硬上限（cudaVideoDecoder 拒绝），ffmpeg 6.1.1 无 FFMIN(pool,32) 钳位。
+# 实测：-threads 8 → 32 surfaces 成功；-threads 9 → 33 surfaces 被驱动拒绝。
+# 注意：仅影响解码侧命令；编码侧线程由 _detect_encode_parallelisms() 独立控制。
+_MAX_DECODE_THREADS = 8
+_DECODE_THREAD_HINT_SHOWN = False
+
+def _clamp_decode_threads(requested: Optional[int] = None) -> int:
+    """钳位 NVDEC 解码线程数（驱动 32-surface 硬上限），超限时打印一次提示。"""
+    global _DECODE_THREAD_HINT_SHOWN
+    n = int(requested) if requested else (os.cpu_count() or 4)
+    if n > _MAX_DECODE_THREADS:
+        if not _DECODE_THREAD_HINT_SHOWN:
+            print(f"[decode] threads={n} exceeds max {_MAX_DECODE_THREADS}, "
+                  f"clamped (NVDEC 32-surface limit)", flush=True)
+            _DECODE_THREAD_HINT_SHOWN = True
+        n = _MAX_DECODE_THREADS
+    return n
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # M2/M3: 硬件能力探测 — [FIX-NVENC-UNIFIED] 统一 NVENC 双检测路径
 # ─────────────────────────────────────────────────────────────────────────
@@ -164,6 +184,9 @@ class HardwareCapability:
                 return False
             dec_cmd = [
                 'ffmpeg', '-hwaccel', 'cuda',
+                # [FIX-NVDEC-THREAD-CAP] 解码线程钳位到 ≤8，避免多核机上
+                # NVDEC 解码 surface 超过驱动 32 上限。
+                '-threads', str(_clamp_decode_threads()),
                 '-f', 'h264', '-i', 'pipe:0',
                 '-f', 'rawvideo', '-pix_fmt', 'bgr24',
                 '-frames:v', '1', 'pipe:1', '-loglevel', 'error',
@@ -413,7 +436,10 @@ class FFmpegReader:
                     an=None,                               # 不处理音频，顺便消除 [mp3float] Header missing 警告
                     **{'fps_mode': 'passthrough'},         # 替代已弃用的 vsync=0，消除 -vsync deprecated 警告
                 )
-                .global_args('-hide_banner', '-loglevel', 'error', '-nostats')  # 屏蔽 banner / info 行 / 进度行
+                # [FIX-NVDEC-THREAD-CAP] 解码线程钳位到 ≤8，避免多核机上
+                # NVDEC 解码 surface 超过驱动 32 上限（-threads 9 → 33 surfaces 被拒）。
+                .global_args('-hide_banner', '-loglevel', 'error', '-nostats',
+                             '-threads', str(_clamp_decode_threads()))  # 屏蔽 banner / info 行 / 进度行
                 .run_async(pipe_stdout=True, pipe_stderr=True, quiet=False)
             )
             self._ffmpeg_process = process
@@ -703,14 +729,17 @@ class FFmpegWriter:
         return '\n'.join(lines)
 
     def _init_ffmpeg_process(self):
-        video_codec = getattr(self.args, 'video_codec', 'libx264')
+        video_codec = getattr(self.args, 'codec', 'libx264')
         crf = getattr(self.args, 'crf', 23)
-        x264_preset = getattr(self.args, 'x264_preset', 'medium')
+        preset = getattr(self.args, 'encode_preset', 'medium')
+        # [V6451-RATEMODE] 从 processor 层透传的 rate_mode / lookahead_depth
+        rc_mode = getattr(self.args, 'rate_mode', 'vbr_hq')
+        rc_lookahead = getattr(self.args, 'lookahead_depth', _NVENC_LOOKAHEAD_VBR)
 
         # [FIX-NVENC-UNIFIED] 统一 NVENC 检测：静态 GPU 型号表 + ffmpeg probe 双路径
         _hw_profile = getattr(self.args, '_hw_profile', None)
         video_codec = HardwareCapability.best_encoder(video_codec, hw_profile=_hw_profile)
-        self.args.video_codec = video_codec
+        self.args.codec = video_codec
 
         _base, _ext = os.path.splitext(self.output_path)
         self._tmp_video_path = f'{_base}.tmp_novid{_ext}'
@@ -733,14 +762,14 @@ class FFmpegWriter:
         # x265 pool：线程池总大小 = encode_threads
         _x265_pool = _et
 
-        # [FIX-PRESET] NVENC preset 映射：x264 名称 → p1~p7 体系
+        # [FIX-PRESET-UNIFY] NVENC preset 映射：x264 名称 → p1~p7 体系（统一 _PRESET_P_INDEX 口径）
         if video_codec in ('h264_nvenc', 'hevc_nvenc'):
-            if x264_preset in _X264_TO_NVENC_PRESET:
-                nvenc_preset = _X264_TO_NVENC_PRESET[x264_preset]
+            if preset in _PRESET_P_INDEX:
+                nvenc_preset = f"p{_PRESET_P_INDEX[preset] + 1}"
             else:
-                nvenc_preset = x264_preset  # 已经是 p1~p7 格式
+                nvenc_preset = preset  # 已经是 p1~p7 格式
         else:
-            nvenc_preset = x264_preset
+            nvenc_preset = preset
 
         cmd_args = [
             getattr(self.args, 'ffmpeg_bin', 'ffmpeg'),
@@ -784,14 +813,20 @@ class FFmpegWriter:
                         '-delay', '0',
                     ]
                 else:
-                    # [FIX-NVENC-PIPE] NVENC VBR（cq）模式 pipe 场景优化
+                    # [FIX-NVENC-PIPE] NVENC（cq）模式 pipe 场景优化
                     #   -bf 0 禁用 B 帧，降低流水线缓冲延迟
                     #   -rc-lookahead N 前向帧预看（与 -delay 0 互斥）
+                    # [V6451-RATEMODE] rc_mode / rc_lookahead 由 processor 层透传
+                    # [FIX-QVBR-NVENC] FFmpeg NVENC CLI 不支持 "qvbr" 作为 -rc:v 值，
+                    # 映射到 vbr_hq（语义等价：VBR + -cq:v 质量目标控制）。
+                    _NVENC_RC_MAP = {'constqp': 'constqp', 'vbr_hq': 'vbr_hq', 'qvbr': 'vbr_hq'}
+                    nvenc_rc = _NVENC_RC_MAP.get(rc_mode, 'vbr_hq')
+                    print(f'[FFmpegWriter] rate_mode={rc_mode} rc-lookahead={rc_lookahead}')
                     quality_args = [
                         '-preset', nvenc_preset,
-                        '-rc:v', 'vbr', '-cq:v', str(crf), '-b:v', '0',
+                        '-rc:v', nvenc_rc, '-cq:v', str(crf), '-b:v', '0',
                         '-bf', '0',
-                        '-rc-lookahead', str(_NVENC_LOOKAHEAD_VBR),
+                        '-rc-lookahead', str(rc_lookahead),
                         '-surfaces', str(_NVENC_SURFACES_PIPE),
                     ]
                 cmd_args += ['-vcodec', video_codec, '-pix_fmt', 'yuv420p'] + quality_args
@@ -870,9 +905,9 @@ class FFmpegWriter:
                 )
             else:
                 _enc_info = (
-                    f'[FIX-NVENC-PIPE] NVENC VBR(cq={crf}): '
+                    f'[FIX-NVENC-PIPE] NVENC {rc_mode}(cq={crf}): '
                     f'preset={nvenc_preset}  bf=0  '
-                    f'rc-lookahead={_NVENC_LOOKAHEAD_VBR}  '
+                    f'rc-lookahead={rc_lookahead}  '
                     f'surfaces={_NVENC_SURFACES_PIPE}  '
                     f'ffmpeg_threads={_ft}(全局demux，不影响NVENC硬件单元)'
                 )
@@ -935,6 +970,10 @@ class FFmpegWriter:
             rc = self._process.returncode
             self._write_error = f'FFmpeg 已退出 (rc={rc})'
             return False
+
+        # [P1-FIX-WIN-SELECT] 平台分流：Windows 管道 fd 不被 select 支持
+        if not _SELECT_SUPPORTS_PIPES:
+            return self._write_with_timeout_threaded(data, timeout)
 
         try:
             fd = self._process.stdin.fileno()
@@ -1013,6 +1052,96 @@ class FFmpegWriter:
             self._write_error = str(e)
             return False
 
+    def _write_with_timeout_threaded(self, data: bytes, timeout: float = WRITE_TIMEOUT) -> bool:
+        """[P1-FIX-WIN-SELECT] Windows 专用的带超时管道写入。
+
+        常驻后台线程执行阻塞 os.write（Windows 管道无非阻塞模式），
+        主线程以 Event.wait(timeout) 等待单次写入完成；超时/进程退出即判失败。
+        语义与 select 版本对齐：成功返回 True 并累加帧计数，失败写 _write_error。
+        """
+        pw = getattr(self, '_pipe_writer_ctx', None)
+        try:
+            fd = self._process.stdin.fileno()
+        except Exception:
+            self._write_error = 'stdin fileno 不可用'
+            return False
+        if pw is None or pw.get('fd') != fd:
+            q = queue.Queue(maxsize=2)
+            ctx = {'fd': fd, 'queue': q}
+
+            def _pump():
+                while True:
+                    item = q.get()
+                    if item is None:
+                        return
+                    chunk, ev, holder = item
+                    try:
+                        holder['n'] = os.write(ctx['fd'], chunk)
+                    except Exception as e:
+                        holder['err'] = e
+                    finally:
+                        ev.set()
+
+            ctx['thread'] = threading.Thread(
+                target=_pump, daemon=True, name='FFmpegWriter-pipe-win')
+            ctx['thread'].start()
+            self._pipe_writer_ctx = ctx
+            pw = ctx
+
+        offset, total = 0, len(data)
+        deadline = time.time() + timeout
+        while offset < total:
+            now = time.time()
+            if now >= deadline:
+                self._write_error = f'写入超时 ({offset}/{total} 字节)'
+                return False
+
+            chunk = data[offset:offset + self.WRITE_CHUNK_SIZE]
+            ev = threading.Event()
+            holder = {}
+            try:
+                pw['queue'].put((chunk, ev, holder), timeout=1.0)
+            except queue.Full:
+                if self._process.poll() is not None:
+                    rc = self._process.returncode
+                    stderr_text = self._get_ffmpeg_stderr(tail_lines=5)
+                    self._write_error = (
+                        f'FFmpeg 进程已退出 (rc={rc}, 已写 {offset}/{total} 字节)\n{stderr_text}')
+                else:
+                    self._write_error = '写线程队列满（写入停滞）'
+                return False
+
+            remain = max(0.05, deadline - time.time())
+            if not ev.wait(remain):
+                if self._process.poll() is not None:
+                    rc = self._process.returncode
+                    stderr_text = self._get_ffmpeg_stderr(tail_lines=5)
+                    self._write_error = (
+                        f'FFmpeg 进程已退出 (rc={rc}, 已写 {offset}/{total} 字节)\n{stderr_text}')
+                else:
+                    self._write_error = (
+                        f'写入超时 ({offset}/{total} 字节, frame_size={total})')
+                return False
+
+            err = holder.get('err')
+            if err is not None:
+                if self._process.poll() is not None:
+                    rc = self._process.returncode
+                    self._write_error = (
+                        f'FFmpeg 退出 (rc={rc}), OSError: {err}')
+                else:
+                    self._write_error = f'OSError: {err}'
+                return False
+            n = holder.get('n', 0)
+            if n <= 0:
+                self._write_error = 'os.write() 返回 0 (fd 已关闭?)'
+                return False
+            offset += n
+            self._bytes_written_to_pipe += n
+
+        self._frames_written_to_pipe += 1
+        return True
+
     def _write_loop(self):
         """
         [FIX-BATCH-WRITE] 写线程主循环：
@@ -1022,7 +1151,7 @@ class FFmpegWriter:
           · 保留完整的 stall / NVENC 死亡检测 / 重试容错逻辑（原代码 130 行）
         """
         pending: list[bytes] = []
-        _vc = getattr(self.args, 'video_codec', 'libx264')
+        _vc = getattr(self.args, 'codec', 'libx264')
         if _vc in ('h264_nvenc', 'hevc_nvenc'):
             _single_timeout = 300.0
             _max_stall_s   = 600.0
@@ -1169,7 +1298,7 @@ class FFmpegWriter:
         stall_elapsed = 0.0
         consecutive_errors = 0
         stall_first_reported = False
-        _vc = getattr(self.args, 'video_codec', 'libx264')
+        _vc = getattr(self.args, 'codec', 'libx264')
 
         while True:
             if not self._running:
@@ -1203,7 +1332,7 @@ class FFmpegWriter:
             stall_elapsed += single_write_timeout
             if stall_elapsed >= max_stall_s:
                 if _vc in ('h264_nvenc', 'hevc_nvenc'):
-                    _suggestion = (f'建议改用 --video-codec libx264 避免 '
+                    _suggestion = (f'建议改用 --codec libx264 避免 '
                                    f'SR+GFPGAN 与 {_vc} 的 GPU 资源竞争。')
                 else:
                     _suggestion = (f'编码器 {_vc} stdin 阻塞超过 '
@@ -1240,7 +1369,7 @@ class FFmpegWriter:
         if not self._running or self._broken:
             return False
 
-        _vc = getattr(self.args, 'video_codec', 'libx264')
+        _vc = getattr(self.args, 'codec', 'libx264')
         if _vc in ('h264_nvenc', 'hevc_nvenc'):
             _total_timeout = 660.0
         else:

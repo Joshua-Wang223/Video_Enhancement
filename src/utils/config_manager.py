@@ -74,7 +74,7 @@ class Config:
                 "prefetch_factor":  48,
                 "use_compile":      True,
                 "use_cuda_graph":   True,
-                "use_tensorrt":     False,
+                "use_tensorrt":     True,
                 "gfpgan_trt":       False,
                 # v6 face_enhance 精细控制
                 "gfpgan_model":      "1.4",
@@ -85,9 +85,8 @@ class Config:
                 "adaptive_batch":    True,
                 # v5 硬件解/编码
                 "use_hwaccel":    True,
-                "video_codec":    "libx264",   # 底层 argparse 使用的字段名
-                "codec":          "libx264",   # 兼容旧配置，处理器会映射到 video_codec
-                "x264_preset":    "medium",
+                "codec":          "libx264",   # 底层 argparse 使用的字段名（与 ifrnet 统一为 codec）
+                "encode_preset":  "medium",
                 "crf":            23,
                 "ffmpeg_bin":     "ffmpeg",
                 # v6 预览与报告

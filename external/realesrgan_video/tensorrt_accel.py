@@ -6,6 +6,7 @@ Real-ESRGAN Video Enhancement - TensorRT 加速模块 (SR)
 import os
 import sys
 import gc
+import logging
 import threading
 import time
 from typing import Tuple, Optional
@@ -13,9 +14,13 @@ from typing import Tuple, Optional
 import torch
 import torch.nn as nn
 
+# Suppress onnxscript/onnx_ir optimization pass logs and PyTorch ONNX exporter warnings
+for _name in ('onnxscript', 'onnx_ir', 'onnx_ir.passes', 'onnxscript.optimizer', 'onnxscript.rewriter', 'torch.onnx._internal.exporter._schemas'):
+    logging.getLogger(_name).setLevel(logging.ERROR)
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import models_RealESRGAN
+from realesrgan_video.config import models_RealESRGAN
 
 _TRT_LOGGER = None
 
@@ -280,5 +285,10 @@ class TensorRTAccelerator:
             )
         self._trt_stream.synchronize()
         if actual_B < engine_B:
-            out_tensor = out_tensor[:actual_B]
+            # [FIX-MEM-LEAK] .contiguous() 创建独立副本，释放全尺寸 engine_B
+            # 存储。若只用 [:] view，返回的 slice 持有全尺寸存储引用 →
+            # 实际占用 engine_B 显存但只用 actual_B 部分，等效泄漏。
+            # 配合 expandable_segments 模式，cudaFreeAsync 不会立即归还，
+            # 导致碎片累积 → bs=1 最终也 OOM。
+            out_tensor = out_tensor[:actual_B].contiguous()
         return out_tensor

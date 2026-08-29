@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from basicsr.utils.download_util import load_file_from_url
 from basicsr.utils import img2tensor, tensor2img
 from torchvision.transforms.functional import normalize as _tv_normalize
-from config import models_RealESRGAN, models_GFPGAN, gfpgan_weights_dir
+from realesrgan_video.config import models_RealESRGAN, models_GFPGAN, gfpgan_weights_dir
 
 try:
     from gfpgan import GFPGANer

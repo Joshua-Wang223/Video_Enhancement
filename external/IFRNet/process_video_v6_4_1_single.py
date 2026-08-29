@@ -968,7 +968,10 @@ class GPUMonitor:
         current_bs:       int,
         current_pair_q:   int,
         current_result_q: int,
-        codec:            str = '',          # [FIX-NVENC-AWARE] 编码器名称，用于避开 NVENC 误判
+        codec:            str   = '',       # [FIX-NVENC-AWARE] 编码器名称，用于避开 NVENC 误判
+        slot_mb:          float = 0.0,      # [FIX-MAXRQ-DYNAMIC] PinnedPool 每槽 MiB，用于内存上限约束
+        t2_ms:            float = 0.0,      # [FIX-MAXRQ-DYNAMIC] T2 推理延迟（ms）
+        t3_ms:            float = 0.0,      # [FIX-MAXRQ-DYNAMIC] T3 编码延迟（ms）
     ) -> None:
         """
         打印精细统计报告，并依据以下逻辑给出三项调优建议：
@@ -1047,6 +1050,7 @@ class GPUMonitor:
         # ── [FIX-T3-DETECT] result_queue（T3 输出缓冲）建议 ─────────────────
         # 先判断是否 T3-bottleneck：若是，增大 result_queue 无助于提速，
         # 反而加重 PinnedPool 锁页内存压力，应保持或缩小。
+        sug_rq = None   # [FIX-MAXRQ-DYNAMIC] 统一收集建议值，用于后续内存上限约束
         if self._is_t3_bottleneck(stats, codec=codec):
             if current_result_q > 16:
                 sug_rq = max(16, current_result_q - 8)
@@ -1070,6 +1074,21 @@ class GPUMonitor:
         else:
             print(f'[GPU-MONITOR] ✅ result_queue={current_result_q} 无需调整'
                   f'  （P95={stats.stable_p95:.0f}%，余量 {headroom_gib:.1f} GiB）')
+
+        # [FIX-MAXRQ-DYNAMIC] PinnedPool 内存上限约束（与 get_queue_suggestions 一致）
+        if slot_mb > 0.0 and sug_rq is not None:
+            _mem_avail_gb_pr = _detect_encode_parallelism()['mem_avail_gb']
+            _max_rq_pr = _compute_max_result_queue(
+                slot_mb=slot_mb, mem_avail_gb=_mem_avail_gb_pr,
+                T2_ms=t2_ms, T3_ms=t3_ms,
+            )
+            if sug_rq > _max_rq_pr:
+                print(f'[GPU-MONITOR] ℹ️  PinnedPool 内存上限约束: '
+                      f'result_queue 理想值 {sug_rq} → {_max_rq_pr}'
+                      f'  (slot={slot_mb:.1f} MB × {_max_rq_pr}'
+                      f' ≈ {slot_mb * _max_rq_pr:.0f} MB'
+                      f'  ≤ RAM预算 {_mem_avail_gb_pr * 1024 * 0.06:.0f} MB'
+                      f'  [mem_avail={_mem_avail_gb_pr:.1f} GB × 6%])')
 
     def get_queue_suggestions(
         self,
@@ -1896,16 +1915,19 @@ class IFRNetPipelineRunner:
                         # [FIX-T3-V641] pix_fmt 已改为 rgb24，不再需要 BGR→RGB 翻转
                         arr = _item.buf[:_item.B * _item.T].numpy()
                         for i in range(_item.B):
+                            # [FIX-BATCH-PAIR] per-pair 批量写入，减少 pipe write() 系统调用
+                            _pair_buf = bytearray()
                             for j in range(_item.T):
                                 fr = arr[i * _item.T + j,
                                          :_item.orig_H, :_item.orig_W]
                                 if not fr.flags['C_CONTIGUOUS']:
                                     fr = np.ascontiguousarray(fr)
-                                writer.write_frame(fr)
+                                _pair_buf.extend(fr.tobytes())
                                 written += 1
                             # [FIX-T3-V641] img1_raw 来自 reader（BGR），须翻转为 RGB 以匹配 rgb24
-                            writer.write_frame(_item.img1_raw[i][:, :, ::-1].copy())
+                            _pair_buf.extend(_item.img1_raw[i][:, :, ::-1].copy().tobytes())
                             written += 1
+                            writer.write_bytes(bytes(_pair_buf))
                         # [EVENT-POOL] 写完后归还 Event 和 buffer
                         self._event_pool.release(_item.event)
                         _item.pool.release(_item.buf)
@@ -1915,12 +1937,15 @@ class IFRNetPipelineRunner:
                         _n_pairs_total += n_pairs
                         # [FIX-T3-V641] 直写模式，无中间队列
                         for i, interps in enumerate(results):
+                            # [FIX-BATCH-PAIR] per-pair 批量写入
+                            _pair_buf = bytearray()
                             for fr in interps:
-                                writer.write_frame(fr)
+                                _pair_buf.extend(fr.tobytes())
                                 written += 1
                             # [FIX-T3-V641] img1_raw 来自 reader（BGR），翻转为 RGB
-                            writer.write_frame(img1_raw_list[i][:, :, ::-1].copy())
+                            _pair_buf.extend(img1_raw_list[i][:, :, ::-1].copy().tobytes())
                             written += 1
+                            writer.write_bytes(bytes(_pair_buf))
 
                 if _has_sentinel:
                     received_sentinel = True
@@ -3542,8 +3567,7 @@ class IFRNetVideoProcessor:
     def _is_first_segment(self) -> bool:
         return self._segment_index <= 1
 
-    def _is_last_segment(self) -> bool:
-        return self._segment_index >= self._total_segments
+    # 帧数守恒确保每段独立排空，无需 _is_last_segment
 
     def _get_or_create_result_pool(self, pool_size: int, max_BT: int,
                                    H_pad: int, W_pad: int) -> 'Tuple[PinnedResultPool, bool]':
@@ -3921,6 +3945,7 @@ class IFRNetVideoProcessor:
         if _gpu_stats.sample_count > 0:
             _cur_pair_q   = getattr(self, '_last_pair_q_size',   4)
             _cur_result_q = getattr(self, '_last_result_q_size', 16)
+            _slot_mb = getattr(self, '_last_pool_slot_mb', 0.0)
             if _verbose_report:
                 print()
                 self._gpu_monitor.print_report(
@@ -3928,10 +3953,10 @@ class IFRNetVideoProcessor:
                     current_bs       = self.batch_size,
                     current_pair_q   = _cur_pair_q,
                     current_result_q = _cur_result_q,
-                    codec            = getattr(self, '_last_used_codec', self.codec),    # [FIX-NVENC-AWARE] 使用实际编码器
+                    codec            = getattr(self, '_last_used_codec', self.codec),
+                    slot_mb          = _slot_mb,   # [FIX-MAXRQ-DYNAMIC] 传入以应用内存上限约束
                 )
             # [FIX-T3-DETECT] 获取 GPU-MONITOR 的队列建议（含 T3-bottleneck 检测）
-            _slot_mb = getattr(self, '_last_pool_slot_mb', 0.0)
             pair_gpu_sug, result_gpu_sug = self._gpu_monitor.get_queue_suggestions(
                 _gpu_stats, _cur_pair_q, _cur_result_q,
                 slot_mb=_slot_mb,           # 传入每 slot 大小，用于 PinnedPool 内存约束
@@ -4058,6 +4083,11 @@ class IFRNetVideoProcessor:
 
             self._next_pair_queue   = final_pair_q
             self._next_result_queue = final_result_q
+            # [SEGMENT-REUSE] 非末段输出简短队列调整摘要
+            if not _verbose_report:
+                print(f'[ADAPTIVE-QUEUE] 段{segment_index}→段{segment_index+1}: '
+                      f'pair_queue={_cur_pair_q}→{final_pair_q} '
+                      f'result_queue={_cur_result_q}→{final_result_q}')
         else:
             if _verbose_report:
                 print('[GPU-MONITOR] 警告：未能获取任何 GPU 采样数据，'

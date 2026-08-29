@@ -2,6 +2,8 @@
 
 > 本文档记录各版本的核心改进和升级步骤。
 
+> **最新入口**：当前推荐使用 `src/main_video_optimized.py`（IFRNet v6.4.5.1 已模块化至 `external/ifrnet_video/`，Real-ESRGAN 走 `external/realesrgan_video/`）。本文档 v1–v5 为历史演进记录。
+
 ---
 
 ## 版本概览
@@ -15,7 +17,7 @@
 
 ---
 
-## v5.0（当前版本）
+## v5.0（历史版本）
 
 ### 核心新增功能
 

@@ -638,7 +638,7 @@ class PinnedRingBuffer:
     """
     [FIX-T3-V642] 预分配 N 个 pinned memory slot 的环形缓冲区。
 
-    T2 (推理线程) 获取空 slot → GPU 裁剪 + RGB→BGR + D2H → 存储 CUDA event → 标记为可读。
+    T2 (推理线程) 获取空 slot → GPU 裁剪 + D2H（RGB，匹配 rgb24 pix_fmt） → 存储 CUDA event → 标记为可读。
     T3 (写入线程) 获取可读 slot → 等待 event → memoryview 零拷贝写 pipe → 标记为空闲。
 
     每帧数据在 pinned memory 中完全连续（无 padding），memoryview 切片即得完整帧。
@@ -1056,7 +1056,10 @@ class GPUMonitor:
         current_bs:       int,
         current_pair_q:   int,
         current_result_q: int,
-        codec:            str = '',          # [FIX-NVENC-AWARE] 编码器名称，用于避开 NVENC 误判
+        codec:            str   = '',       # [FIX-NVENC-AWARE] 编码器名称，用于避开 NVENC 误判
+        slot_mb:          float = 0.0,      # [FIX-MAXRQ-DYNAMIC] PinnedPool 每槽 MiB，用于内存上限约束
+        t2_ms:            float = 0.0,      # [FIX-MAXRQ-DYNAMIC] T2 推理延迟（ms）
+        t3_ms:            float = 0.0,      # [FIX-MAXRQ-DYNAMIC] T3 编码延迟（ms）
     ) -> None:
         """
         打印精细统计报告，并依据以下逻辑给出三项调优建议：
@@ -1135,6 +1138,7 @@ class GPUMonitor:
         # ── [FIX-T3-DETECT] result_queue（T3 输出缓冲）建议 ─────────────────
         # 先判断是否 T3-bottleneck：若是，增大 result_queue 无助于提速，
         # 反而加重 PinnedPool 锁页内存压力，应保持或缩小。
+        sug_rq = None   # [FIX-MAXRQ-DYNAMIC] 统一收集建议值，用于后续内存上限约束
         if self._is_t3_bottleneck(stats, codec=codec):
             if current_result_q > 16:
                 sug_rq = max(16, current_result_q - 8)
@@ -1158,6 +1162,21 @@ class GPUMonitor:
         else:
             print(f'[GPU-MONITOR] ✅ result_queue={current_result_q} 无需调整'
                   f'  （P95={stats.stable_p95:.0f}%，余量 {headroom_gib:.1f} GiB）')
+
+        # [FIX-MAXRQ-DYNAMIC] PinnedPool 内存上限约束（与 get_queue_suggestions 一致）
+        if slot_mb > 0.0 and sug_rq is not None:
+            _mem_avail_gb_pr = _detect_encode_parallelism()['mem_avail_gb']
+            _max_rq_pr = _compute_max_result_queue(
+                slot_mb=slot_mb, mem_avail_gb=_mem_avail_gb_pr,
+                T2_ms=t2_ms, T3_ms=t3_ms,
+            )
+            if sug_rq > _max_rq_pr:
+                print(f'[GPU-MONITOR] ℹ️  PinnedPool 内存上限约束: '
+                      f'result_queue 理想值 {sug_rq} → {_max_rq_pr}'
+                      f'  (slot={slot_mb:.1f} MB × {_max_rq_pr}'
+                      f' ≈ {slot_mb * _max_rq_pr:.0f} MB'
+                      f'  ≤ RAM预算 {_mem_avail_gb_pr * 1024 * 0.06:.0f} MB'
+                      f'  [mem_avail={_mem_avail_gb_pr:.1f} GB × 6%])')
 
     def get_queue_suggestions(
         self,
@@ -1766,6 +1785,12 @@ class IFRNetPipelineRunner:
         self._fc_extra   = 0                    # [FIX-INFER-THREAD] 推理线程累计输入帧
         self._oc_extra   = 0                    # [FIX-INFER-THREAD] 推理线程累计输出帧
 
+        # 诊断计数器：追踪 pipeline 各阶段的帧/批次数
+        self._diag_reader_pairs   = 0           # reader 发送的 pair 总数
+        self._diag_infer_batches  = 0           # infer 处理的 batch 数
+        self._diag_infer_pairs    = 0           # infer 处理的 pair 总数 (∑B)
+        self._pending_sentinel    = False       # SENTINEL 无法放回 pair_queue 时的紧急标记
+
         # [EVENT-POOL] 预分配 CUDA Event 对象池
         self._event_pool = CudaEventPool(max_size=8)
 
@@ -1831,6 +1856,7 @@ class IFRNetPipelineRunner:
                     continue
 
     def _enqueue_pair(self, img1_raw, img0_pad, img1_pad, is_end):
+        self._diag_reader_pairs += len(img1_raw)
         item = (img1_raw, img0_pad, img1_pad, is_end)
         while self.running:
             try:
@@ -1860,11 +1886,23 @@ class IFRNetPipelineRunner:
             except queue.Empty:
                 return
             if item is self._SENTINEL:
-                # [FIX-DOUBLEBUF-SLOT] timeout put，防止队列满时阻塞 T2
-                try:
-                    self.pair_queue.put(item, timeout=5.0)
-                except Exception:
-                    pass
+                # 将 SENTINEL 放回 pair_queue，最多重试 5 次
+                # 若队列满且无法放回，存入 _pending_sentinel 供 _infer_loop 读取
+                _put_ok = False
+                for _ in range(5):
+                    try:
+                        self.pair_queue.put(item, timeout=1.0)
+                        _put_ok = True
+                        break
+                    except queue.Full:
+                        continue
+                    except Exception:
+                        break
+                if not _put_ok:
+                    if not self.proc.quiet:
+                        print('[IFRNet-Prefetch] ⚠️ 无法将 SENTINEL 放回 pair_queue，'
+                              '存入 _pending_sentinel', flush=True)
+                    self._pending_sentinel = True
                 return
             img1_raw, img0_pad, img1_pad, is_end = item
             if not img0_pad:
@@ -1984,6 +2022,9 @@ class IFRNetPipelineRunner:
                         # ── [FIX-T3-V642] Ring Buffer 零拷贝路径 ──
                         _, _ring_slot = _item
                         _rb = self.proc._ring_buf
+                        if _rb is None:
+                            print('[IFRNet-Writer] ⚠️ _ring_buf 已释放，跳过 RING item', flush=True)
+                            continue
                         rv = _rb.reader_acquire(timeout=5.0)
                         if rv is None:
                             print('[IFRNet-Writer] ⚠️ ring buffer reader_acquire 返回 None，跳过', flush=True)
@@ -1995,16 +2036,19 @@ class IFRNetPipelineRunner:
                             self._event_pool.release(_ev)
                         frame_sz = _oh * _ow * 3
                         _n_pairs_total += _rB
-                        # 零拷贝：直接从 memoryview 切片写入 pipe
+                        # [FIX-ZEROCOPY] 零拷贝写入: pinned memory → memoryview → stdin pipe
+                        # write_direct() 已声明支持 bytes/memoryview（见其 docstring），
+                        # 底层 stdin.write() 原生接受 memoryview，无需创建中间 bytes 对象。
+                        # 逐 pair 写入 (而非 bytearray 批量累积) 避免每 batch ~252MB 内存搅拌。
+                        mv_flat = _mv.cast('B')
                         for i in range(_rB):
-                            for j in range(_rT):
-                                f_idx = i * _rT + j
-                                offset = f_idx * frame_sz
-                                writer.write_direct(_mv[offset:offset + frame_sz])
-                                written += 1
-                            # img1_raw: 来自 reader (BGR)，直接 tobytes() 写管道
+                            interp_start = i * _rT * frame_sz
+                            interp_end   = (i + 1) * _rT * frame_sz
+                            writer.write_direct(mv_flat[interp_start:interp_end])
+                            written += _rT
+                            # img1_raw: 来自 reader (BGR)，翻转为 RGB 以匹配 rgb24
                             if i < len(_img1l):
-                                writer.write_direct(_img1l[i].tobytes())
+                                writer.write(_img1l[i][:, :, ::-1].copy())
                                 written += 1
                         _rb.reader_release(_sid)
                     elif isinstance(_item, _PinnedResultItem):
@@ -2012,13 +2056,17 @@ class IFRNetPipelineRunner:
                         n_pairs = _item.B
                         _n_pairs_total += n_pairs
                         arr = _item.buf[:_item.B * _item.T].numpy()
+                        # pix_fmt 为 rgb24，数据保持 RGB（不翻转）
                         for i in range(_item.B):
                             for j in range(_item.T):
                                 fr = arr[i * _item.T + j,
-                                         :_item.orig_H, :_item.orig_W, ::-1].copy()
+                                         :_item.orig_H, :_item.orig_W]
+                                if not fr.flags['C_CONTIGUOUS']:
+                                    fr = np.ascontiguousarray(fr)
                                 writer.write(fr)
                                 written += 1
-                            writer.write(_item.img1_raw[i])
+                            # img1_raw 来自 reader (BGR)，翻转为 RGB
+                            writer.write(_item.img1_raw[i][:, :, ::-1].copy())
                             written += 1
                         self._event_pool.release(_item.event)
                         _item.pool.release(_item.buf)
@@ -2031,7 +2079,8 @@ class IFRNetPipelineRunner:
                             for fr in interps:
                                 writer.write(fr)
                                 written += 1
-                            writer.write(img1_raw_list[i])
+                            # img1_raw 来自 reader (BGR)，翻转为 RGB
+                            writer.write(img1_raw_list[i][:, :, ::-1].copy())
                             written += 1
 
                 if _has_sentinel:
@@ -2211,8 +2260,10 @@ class IFRNetPipelineRunner:
         self._infer_th.start()
 
         # 等待工作线程退出（先等 Writer，确保其错误先写入 self._error）
+        # 无超时 join：writer 收到 SENTINEL 后应正常退出，不退出说明死锁，
+        # 超时后清 ring_buf 会导致 writer 崩溃（二次故障掩盖根因）
         if self._writer_th is not None:
-            self._writer_th.join(timeout=10.0)
+            self._writer_th.join()
         self._infer_th.join()
 
         # [FIX-POOL-LEAK / SEGMENT-REUSE] PinnedRingBuffer 由 _cached_ring_buf
@@ -2335,10 +2386,26 @@ class IFRNetPipelineRunner:
                         item = self.pair_queue.get(timeout=2.0)
                     except queue.Empty:
                         if not self._reader_th.is_alive():
+                            # [DIAG-SENTINEL] pair_queue SENTINEL 丢失时的紧急退出路径
+                            if self._pending_sentinel and self._prefetch_deque:
+                                # 仍有预取数据待处理，消耗完再退出
+                                continue
+                            if self._pending_sentinel:
+                                if not self.proc.quiet:
+                                    print('[IFRNet-Infer] _pending_sentinel 触发，退出推理循环',
+                                          flush=True)
                             break
                         continue
 
                 if item is self._SENTINEL:
+                    # 若 _prefetch_deque 仍有预取 batch，SENTINEL 放回 pair_queue
+                    # 继续处理，避免 slot semaphore 泄漏 + 最后一批帧丢失
+                    if self._prefetch_deque:
+                        try:
+                            self.pair_queue.put(item, timeout=2.0)
+                        except queue.Full:
+                            self._pending_sentinel = True
+                        continue
                     break
 
                 img1_raw, img0_pad, img1_pad, is_end = item
@@ -2409,6 +2476,8 @@ class IFRNetPipelineRunner:
 
                 fc_extra += B
                 oc_extra += B * (len(timesteps) + 1)
+                self._diag_infer_batches += 1
+                self._diag_infer_pairs   += B
                 meter.update(B)
 
         except Exception as e:
@@ -2517,7 +2586,7 @@ def frames_to_tensor(frames, device, stream=None, dtype=torch.float32, slot: int
 
 
 def tensor_to_np(t, orig_H, orig_W, sync_stream=None) -> List[np.ndarray]:
-    """[FIX-D2H] 异步 D2H，用于同步回退路径。"""
+    """[FIX-D2H] 异步 D2H，用于同步回退路径。pix_fmt rgb24 保持 RGB 不翻转。"""
     if sync_stream is not None and torch.cuda.is_available():
         torch.cuda.current_stream().wait_stream(sync_stream)
     arr_gpu    = t.clamp_(0.0, 1.0).mul_(255.0).round_().byte()
@@ -2529,7 +2598,7 @@ def tensor_to_np(t, orig_H, orig_W, sync_stream=None) -> List[np.ndarray]:
     if device.type == 'cuda':
         torch.cuda.synchronize(device)
     arr = out_pinned.numpy()
-    return [arr[i, :orig_H, :orig_W, ::-1].copy() for i in range(arr.shape[0])]
+    return [np.ascontiguousarray(arr[i, :orig_H, :orig_W]) for i in range(arr.shape[0])]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2867,7 +2936,7 @@ class FFmpegWriter:
         cmd = [
             ffmpeg_bin, '-y',
             '-f', 'rawvideo', '-vcodec', 'rawvideo',
-            '-pix_fmt', 'bgr24',
+            '-pix_fmt', 'rgb24',
             '-s', f'{width}x{height}',
             '-r', f'{fps:.6f}',
             '-i', 'pipe:0',
@@ -3486,8 +3555,9 @@ class IFRNetVideoProcessor:
                 self._pipeline_runner._try_prefetch_next()
 
         # ── [FIX-T3-V642] RING-BUFFER D2H 路径 ──────────────────────────────
-        # float() + 量化 + DMA 全在 stream_d2h 上执行；GPU 侧 RGB→BGR + 裁剪；
-        # 写入 PinnedRingBuffer slot（无 padding，每帧连续），返回轻量句柄。
+        # float() + 量化 + DMA 全在 stream_d2h 上执行；裁剪后写入
+        # PinnedRingBuffer slot（无 padding，每帧连续），返回轻量句柄。
+        # pix_fmt 改为 rgb24，数据保持 RGB，不做通道翻转。
         if (self._ring_buf is not None
                 and self.stream_d2h is not None
                 and pred_big.device.type == 'cuda'):
@@ -3501,15 +3571,14 @@ class IFRNetVideoProcessor:
                         pred_f = pred_big.float()
                     else:
                         pred_f = pred_big
-                    # [FIX-T3-V642] GPU 侧: 量化 + CHW→HWC + RGB→BGR + 裁剪到 orig_H×orig_W
                     pred_u8 = (
                         pred_f.clamp_(0.0, 1.0).mul_(255.0).byte()
                         .permute(0, 2, 3, 1)                              # CHW → HWC (BT,H,W,3) RGB
                         .contiguous()
                     )
-                    # RGB→BGR: 取通道 [2,1,0]，裁剪到原始分辨率
-                    pred_bgr = pred_u8[:, :orig_H, :orig_W, [2, 1, 0]].contiguous()
-                    slot_tensor[:BT].copy_(pred_bgr, non_blocking=True)
+                    # 裁剪到原始分辨率，保持 RGB（pix_fmt 已是 rgb24）
+                    pred_rgb = pred_u8[:, :orig_H, :orig_W, :].contiguous()
+                    slot_tensor[:BT].copy_(pred_rgb, non_blocking=True)
                 ev = (self._pipeline_runner._event_pool.acquire()
                       if self._pipeline_runner is not None
                       else torch.cuda.Event())
@@ -3655,8 +3724,7 @@ class IFRNetVideoProcessor:
     def _is_first_segment(self) -> bool:
         return self._segment_index <= 1
 
-    def _is_last_segment(self) -> bool:
-        return self._segment_index >= self._total_segments
+    # 帧数守恒确保每段独立排空，无需 _is_last_segment
 
     def _get_or_create_ring_buf(self, num_slots: int, max_frames_per_slot: int,
                                 H: int, W: int) -> 'Tuple[PinnedRingBuffer, bool]':
@@ -3887,6 +3955,11 @@ class IFRNetVideoProcessor:
             # [FIX-T3-FPS] 保存实测 T3 fps + 编码分辨率，供 process_video 报告使用
             self._last_t3_fps_measured = getattr(pipeline, '_t3_fps_measured', 0.0)
             self._last_encode_hw = (H, W)
+            # 诊断计数器：reader/infer/writer 三级帧数追踪
+            self._diag_reader_pairs  = getattr(pipeline, '_diag_reader_pairs', 0)
+            self._diag_infer_batches = getattr(pipeline, '_diag_infer_batches', 0)
+            self._diag_infer_pairs   = getattr(pipeline, '_diag_infer_pairs', 0)
+            self._diag_writer_frames = getattr(pipeline, '_written', 0)
             frame_count  += fc_extra
             output_count += oc_extra
             if n_seg_est > 0:
@@ -4031,6 +4104,7 @@ class IFRNetVideoProcessor:
         if _gpu_stats.sample_count > 0:
             _cur_pair_q   = getattr(self, '_last_pair_q_size',   4)
             _cur_result_q = getattr(self, '_last_result_q_size', 16)
+            _slot_mb = getattr(self, '_last_pool_slot_mb', 0.0)
             if _verbose_report:
                 print()
                 self._gpu_monitor.print_report(
@@ -4038,10 +4112,10 @@ class IFRNetVideoProcessor:
                     current_bs       = self.batch_size,
                     current_pair_q   = _cur_pair_q,
                     current_result_q = _cur_result_q,
-                    codec            = getattr(self, '_last_used_codec', self.codec),    # [FIX-NVENC-AWARE] 使用实际编码器
+                    codec            = getattr(self, '_last_used_codec', self.codec),
+                    slot_mb          = _slot_mb,   # [FIX-MAXRQ-DYNAMIC] 传入以应用内存上限约束
                 )
             # [FIX-T3-DETECT] 获取 GPU-MONITOR 的队列建议（含 T3-bottleneck 检测）
-            _slot_mb = getattr(self, '_last_pool_slot_mb', 0.0)
             pair_gpu_sug, result_gpu_sug = self._gpu_monitor.get_queue_suggestions(
                 _gpu_stats, _cur_pair_q, _cur_result_q,
                 slot_mb=_slot_mb,           # 传入每 slot 大小，用于 PinnedPool 内存约束
@@ -4168,6 +4242,11 @@ class IFRNetVideoProcessor:
 
             self._next_pair_queue   = final_pair_q
             self._next_result_queue = final_result_q
+            # [SEGMENT-REUSE] 非末段输出简短队列调整摘要
+            if not _verbose_report:
+                print(f'[ADAPTIVE-QUEUE] 段{segment_index}→段{segment_index+1}: '
+                      f'pair_queue={_cur_pair_q}→{final_pair_q} '
+                      f'result_queue={_cur_result_q}→{final_result_q}')
         else:
             if _verbose_report:
                 print('[GPU-MONITOR] 警告：未能获取任何 GPU 采样数据，'

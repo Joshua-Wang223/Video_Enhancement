@@ -1,7 +1,7 @@
 # Video Enhancement — 视频增强处理系统
 
-> **当前版本**: v2.0.0（优化版）｜IFRNet 后端 **v6.3.5**（双流深度流水线 + 段后调参 / 编码与 NVENC 调优）/ Real-ESRGAN 后端 v6.4（深度模块化架构 + 独立优化版）  
-> **最后更新**: 2026-05-14
+> **当前版本**: v2.0.0（优化版）｜IFRNet 后端 **v6.4.5.1**（NVENC SDK Level 1 GPU 直通 + CE-Pipeline 异步编码，深度模块化于 `external/ifrnet_video/`）/ Real-ESRGAN 后端 v6.4（深度模块化架构 + 独立优化版）
+> **最后更新**: 2026-06-15
 
 一套完整的 AI 视频增强解决方案，整合了**视频插帧（IFRNet v6.3.5）**与**视频超分辨率（Real-ESRGAN v6.4）**两大模块，并针对单 GPU 环境进行了深度优化。IFRNet 后端在 v6.3.0 双流架构（H2D 预取 / D2H 独立流 + CudaEventPool）之上，v6.3.5 进一步改进编码稳定性与性能调优、日志可追溯性、软编并行与 NVENC pipe 场景参数等。Real-ESRGAN 侧通过 `realesrgan_video`（深度模块化、4 级并行 + **多片段复用**：模型/TRT 一次初始化、分段复用）与独立优化版 v6.4 并存。
 
@@ -65,25 +65,29 @@ graph TD
     %% ===================================================================
     %% PROCESSOR LAYER
     %% ===================================================================
-    IFRNET_PROC["🎞️ ifrnet_processor_v6_1_single.py<br/>IFRNetProcessor<br/>分段管理 · 断点恢复 · OOM 降级<br/>底层 processor 复用 (v6.1)"]
+    IFRNET_PROC["🎞️ ifrnet_processor_video_optimized.py<br/>IFRNetProcessor<br/>分段管理 · 断点恢复 · OOM 降级<br/>底层 processor 复用（对接 ifrnet_video）"]
     ESRGAN_PROC["🎨 realesrgan_processor_video_optimized.py<br/>RealESRGANVideoProcessor<br/>分段管理 · 断点恢复 · 多片段复用<br/>enhancer 一次初始化全局复用 (v6.5)"]
 
     %% ===================================================================
-    %% IFRNet BACKEND (v6.3.5)
+    %% IFRNet BACKEND (v6.4.5.1)
     %% ===================================================================
-    subgraph IFRNET_BACKEND["external/IFRNet/ — IFRNet 后端 v6.3.5"]
-        IFRNET_CORE["process_video_v6_3_5_single.py<br/>IFRNetVideoProcessor<br/>三阶段流水线"]
-        T1["T1: FFmpegFrameReader<br/>NVDEC 解码 · 帧预取"]
-        T2["T2: GPU 推理<br/>IFRNet 模型 · FP16 / compile / TRT"]
-        T3["T3: FFmpegWriter<br/>H.264 编码 · NVENC"]
+    subgraph IFRNET_BACKEND["external/ifrnet_video/ — IFRNet 后端 v6.4.5.1（深度模块化）"]
+        IFRNET_CORE["main.py<br/>IFRNetVideoProcessor<br/>NVENC SDK Level 1 GPU 直通"]
+        IFRNET_PIPELINE["pipeline.py<br/>IFRNetPipelineRunner<br/>三阶段流水线（T1/T2/T3）+ 队列自动调优"]
+        IFRNET_FFMPEG["ffmpeg_io.py<br/>FFmpegFrameReader · FFmpegWriter<br/>HardwareCapability"]
+        IFRNET_NVENC["nvenc_sdk.py<br/>NVENCEncoder · _NVENCEncodeThread<br/>CE-Pipeline 异步 · FFmpegMuxer"]
+        IFRNET_TRT["tensorrt_accel.py<br/>TensorRTAccelMixin<br/>TRT Engine 构建/推理"]
+        IFRNET_CONFIG["config.py · ifrnet_utils.py<br/>路径/模型常量 · 池 · tensor 辅助"]
         DUAL_STREAM["双 CUDA Transfer Stream<br/>stream_h2d (预取) · stream_d2h (输出)<br/>CudaEventPool"]
         GPU_MON["GPU 监测线程<br/>2s 采样 · batch 建议"]
 
-        IFRNET_CORE --> T1
-        IFRNET_CORE --> T2
-        IFRNET_CORE --> T3
-        IFRNET_CORE --> DUAL_STREAM
+        IFRNET_CORE --> IFRNET_PIPELINE
+        IFRNET_CORE --> IFRNET_FFMPEG
+        IFRNET_CORE --> IFRNET_NVENC
+        IFRNET_CORE --> IFRNET_TRT
+        IFRNET_CORE --> IFRNET_CONFIG
         IFRNET_CORE --> GPU_MON
+        IFRNET_PIPELINE --> DUAL_STREAM
     end
 
     %% ===================================================================
@@ -191,7 +195,7 @@ graph TD
     class MAIN entry
     class CONFIG_MGR,CONFIG_JSON,VIDEO_UTILS config
     class IFRNET_PROC,ESRGAN_PROC processor
-    class IFRNET_CORE,T1,T2,T3,DUAL_STREAM,GPU_MON backend
+    class IFRNET_CORE,IFRNET_PIPELINE,IFRNET_FFMPEG,IFRNET_NVENC,IFRNET_TRT,IFRNET_CONFIG,DUAL_STREAM,GPU_MON module
     class ESRGAN_MAIN,PIPELINE,R1,R2,R3,R4,FFMPEG_IO,TRT_ACCEL,GFPGAN_SUB,FACE_UTILS,ESRGAN_CONFIG,ASYNC_DISP module
     class M_IFRNET,M_ESRGAN,M_GFPGAN,TRT_CACHE,CHECKPOINT storage
     class INPUT,OUTPUT io
@@ -204,7 +208,7 @@ graph TD
 | **入口层** | `main_video_optimized.py` | CLI 参数解析、环境检查、流程编排、批量调度、流水线报告 |
 | **配置层** | `config_manager.py` + `default_config.json` | 配置加载、递归合并、路径自动派生、CLI 覆盖写入 |
 | **处理器层** | `IFRNetProcessor` / `RealESRGANVideoProcessor` | 分段管理、断点恢复、OOM 降级、底层 Backend 复用 |
-| **后端层** | IFRNet v6.3.5 / Real-ESRGAN v6.4 | 模型推理、GPU 加速、编解码、人脸增强 |
+| **后端层** | IFRNet v6.4.5.1 / Real-ESRGAN v6.4 | 模型推理、GPU 加速、编解码、人脸增强 |
 | **工具层** | `video_utils.py` | 视频分割/合并、音频提取/回写、完整性校验 |
 
 ### 数据流（两种处理模式）
@@ -221,15 +225,32 @@ graph TD
 
 > **直连分段优化：** 两个处理器之间直接传递分段文件列表，跳过中间合并+重新分割步骤，节省约 30% I/O。
 
-### IFRNet 后端内部架构 (v6.3.5)
+### IFRNet 后端内部架构 (v6.4.5.1，深度模块化于 `external/ifrnet_video/`)
 
-三阶段深度流水线，三者通过队列异步解耦：
+**NVENC SDK Level 1 GPU 直通 + CE-Pipeline 异步编码**：
+
+> v6.4.5.1 已由单文件脚本 `external/IFRNet/process_video_v6_4_5_1_single.py`（约 8750 行）
+> 逐字保真重构为独立子项目 `external/ifrnet_video/`，目录与模块划分镜像
+> `external/realesrgan_video/`：
+> `main.py`（IFRNetVideoProcessor）· `pipeline.py`（IFRNetPipelineRunner）
+> · `nvenc_sdk.py`（NVENC SDK ctypes + CE-Pipeline）· `tensorrt_accel.py`
+> （TensorRTAccelMixin）· `ffmpeg_io.py`（FFmpeg 读写 + 硬件探测）
+> · `config.py` / `ifrnet_utils.py`（路径常量 / 池与 tensor 辅助）。
+> 处理器层由 `src/processors/ifrnet_processor_video_optimized.py` 对接
+> `ifrnet_video.main.IFRNetVideoProcessor`。
 
 | 阶段 | 组件 | 功能 |
 |------|------|------|
-| **T1 Reader** | `FFmpegFrameReader` | NVDEC 硬件解码 → frame 预处理 → pair_queue |
-| **T2 GPU** | IFRNet 模型推理 | pair_queue → FP16/compile/TRT 推理 → result_queue |
-| **T3 Writer** | `FFmpegWriter` | result_queue → FFmpeg H.264/H.265 编码 (NVENC) |
+| **T1 Reader** | `FFmpegFrameReader`（ffmpeg_io.py） | NVDEC 硬件解码 → frame 预处理 → pair_queue |
+| **T2 GPU** | IFRNet 模型推理（pipeline.py） | pair_queue → FP16/compile/TRT 推理 → result_queue (GPU tensor) |
+| **T3 Writer+Encoder** | `_NVENCEncodeThread`（nvenc_sdk.py） | result_queue → RGB→NV12 GPU kernel → CE-Pipeline 异步编码 → H.264 ES → FFmpegMuxer |
+
+**NVENC SDK 直通编码特色**：
+- **4-slot 环形缓冲区**：`pipeline_depth=4`，分散 NVENC buffer 争用，帧间流水线化
+- **CE-Pipeline 异步编码**：`encode_frames_batch_ce_pipeline()` — per-frame CUDA completionEvent 异步提交，LockBitstream 延迟收割，消除 EncodePicture 同步阻塞（+13~39% FPS）
+- **多级回退体系**：Level 1 (NVENC SDK) → Level 2/3 (PinnedRingBuffer + FFmpeg NVENC/软编) → Level 4 (FFmpegWriter)
+- **RC 模式**：CONSTQP / VBR_HQ (CQ 质量优先) / QVBR (码率可控)，支持 Lookahead
+- **GPU RGB→NV12 批量转换**：`_rgb_to_nv12_gpu_batch()`，单次 kernel launch 替代 N 次调用
 
 - **双 CUDA Transfer Stream**：`stream_h2d`（H2D 预取）与 `stream_d2h`（D2H 输出）独立流，与计算流三路重叠
 - **CudaEventPool**：预分配 CUDA Event 对象池，消除每批次 Event 创建/销毁开销
@@ -274,8 +295,9 @@ Video_Enhancement/
 │   ├── main_video_v5_single.py     # 历史版本主入口（保留参考）
 │   │
 │   ├── processors/
-│   │   ├── ifrnet_processor_v6_1_single.py          # ★ IFRNet 处理器 v6.1（对接 v6.3.5 后端）
-│   │   ├── ifrnet_processor_v6_single.py            # IFRNet 处理器 v6（历史版本，保留参考）
+│   │   ├── ifrnet_processor_video_optimized.py      # ★ IFRNet 处理器（优化版，对接 ifrnet_video 模块化后端）
+│   │   ├── ifrnet_processor_v6_4_single.py          #   IFRNet 处理器 v6（历史适配层，对接单文件后端）
+│   │   ├── ifrnet_processor_v6_1_single.py          #   历史版本处理器（保留参考）
 │   │   ├── realesrgan_processor_video_optimized.py  # ★ Real-ESRGAN 处理器（优化版，对接 realesrgan_video）
 │   │   ├── realesrgan_processor_video_v6_single.py  # Real-ESRGAN 处理器 v6（历史版本，保留参考）
 │   │   └── ...                                       # 更早历史版本处理器
@@ -287,13 +309,25 @@ Video_Enhancement/
 │       └── output_filter.py        # FFmpeg 输出过滤
 │
 ├── external/
+│   ├── ifrnet_video/                       # ★ IFRNet v6.4.5.1 深度模块化子项目（当前对接）
+│   │   ├── main.py                         #   主入口：IFRNetVideoProcessor + main()
+│   │   ├── pipeline.py                     #   三阶段流水线：IFRNetPipelineRunner + GPU 监测 + 队列自动调优
+│   │   ├── nvenc_sdk.py                    #   NVENC SDK Level 1：NVENCEncoder / _NVENCEncodeThread / FFmpegMuxer
+│   │   ├── tensorrt_accel.py               #   TensorRT：Engine 构建/缓存 + TRT 推理分支（mixin）
+│   │   ├── ffmpeg_io.py                    #   FFmpeg 读写：FFmpegFrameReader / FFmpegWriter / HardwareCapability
+│   │   ├── config.py                       #   路径与模型常量
+│   │   ├── ifrnet_utils.py                 #   模型加载 / 池 / tensor 辅助
+│   │   └── __init__.py                     #   包初始化
+│   │
 │   ├── IFRNet/
-│   │   ├── process_video_v6_3_5_single.py  # ★ IFRNet v6.3.5 后端核心（当前对接）
-│   │   ├── process_video_v6_3_0_single.py    # IFRNet v6.3.0（历史，双流流水线基线）
-│   │   ├── process_video_v6_1_single.py    # IFRNet v6.1 后端核心（历史版本）
-│   │   ├── process_video_v6_1.py           # IFRNet v6.1 后端核心（多卡）
-│   │   ├── process_video_v6_2_4_single.py  # IFRNet v6.2.4 后端核心（过渡版本）
-│   │   └── models/                         # IFRNet 模型定义
+│   │   ├── process_video_v6_4_5_1_single.py  #   IFRNet v6.4.5.1 单文件源（已逐字拆分至 ifrnet_video/，保留参考）
+│   │   ├── process_video_v6_4_5_single.py     #   IFRNet v6.4.5（CE-Pipeline 原版）
+│   │   ├── process_video_v6_4_4_1_single.py   #   IFRNet v6.4.4.1（全RC + _NVENCEncodeThread）
+│   │   ├── process_video_v6_4_4_single.py     #   IFRNet v6.4.4（CONSTQP + _NVENCEncodeThread）
+│   │   ├── process_video_v6_4_3_1_single.py   #   IFRNet v6.4.3.1（全RC，_writer_loop 编码）
+│   │   ├── process_video_v6_4_3_single.py     #   IFRNet v6.4.3（CONSTQP-only，NVENC SDK 起点）
+│   │   ├── process_video_v6_3_5_single.py     #   IFRNet v6.3.5（双流流水线基线，FFmpeg NVENC）
+│   │   └── models/                            #   IFRNet 模型定义
 │   │
 │   └── realesrgan_video/                # ★ Real-ESRGAN v6.4 深度模块化子项目
 │       ├── main.py                       #   主入口（main_optimized），由处理器调用
@@ -803,13 +837,13 @@ TRT Engine 缓存（IFRNet / ESRGan 共用）:
 
 | 操作 | 设置 | 10 分钟视频耗时 |
 |------|------|--------------|
-| 插帧 | 2x IFRNet_S（v6.3.5，bs=48 调优） | ~5 分钟 |
-| 插帧 | 4x IFRNet_S（v6.3.5，bs=48 调优） | ~10 分钟 |
+| 插帧 | 2x IFRNet_S（v6.4.5.1，NVENC SDK 直通，bs=48） | ~3 分钟 |
+| 插帧 | 4x IFRNet_S（v6.4.5.1，NVENC SDK 直通，bs=48） | ~6 分钟 |
 | 超分 | 2x | ~50 分钟 |
 | 超分 | 4x | ~125 分钟 |
-| **插帧 2x + 超分 4x（直连流水线）** | **推荐配置** | **~127 分钟** |
+| **插帧 2x + 超分 4x（直连流水线）** | **推荐配置** | **~125 分钟** |
 
-IFRNet v6.3.x 双流深度流水线在提高 `batch_size` 与队列深度后，插帧吞吐可较保守默认再提升约 20–30%（视显存与分辨率而定）。优化版直连流水线相比 v1 节省约 30% 总时间和 38% 磁盘 I/O。Real-ESRGAN v6.4 深度流水线 + 多片段复用降低段间启动成本；TRT 在 Engine 已缓存时推理吞吐可额外提升约 15–30%。
+IFRNet v6.4.x NVENC SDK Level 1 GPU 直通 + CE-Pipeline 异步编码相比旧版 FFmpeg NVENC pipe 路径，编码吞吐提升 30–50%。优化版直连流水线相比 v1 节省约 30% 总时间和 38% 磁盘 I/O。Real-ESRGAN v6.4 深度流水线 + 多片段复用降低段间启动成本；TRT 在 Engine 已缓存时推理吞吐可额外提升约 15–30%。
 
 ---
 
@@ -1000,24 +1034,24 @@ python src/main_video_optimized.py -i input.mp4 -o output.mp4 --report report.js
 两个处理器均可脱离主流程独立运行，方便单独调试：
 
 ```bash
-# ── IFRNet 独立插帧（v6.1 处理器，对接 v6.3.5 后端）──────────────────────────
+# ── IFRNet 独立插帧（优化版处理器，对接 ifrnet_video 模块化后端）────────────────
 
 # 基础 2x 插帧（使用配置中 model_name 自动拼路径）
-python src/processors/ifrnet_processor_v6_1_single.py \
+python src/processors/ifrnet_processor_video_optimized.py \
     -i input.mp4 -o output_2x.mp4
 
 # 指定模型名称 + 4x 插帧
-python src/processors/ifrnet_processor_v6_1_single.py \
+python src/processors/ifrnet_processor_video_optimized.py \
     -i input.mp4 -o output_4x.mp4 \
     --interpolation-factor 4 --ifrnet-model IFRNet_L_Vimeo90K
 
 # 启用 TRT 加速 + 指定缓存目录
-python src/processors/ifrnet_processor_v6_1_single.py \
+python src/processors/ifrnet_processor_video_optimized.py \
     -i input.mp4 -o output_2x.mp4 \
     --use-tensorrt --trt-cache-dir /data/trt_engines
 
 # 关闭 compile（短视频跳过 1–3 分钟预热）
-python src/processors/ifrnet_processor_v6_1_single.py \
+python src/processors/ifrnet_processor_video_optimized.py \
     -i input.mp4 -o output_2x.mp4 \
     --no-compile --no-cuda-graph
 
@@ -1168,8 +1202,8 @@ A: 传入 `--dry-run`，将只打印环境信息和完整配置摘要然后退�
 **Q: 旧版 `main_video_v6_single.py` 还能用吗？**  
 A: 可以。旧版主入口对接的是 `external/Real-ESRGAN/inference_realesrgan_video_v6_1_single.py` 后端，仍保留在项目中供参考。但推荐迁移到 `main_video_optimized.py`，后者对接性能更优的 `realesrgan_video` 深度模块化架构。
 
-**Q: IFRNet v6.3.5 相比旧版有哪些提升？**  
-A: **v6.3.0** 起：双 transfer stream（`stream_h2d` / `stream_d2h`）+ CudaEventPool，实现计算与 H2D/D2H 三流重叠；GPU 监测线程给出 batch 建议。**v6.3.1+** 推理线程与双槽 H2D 预取。**v6.3.2+** 强化编码瓶颈识别、PinnedPool 上限与队列深度，避免错误堆队列。**v6.3.3** 将 RETUNE 统计移到段完成后、增强日志可追溯性；**v6.3.4/v6.3.5** 继续优化编码稳定性与性能调优。默认 `batch_size` 以 `default_config.json` 为准（当前 24），显存充足可自行调高。
+**Q: IFRNet v6.4.5.1 相比旧版有哪些提升？**  
+A: **v6.4.0+** 引入 NVENC SDK Level 1 ctypes GPU 直通编码（替代 FFmpeg NVENC pipe），彻底消除 GPU→CPU→GPU 往复；**v6.4.3+** 实现 CE-Pipeline 异步编码（4-slot 环形缓冲 + per-frame CUDA completionEvent），EncodePicture 异步提交、LockBitstream 延迟收割，消除同步阻塞，CONSTQP 达 612 FPS、VBR_HQ 518 FPS (T4, 720×576)。**v6.4.5.1** 含 V6451-RC-FIXED SEQUENTIAL RC 布局修正与完整 GPU 验证文档。详见项目记忆 `ifrnet-v6-4x-version-matrix`。
 
 **Q: IFRNet `stream_transfer` 属性报错？**  
 A: v6.3.0 起将 `stream_transfer` 拆分为 `stream_h2d`（预取）和 `stream_d2h`（输出）。如有上层代码直接引用 `processor.stream_transfer`，需改为 `stream_h2d` 或 `stream_d2h` 分别使用。

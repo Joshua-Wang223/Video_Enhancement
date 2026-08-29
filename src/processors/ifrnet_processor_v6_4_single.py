@@ -1,0 +1,941 @@
+"""
+IFRNet 视频插帧处理器 v6（单卡版）
+=====================================
+对接 process_video_v6_4_5_1_single.py（IFRNetVideoProcessor），NVENC SDK Level 1 GPU 直通 + CE-Pipeline 异步编码，
+保留分段直接对接与断点恢复逻辑，支持 v6.1 全部硬件加速参数：
+  - FP16 / torch.compile / CUDA Graph（compile 激活时自动接管 Graph）
+  - TensorRT 可选加速（首次构建需缓存 .trt Engine）
+  - NVDEC 硬件解码 / NVENC 硬件编码（自动探测，失败时回退软解/软编）
+  - OOM 自动降级：batch_size 减半 → 深度清理 → 显存估算恢复
+  - torch.compile 预热：小形状（32×32）触发编译，避免大分辨率首次卡顿
+  - JSON 性能报告（可选，含 infer_latency_ms / nvdec / nvenc 等字段）
+  - preview 帧预览（可选，每隔 preview_interval 帧弹出一帧预览）
+
+【v6 变更说明（相对 v5）】
+  - 对齐底层 process_video_v6_4_5_1_single.py v6.4.5.1（NVENC SDK Level 1 + CE-Pipeline）
+  - 新增 preview / preview_interval 参数（透传至底层 process_video）
+  - main() CLI 新增 --preview / --preview-interval
+  - _process_segment 打印信息对齐 v6.4.5.1 版本标记
+  - 构造函数新增参数与 default_config.json 完全对齐
+  - [v6.1 优化] 底层 IFRNetVideoProcessor 在循环外构造一次，分段复用，避免重复加载/编译/构建
+"""
+
+import os
+import sys
+import json
+import time
+import hashlib
+from pathlib import Path
+from typing import List, Optional
+
+# ----- Add the utils directory so that video_utils and config_manager can be found -----
+script_dir   = Path(__file__).resolve().parent          # src/processors
+project_root = script_dir.parent.parent                 # Video_Enhancement/
+utils_path   = str(project_root / "src" / "utils")
+if utils_path not in sys.path:
+    sys.path.insert(0, utils_path)
+# ----------------------------------------------------------------------------------------
+
+from video_utils import (
+    get_video_duration, format_time, verify_video_integrity,
+    split_video_by_time,
+)
+
+
+class IFRNetProcessor:
+    """IFRNet 插帧处理器 v6（单卡版）"""
+
+    # 支持的模型名称 → 文件名映射（与 process_video_v6_3_2_single.py 保持一致）
+    MODEL_NAME_MAP = {
+        "IFRNet_Vimeo90K":   "IFRNet_Vimeo90K.pth",
+        "IFRNet_S_Vimeo90K": "IFRNet_S_Vimeo90K.pth",
+        "IFRNet_L_Vimeo90K": "IFRNet_L_Vimeo90K.pth",
+    }
+
+    def __init__(self, config):
+        """
+        初始化处理器
+
+        Args:
+            config: 配置对象（应包含 paths, models.ifrnet, processing 等节）
+        """
+        self.config   = config
+        self.ifrnet_dir = Path(config.get("paths", "base_dir")) / "external" / "IFRNet"
+
+        # ── 模型路径解析（优先级: model_path 显式路径 > model_name 自动拼接 > 默认名称）
+        self.model_name = config.get("models", "ifrnet", "model_name",
+                                     default="IFRNet_S_Vimeo90K")
+        _model_path = config.get("models", "ifrnet", "model_path", default="")
+        if _model_path:
+            self.model_path = _model_path
+        else:
+            base_dir        = Path(config.get("paths", "base_dir"))
+            checkpoints_dir = base_dir / "models_IFRNet" / "checkpoints"
+            pth_filename    = self.MODEL_NAME_MAP.get(
+                self.model_name, f"{self.model_name}.pth"
+            )
+            self.model_path = str(checkpoints_dir / pth_filename)
+
+        # 提前校验模型文件是否存在
+        if not os.path.exists(self.model_path):
+            raise FileNotFoundError(
+                f"IFRNet 模型文件不存在: {self.model_path}\n"
+                f"  · 请将 .pth 权重文件放置到上述路径，或\n"
+                f"  · 使用 --ifrnet-model-path /绝对/路径/model.pth 直接指定，或\n"
+                f"  · 使用 --ifrnet-model IFRNet_S_Vimeo90K 指定模型名称（需存在对应 .pth）。\n"
+                f"  · 可选模型名: {', '.join(self.MODEL_NAME_MAP.keys())}"
+            )
+
+        # 推理设备与基础参数
+        use_gpu = config.get("models", "ifrnet", "use_gpu", default=True)
+        self.device             = "cuda" if use_gpu else "cpu"
+        self.batch_size         = config.get("models", "ifrnet", "batch_size",     default=4)
+        self.max_batch_size     = config.get("models", "ifrnet", "max_batch_size", default=16)
+        self.interpolation_factor = config.get("processing", "interpolation_factor", default=2)
+        self.segment_duration   = config.get("processing", "segment_duration",     default=30)
+
+        # 推理优化参数（v5+）
+        self.use_fp16       = config.get("models", "ifrnet", "use_fp16",       default=True)
+        self.use_compile    = config.get("models", "ifrnet", "use_compile",    default=True)
+        self.use_cuda_graph = config.get("models", "ifrnet", "use_cuda_graph", default=True)
+        self.use_tensorrt   = config.get("models", "ifrnet", "use_tensorrt",   default=False)
+
+        # 硬件解/编码参数（v5+）
+        self.use_hwaccel = config.get("models", "ifrnet", "use_hwaccel", default=True)
+        self.codec       = config.get("models", "ifrnet", "codec",       default="libx264")
+        self.crf         = config.get("models", "ifrnet", "crf",         default=23)
+        self.x264_preset = config.get("models", "ifrnet", "x264_preset", default="medium")
+        self.rate_mode       = config.get("models", "ifrnet", "rate_mode",       default="vbr_hq")
+        self.lookahead_depth = config.get("models", "ifrnet", "lookahead_depth", default=8)
+        self.keep_audio  = config.get("models", "ifrnet", "keep_audio",  default=True)
+        self.ffmpeg_bin  = config.get("models", "ifrnet", "ffmpeg_bin",  default="ffmpeg")
+        self.report_json = config.get("models", "ifrnet", "report_json", default=None)
+
+        # v6 新增：preview / quiet 参数（透传至底层 process_video）
+        self.preview          = False
+        self.preview_interval = 30
+        # quiet：静默模式，抑制底层 FFmpegWriter 命令行等冗余输出
+        self.quiet            = True
+
+        # TRT Engine 缓存目录（v6+）
+        # 优先级：config.paths.trt_cache_dir（由 config_manager 自动派生为 base_dir/.trt_cache，
+        # 或用户在 config / CLI --trt-cache-dir 中显式指定）；空时兜底为 base_dir/.trt_cache。
+        self.trt_cache_dir = config.get("paths", "trt_cache_dir", default="") or ""
+
+        # 验证 IFRNet 目录
+        if not self.ifrnet_dir.exists():
+            raise FileNotFoundError(f"IFRNet 目录不存在: {self.ifrnet_dir}")
+
+        # 将 IFRNet 加入 Python 路径
+        sys.path.insert(0, str(self.ifrnet_dir))
+
+        # 临时目录句柄（在 _setup_temp_dirs 中初始化）
+        self.temp_base:       Optional[Path] = None
+        self.checkpoint_file: Optional[Path] = None
+        self.segment_dir:     Optional[Path] = None
+        self.processed_dir:   Optional[Path] = None
+        self._checkpoint_save_logged = False    # 首次保存断点时打印路径
+        self._current_input_video: Optional[str] = None  # 当前输入视频，用于断点指纹
+        self._upstream_segments_hash: Optional[str] = None  # 上游分段指纹（process_segments_directly）
+
+        # [v6.4.5.1 新增] 跟踪是否有分段处理失败，供上游主流程判断是否继续
+        self._has_failure = False
+
+        # [v6.1 新增] 底层 IFRNetVideoProcessor 实例缓存，避免每个分段重新初始化
+        self._video_processor = None
+
+    # -------------------------------------------------------------------------
+    # 公共接口
+    # -------------------------------------------------------------------------
+
+    def _la_is_active(self) -> bool:
+        """检测 NVENC LA 是否实际生效 (仅 VBR_HQ/QVBR, crf>0)。
+
+        NVENC SDK 严格遵守帧数守恒 (Output==Input)，LA 仅引入编码延迟，不增删帧。
+        跨编码会话不可复用 LA FIFO，每个 segment 独立管理其 LA 状态。
+        """
+        if self.crf == 0:
+            return False
+        if self.rate_mode in ("vbr_hq", "qvbr") and self.lookahead_depth > 0:
+            return True
+        return False
+
+    def process_video_segments(self, input_video: str) -> List[str]:
+        """
+        对完整视频执行插帧，返回处理后的分段列表（不合并）。
+
+        Args:
+            input_video: 输入视频路径
+
+        Returns:
+            处理后的分段文件路径列表
+        """
+        print(f"\n🎬 IFRNet 插帧处理（分段模式）—— v6.4.5.1")
+        print(f"📹 输入: {input_video}")
+        print(f"⚡ 插帧倍数: {self.interpolation_factor}x")
+        print(f"🖥️  设备: {self.device} | "
+              f"FP16: {self.use_fp16} | "
+              f"compile: {self.use_compile} | "
+              f"CUDA Graph: {self.use_cuda_graph} | "
+              f"TRT: {self.use_tensorrt}")
+
+        video_name = Path(input_video).stem
+        self._current_input_video = input_video
+        self._setup_temp_dirs(video_name, "ifrnet_source")
+        checkpoint = self._load_checkpoint()
+
+        duration = get_video_duration(input_video)
+        if duration is None:
+            print("❌ 无法获取视频时长")
+            return []
+
+        print(f"📊 时长: {format_time(duration)}, 分段: {self.segment_duration}秒")
+        if self._la_is_active():
+            print(f"   NVENC LA={self.lookahead_depth} 已激活 " +
+                  {True: "(VBR_HQ)", False: "(QVBR)"}.get(
+                      self.rate_mode == 'vbr_hq', "(QVBR)") +
+                  " — NVENC SDK 严格遵守帧数守恒，每段独立排空")
+
+        # 视频较短时直接整体处理
+        if duration <= self.segment_duration:
+            print("📦 视频较短，直接处理整个视频...")
+            output_file = self.processed_dir / f"interpolated_{Path(input_video).name}"
+            success = self._process_segment(input_video, str(output_file))
+            return [str(output_file)] if success else []
+
+        print(f"\n🔪 分割视频...")
+        segment_files = split_video_by_time(
+            input_video,
+            str(self.segment_dir),
+            self.segment_duration
+        )
+        if not segment_files:
+            print("❌ 视频分割失败")
+            return []
+
+        print(f"✅ 共 {len(segment_files)} 个片段")
+        return self._process_segments(segment_files, checkpoint)
+
+    def process_segments_directly(self, input_segments: List[str],
+                                  video_name: str) -> List[str]:
+        """
+        直接对已有分段执行插帧（用于对接上游处理器输出）。
+
+        Args:
+            input_segments: 输入分段文件路径列表
+            video_name:     视频名称（用于临时目录命名）
+
+        Returns:
+            处理后的分段文件路径列表
+        """
+        print(f"\n🎬 IFRNet 插帧处理（接收分段输入）—— v6.4.5.1")
+        print(f"📹 输入分段数: {len(input_segments)}")
+        print(f"⚡ 插帧倍数: {self.interpolation_factor}x")
+
+        # LA 参数透传：NVENC SDK 帧数守恒，每段独立编码+排空，无需禁用 LA
+        if len(input_segments) > 1 and self._la_is_active():
+            print(f"   接收多分段输入 + NVENC LA={self.lookahead_depth} — 每段独立排空，帧数守恒")
+        self._setup_temp_dirs(video_name, "ifrnet_from_segments")
+        self._upstream_segments_hash = hashlib.md5(
+            '|'.join(sorted(input_segments)).encode()
+        ).hexdigest()
+        checkpoint = self._load_checkpoint()
+        return self._process_segments(input_segments, checkpoint)
+
+    def process_video(self, input_video: str, output_video: str) -> bool:
+        """
+        完整处理视频（分段插帧 → 合并），支持断点恢复。
+        与 RealESRGANVideoProcessor.process_video() 对称，供独立调用或测试。
+
+        Args:
+            input_video:  输入视频路径
+            output_video: 最终输出视频路径
+
+        Returns:
+            是否成功
+        """
+        from video_utils import (
+            VideoInfo, smart_extract_audio, merge_videos_by_codec,
+            build_color_args,
+        )
+
+        print("\n" + "=" * 65)
+        print("🎬 IFRNet 视频插帧处理（完整流程）—— v6.4.5.1")
+        print(f"📹 输入  : {input_video}")
+        print(f"📤 输出  : {output_video}")
+        print(f"⚡ 插帧倍数: {self.interpolation_factor}x")
+        print(f"🖥️  设备  : {self.device}")
+        print(f"🧩 分段时长: {self.segment_duration}秒")
+        print(f"   FP16  : {self.use_fp16} | compile: {self.use_compile}"
+              f" | CUDAGraph: {self.use_cuda_graph} | TRT: {self.use_tensorrt}")
+        print("=" * 65 + "\n")
+
+        total_start = time.time()
+
+        # 提取音频
+        audio_path = None
+        if self.keep_audio:
+            try:
+                info = VideoInfo(input_video)
+                if info.has_audio:
+                    print("🎵 提取音频...")
+                    audio_path = smart_extract_audio(
+                        input_video,
+                        str(self.config.get_temp_dir("ifrnet_audio"))
+                    )
+                    if audio_path:
+                        print(f"✅ 音频已保存: {audio_path}")
+                    else:
+                        print("⚠️  音频提取失败，输出将无音频")
+            except Exception as e:
+                print(f"⚠️  获取视频信息或提取音频失败: {e}")
+
+        # 插帧（分段）
+        processed_segments = self.process_video_segments(input_video)
+        if not processed_segments:
+            print("❌ 未成功处理任何分段")
+            return False
+
+        # 合并
+        print(f"\n🔗 合并 {len(processed_segments)} 个插帧分段...")
+        output_config = self.config.get_section("output", {})
+        # [COLOR-FIX] 合并输出注入源视频色彩元数据（有值透传，无值回退 BT.709+Full Range）
+        output_config = {
+            **output_config,
+            "extra_args": list(output_config.get("extra_args", []))
+                          + build_color_args(input_video),
+        }
+        success = merge_videos_by_codec(
+            processed_segments, output_video,
+            audio_path=audio_path,
+            config=output_config,
+        )
+
+        if success:
+            total_time = time.time() - total_start
+            print(f"\n✅ 插帧处理完成！总用时: {format_time(total_time)}")
+            print(f"📤 输出: {output_video}")
+            # 全部成功完成 → 自动删除断点文件（不依赖 auto_cleanup_temp）
+            self._delete_checkpoint()
+            if self.config.get("processing", "auto_cleanup_temp", default=False):
+                self._cleanup_temp_files()
+        else:
+            print("❌ 视频合并失败")
+
+        # [v6.1 新增] 清理复用的视频处理器，释放可能占用的 GPU 资源
+        self._cleanup_video_processor()
+
+        return success
+
+    # -------------------------------------------------------------------------
+    # 内部方法
+    # -------------------------------------------------------------------------
+
+    def _setup_temp_dirs(self, video_name: str, prefix: str):
+        """创建并记录临时目录路径。"""
+        self.temp_base = self.config.get_temp_dir("ifrnet") / f"{prefix}_{video_name}"
+
+        self.segment_dir     = self.temp_base / "segments"
+        self.processed_dir   = self.temp_base / "processed"
+        self.checkpoint_file = self.temp_base / "checkpoint.json"
+
+        self.segment_dir.mkdir(parents=True, exist_ok=True)
+        self.processed_dir.mkdir(parents=True, exist_ok=True)
+
+    def _load_checkpoint(self) -> dict:
+        """加载断点信息；文件不存在/损坏/配置不兼容时返回空断点。"""
+        if self.checkpoint_file and self.checkpoint_file.exists():
+            try:
+                with open(self.checkpoint_file, "r") as f:
+                    checkpoint = json.load(f)
+
+                # 校验配置兼容性
+                saved_snapshot = checkpoint.get("config_snapshot", None)
+                if saved_snapshot is None:
+                    print(f"⚠️  断点文件缺少配置快照（旧版本），将从头开始处理")
+                    print(f"   📁 断点文件: {self.checkpoint_file}")
+                    return {"processed_segments": [], "last_segment": -1}
+
+                current_snapshot = self._get_config_snapshot()
+                _fingerprint_keys = {"input_mtime", "input_size", "upstream_segments_hash"}
+                mismatches = []
+                for key in current_snapshot:
+                    saved_val = saved_snapshot.get(key)
+                    curr_val  = current_snapshot[key]
+                    if saved_val != curr_val:
+                        if key in _fingerprint_keys and saved_val is None:
+                            continue  # 旧断点无指纹，跳过
+                        # 格式化时间戳
+                        if key == "input_mtime":
+                            _fmt_saved = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(saved_val)) if saved_val else str(saved_val)
+                            _fmt_curr  = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(curr_val)) if curr_val else str(curr_val)
+                            mismatches.append(
+                                f"     {key}: 断点值={_fmt_saved} → 当前值={_fmt_curr}")
+                        elif key == "input_size":
+                            mismatches.append(
+                                f"     {key}: 断点值={saved_val} 字节 → 当前值={curr_val} 字节")
+                        else:
+                            mismatches.append(
+                                f"     {key}: 断点值={saved_val!r} → 当前值={curr_val!r}")
+
+                if mismatches:
+                    print(f"⚠️  配置参数已变更，断点失效，将从头开始处理:")
+                    for m in mismatches:
+                        print(m)
+                    print(f"   📁 断点文件: {self.checkpoint_file}")
+                    return {"processed_segments": [], "last_segment": -1}
+
+                print(f"📌 发现断点: 已完成 {len(checkpoint['processed_segments'])} 个分段")
+                print(f"   📁 断点文件: {self.checkpoint_file}")
+                return checkpoint
+            except Exception:
+                print(f"⚠️  断点文件损坏，将从头开始处理")
+                print(f"   📁 断点文件: {self.checkpoint_file}")
+        else:
+            if self.checkpoint_file:
+                print(f"🆕 未发现断点文件，将从头开始处理")
+                print(f"   📁 断点文件: {self.checkpoint_file}")
+        return {"processed_segments": [], "last_segment": -1}
+
+    def _get_config_snapshot(self) -> dict:
+        """返回影响分段兼容性的关键配置参数快照，用于断点恢复时校验一致性。"""
+        snap = {
+            "segment_duration":    self.segment_duration,
+            "interpolation_factor": self.interpolation_factor,
+            "codec":               self.codec,
+            "crf":                 self.crf,
+            "x264_preset":         self.x264_preset,
+        }
+        if self._current_input_video and os.path.exists(self._current_input_video):
+            st = os.stat(self._current_input_video)
+            snap["input_mtime"] = st.st_mtime
+            snap["input_size"] = st.st_size
+        if self._upstream_segments_hash:
+            snap["upstream_segments_hash"] = self._upstream_segments_hash
+        return snap
+
+    def _save_checkpoint(self, checkpoint: dict):
+        """将断点信息持久化到磁盘（首次写入时附加配置快照用于兼容性校验）。"""
+        if self.checkpoint_file:
+            if "config_snapshot" not in checkpoint:
+                checkpoint["config_snapshot"] = self._get_config_snapshot()
+            if not self._checkpoint_save_logged:
+                print(f"💾 断点已保存至: {self.checkpoint_file}")
+                self._checkpoint_save_logged = True
+            with open(self.checkpoint_file, "w") as f:
+                json.dump(checkpoint, f, indent=2)
+
+    def _get_or_create_video_processor(self):
+        """
+        [v6.1 新增] 获取或创建底层 IFRNetVideoProcessor，全局复用。
+        只在首次调用时进行模型加载、compile 预热、TRT 构建等操作。
+        """
+        if self._video_processor is not None:
+            return self._video_processor
+
+        # 延迟导入，保证只在需要时加载
+        from process_video_v6_4_5_1_single import IFRNetVideoProcessor
+
+        _trt_cache_dir = None
+        if self.use_tensorrt:
+            _trt_cache_dir = (self.trt_cache_dir or
+                              os.path.join(
+                                  str(self.config.get("paths", "base_dir", default="")),
+                                  '.trt_cache'
+                              ))
+
+        print("   🔧 首次初始化 IFRNetVideoProcessor（模型加载/编译仅此一次）")
+        processor = IFRNetVideoProcessor(
+            model_path     = self.model_path,
+            device         = self.device,
+            batch_size     = self.batch_size,
+            max_batch_size = self.max_batch_size,
+            use_fp16       = self.use_fp16,
+            use_compile    = self.use_compile,
+            use_cuda_graph = self.use_cuda_graph,
+            use_tensorrt   = self.use_tensorrt,
+            use_hwaccel    = self.use_hwaccel,
+            codec          = self.codec,
+            crf            = self.crf,
+            x264_preset    = self.x264_preset,
+            rate_mode      = self.rate_mode,
+            lookahead_depth = self.lookahead_depth,
+            keep_audio     = self.keep_audio,
+            ffmpeg_bin     = self.ffmpeg_bin,
+            report_json    = self.report_json,
+            trt_cache_dir  = _trt_cache_dir,
+            quiet          = self.quiet,   # 透传静默开关
+        )
+        self._video_processor = processor
+        return processor
+
+    def _cleanup_video_processor(self):
+        """
+        [v6.1 新增] 释放底层 processor 并清空缓存。
+        通常在完整流程结束后调用，释放 GPU 内存等资源。
+        [SEGMENT-REUSE] 先调用 cleanup() 释放跨段缓存的 NVENC/Pool/RingBuffer。
+        [VRAM-CLEANUP] del 后 gc.collect + empty_cache，把 torch reserved 归还驱动，
+        使后续阶段（如 ESRGAN TRT 构建）看到真实空闲显存。
+        """
+        if self._video_processor is not None:
+            try:
+                # release_model=True：阶段/流程已全部结束，连同模型/TRT 一起销毁；
+                # 跨段复用期间本方法不会被调用，复用不受影响。
+                self._video_processor.cleanup(release_model=True)
+            except TypeError:
+                self._video_processor.cleanup()  # 旧版签名无 release_model 参数
+            except AttributeError:
+                pass  # 旧版 processor 无 cleanup 方法，忽略
+            del self._video_processor
+            self._video_processor = None
+            try:
+                import gc as _gc
+                import torch as _torch
+                _gc.collect()
+                if _torch.cuda.is_available():
+                    _torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+    def _process_segments(self, segment_files: List[str],
+                           checkpoint: dict) -> List[str]:
+        """
+        遍历分段列表，跳过已处理项，处理并更新断点。
+
+        Args:
+            segment_files: 分段文件路径列表
+            checkpoint:    断点字典
+
+        Returns:
+            处理成功的分段输出路径列表
+        """
+        print(f"\n⚙️  开始处理片段...")
+        processed_files: List[str] = []
+        start_time = time.time()
+
+        for i, segment_file in enumerate(segment_files):
+            segment_name = Path(segment_file).name
+
+            # 断点跳过
+            if i in checkpoint["processed_segments"]:
+                output_file = self.processed_dir / f"interpolated_{segment_name}"
+                if output_file.exists():
+                    print(f"\n⏭️  片段 {i+1}/{len(segment_files)}: {segment_name} (已处理)")
+                    processed_files.append(str(output_file))
+                    continue
+                else:
+                    print(f"\n⚠️  片段 {i+1}/{len(segment_files)}: {segment_name} "
+                          f"(断点标记已完成但输出文件缺失，重新处理)")
+
+            print(f"\n🎬 片段 {i+1}/{len(segment_files)}: {segment_name}")
+            output_file = self.processed_dir / f"interpolated_{segment_name}"
+
+            success = self._process_segment(segment_file, str(output_file),
+                                              total_segments=len(segment_files),
+                                              segment_index=i + 1)
+            if success:
+                processed_files.append(str(output_file))
+                if i not in checkpoint["processed_segments"]:
+                    checkpoint["processed_segments"].append(i)
+                checkpoint["last_segment"] = i
+                self._save_checkpoint(checkpoint)
+            else:
+                print(f"⚠️  片段 {i+1} 处理失败，终止后续处理")
+                self._has_failure = True
+                break
+
+            # 估算剩余时间
+            elapsed   = time.time() - start_time
+            completed = len(checkpoint["processed_segments"])
+            if completed > 0:
+                avg_time  = elapsed / completed
+                remaining = (len(segment_files) - completed) * avg_time
+                print(f"   ⏱️  已用时: {format_time(elapsed)}, "
+                      f"预计剩余: {format_time(remaining)}")
+
+        if processed_files:
+            print(f"\n✅ IFRNet 处理完成: "
+                  f"{len(processed_files)}/{len(segment_files)} 个分段")
+        else:
+            print("\n❌ 没有成功处理的片段")
+
+        return processed_files
+
+    def _process_segment(self, segment_path: str, output_path: str,
+                          total_segments: int = 1,
+                          segment_index: int = 1) -> bool:
+        """
+        调用 process_video_v6_4_5_1_single.IFRNetVideoProcessor 处理单个分段。
+        [v6.1 修改] 复用全局缓存的 processor，避免重复初始化。
+
+        Args:
+            segment_path:   输入片段路径
+            output_path:    输出路径
+            total_segments: 总分段数（用于抑制中间段冗余日志）
+            segment_index:  当前分段序号（1-based）
+
+        Returns:
+            是否成功
+        """
+        try:
+            # [v6.1] 使用缓存的 processor，不再每次新建
+            processor = self._get_or_create_video_processor()
+
+            print(f"   🎬 处理片段: {Path(segment_path).name}")
+            print(f"   📊 插帧倍数: {self.interpolation_factor}x")
+            print(f"   🖥️  设备: {self.device} | "
+                  f"FP16: {self.use_fp16} | "
+                  f"compile: {self.use_compile} | "
+                  f"CUDA Graph: {self.use_cuda_graph} | "
+                  f"TRT: {self.use_tensorrt}")
+
+            start_time = time.time()
+
+            ok = processor.process_video(
+                input_path       = segment_path,
+                output_path      = output_path,
+                scale            = float(self.interpolation_factor),
+                preview          = self.preview,
+                preview_interval = self.preview_interval,
+                total_segments   = total_segments,
+                segment_index    = segment_index,
+            )
+
+            elapsed = time.time() - start_time
+
+            if ok and verify_video_integrity(output_path):
+                seg_duration = get_video_duration(output_path)
+                print(f"   ✅ 处理完成: 输出时长 {format_time(seg_duration)} | 耗时 {format_time(elapsed)}")
+                return True
+            else:
+                print(f"   ❌ 输出文件验证失败")
+                return False
+
+        except ImportError as e:
+            print(f"   ❌ 无法导入 process_video_v6_4_5_1_single: {e}")
+            return False
+        except Exception as e:
+            print(f"   ❌ 处理失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def _delete_checkpoint(self):
+        """全部成功完成后自动删除断点文件，避免下次运行误用。"""
+        if self.checkpoint_file and self.checkpoint_file.exists():
+            try:
+                self.checkpoint_file.unlink()
+                print(f"🗑️  断点文件已自动清理: {self.checkpoint_file}")
+            except Exception as e:
+                print(f"⚠️  断点文件清理失败: {e}")
+
+    def _cleanup_temp_files(self):
+        """清理整个临时目录（含分段、中间文件、断点文件）。"""
+        import shutil as _shutil
+        print("\n🧹 清理 IFRNet 插帧临时文件...")
+        try:
+            if self.temp_base and self.temp_base.exists():
+                _shutil.rmtree(self.temp_base)
+                print("   ✅ 已清理临时目录")
+        except Exception as e:
+            print(f"   ⚠️  清理失败: {e}")
+
+
+# =============================================================================
+# 独立命令行入口
+# =============================================================================
+
+def main():
+    """
+    独立调用入口：直接驱动 IFRNetProcessor，
+    底层对接 process_video_v6_4_5_1_single.IFRNetVideoProcessor。
+
+    示例：
+      # 使用默认配置，直接插帧
+      python ifrnet_processor_v6_3_0_single.py -i input.mp4 -o output_2x.mp4
+
+      # 指定配置文件 + 覆盖插帧倍数
+      python ifrnet_processor_v6_3_0_single.py -c config.json \\
+             -i input.mp4 -o output_4x.mp4 --interpolation-factor 4
+
+      # 关闭 compile（短视频跳过预热，启动更快）
+      python ifrnet_processor_v6_3_0_single.py -i input.mp4 -o output.mp4 \\
+             --no-compile --no-cuda-graph
+             
+      # 强制启用 CUDA Graph（覆盖 config 中 use_cuda_graph=false）
+      python ifrnet_processor_v6_3_0_single.py -i input.mp4 -o output.mp4 \\
+             --use-cuda-graph --no-compile
+
+      # 启用 TensorRT + 关闭 compile（短视频启动更快）
+      python ifrnet_processor_v6_3_0_single.py -i input.mp4 -o output.mp4 \\
+             --use-tensorrt --no-compile
+
+      # 强制禁用 TensorRT（覆盖 config 中 use_tensorrt=true）
+      python ifrnet_processor_v6_3_0_single.py -i input.mp4 -o output.mp4 \\
+             --no-tensorrt
+
+      # 关闭所有加速（调试/CPU 环境）
+      python ifrnet_processor_v6_3_0_single.py -i input.mp4 -o output.mp4 \\
+             --no-fp16 --no-compile --no-cuda-graph --no-hwaccel
+    """
+    import argparse
+
+    _script_dir  = Path(os.path.abspath(__file__)).parent        # src/processors
+    _base_dir    = _script_dir.parent.parent                     # project root
+    _default_cfg = str(_base_dir / "config" / "default_config.json")
+
+    sys.path.insert(0, str(_base_dir / "src" / "utils"))
+    from config_manager import Config
+
+    parser = argparse.ArgumentParser(
+        description="IFRNet 视频插帧处理器 v6（单卡版）—— 独立入口",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+底层脚本：external/IFRNet/process_video_v6_4_5_1_single.py（v6.4.5.1，NVENC SDK Level 1 GPU 直通）
+
+特性：
+  · 分段处理 + 断点恢复
+  · FP16 / CUDA Graph / torch.compile / TensorRT 可选
+  · NVDEC 硬件解码 / NVENC 硬件编码自动探测
+  · OOM 级联保护（batch_size 减半 → 深度清理 → 显存估算恢复）
+  · [v6.1] 异步 D2H（PinnedBufferPool 输出 buffer）
+  · [v6.1] 预取线程集成 padding（与 GPU 推理完全并行）
+  · [v6.1 新增] 底层 processor 复用，避免分段重复初始化
+
+模型选项（二选一，model-path 优先）：
+  --ifrnet-model IFRNet_S_Vimeo90K   轻量默认（推荐）
+  --ifrnet-model IFRNet_L_Vimeo90K   高质量，速度更慢
+  --ifrnet-model-path /path/to/x.pth 直接指定 .pth 路径
+""",
+    )
+
+    # ── 基础参数 ─────────────────────────────────────────────────────────────
+    parser.add_argument("--config", "-c", default=_default_cfg,
+                        help=f"配置文件路径（默认: {_default_cfg}）")
+    parser.add_argument("--input",  "-i", required=True,
+                        help="输入视频路径")
+    parser.add_argument("--output", "-o", required=True,
+                        help="输出视频路径（含文件名）")
+
+    # ── IFRNet 模型参数 ──────────────────────────────────────────────────────
+    parser.add_argument("--ifrnet-model", metavar="MODEL_NAME",
+                        choices=["IFRNet_Vimeo90K", "IFRNet_S_Vimeo90K", "IFRNet_L_Vimeo90K"],
+                        help="IFRNet 模型名称（processor 自动在 models_IFRNet/checkpoints/ 下查找）；"
+                             "覆盖配置中 models.ifrnet.model_name")
+    parser.add_argument("--ifrnet-model-path", metavar="PATH",
+                        help="IFRNet .pth 权重文件绝对路径（优先级高于 --ifrnet-model）；"
+                             "覆盖配置中 models.ifrnet.model_path")
+
+    # ── 处理参数 ─────────────────────────────────────────────────────────────
+    parser.add_argument("--interpolation-factor", type=int, choices=[2, 4, 8, 16],
+                        help="插帧倍数（覆盖配置，默认 2）")
+    parser.add_argument("--segment-duration", type=int,
+                        help="分段时长（秒，覆盖配置，默认 30）")
+    parser.add_argument("--batch-size", type=int,
+                        help="推理批处理大小（覆盖配置，默认 4）")
+    parser.add_argument("--max-batch-size", type=int,
+                        help="批大小上限（覆盖配置，默认 8）")
+
+    # ── 推理优化开关 ─────────────────────────────────────────────────────────
+    parser.add_argument("--no-fp16",       action="store_true",
+                        help="禁用 FP16 半精度（默认开启）")
+    parser.add_argument("--no-compile",    action="store_true",
+                        help="禁用 torch.compile（默认开启；短视频可禁用跳过预热）")
+    parser.add_argument("--no-cuda-graph", action="store_true",
+                        help="禁用 CUDA Graph（compile 激活时已接管，可安全禁用）")
+    parser.add_argument("--use-tensorrt",  action="store_true",
+                        help="启用 TensorRT 加速（首次需构建 Engine，缓存于 .trt_cache/）")
+    parser.add_argument("--trt-cache-dir", metavar="DIR",
+                        help="TRT Engine 缓存目录（覆盖配置 paths.trt_cache_dir；"
+                             "默认 base_dir/.trt_cache）")
+    # ── 高优先级覆盖开关（覆盖 config / --no-* 默认值，优先级高于上方对应参数）──
+    parser.add_argument("--use-cuda-graph", dest="use_cuda_graph_force",
+                        action="store_true", default=False,
+                        help="[覆盖] 强制启用 CUDA Graph，覆盖 --no-cuda-graph / config。"
+                             "与 torch.compile 互斥（compile 激活时自动禁用）；"
+                             "如需确保生效，请同时指定 --no-compile。")
+    parser.add_argument("--use-compile", dest="use_compile_force",
+                        action="store_true", default=False,
+                        help="[覆盖] 强制启用 torch.compile，覆盖 --no-compile / config。"
+                             "与 --use-tensorrt 互斥（TRT 激活时 compile 被跳过）。")
+    parser.add_argument("--no-tensorrt", dest="no_tensorrt",
+                        action="store_true", default=False,
+                        help="[覆盖] 强制禁用 TensorRT，覆盖 --use-tensorrt / config。")
+
+    # ── 硬件解/编码开关 ──────────────────────────────────────────────────────
+    parser.add_argument("--no-hwaccel",  action="store_true",
+                        help="禁用 NVDEC 硬件解码（默认自动探测）")
+    parser.add_argument("--no-audio",   action="store_true",
+                        help="不提取/保留音频")
+    parser.add_argument("--crf",        type=int,
+                        help="分段输出视频质量 CRF（0~51，默认 23）")
+    parser.add_argument("--codec",      type=str,
+                        help="分段输出编码器（默认 libx264；有 NVENC 时自动升级）")
+    parser.add_argument('--x264-preset', type=str,
+                        default=None,
+                        choices=['ultrafast', 'superfast', 'veryfast', 'faster', 'fast',
+                                 'medium', 'slow', 'slower', 'veryslow'],
+                        help='编码预设（默认 medium，NVENC 自动使用 p4）')
+    parser.add_argument('--rate-mode', type=str,
+                        choices=['constqp', 'vbr_hq', 'qvbr'],
+                        help='NVENC 码率控制模式（默认 qvbr）')
+    parser.add_argument('--lookahead-depth', type=int,
+                        choices=[0, 8, 16, 32],
+                        help='NVENC 前向帧预看深度（默认 8）')
+    parser.add_argument("--ffmpeg-bin", type=str,
+                        help="ffmpeg 可执行文件路径（默认 ffmpeg）")
+
+    # ── 性能报告 ─────────────────────────────────────────────────────────────
+    parser.add_argument("--report", metavar="PATH",
+                        help="输出 JSON 性能报告路径（含 infer_latency_ms/nvdec/nvenc）")
+
+    # ── 预览 ─────────────────────────────────────────────────────────────────
+    parser.add_argument("--preview",          action="store_true",
+                        help="处理过程中弹出帧预览（调试用）")
+    parser.add_argument("--preview-interval", type=int, default=30,
+                        help="预览帧间隔（每隔 N 帧弹出一次，默认 30）")
+
+    # ── 杂项 ─────────────────────────────────────────────────────────────────
+    parser.add_argument("--auto-cleanup", action="store_true",
+                        help="处理完成后自动清理临时文件")
+    parser.add_argument("--quiet", action=argparse.BooleanOptionalAction, default=True,
+                        help="静默模式：抑制底层冗余输出；--no-quiet 开启详细日志")
+
+    args = parser.parse_args()
+
+    # ── 加载配置 ──────────────────────────────────────────────────────────────
+    try:
+        config = Config(args.config)
+        print(f"⚙️  配置文件: {args.config}")
+    except Exception as e:
+        print(f"❌ 加载配置失败: {e}")
+        return 1
+
+    # ── 命令行参数覆盖配置 ────────────────────────────────────────────────────
+    config.set("paths", "input_video", value=args.input)
+    config.set("paths", "output_dir",  value=str(Path(args.output).parent))
+    config.set("processing", "batch_mode", value=False)
+
+    # IFRNet 模型参数（model_path 优先级高于 model_name）
+    if args.ifrnet_model_path:
+        config.set("models", "ifrnet", "model_path", value=args.ifrnet_model_path)
+        # 同时清空 model_name，避免 processor 按 name 拼路径覆盖显式路径
+        config.set("models", "ifrnet", "model_name", value="")
+    elif args.ifrnet_model:
+        config.set("models", "ifrnet", "model_name", value=args.ifrnet_model)
+        config.set("models", "ifrnet", "model_path", value="")  # 让 processor 按 name 拼接
+
+    if args.interpolation_factor:
+        config.set("processing", "interpolation_factor", value=args.interpolation_factor)
+    if args.segment_duration:
+        config.set("processing", "segment_duration", value=args.segment_duration)
+    if args.batch_size:
+        config.set("models", "ifrnet", "batch_size", value=args.batch_size)
+    if args.max_batch_size:
+        config.set("models", "ifrnet", "max_batch_size", value=args.max_batch_size)
+
+    # 推理优化
+    if args.no_fp16:
+        config.set("models", "ifrnet", "use_fp16", value=False)
+    if args.no_compile:
+        config.set("models", "ifrnet", "use_compile", value=False)
+    if args.no_cuda_graph:
+        config.set("models", "ifrnet", "use_cuda_graph", value=False)
+    if args.use_tensorrt:
+        config.set("models", "ifrnet", "use_tensorrt", value=True)
+    if args.trt_cache_dir:
+        config.set("paths", "trt_cache_dir", value=args.trt_cache_dir)
+    # ── 高优先级覆盖（后写入，覆盖上方 --no-* / config 的值）──────────────────
+    # 互斥关系由底层 IFRNetVideoProcessor.__init__ 最终裁定，此处仅写入并给出预警
+    _cli_overrides = []
+    if args.no_tensorrt and args.use_tensorrt:
+        config.set("models", "ifrnet", "use_tensorrt", value=False)
+        _cli_overrides.append("--no-tensorrt  覆盖了  --use-tensorrt  → TensorRT 已禁用")
+    elif args.no_tensorrt:
+        config.set("models", "ifrnet", "use_tensorrt", value=False)
+    if args.use_compile_force:
+        config.set("models", "ifrnet", "use_compile", value=True)
+        if args.no_compile:
+            _cli_overrides.append("--use-compile  覆盖了  --no-compile  → torch.compile 已启用")
+    if args.use_cuda_graph_force:
+        config.set("models", "ifrnet", "use_cuda_graph", value=True)
+        if args.no_cuda_graph:
+            _cli_overrides.append("--use-cuda-graph  覆盖了  --no-cuda-graph  → CUDA Graph 已启用")
+    # 互斥冲突预警（基于最终写入 config 的有效值）
+    _eff_trt     = config.get("models", "ifrnet", "use_tensorrt",   default=False)
+    _eff_compile = config.get("models", "ifrnet", "use_compile",    default=True)
+    _eff_cugraph = config.get("models", "ifrnet", "use_cuda_graph", default=True)
+    if args.use_cuda_graph_force and _eff_compile and not _eff_trt:
+        print("[CLI警告] --use-cuda-graph 与 torch.compile 互斥："
+              "compile 成功后 CUDA Graph 将被自动禁用。")
+        print("          若要确保 CUDA Graph 生效，请同时指定 --no-compile。")
+    if args.use_cuda_graph_force and _eff_trt:
+        print("[CLI警告] --use-cuda-graph 与 --use-tensorrt 互斥："
+              "TensorRT 优先，CUDA Graph 将被禁用。")
+        print("          如需 CUDA Graph，请同时指定 --no-tensorrt。")
+    if args.use_compile_force and _eff_trt:
+        print("[CLI警告] --use-compile 与 --use-tensorrt 互斥："
+              "TensorRT 优先，compile 将被跳过。")
+        print("          如需 torch.compile，请同时指定 --no-tensorrt。")
+    if _cli_overrides:
+        print("[CLI覆盖] 以下设置已被高优先级参数覆盖：")
+        for msg in _cli_overrides:
+            print(f"          · {msg}")
+        print()
+
+    # 硬件解/编码
+    if args.no_hwaccel:
+        config.set("models", "ifrnet", "use_hwaccel", value=False)
+    if args.no_audio:
+        config.set("models", "ifrnet", "keep_audio",  value=False)
+    if args.crf is not None:
+        config.set("models", "ifrnet", "crf",         value=args.crf)
+    if args.codec:
+        config.set("models", "ifrnet", "codec",       value=args.codec)
+    if args.x264_preset is not None:
+        config.set("models", "ifrnet", "x264_preset", value=args.x264_preset)
+    if args.rate_mode:
+        config.set("models", "ifrnet", "rate_mode",       value=args.rate_mode)
+    if args.lookahead_depth is not None:
+        config.set("models", "ifrnet", "lookahead_depth", value=args.lookahead_depth)
+    if args.ffmpeg_bin:
+        config.set("models", "ifrnet", "ffmpeg_bin",  value=args.ffmpeg_bin)
+
+    # 报告 / 清理
+    if args.report:
+        config.set("models", "ifrnet", "report_json", value=args.report)
+    if args.auto_cleanup:
+        config.set("processing", "auto_cleanup_temp", value=True)
+
+    # ── 创建处理器并执行 ──────────────────────────────────────────────────────
+    try:
+        processor = IFRNetProcessor(config)
+    except Exception as e:
+        print(f"❌ 初始化处理器失败: {e}")
+        return 1
+
+    # v6 新增：preview 参数注入
+    processor.preview          = args.preview
+    processor.preview_interval = args.preview_interval
+    processor.quiet            = args.quiet
+
+    print(f"\n🎬 IFRNet v6 独立插帧")
+    print(f"   输入   : {args.input}")
+    print(f"   输出   : {args.output}")
+    print(f"   模型   : {processor.model_name or '(直接路径)'} → {processor.model_path}")
+    print(f"   倍数   : {processor.interpolation_factor}x")
+    print(f"   设备   : {processor.device}")
+    print(f"   批大小 : {processor.batch_size} (上限 {processor.max_batch_size})")
+    print(f"   FP16   : {processor.use_fp16} | compile: {processor.use_compile}"
+          f" | CUDAGraph: {processor.use_cuda_graph} | TRT: {processor.use_tensorrt}")
+    print(f"   NVDEC  : {processor.use_hwaccel} | codec: {processor.codec}"
+          f" | CRF: {processor.crf}")
+    if processor.use_tensorrt:
+        print(f"   TRT 缓存: {processor.trt_cache_dir or '(自动: base_dir/.trt_cache)'}")
+
+    success = processor.process_video(args.input, args.output)
+    return 0 if success else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

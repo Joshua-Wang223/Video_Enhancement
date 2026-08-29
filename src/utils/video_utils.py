@@ -81,7 +81,16 @@ class VideoInfo:
             # 解析流信息
             for stream in data.get('streams', []):
                 if stream['codec_type'] == 'video':
-                    self.fps = eval(stream.get('r_frame_rate', '0/1'))
+                    # [P0-FIX-FPS-EVAL] 原实现 eval(r_frame_rate) 属动态执行反模式：
+                    # 'N/A'/'0/0' 等奇异值会抛 NameError/ZeroDivisionError，且均不在
+                    # 外层 except 捕获面内 → 直接穿透 VideoInfo.__init__。改用 Fraction。
+                    _rate_str = str(stream.get('r_frame_rate', '0/1'))
+                    try:
+                        from fractions import Fraction as _Fraction
+                        _fps_f = float(_Fraction(_rate_str))
+                        self.fps = _fps_f if _fps_f > 0 else None
+                    except (ValueError, ZeroDivisionError):
+                        self.fps = None
                     self.width = int(stream.get('width', 0))
                     self.height = int(stream.get('height', 0))
                     self.codec = stream.get('codec_name', 'unknown')
@@ -388,7 +397,8 @@ def smart_extract_audio(
     timeout: int = 60,
     stream_index: int = 0,           # 新增：指定音频流索引
     overwrite: bool = False,         # 新增：是否覆盖已存在文件
-    log_ffmpeg_output: bool = False  # 新增：是否打印 ffmpeg 输出
+    log_ffmpeg_output: bool = False,  # 新增：是否打印 ffmpeg 输出
+    quiet: bool = False              # 新增：静默模式，抑制日志输出
 ) -> Optional[str]:
     """
     智能提取音频流（不重新编码），并根据音频编码自动选择适当的文件扩展名。
@@ -400,6 +410,7 @@ def smart_extract_audio(
         stream_index: 要提取的音频流索引（默认 0，第一个音频流）
         overwrite: 是否覆盖已存在的输出文件
         log_ffmpeg_output: 是否打印 ffmpeg 的详细输出（调试用）
+        quiet: 静默模式，抑制日志输出
 
     Returns:
         成功时返回输出音频文件的绝对路径字符串，失败返回 None
@@ -433,8 +444,33 @@ def smart_extract_audio(
     
     # 5. 处理已存在文件
     if output_path.exists() and not overwrite:
-        logger.info(f"输出文件已存在，跳过: {output_path}")
-        return str(output_path.absolute())
+        # [P1-FIX-AUDIO-FRESHNESS] 同名即复用会让"换了内容的同名输入视频"静默
+        # 挂上旧音轨。以源视频 (size, mtime_ns) 指纹侧车校验新鲜度，不符则重提取。
+        _fp_file = output_path.with_suffix(output_path.suffix + ".src.json")
+        _cur_fp = None
+        try:
+            _st = video_path.stat()
+            _cur_fp = {"source": str(video_path.resolve()),
+                       "size": _st.st_size, "mtime_ns": _st.st_mtime_ns}
+        except OSError:
+            pass
+        _fp_ok = False
+        if _cur_fp is not None and _fp_file.exists():
+            try:
+                with open(_fp_file, "r", encoding="utf-8") as f:
+                    _saved = json.load(f)
+                _fp_ok = (_saved.get("source") == _cur_fp["source"]
+                          and _saved.get("size") == _cur_fp["size"]
+                          and _saved.get("mtime_ns") == _cur_fp["mtime_ns"])
+            except Exception:
+                _fp_ok = False
+        if not _fp_ok:
+            if not quiet:
+                print(f"已有音频与当前源视频不匹配（或无指纹），重新提取: {output_path}")
+        else:
+            if not quiet:
+                print(f"输出文件已存在且源未变化，跳过: {output_path}")
+            return str(output_path.absolute())
 
     # 6. 构建 ffmpeg 命令
     cmd = [
@@ -448,7 +484,8 @@ def smart_extract_audio(
     ]
 
     # 7. 执行 ffmpeg
-    logger.info(f"执行命令: {' '.join(cmd)}")
+    if not quiet:
+        print(f"执行命令: {' '.join(cmd)}")
     
     # 根据是否需要日志配置 stdout/stderr
     stdout = None if log_ffmpeg_output else subprocess.DEVNULL
@@ -478,6 +515,17 @@ def smart_extract_audio(
     except subprocess.TimeoutExpired:
         logger.error(f"ffmpeg 执行超时（{timeout}秒）")
         return None
+
+    # [P1-FIX-AUDIO-FRESHNESS] 成功后写入源指纹侧车，供下次复用判定
+    try:
+        _st2 = video_path.stat()
+        with open(output_path.with_suffix(output_path.suffix + ".src.json"),
+                  "w", encoding="utf-8") as f:
+            json.dump({"source": str(video_path.resolve()),
+                       "size": _st2.st_size, "mtime_ns": _st2.st_mtime_ns},
+                      f, indent=2)
+    except Exception:
+        pass
 
     return str(output_path.absolute())
 
@@ -576,7 +624,8 @@ def get_frame_rate(file_path):
             try:
                 num, den = map(int, fraction_str.split('/'))
                 return num / den if den != 0 else None
-            except:
+            except (ValueError, ZeroDivisionError):
+                # [P0-FIX-BARE-EXCEPT] 原裸 except 会吞 KeyboardInterrupt/SystemExit
                 return None
         
         r_fps = parse_fraction(r_frame_rate)
@@ -624,21 +673,21 @@ def get_video_duration(video_path: str) -> Optional[float]:
         output = result.stdout.strip()
         if output and output != 'N/A':
             return float(output)
-    except:
+    except Exception:
         pass
-    
+
     # 备用方法：使用OpenCV
     try:
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
-        
+
         if fps > 0 and frame_count > 0:
             return frame_count / fps
-    except:
+    except Exception:
         pass
-    
+
     return None
 
 def format_time(seconds: Optional[float]) -> str:
@@ -665,6 +714,129 @@ def format_time(seconds: Optional[float]) -> str:
         return f"{mins}:{secs:02d}.{ms:03d}"
     else:
         return f"{secs}.{ms:03d}秒"
+
+
+def validate_source_video_structurally(video_path: Union[str, Path]) -> Tuple[bool, str]:
+    """[P5-FIX-SOURCE-STRUCT-GATE] 处理前对源视频做硬性结构解码检查。
+
+    只拦截不可解码/损坏视频，不做内容级撕裂启发式（高误判风险）。
+    """
+    path = Path(video_path)
+    if not path.exists():
+        return False, "source_missing"
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return False, "ffmpeg_unavailable"
+    try:
+        proc = subprocess.run(
+            [ffmpeg, "-hide_banner", "-v", "error", "-i", str(path),
+             "-map", "0:v:0", "-f", "null", "-"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=3600,
+        )
+        err_tail = (proc.stderr or "").strip()
+        if proc.returncode != 0 or err_tail:
+            return False, f"source_decode_errors: {err_tail[-1000:]}"
+    except subprocess.TimeoutExpired:
+        return False, "source_validation_timeout"
+    except OSError as exc:
+        return False, f"validation_process_error: {exc}"
+    return True, "ok"
+
+
+def count_decoded_video_frames(video_path: Union[str, Path]) -> Optional[int]:
+    """[P4-FIX-COUNT] 返回真实可解码帧数（nb_read_frames），而非容器元数据帧数。
+
+    容器 nb_frames/packet 数对"包存在但解码失败/参考链断裂"完全盲区。
+    """
+    path = Path(video_path)
+    if not path.exists():
+        return None
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return None
+    cmd = [
+        ffprobe,
+        "-v", "error",
+        "-select_streams", "v:0",
+        "-count_frames",
+        "-show_entries", "stream=nb_read_frames,nb_frames",
+        "-of", "json",
+        str(path),
+    ]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=True, timeout=1800,
+        )
+        data = json.loads(result.stdout or "{}")
+        streams = data.get("streams", [])
+        if not streams:
+            return None
+        value = streams[0].get("nb_read_frames") or streams[0].get("nb_frames")
+        return int(value) if value not in (None, "", "N/A") else None
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
+        return None
+
+
+def validate_decodable_video(video_path: Union[str, Path],
+                             expected_frames: Optional[int] = None) -> Tuple[bool, Dict[str, object]]:
+    """[P4-FIX-GATE] 段级/最终输出解码级守恒与错误校验。
+
+    Checks:
+      1. ffprobe 可解析且有视频流；
+      2. nb_read_frames == expected_frames（提供时）；
+      3. ffmpeg -v error ... -f null - 无任何 stderr 错误。
+    """
+    path = Path(video_path)
+    report: Dict[str, object] = {"path": str(path), "exists": path.exists()}
+    if not report["exists"]:
+        report["reason"] = "file_missing"
+        return False, report
+    if path.stat().st_size < 1024:
+        report["reason"] = "too_small"
+        return False, report
+
+    decoded = count_decoded_video_frames(path)
+    report["decoded_frames"] = decoded
+    if decoded is None:
+        report["reason"] = "frame_count_unavailable"
+        return False, report
+    if expected_frames is not None and decoded != int(expected_frames):
+        report["expected_frames"] = int(expected_frames)
+        report["reason"] = "decoded_frame_mismatch"
+        return False, report
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        report["ffmpeg_error_check"] = "unavailable"
+        # 无法运行完整解码校验时不接受为成功；避免旧验证盲区复发。
+        report["reason"] = "ffmpeg_unavailable"
+        return False, report
+    try:
+        proc = subprocess.run(
+            [ffmpeg, "-hide_banner", "-v", "error",
+             "-i", str(path), "-map", "0:v:0", "-f", "null", "-"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=3600,
+        )
+        err_tail = (proc.stderr or "").strip()
+        report["decode_errors"] = len(err_tail.splitlines())
+        report["decode_stderr_tail"] = err_tail[-2000:]
+        report["returncode"] = proc.returncode
+        if proc.returncode != 0 or err_tail:
+            report["reason"] = "decode_errors"
+            return False, report
+    except subprocess.TimeoutExpired:
+        report["reason"] = "decode_timeout"
+        return False, report
+    except OSError as exc:
+        report["reason"] = "decode_process_error"
+        report["detail"] = str(exc)
+        return False, report
+
+    report["reason"] = "ok"
+    return True, report
 
 
 def verify_video_integrity(video_path: str) -> bool:
@@ -694,8 +866,31 @@ def verify_video_integrity(video_path: str) -> bool:
         
         cap.release()
         return ret
-    except:
+    except Exception:
+        # [P0-FIX-BARE-EXCEPT] 原裸 except 会吞掉 KeyboardInterrupt/SystemExit，
+        # 中断瞬间命中此路径会被静默吞掉。
         return False
+
+
+def _fingerprint_matches(sidecar_path: str, current: dict) -> bool:
+    """[P1-FIX-SPLIT-FINGERPRINT] 比对分段目录的源内容指纹侧车与当前源视频。
+
+    以名字代内容的等价假设是该模块历史缺陷根源之一；侧车记录
+    (source, size, mtime_ns, segment_duration)，任一不符即视为陈旧。
+    """
+    if not current:
+        return False
+    try:
+        if not os.path.exists(sidecar_path):
+            return False
+        with open(sidecar_path, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+    except Exception:
+        return False
+    return (saved.get("source") == current.get("source")
+            and saved.get("size") == current.get("size")
+            and saved.get("mtime_ns") == current.get("mtime_ns")
+            and saved.get("segment_duration") == current.get("segment_duration"))
 
 
 def split_video_by_time(input_video: str, output_dir: str,
@@ -723,22 +918,48 @@ def split_video_by_time(input_video: str, output_dir: str,
 
     print(f"📹 视频总时长: {format_time(duration)}")
 
-    # 计算分段数
-    num_segments = int(duration / segment_duration) + (1 if duration % segment_duration > 0 else 0)
+    # [P1-FIX-SPLIT-FINGERPRINT] 源内容指纹侧车：(size, mtime_ns) 写入
+    # .segments_fingerprint.json。复用判定先比对指纹——同名不同内容的源视频
+    # 不再被陈旧 segments 目录蒙混；指纹不符时强制重新分割。
+    _fp_path = os.path.join(output_dir, ".segments_fingerprint.json")
+    def _current_fingerprint() -> dict:
+        try:
+            st = os.stat(input_video)
+            return {"source": os.path.abspath(input_video),
+                    "size": st.st_size, "mtime_ns": st.st_mtime_ns,
+                    "segment_duration": segment_duration}
+        except OSError:
+            return {}
+
+    # 计算分段数（[P1-FIX-SEG-COUNT] 浮点容差：60.0000001s 这类元数据不再多算一段）
+    _eps = max(segment_duration, 1.0) * 1e-6
+    num_segments = int(duration / segment_duration) + (
+        1 if (duration % segment_duration) > _eps else 0)
+
+    def _write_fingerprint():
+        try:
+            with open(_fp_path, "w", encoding="utf-8") as f:
+                json.dump(_current_fingerprint(), f, indent=2)
+        except Exception:
+            pass
 
     if num_segments <= 1:
         print(f"⏭️  视频时长 < {segment_duration}秒，无需分段")
         segment_file = os.path.join(output_dir, "segment_000.mp4")
-        if reuse_existing and os.path.exists(segment_file) and verify_video_integrity(segment_file):
+        if reuse_existing and os.path.exists(segment_file) \
+                and verify_video_integrity(segment_file) \
+                and _fingerprint_matches(_fp_path, _current_fingerprint()):
             print(f"♻️  复用已有分段文件，跳过重复复制")
             return [segment_file]
         shutil.copy2(input_video, segment_file)
+        _write_fingerprint()
         return [segment_file]
 
     # 检查是否可复用已有分段
     if reuse_existing:
         existing = sorted(Path(output_dir).glob("segment_*.mp4"))
-        if len(existing) == num_segments:
+        if len(existing) == num_segments and \
+                _fingerprint_matches(_fp_path, _current_fingerprint()):
             valid_files = []
             all_valid = True
             for f in existing:
@@ -756,6 +977,8 @@ def split_video_by_time(input_video: str, output_dir: str,
                 return valid_files
             else:
                 print("⚠️  已有分段文件不完整，将重新分割")
+        elif len(existing) == num_segments:
+            print("⚠️  源视频内容/参数与既有分段不一致（指纹侧车不匹配），将重新分割")
 
     print(f"🔪 分割为 {num_segments} 段，只 copy 视频流，不重新编码...")
     
@@ -764,7 +987,9 @@ def split_video_by_time(input_video: str, output_dir: str,
     
     # 使用FFmpeg的segment muxer
     cmd = [
-        'ffmpeg', '-i', input_video,
+        'ffmpeg', '-fflags', '+genpts', '-i', input_video,
+        # -fflags +genpts 是输入选项(须在 -i 前)：老 AVI/mpeg4 常缺 PTS，
+        # segment muxer 依赖包时间戳切分，缺 PTS 会导致整段输出不切分
         '-c', 'copy',  # 复制流，不重新编码
         '-map', '0:v',  # 只映射视频流
         '-f', 'segment',
@@ -776,7 +1001,7 @@ def split_video_by_time(input_video: str, output_dir: str,
     
     try:
         subprocess.run(cmd, check=True, capture_output=True)
-        
+
         # 验证分段
         for i in range(num_segments):
             segment_file = os.path.join(output_dir, f"segment_{i:03d}.mp4")
@@ -784,10 +1009,17 @@ def split_video_by_time(input_video: str, output_dir: str,
                 segment_files.append(segment_file)
                 seg_dur = get_video_duration(segment_file)
                 print(f"✅ 分段 {i+1}/{num_segments}: {format_time(seg_dur)}")
-        
+
+        # [P1-FIX-SEG-COUNT] 实产段数与预期不符（关键帧对齐/容器怪癖）时显式告警，
+        # 不再静默返回短列表导致合并产物比源视频短。
+        if len(segment_files) != num_segments:
+            print(f"⚠️  [split] 预期 {num_segments} 段，实际产出 {len(segment_files)} 段"
+                  f"——后续合并产物时长可能短于源视频，请检查源文件时间戳")
+
+        _write_fingerprint()
         print(f"✅ 成功分割为 {len(segment_files)} 个有效片段")
         return segment_files
-        
+
     except subprocess.CalledProcessError as e:
         print(f"❌ 分割失败: {e}")
         return []
@@ -1007,6 +1239,114 @@ def get_video_codec(video_file: Union[str, Path]) -> str:
 
     return codec
 
+
+def probe_color_metadata(video_file: Union[str, Path]) -> Optional[Dict[str, str]]:
+    """
+    使用 ffprobe 读取视频第一个视频流的色彩元数据。
+
+    Args:
+        video_file: 视频文件路径，支持字符串或 pathlib.Path 对象。
+
+    Returns:
+        字典 {color_range, color_space, color_primaries, color_transfer}，
+        各项为 ffprobe 输出字符串（可能为 'unknown'）。
+        无法探测（文件缺失/无视频流/ffprobe 异常）时返回 None。
+    """
+    video_path = str(video_file)
+    if not os.path.isfile(video_path):
+        return None
+
+    cmd = [
+        'ffprobe', '-v', 'error',
+        '-select_streams', 'v:0',       # 仅选择第一个视频流
+        '-show_entries',
+        'stream=color_range,color_space,color_primaries,color_transfer',
+        '-of', 'default=noprint_wrappers=1',
+        video_path                      # 使用转换后的字符串路径
+    ]
+    try:
+        probe_out = subprocess.run(
+            cmd, capture_output=True, text=True,
+            encoding='utf-8', timeout=10, check=False,
+        )
+        if probe_out.returncode != 0:
+            return None
+        meta: Dict[str, str] = {}
+        for line in probe_out.stdout.strip().splitlines():
+            if '=' in line:
+                key, value = line.split('=', 1)
+                meta[key] = value
+        return meta if meta else None
+    except Exception:
+        # 任何异常（超时/解析失败等）均容错返回 None，不阻断流程
+        return None
+
+
+def build_color_args(video_file: Union[str, Path]) -> List[str]:
+    """
+    检测源视频色彩元数据并构造 ffmpeg 输出端色彩参数列表。
+
+    有值则逐项透传（color_space→-colorspace 等）；unknown/缺失项
+    回退 BT.709 + Full Range(pc)：-colorspace bt709 -color_primaries bt709
+    -color_trc bt709 -color_range pc（0-255 全范围）。
+
+    Args:
+        video_file: 源视频路径，用于探测色彩元数据。
+
+    Returns:
+        ffmpeg 参数列表，可直接追加到合并/编码命令输出文件之前。
+    """
+    meta = probe_color_metadata(video_file) or {}
+
+    def _pick(key: str, fallback: str) -> str:
+        val = meta.get(key, '')
+        if val and val.lower() not in ('unknown', 'unspecified'):
+            return val
+        return fallback
+
+    return [
+        '-colorspace', _pick('color_space', 'bt709'),
+        '-color_primaries', _pick('color_primaries', 'bt709'),
+        '-color_trc', _pick('color_transfer', 'bt709'),
+        '-color_range', _pick('color_range', 'pc'),
+    ]
+
+
+def _setparams_from_color_args(extra_args: Sequence[str]) -> Optional[str]:
+    """
+    从 build_color_args 生成的色彩参数列表中提取取值，构造 setparams 滤镜字符串。
+
+    原因：libx264 等编码器对输出端 -color_primaries/-color_trc 参数不写入 VUI，
+    重新编码时需用 setparams 滤镜显式注入帧级色彩属性（copy 路径则靠输出端
+    参数写入 MP4 colr box，无需滤镜）。
+
+    Args:
+        extra_args: ffmpeg 输出端参数列表（含 -colorspace/-color_primaries 等）。
+
+    Returns:
+        setparams 滤镜字符串（如 'setparams=colorspace=bt709:color_primaries=bt709:...'），
+        无色彩参数时返回 None。
+    """
+    _color_map = {
+        '-colorspace': 'colorspace',
+        '-color_primaries': 'color_primaries',
+        '-color_trc': 'color_trc',
+        '-color_range': 'range',
+    }
+    vals: Dict[str, str] = {}
+    i = 0
+    while i < len(extra_args) - 1:
+        key = extra_args[i]
+        if key in _color_map:
+            vals[_color_map[key]] = extra_args[i + 1]
+            i += 2
+        else:
+            i += 1
+    if not vals:
+        return None
+    return 'setparams=' + ':'.join(f'{k}={v}' for k, v in vals.items())
+
+
 def merge_videos_by_codec(
     file_list: Sequence[Union[str, Path]],
     output_path: Union[str, Path],
@@ -1016,15 +1356,21 @@ def merge_videos_by_codec(
     check_consistency: bool = True,
     force_reencode: bool = False,
     overwrite: bool = True,
-    timeout: Optional[int] = None
+    timeout: Optional[int] = None,
+    actual_output: Optional[List[str]] = None
 ) -> bool:
     """
     根据视频编码自动选择直接复制流或重新编码为 H.264 后合并视频，
     并支持使用独立音频文件替换原视频音轨。
 
+    [P0-FIX-EXT-PROP] 触发重编码且输出扩展名与 config format 不一致时，本函数
+    会改写实际输出路径（如 out.mkv → out.mp4）。调用方传入 actual_output 列表
+    （出参）即可拿到真实写出路径，避免"任务成功但按原路径找不到文件"的假阴性链。
+
     Args:
         file_list: 待合并的视频分段文件路径列表。
         output_path: 输出视频文件路径。
+        actual_output: 可选出参列表；函数成功时追加实际输出路径（str）。
         config: 可选，配置参数字典，支持以下字段：
             - format      : str  (默认 'mp4')       # 输出格式（用于自动补充扩展名）
             - codec       : str  (默认 'libx264')   # 视频编码器（重编码时使用）
@@ -1178,6 +1524,13 @@ def merge_videos_by_codec(
             '-crf', crf_str,
             '-pix_fmt', params['pix_fmt']
         ]
+        # [COLOR-FIX] 补全 re-encode 路径色彩元数据：
+        # libx264 等编码器对输出端 -color_primaries/-color_trc 不写 VUI，
+        # 需用 setparams 滤镜显式注入（值来自 extra_args，无则跳过）。
+        if '-vf' not in params['extra_args']:
+            _sp = _setparams_from_color_args(params['extra_args'])
+            if _sp:
+                ffmpeg_cmd += ['-vf', _sp]
     else:
         ffmpeg_cmd += ['-c:v', 'copy']
 
@@ -1190,10 +1543,13 @@ def merge_videos_by_codec(
             ffmpeg_cmd += ['-b:a', params['audio_bitrate']]
 
     # 输出文件：自动补充扩展名
-    #debug print
-    print(f"first_codec: {first_codec}; need_reencode: {need_reencode}; format: .{params['format']}; output_path.suffix: {output_path.suffix}")
+    _requested_output = str(output_path)
     if not output_path.suffix or need_reencode:
         output_path = output_path.with_suffix(f'.{params["format"]}')
+    _final_output = str(output_path)
+    if _final_output != _requested_output:
+        print(f"⚠️  [merge] 输出容器与编码策略不匹配，实际输出: {_final_output} "
+              f"(请求: {_requested_output})")
 
     ffmpeg_cmd += params['extra_args'] + [str(output_path)]
 
@@ -1282,6 +1638,10 @@ def merge_videos_by_codec(
                 f"合并输出文件缺少音频流（视频正常）: {output_path}\n"
                 f"ffprobe a:0 返回: {_a_info!r}"
             )
+
+    # [P0-FIX-EXT-PROP] 向调用方传播实际输出路径
+    if actual_output is not None:
+        actual_output.append(_final_output)
 
     return True
 

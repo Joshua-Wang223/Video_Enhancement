@@ -38,12 +38,23 @@ if _script_dir not in sys.path:
 
 from basicsr.utils.download_util import load_file_from_url
 from realesrgan import RealESRGANer
-from config import MODEL_CONFIG, models_RealESRGAN, models_GFPGAN, gfpgan_weights_dir
-from realesrgan_utils import get_video_meta_info, _build_upsampler
-from ffmpeg_io import FFmpegReader, FFmpegWriter, HardwareCapability
-from tensorrt_accel import TensorRTAccelerator
-from gfpgan_subprocess import GFPGANSubprocess
-from pipeline import DeepPipelineOptimizer
+from realesrgan_video.config import MODEL_CONFIG, models_RealESRGAN, models_GFPGAN, gfpgan_weights_dir
+from realesrgan_video.realesrgan_utils import get_video_meta_info, _build_upsampler
+from realesrgan_video.ffmpeg_io import (FFmpegReader, FFmpegWriter, HardwareCapability,
+                        _NVENC_LOOKAHEAD_VBR)
+from realesrgan_video.tensorrt_accel import TensorRTAccelerator
+from realesrgan_video.gfpgan_subprocess import GFPGANSubprocess
+from realesrgan_video.pipeline import DeepPipelineOptimizer
+
+# [SDK-NVENC] 条件导入 SDK Level 1 NVENC 模块
+# 从 nvenc_sdk 统一导入（NVENCEncoder + NVENCWriter 同文件），
+# 不再依赖 nvenc_writer.py（死代码）。
+try:
+    from realesrgan_video.nvenc_sdk import NVENCEncoder, NVENCWriter
+    _SDK_NVENC_AVAILABLE = True
+except ImportError:
+    NVENCEncoder = NVENCWriter = None
+    _SDK_NVENC_AVAILABLE = False
 
 try:
     from gfpgan import GFPGANer
@@ -276,6 +287,15 @@ def create_video_enhancer(args):
           GFPGAN 子进程/主进程模型加载、TensorRT 引擎构建。
     返回的字典可在后续 run_pipeline_for_video() 中重复使用。
     """
+    # [DIAG-SEGFAULT] 启用 faulthandler：进程收到 SIGSEGV/SIGABRT 等致命信号时
+    # 打印所有 Python 线程的调用栈（含线程名），用于定位跨段编码崩溃到底发生
+    # 在 NVENC-Enc / SR / Main 哪个线程哪一行。幂等，无性能开销。
+    try:
+        import faulthandler
+        faulthandler.enable()
+    except Exception:
+        pass
+
     # =========================================================================
     # 阶段 -1: 参数标准化、强制覆盖与互斥仲裁
     #          确保任何调用方（CLI 或外部模块）都得到一致的处理结果
@@ -519,10 +539,57 @@ def create_video_enhancer(args):
             args.pre_pad, use_half, device
         )
         print("[优化架构] RealESRGAN模型加载成功")
+        # [P2.1-TILE-RESTORE] tile 生效性明示：>0 时 eager/compile 路径启用批级平铺；
+        # TRT 静态形状 engine 不适用平铺（若 TRT 激活则 tile 被旁路），提前告知运维。
+        if int(getattr(args, 'tile', 0) or 0) > 0:
+            if getattr(args, 'use_tensorrt', False) and not getattr(args, 'no_tensorrt', False):
+                print(f"[P2.1-TILE] ⚠️ tile={args.tile} 已配置但 TensorRT 亦激活："
+                      f"TRT 引擎为静态形状，推理将走 TRT 整幅路径，tile 仅在 "
+                      f"eager/compile 回退路径生效", flush=True)
+            else:
+                print(f"[P2.1-TILE] tile 平铺已启用: size={args.tile} pad={args.tile_pad} "
+                      f"pre_pad={args.pre_pad}（批级实现，保留批量推理/异步D2H）",
+                      flush=True)
         _, _netscale, _ = MODEL_CONFIG.get(args.model_name, (None, 4, None))
         args.netscale = _netscale
         if getattr(args, 'use_tensorrt', False) and not getattr(args, 'no_compile', False):
             args.no_compile = True
+
+        # [P2.2-COMPILE-IMPL] torch.compile / CUDA Graph 真实落地（此前仅有仲裁
+        # 与提示文案、无任何实现——pipeline.cuda_graph_accel 恒 None）：
+        # · use_compile（TRT 未激活）          → torch.compile(mode='default', dynamic=True)
+        # · use_cuda_graph（TRT/compile 均未激活）→ torch.compile(mode='reduce-overhead')
+        #   inductor cudagraphs 即 CUDA Graph 加速，取代从未存在的手动捕获路径。
+        # 首次推理触发编译（约 1-3 分钟），结果缓存于 .torch_compile_cache_sr。
+        _sr_trt_active = bool(getattr(args, 'use_tensorrt', False))
+        _sr_want_compile = bool(getattr(args, 'use_compile', False))
+        _sr_want_cugraph = bool(getattr(args, 'use_cuda_graph', False))
+        if (not _sr_trt_active and (_sr_want_compile or _sr_want_cugraph)
+                and hasattr(torch, 'compile')):
+            try:
+                if _sr_want_compile:
+                    _c_mode, _c_tag = 'default', 'torch.compile(default, dynamic=True)'
+                    _c_dynamic = True
+                else:
+                    _c_mode, _c_tag = 'reduce-overhead', 'CUDA Graph (inductor cudagraphs)'
+                    _c_dynamic = False   # cudagraphs 需要静态 shape
+                _sr_cache_dir = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)),
+                    '.torch_compile_cache_sr')
+                os.makedirs(_sr_cache_dir, exist_ok=True)
+                os.environ.setdefault('TORCHINDUCTOR_CACHE_DIR', _sr_cache_dir)
+                upsampler.model = torch.compile(
+                    upsampler.model, mode=_c_mode, dynamic=_c_dynamic)
+                args._sr_backend_tag = _c_tag
+                print(f"[P2.2-COMPILE] {_c_tag} 已启用"
+                      f"（首次推理触发编译约1-3分钟，缓存: {_sr_cache_dir}）",
+                      flush=True)
+            except Exception as _cmp_err:
+                print(f"[P2.2-COMPILE] 编译包装失败，回退 eager 推理: {_cmp_err}",
+                      flush=True)
+        elif _sr_trt_active and (_sr_want_compile or _sr_want_cugraph):
+            print('[P2.2-COMPILE] TensorRT 已激活：compile/CUDA Graph 按互斥规则跳过。',
+                  flush=True)
     except Exception as e:
         print(f"[优化架构] RealESRGAN模型加载失败: {e}")
         import traceback
@@ -600,11 +667,17 @@ def create_video_enhancer(args):
         # [FIX-TRT-CTX-OOM] 在双步模式（interpolate_then_upscale）下，
         # 前序 IFRNet 步骤可能在 PyTorch 缓存分配器中残留大量显存。
         # 主动清理，为 TRT execution context 腾出空间。
+        # [FIX-OOM-TRT] 加强：synchronize 确保所有 CUDA 操作完成后再清理，
+        # 避免残留 GPU kernel 持有的临时 buffer 不被 empty_cache 回收。
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+        import gc as _gc
+        _gc.collect()
         torch.cuda.empty_cache()
         
         meta = get_video_meta_info(args.input)
         sh = (args.batch_size, 3, meta['height'], meta['width'])
-        trt_dir = getattr(args, 'trt_cache_dir', None) or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.trt_cache')
+        trt_dir = getattr(args, 'trt_cache_dir', None) or os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), '.trt_cache')
         print(f'[优化架构] 初始化 SR TensorRT Engine (shape={sh})...')
         try:
             trt_accel = TensorRTAccelerator(
@@ -636,6 +709,7 @@ def create_video_enhancer(args):
         'args': args,                    # 标准化后的参数
         'gfpgan_subprocess': _early_gfpgan_subprocess,
         'gfpgan_mode': gfpgan_mode,
+        '_sdk_nvenc_encoder': None,      # [SDK-NVENC] 延迟创建，首段填充，后续段复用
     }
     return enhancer
 
@@ -663,10 +737,10 @@ def run_pipeline_for_video(enhancer, input_video, output_video):
 
     # [FIX-NVENC-UNIFIED] 统一 NVENC 检测前移：在 reader 创建前确定实际编码器，
     # 确保 "[GPU0] NVENC 编码已激活" 日志出现在 reader 启动信息之前。
-    _video_codec = getattr(args, 'video_codec', 'libx264')
-    args.video_codec = HardwareCapability.best_encoder(_video_codec, hw_profile=args._hw_profile)
-    if 'nvenc' in args.video_codec:
-        print(f'\n[GPU0] NVENC 编码已激活: {args.video_codec}', flush=True)
+    _codec = getattr(args, 'codec', 'libx264')
+    args.codec = HardwareCapability.best_encoder(_codec, hw_profile=args._hw_profile)
+    if 'nvenc' in args.codec:
+        print(f'\n[GPU0] NVENC 编码已激活: {args.codec}', flush=True)
 
     vlog("[优化架构] 阶段 3: 创建视频读写器...")
     reader = FFmpegReader(
@@ -682,7 +756,111 @@ def run_pipeline_for_video(enhancer, input_video, output_video):
     output_dir = os.path.dirname(output_video)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
-    base_writer = FFmpegWriter(args, reader.audio, out_h, out_w, output_video, reader.fps)
+    # [FIX-HIGHRES-RC] 4K超高清输出（≥2160p）自动切换 CONSTQP + LA=0：
+    # VBR_HQ/QVBR + LA=8 在超高分辨率下，NVENC lookahead 缓冲的 drain 会阻塞
+    # 主线程写循环，背压沿 gfpgan_queue→sr_queue 传导导致 SR 推理空转
+    # （实测 768x576→1536x1152 时 gfpgan_queue 满占比 ~30%）。
+    # CONSTQP 无 lookahead 缓冲需求且零空帧（与 IFRNet 侧生产推荐一致），
+    # 从写端消除 stall 而非加深队列（RAM 代价更低）。
+    if out_h >= 2160:
+        _cur_rate = getattr(args, 'rate_mode', 'vbr_hq')
+        _cur_la = getattr(args, 'lookahead_depth', 8)
+        if _cur_rate != 'constqp' or _cur_la != 0:
+            print(f'[FIX-HIGHRES-RC] 输出 {out_w}x{out_h} ≥2160p：'
+                  f'rate_mode {_cur_rate}→constqp，lookahead {_cur_la}→0'
+                  f'（消除高分辨率 NVENC drain 背压）', flush=True)
+            args.rate_mode = 'constqp'
+            args.lookahead_depth = 0
+    # [SDK-NVENC] 编码路径: SDK Level 1 默认优先 → 失败自动回退 FFmpeg CLI
+    # encoder 缓存在 enhancer['_sdk_nvenc_encoder'] 中跨段复用，
+    # flush_and_join 在段末排空 LA FIFO，下一段从干净状态启动。
+    # [ESRGAN_DISABLE_SDK_NVENC] 环境变量逃生门：置 1 时禁用 SDK Level 1
+    # 直通编码，整段使用 FFmpegWriter（Level 2/3），用于隔离 SDK 路径问题
+    # 或在 SDK 路径不稳定时保证生产可用。
+    base_writer = None
+    _nvenc_available = (_SDK_NVENC_AVAILABLE and (device.type == 'cuda')
+                        and os.environ.get('ESRGAN_DISABLE_SDK_NVENC', '0') != '1')
+    if _nvenc_available and 'nvenc' in args.codec:
+        try:
+            _sdk_qp = getattr(args, 'crf', 23)
+            _sdk_rate = getattr(args, 'rate_mode', 'vbr_hq')
+            _sdk_la = getattr(args, 'lookahead_depth',
+                              _NVENC_LOOKAHEAD_VBR if _sdk_qp > 0 else 0)
+            _sdk_preset = getattr(args, 'encode_preset', 'medium')
+            # [FIX-PRESET-UNIFY] 直传 x264 名称给 NVENCEncoder，由其内部 _PRESET_P_INDEX
+            # 解析为 p1~p7（避免二次映射导致口径不一致或静默落到默认档）。
+            _nvenc_preset = _sdk_preset
+            # [FIX-CODEC-SUPPORT] 将 ffmpeg codec 名映射为 SDK codec（h264/hevc/av1）。
+            # libx265 经 best_encoder 升级为 hevc_nvenc 后，此处正确产出 HEVC（而非旧实现静默降级为 H.264）。
+            _sdk_codec = {"h264_nvenc": "h264", "hevc_nvenc": "hevc", "av1_nvenc": "av1"}.get(
+                args.codec, "h264")
+
+            _encoder = enhancer.get('_sdk_nvenc_encoder')
+            if _encoder is None:
+                # 首段：延迟创建 encoder 并缓存到 enhancer
+                _encoder = NVENCEncoder(out_w, out_h, reader.fps,
+                                         preset=_nvenc_preset, qp=_sdk_qp,
+                                         rate_mode=_sdk_rate,
+                                         la_depth=_sdk_la,
+                                         codec=_sdk_codec)
+                enhancer['_sdk_nvenc_encoder'] = _encoder
+                # 缓存创建参数 key，供后续段复用前做一致性检查
+                # （对齐 IFRNet v6.4.5.1 _get_or_create_nvenc_encoder 防御模式）
+                # [FIX-CODEC-SUPPORT] key 加入 codec 维度，防御 h264/hevc/av1 混用复用错误编码器。
+                enhancer['_sdk_nvenc_key'] = (
+                    out_w, out_h, reader.fps, _nvenc_preset,
+                    _sdk_qp, _sdk_rate, _sdk_la, _sdk_codec)
+                # 打印 encoder 内部最终值（_sdk_la 可能被 CONSTQP/CRF0 覆写）
+                print(f'[NVENCEncoder] 首段创建: {out_w}x{out_h}@{reader.fps:.1f}fps '
+                      f'rc={_encoder._rate_mode} la={_encoder._la_depth}', flush=True)
+            else:
+                # 后续段：检查参数一致性后复用
+                _key = (out_w, out_h, reader.fps, _nvenc_preset,
+                        _sdk_qp, _sdk_rate, _sdk_la, _sdk_codec)
+                _cached_key = enhancer.get('_sdk_nvenc_key')
+                if _cached_key == _key:
+                    print(f'[NVENCEncoder] 复用编码器 ({out_w}x{out_h}@{reader.fps:.1f}fps '
+                          f'rc={_encoder._rate_mode})', flush=True)
+                else:
+                    # 参数变化（罕见）：关闭旧 encoder，创建新的
+                    print(f'[NVENCEncoder] 参数变化 (old={_cached_key} new={_key})，重建编码器',
+                          flush=True)
+                    try:
+                        _encoder.close()
+                    except Exception:
+                        pass
+                    _encoder = NVENCEncoder(out_w, out_h, reader.fps,
+                                             preset=_nvenc_preset, qp=_sdk_qp,
+                                             rate_mode=_sdk_rate,
+                                             la_depth=_sdk_la,
+                                             codec=_sdk_codec)
+                    enhancer['_sdk_nvenc_encoder'] = _encoder
+                enhancer['_sdk_nvenc_key'] = _key
+
+            # [P0-FIX-AUDIO-SRC] FFmpegReader 没有 audio_src 属性，原写法恒为 None
+            # → SDK Level1 路径输出无声视频（FFmpegWriter 回退路径却有音轨）。
+            # 改传源视频路径：muxer 用 -map 1:a? 可选复制音轨；切片本无音轨时安全跳过。
+            _audio_for_mux = input_video if os.path.exists(input_video) else None
+            base_writer = NVENCWriter(_encoder, args, reader.audio,
+                                       out_w, out_h, output_video, reader.fps,
+                                       audio_src=_audio_for_mux)
+            print(f'[GPU0] NVENC SDK Level 1 编码已激活 (ctypes direct, '
+                  f'slots={_encoder._slot_count})', flush=True)
+        except Exception as _sdk_e:
+            print(f'[GPU0] NVENC SDK 初始化失败 ({_sdk_e})，降级到 FFmpeg 管道编码',
+                  flush=True)
+            # 清理失败的 encoder，允许后续段重新创建
+            if enhancer.get('_sdk_nvenc_encoder') is not None:
+                try:
+                    enhancer['_sdk_nvenc_encoder'].close()
+                except Exception:
+                    pass
+                enhancer['_sdk_nvenc_encoder'] = None
+                enhancer['_sdk_nvenc_key'] = None
+            base_writer = None
+
+    if base_writer is None:
+        base_writer = FFmpegWriter(args, reader.audio, out_h, out_w, output_video, reader.fps)
     # 根据预览选项包装 writer
     preview_enabled = getattr(args, 'preview', False)
     preview_interval = getattr(args, 'preview_interval', 30)
@@ -708,6 +886,7 @@ def run_pipeline_for_video(enhancer, input_video, output_video):
 
     start_time = time.time()
     interrupted = False
+    _pipeline_error = None   # [P0-FAIL-FAST] 流水线异常不再被吞掉
     try:
         pipeline.optimize_pipeline(reader, writer, pbar, reader.nb_frames)
     except KeyboardInterrupt:
@@ -717,14 +896,34 @@ def run_pipeline_for_video(enhancer, input_video, output_video):
         print(f"流水线错误: {e}")
         import traceback
         traceback.print_exc()
+        _pipeline_error = e
     finally:
+        end_time = time.time()
+        total_time = end_time - start_time
+
+        # 先关闭进度条，确保最终进度条行（100% 行）已输出
+        try:
+            pbar.close()
+        except Exception:
+            pass
+
+        # 清理资源（NVENC lookahead/SPS 编码端消息在此输出）
         print("\n[优化架构] 视频推理完成，正在清理资源...")
         pipeline.close()
         writer.close()
         reader.close()
-        pbar.close()
-        end_time = time.time()
-        total_time = end_time - start_time
+
+        # ── 完成摘要（参考 IFRNet v6.4.5.1 风格）────
+        fc = reader.nb_frames
+        oc = reader.nb_frames  # SR 不改变帧数
+        if not interrupted and _pipeline_error is None:
+            print(f'\n✅ 超分完成！')
+            print(f'   原始帧: {fc} → 输出帧: {oc}')
+            m, s = divmod(int(total_time), 60)
+            print(f'\n⏱️  总耗时（含模型加载）: {m}分{s}秒')
+            if os.path.exists(output_video):
+                size_mb = os.path.getsize(output_video) / 1024 / 1024
+                print(f'✅ 输出: {output_video} ({size_mb:.1f} MB)')
 
         # ── 生成性能报告（如果指定了 --report）─────────────────────
         if getattr(args, 'report', None) and pipeline.timing:
@@ -741,7 +940,7 @@ def run_pipeline_for_video(enhancer, input_video, output_video):
                 'fp16': not args.no_fp16,
                 'trt': trt_accel is not None and trt_accel.available,
                 'nvdec': getattr(args, 'use_hwaccel', True),
-                'nvenc': getattr(args, 'video_codec', 'libx264') in ('h264_nvenc', 'hevc_nvenc'),
+                'nvenc': getattr(args, 'codec', 'libx264') in ('h264_nvenc', 'hevc_nvenc'),
                 'face_enhance': args.face_enhance,
                 'frame_count': reader.nb_frames,
                 'elapsed_s': round(elapsed, 2),
@@ -777,6 +976,13 @@ def run_pipeline_for_video(enhancer, input_video, output_video):
 
     if interrupted:
         raise KeyboardInterrupt
+
+    # [P0-FAIL-FAST] 原实现吞掉流水线异常后仍 return True：processor 只要输出
+    # 文件容器完整即判段成功，半截视频混入最终合并。现返回 False 让上层判败。
+    if _pipeline_error is not None:
+        print(f'[P0-FAIL-FAST] 流水线异常，本段判败: '
+              f'{type(_pipeline_error).__name__}: {_pipeline_error}', flush=True)
+        return False
 
     return True
 
@@ -843,14 +1049,13 @@ def main():
     parser.add_argument('--fps', type=float, default=None, help='输出帧率')
 
     # 编码参数
-    parser.add_argument('--video-codec', type=str, default='libx264',
-                        choices=['libx264', 'libx265', 'libvpx-vp9', 'h264_nvenc'],
-                        help='偏好编码器')
+    parser.add_argument('--codec', type=str, default='libx264',
+                        help='偏好编码器（libx264/libx265/h264_nvenc/hevc_nvenc 等，有 NVENC 时自动升级）')
     parser.add_argument('--crf', type=int, default=23, help='编码质量')
-    parser.add_argument('--x264-preset', type=str, default='medium',
+    parser.add_argument('--encode-preset', type=str, default='medium',
                         choices=['ultrafast', 'superfast', 'veryfast', 'faster', 'fast',
                                  'medium', 'slow', 'slower', 'veryslow'],
-                        help='libx264/libx265 preset')
+                        help='编码预设（libx264/libx265 名称；NVENC 时自动映射为 p1~p7）')
     parser.add_argument('--ffmpeg-bin', type=str, default='ffmpeg', help='FFmpeg 二进制路径')
 
     # 性能报告（支持可选参数自动生成路径）

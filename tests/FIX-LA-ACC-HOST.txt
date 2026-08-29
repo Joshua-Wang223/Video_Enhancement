@@ -1,0 +1,20 @@
+根因定位（[FIX-LA-ACC-HOST]）
+跟你之前 ESRGAN 那条排查思路一样，先从日志现象反推代码路径：写线程 _writer_loop 崩在 _rgb_to_nv12_gpu_batch，但真正吃显存的不是这次调用本身。
+_NVENCEncodeThread._loop() 里的 [FIX-LA-ACCUMULATE]（v6.4.4 时代为修 LA 连续性引入的设计）要求：LA>0 时把整个 segment所有批次的 NV12 帧全部攒进 _acc_nv12，直到收到 SENTINEL（segment 结束）才一次性 encode_frames_batch(send_eos=True)。这个设计本身是对的——之前分批调用会导致 _slot_pending 跨批次错位、静默丢帧，不能改回去。
+但问题是攒的元素是 GPU tensor。单帧 NV12 (H+H//2)*W 字节，你这次 1280×720、7226 帧的 segment，累积下来能到 8~10GB+ 显存，且完全不释放，跟 T2 IFRNet 推理批次持续抢显存——这就是"阶梯状爬升"的来源。日志里 batch_size 被反复腰斩到 1 还是 OOM，正是因为真正占着显存不放的是这条编码累积队列，降 batch_size 根本降不到点子上。
+修复思路
+不动 LA 连续性这条正确性约束，只把"累积介质"从显存换成系统内存：
+
+_writer_loop：每个 GPU_RAW 批次转出 all_nv12 后，若 _la_depth > 0，立即 D2H 搬到 pinned host 内存（失败自动退化为普通 host 内存，不影响正确性），再入队；GPU 侧引用随本轮循环结束即被 PyTorch allocator 回收复用。
+encode_frames_batch：cuMemcpy2D 提交路径改为按 nv12_tensors[fi].is_cuda 自动切换 srcMemoryType=HOST/DEVICE，对调用方透明；每帧提交完立即释放该元素引用，避免"已提交+已编码"的内存同时占着不放。
+LA=0 的 per-batch ce_pipeline 路径完全不受影响，帧不跨批次滞留，继续留在 GPU 保持原有零拷贝性能。
+
+diff 很干净（只涉及 4 处：注释头版本说明、encode_frames_batch 的 cuMemcpy2D 分支、_writer_loop 的 D2H 搬移、一处过时注释更新），语法检查通过，另外跑了 12 项自动化校验（struct offset 未破坏、HOST/DEVICE 分支互斥、LA=0 路径零改动、释放时序正确等）全部 OK。
+建议先跑一个能触发长 segment（比如你这次的 7226 帧那个）的样本，观察显存占用曲线是否不再阶梯上升，nvidia-smi -l 1 盯一下 batch_size 是否能稳定在正常水平而不再被压到 1。
+
+
+一个可以顺手优化的地方：现在 all_nv12.cpu().pin_memory() 是两步——先 D2H 到 pageable 内存,再 pageable→pinned 做一次 host 内存内的 memcpy,相当于多做了一次搬运。可以改成先分配好 pinned 缓冲区,直接 D2H 拷进去,省掉这一趟：
+pythonif _nvenc._la_depth > 0:
+    _pinned = torch.empty_like(all_nv12, device='cpu', pin_memory=True)
+    _pinned.copy_(all_nv12, non_blocking=False)
+    all_nv12 = _pinned

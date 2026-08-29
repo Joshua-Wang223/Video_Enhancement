@@ -1,0 +1,44 @@
+# 第1次尝试超分，CONSTQP，GPU显存占用平稳正常:
+[GPU0] NVENC 编码已激活: h264_nvenc
+[NVENCEncoder] CONSTQP + LA=0: 4 slots (HW pipeline buffers>=1)
+
+[FFmpegReader] FFmpeg 进程启动（pid=9136, frame_size=1327104B, queue_size=96）
+[NVENCEncoder] NVENC API: 0xd0 = v13.0
+[NVENCEncoder] 使用 primary CUDA context (0x55f223dc7430)
+[NVENCEncoder] OpenEncodeSessionEx OK: apiVersion=0xd0 (13.0)
+[NVENCEncoder] Driver codec GUID: 6bc82762-4e63-4ca4
+[NVENCEncoder] Driver preset GUID: 82e3e450-bdbb-4e40 (index=4/16)
+[NVENCEncoder] GetEncodePresetConfig OK
+[NVENCEncoder] 4 slots created (0x55f238bb1980..0x55f238bcc980)
+[NVENCEncoder] Ready: 1536x1152@30.0fps H.264 CONSTQP QP=17 preset=p6 slots=4 (GPU direct SDK 13.0)
+[NVENCEncoder] 首段创建: 1536x1152@30.0fps rc=constqp la=8
+[GPU0] NVENC SDK Level 1 编码已激活 (ctypes direct, slots=4)
+[优化流水线]:   0%|          | 24/9012 [00:03<20:54,  7.17frame/s, bs=24, eta=1254s, fps=7.2, ms=1474, queue_sizes=P:0/96[alive]/F:15/D:32/S:0/G:0][NVENCEncoder] Cached SPS+PPS: 47 bytes
+[优化流水线]:  41%|████▏     | 3720/9012 [04:08<05:11, 16.98frame/s, bs=24, eta=297s, fps=17.8, ms=1366, queue_sizes=P:96/96[alive]/F:48/D:32/S:8/G:16]
+
+
+# 第2次尝试超分，VBR_HQ + LA=8，GPU显存阶梯上升暴涨OOM异常:
+[GPU0] NVENC 编码已激活: h264_nvenc
+[NVENCEncoder] VBR_HQ + LA=8: 9 slots (HW pipeline buffers>=9)
+
+[FFmpegReader] FFmpeg 进程启动（pid=28858, frame_size=1327104B, queue_size=96）
+[NVENCEncoder] NVENC API: 0xd0 = v13.0
+[NVENCEncoder] 使用 primary CUDA context (0x55fc4fd4a5a0)
+[NVENCEncoder] OpenEncodeSessionEx OK: apiVersion=0xd0 (13.0)
+[NVENCEncoder] Driver codec GUID: 6bc82762-4e63-4ca4
+[NVENCEncoder] Driver preset GUID: 82e3e450-bdbb-4e40 (index=4/16)
+[NVENCEncoder] GetEncodePresetConfig OK
+[NVENCEncoder] VBR_HQ: crf=17 targetQuality=17 avgBitrate=159252kbps
+[NVENCEncoder] 9 slots created (0x55fc64b84610..0x55fc64bcc270)
+[NVENCEncoder] Ready: 1536x1152@30.0fps H.264 VBR_HQ QP=17 preset=p6 slots=9 la=8 tq=17 (GPU direct SDK 13.0)
+[NVENCEncoder] 首段创建: 1536x1152@30.0fps rc=vbr_hq la=8
+[GPU0] NVENC SDK Level 1 编码已激活 (ctypes direct, slots=9)
+[优化流水线]:  38%|███▊      | 3408/9012 [03:17<05:32, 16.83frame/s, bs=24, eta=316s, fps=17.7, ms=1396, queue_sizes=P:96/96[alive]/F:48/D:32/S:0/G:0][SR-OOM] TRT OOM → 临时拆分 bs=12（engine B=24 不变），重试...
+[SR-OOM] TRT OOM 恢复（临时 bs=12，engine B=24 不变，稳定=1/50）
+[优化流水线]:  38%|███▊      | 3432/9012 [03:21<08:25, 11.04frame/s, bs=24, eta=344s, fps=16.2, ms=1648, queue_sizes=P:96/96[alive]/F:48/D:32/S:0/G:0][SR-OOM] TRT OOM → 临时拆分 bs=6（engine B=24 不变），重试...
+[SR-OOM] TRT OOM 恢复（临时 bs=6，engine B=24 不变，稳定=1/50）
+[优化流水线]:  42%|████▏     | 3816/9012 [04:45<18:38,  4.64frame/s, bs=24, eta=984s, fps=5.3, ms=5170, queue_sizes=P:96/96[alive]/F:48/D:32/S:0/G:0][SR-OOM] TRT OOM → 临时拆分 bs=3（engine B=24 不变），重试...
+[SR-OOM] TRT OOM 恢复（临时 bs=3，engine B=24 不变，稳定=1/50）
+[优化流水线]:  44%|████▍     | 4008/9012 [06:08<34:28,  2.42frame/s, bs=24, eta=1456s, fps=3.4, ms=9304, queue_sizes=P:96/96[alive]/F:48/D:32/S:0/G:0][SR-OOM] TRT OOM → 临时拆分 bs=1（engine B=24 不变），重试...
+[SR-OOM] TRT OOM 恢复（临时 bs=1，engine B=24 不变，稳定=1/50）
+[优化流水线]:  45%|████▌     | 4056/9012 [07:09<1:10:47,  1.17frame/s, bs=24, eta=1974s, fps=2.5, ms=14453, queue_sizes=P:96/96[alive]/F:48/D:32/S:0/G:0]
