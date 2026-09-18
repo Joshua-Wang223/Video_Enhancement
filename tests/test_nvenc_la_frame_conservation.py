@@ -324,13 +324,22 @@ class MinimalTestEncoder:
         """rate_mode: 'constqp' | 'vbr_hq' | 'qvbr'.
            la_depth: lookahead depth (0=disabled, 8~32).
            codec: 'h264' | 'hevc' | 'av1'.
-           pipeline_depth: slot 数。None 时自动设为 max(1, la_depth+1)，
-           遵循 NVENC SDK 规范：启用 lookahead 时比特流缓冲区数量至少
-           lookaheadDepth+1，防止硬件覆盖未读数据。"""
-        if pipeline_depth is None:
-            pipeline_depth = max(1, la_depth + 1)
+           pipeline_depth: slot 数。None 时 h264 取 max(1, la_depth+1)；
+           [FIX-HEVC-READY] HEVC/AV1 取 max(la_depth+3, 6) —— 其输出延迟大于
+           la_depth（la=0 时实测约 4 帧），槽数不足会让提交↔排空形成循环依赖，
+           锁未就绪槽在驱动内永久阻塞（doNotWait=0/1 皆然）。
+
+        支持范围：h264 走原「阻塞排空」路径（逐字未变）；
+        [FIX-HEVC-READY] HEVC/AV1 走「per-slot FIFO + 就绪门控 + 轮转序 EOS」，
+        对齐生产 external/ifrnet_video/nvenc_sdk.py 的 _hevc_ready_count / FIX-HEVC-EOS。"""
         if codec not in ("h264", "hevc", "av1"):
             raise ValueError(f"Unsupported codec: {codec}, must be 'h264', 'hevc', or 'av1'")
+        self._is_hevc = codec in ("hevc", "av1")
+        if pipeline_depth is None:
+            if self._is_hevc:
+                pipeline_depth = max(la_depth + 3, 6)
+            else:
+                pipeline_depth = max(1, la_depth + 1)
 
         self._width = width
         self._height = height
@@ -345,11 +354,22 @@ class MinimalTestEncoder:
         self._frame_idx = 0
         self._output_slot_idx = 0  # 输出指针：追踪下一个预期输出 slot，保证帧顺序
         self._slots = []           # [{input_buf, bs_buf}]
+        # [FIX-HEVC-READY] per-slot FIFO 记账（对齐生产 _slot_pending）：
+        # slot_idx -> [(gfi, bs_buf), ...]，append 永不覆盖，队首 = 该槽下一次
+        # 必然取回的帧。HEVC/AV1 靠它做就绪门控与 EOS 排空顺序。
+        self._slot_pending = {}
+        # [FIX-HEVC-READY] 排空余量：实测延迟 = la_depth + margin。
+        # LA>0 用 2（对齐 IFRNet _HEVC_DRAIN_MARGIN）；LA=0 约 4（无 LA 时驱动
+        # 内部仍有数帧流水线，生产 LA=0 靠 completionEvent 判就绪，此处无 CE）。
+        self._hevc_margin = 2 if la_depth > 0 else 4
 
         # 统计
         self.total_encoded = 0       # EncodePicture 调用次数
         self.total_locked = 0        # LockBitstream 成功取回帧数
         self.total_eos_frames = 0    # EOS flush 阶段取回帧数
+        self.total_need_more = 0     # [FIX-HEVC-READY] NEED_MORE_INPUT 次数（原为未初始化属性）
+        self.total_illegal_size = 0  # [FIX-HEVC-READY] 非法 bitstream size 次数（铁律 3）
+        self.total_dropped = 0       # [FIX-HEVC-READY] EOS 后仍未取回的帧数（判失败依据）
 
         self._lock = threading.Lock()
 
@@ -741,12 +761,13 @@ class MinimalTestEncoder:
 
         return actual_pitch
 
-    def _lock_bitstream_once(self, bs_handle=None, count=True):
+    def _lock_bitstream_once(self, bs_handle=None, count=True, do_not_wait=False):
         """执行一次 LockBitstream → UnlockBitstream，返回 (h264_bytes, status)。
 
         Args:
             bs_handle: bitstream buffer handle，默认 self._bs_handle
             count: 成功时是否递增 total_locked（EOS flush 应传 False）
+            do_not_wait: True 时 doNotWait=1（非阻塞）。仅 EOS 排空使用。
         """
         if bs_handle is None:
             bs_handle = self._bs_handle
@@ -758,7 +779,7 @@ class MinimalTestEncoder:
         lock_raw = (c_uint8 * 1544)()
         ctypes.memset(lock_raw, 0, 1544)
         cast(lock_raw, POINTER(c_uint32))[0] = NV_ENC_LOCK_BITSTREAM_VER   # version@0
-        cast(byref(lock_raw, 4), POINTER(c_uint32))[0] = 0  # doNotWait=0 (blocking)
+        cast(byref(lock_raw, 4), POINTER(c_uint32))[0] = 1 if do_not_wait else 0
         cast(byref(lock_raw, 8), POINTER(c_void_p))[0] = bs_handle  # outputBitstream@8
 
         bs_status = _LockBitstream(self._encoder, lock_raw)
@@ -766,7 +787,10 @@ class MinimalTestEncoder:
         h264_data = b""
         if bs_status == NV_ENC_SUCCESS:
             bitstream_size = cast(byref(lock_raw, 36), POINTER(c_uint32))[0]
-            if bitstream_size > 0:
+            # [FIX-HEVC-READY] 铁律 3：驱动存在 "SUCCESS + 垃圾 size" 竞态，
+            # 直接 from_address 会越界读 → SIGSEGV。按「约 4 倍原始帧上限」钳制。
+            _cap = max(64 * 1024, self._width * self._height * 4)
+            if 0 < bitstream_size <= _cap:
                 _raw_bsptr = cast(byref(lock_raw, 56), POINTER(c_void_p))[0]
                 bs_ptr_val = _raw_bsptr if isinstance(_raw_bsptr, int) else (_raw_bsptr.value or 0)
                 if bs_ptr_val:
@@ -774,6 +798,8 @@ class MinimalTestEncoder:
                     h264_data = bytes(buf_type.from_address(bs_ptr_val))
                     if count:
                         self.total_locked += 1
+            elif bitstream_size > _cap:
+                self.total_illegal_size += 1
             _UnlockBitstream(self._encoder, bs_handle)
         elif bs_status == NV_ENC_ERR_NEED_MORE_INPUT:
             if count:
@@ -781,16 +807,75 @@ class MinimalTestEncoder:
 
         return h264_data, bs_status
 
-    # ──────────────── 修复后的核心编码方法 ────────────────
+    def _hevc_ready_count(self, limit=None) -> int:
+        """[FIX-HEVC-READY] 本次可安全 Lock 的已就绪帧数上界。
 
-    def _drain_outputs(self) -> List[bytes]:
+        与生产 IFRNet `_hevc_ready_count` 同口径：
+            ready = (submitted - la_depth - margin) - drained
+        仅对 HEVC/AV1 收紧；h264 返回「已提交未排空」的普通上界（行为不变）。
         """
-        循环 Lock 当前输出 slot 直到 NEED_MORE_INPUT。
-        收集所有已完成帧，推进输出指针。
-        NVENC SDK 规范：每送入一帧后必须反复 LockBitstream (blocking)，
-        直到返回 NEED_MORE_INPUT，确保无滞留帧。
+        if limit is None:
+            limit = self._pipeline_depth
+        _pending = max(0, self.total_encoded - self._output_slot_idx)
+        if not self._is_hevc:
+            return max(0, min(int(limit), _pending))
+        _ready = (self.total_encoded - self._la_depth
+                  - self._hevc_margin - self._output_slot_idx)
+        return max(0, min(int(limit), _ready))
+
+    def _ensure_slot_free(self, slot_idx: int) -> None:
+        """[FIX-HEVC-READY] 提交前背压：确认目标槽上一次的码流已排空。
+
+        等价于生产侧 `_ensure_slot_free`（HEVC/AV1 专有）。带 pending 复用物理
+        bs_buf 会在硬件层覆盖未取回的码流 → 静默丢帧。就绪不足时**绝不 Lock**
+        （会驱动内永久阻塞），直接抛错（fail loud）。
+        """
+        _guard = 0
+        while self._slot_pending.get(slot_idx):
+            if self._hevc_ready_count(1) <= 0:
+                raise RuntimeError(
+                    "[MinimalTestEncoder] [FIX-HEVC-READY] 目标槽 %d 仍带 pending 但就绪"
+                    "帧不足（enc=%d out=%d la=%d margin=%d）——拒绝带病复用。"
+                    % (slot_idx, self.total_encoded, self._output_slot_idx,
+                       self._la_depth, self._hevc_margin))
+            _drained = self._drain_outputs(api_limit=1)
+            if _drained:
+                _guard = 0
+            else:
+                _guard += 1
+                if _guard > self._pipeline_depth * 4:
+                    raise RuntimeError(
+                        "[MinimalTestEncoder] [FIX-HEVC-READY] 排空超限，目标槽 %d 仍带 "
+                        "pending（enc=%d out=%d）"
+                        % (slot_idx, self.total_encoded, self._output_slot_idx))
+
+    def _drain_outputs(self, api_limit=None) -> List[bytes]:
+        """
+        排空已完成的输出帧，推进输出指针。
+
+        h264：原语义（blocking Lock 直到 NEED_MORE_INPUT / 空槽 SUCCESS+size=0）。
+
+        HEVC/AV1：[FIX-HEVC-READY] 仅排空「已就绪」上界内的帧；每成功取回一帧，
+        从对应 slot 的 FIFO 队首出队，保证输出顺序 = 提交顺序。
         """
         outputs = []
+        if self._is_hevc:
+            _limit = self._hevc_ready_count(api_limit)
+            for _ in range(_limit):
+                slot_idx = self._output_slot_idx % self._pipeline_depth
+                bs_handle = self._slots[slot_idx]['bs_buf']
+                data, status = self._lock_bitstream_once(bs_handle, count=True)
+                if status != NV_ENC_SUCCESS or not data:
+                    break
+                _dq = self._slot_pending.get(slot_idx)
+                if _dq:
+                    _dq.pop(0)
+                    if not _dq:
+                        del self._slot_pending[slot_idx]
+                outputs.append(data)
+                self._output_slot_idx += 1
+            return outputs
+
         while True:
             slot_idx = self._output_slot_idx % self._pipeline_depth
             bs_handle = self._slots[slot_idx]['bs_buf']
@@ -814,6 +899,12 @@ class MinimalTestEncoder:
         with self._lock:
             slot_idx = self._frame_idx % self._pipeline_depth
             slot = self._slots[slot_idx]
+
+            # [FIX-HEVC-READY] 提交前背压：HEVC/AV1 必须确认目标槽上一次的码流已
+            # 排空，否则 EncodePicture 会在硬件层覆盖未取回的码流 → 静默丢帧。
+            _fi_global = self._frame_idx
+            if self._is_hevc:
+                self._ensure_slot_free(slot_idx)
 
             pitch = self._copy_frame_to_input_buffer(nv12_gpu_tensor,
                                                      slot['input_buf'])
@@ -839,6 +930,11 @@ class MinimalTestEncoder:
 
             self._frame_idx += 1
             self.total_encoded += 1
+            if self._is_hevc:
+                # [FIX-HEVC-READY] 提交后记账（与 EncodePicture 状态无关）：
+                # 该槽队首 = 下一次必然取回的帧。
+                self._slot_pending.setdefault(slot_idx, []).append(
+                    (_fi_global, slot['bs_buf']))
 
             # ★ 关键：立即排空所有已完成的输出帧
             return self._drain_outputs()
@@ -870,7 +966,37 @@ class MinimalTestEncoder:
                 self._func_ptrs[_FUNC_IDX["EncodePicture"]])
             _EncodePicture(self._encoder, pic_buf)
 
-            # 按输出指针顺序排空所有 slot
+            # [FIX-HEVC-READY] HEVC/AV1：只排空仍有 pending 的槽，且**保持
+            # _output_slot_idx 起始的轮转顺序**（物理槽号升序 ≠ 帧输出顺序，
+            # 段尾回绕时会错位 → 帧乱序）；用非阻塞锁 + 墙钟截止，绝不 blocking
+            # 锁未就绪槽（HEVC 驱动永不返回）。
+            if self._is_hevc:
+                _start = self._output_slot_idx % self._pipeline_depth
+                _order = [(_start + i) % self._pipeline_depth
+                          for i in range(self._pipeline_depth)]
+                _slots_pending = [_s for _s in _order if self._slot_pending.get(_s)]
+                _deadline = time.time() + 10.0
+                for _s in _slots_pending:
+                    while self._slot_pending.get(_s) and time.time() < _deadline:
+                        bs_handle = self._slots[_s]['bs_buf']
+                        data, status = self._lock_bitstream_once(bs_handle, count=False,
+                                                                 do_not_wait=True)
+                        if status == NV_ENC_SUCCESS and data:
+                            _dq = self._slot_pending[_s]
+                            _dq.pop(0)
+                            if not _dq:
+                                del self._slot_pending[_s]
+                            output_frames.append(data)
+                            self.total_eos_frames += 1
+                            self._output_slot_idx += 1
+                        else:
+                            time.sleep(0.002)
+                # 残余 pending = 真实丢帧（记入 total_dropped → 验收因帧数不符判失败）
+                self.total_dropped += sum(len(_d) for _d in self._slot_pending.values())
+                self._slot_pending.clear()
+                return output_frames
+
+            # h264：按输出指针顺序 blocking 排空所有 slot（原语义，未改动）
             start_slot = self._output_slot_idx % self._pipeline_depth
             drain_order = [(start_slot + i) % self._pipeline_depth
                            for i in range(self._pipeline_depth)]
@@ -901,24 +1027,41 @@ class MinimalTestEncoder:
                     _lep = ctypes.CFUNCTYPE(c_uint32, c_void_p, POINTER(c_uint8 * 3360))(
                         self._func_ptrs[_FUNC_IDX["EncodePicture"]])
                     _lep(self._encoder, pic_buf)
-                    # drain all slots with doNotWait=1 (non-blocking, max 32 attempts each)
-                    _lck = ctypes.CFUNCTYPE(c_uint32, c_void_p, POINTER(c_uint8 * 1544))(
-                        self._func_ptrs[_FUNC_IDX["LockBitstream"]])
-                    _unl = ctypes.CFUNCTYPE(c_uint32, c_void_p, c_void_p)(
-                        self._func_ptrs[_FUNC_IDX["UnlockBitstream"]])
-                    for slot in self._slots:
-                        bs_handle = slot['bs_buf']
-                        for _ in range(32):
-                            lr = (c_uint8 * 1544)()
-                            ctypes.memset(lr, 0, 1544)
-                            cast(lr, POINTER(c_uint32))[0] = NV_ENC_LOCK_BITSTREAM_VER
-                            cast(byref(lr, 4), POINTER(c_uint32))[0] = 1
-                            cast(byref(lr, 8), POINTER(c_void_p))[0] = bs_handle
-                            if _lck(self._encoder, lr) != NV_ENC_SUCCESS:
-                                break
-                            _unl(self._encoder, bs_handle)
-                            if cast(byref(lr, 36), POINTER(c_uint32))[0] == 0:
-                                break
+                    if self._is_hevc:
+                        # [FIX-HEVC-READY] HEVC/AV1：只锁仍有 pending 的槽；对空槽
+                        # 的 LockBitstream 在驱动内永久阻塞（doNotWait=0/1 皆然），
+                        # 故用非阻塞 + 墙钟截止，并且绝不遍历无 pending 的槽。
+                        _deadline = time.time() + 5.0
+                        for _s, _dq in list(self._slot_pending.items()):
+                            while _dq and time.time() < _deadline:
+                                _d, _st = self._lock_bitstream_once(
+                                    self._slots[_s]['bs_buf'], count=False,
+                                    do_not_wait=True)
+                                if _st == NV_ENC_SUCCESS and _d:
+                                    _dq.pop(0)
+                                else:
+                                    time.sleep(0.002)
+                        self._slot_pending.clear()
+                    else:
+                        # h264：原语义（空槽返回 SUCCESS+size=0，无死锁）
+                        # drain all slots with doNotWait=1 (non-blocking, max 32 attempts each)
+                        _lck = ctypes.CFUNCTYPE(c_uint32, c_void_p, POINTER(c_uint8 * 1544))(
+                            self._func_ptrs[_FUNC_IDX["LockBitstream"]])
+                        _unl = ctypes.CFUNCTYPE(c_uint32, c_void_p, c_void_p)(
+                            self._func_ptrs[_FUNC_IDX["UnlockBitstream"]])
+                        for slot in self._slots:
+                            bs_handle = slot['bs_buf']
+                            for _ in range(32):
+                                lr = (c_uint8 * 1544)()
+                                ctypes.memset(lr, 0, 1544)
+                                cast(lr, POINTER(c_uint32))[0] = NV_ENC_LOCK_BITSTREAM_VER
+                                cast(byref(lr, 4), POINTER(c_uint32))[0] = 1
+                                cast(byref(lr, 8), POINTER(c_void_p))[0] = bs_handle
+                                if _lck(self._encoder, lr) != NV_ENC_SUCCESS:
+                                    break
+                                _unl(self._encoder, bs_handle)
+                                if cast(byref(lr, 36), POINTER(c_uint32))[0] == 0:
+                                    break
                 except Exception:
                     pass
                 _DestroyInputBuffer = ctypes.CFUNCTYPE(c_uint32, c_void_p, c_void_p)(
@@ -1213,6 +1356,10 @@ def test_correct_polling_pattern(encoder: MinimalTestEncoder,
         "encoded_count": encoder.total_encoded,
         "locked_count": encoder.total_locked,
         "eos_frames": encoder.total_eos_frames,
+        # [FIX-HEVC-READY] 诊断计数：丢帧（EOS 后仍未取回）/ 非法 size / 空帧
+        "dropped": encoder.total_dropped,
+        "illegal_size": encoder.total_illegal_size,
+        "empty_outputs": sum(1 for _o in all_outputs if not _o),
         "match": len(all_outputs) == len(frames),  # ★ Output == Input（含 EOS flush）
         "outputs": all_outputs,
     }

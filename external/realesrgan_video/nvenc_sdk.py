@@ -312,15 +312,49 @@ class _NvEncConfig(Structure):
         ("reserved4",       c_uint32 * 27),
         ("reserved5",       c_uint32 * 172),  # [V6451] absorb mis-mapped enableTemporalAQ (=rcParams bitfield bit7, not a standalone NV_ENC_CONFIG field)
         ("encodeCodecConfig", _NvEncConfigH264),
-        ("reserved7",      c_uint32 * 252),
+        # [FIX-NVENC-CONFIG-SIZE] 252 → 356：本类是"保留字节块"近似体，字段偏移靠
+        # 绝对偏移硬编码写入（见 _open_session 的 [FIX-SDK13-CODEC] 说明）。
+        # 实测（gcc + nvEncodeAPI.h, SDK 13.0）: sizeof(NV_ENC_CONFIG) = 3584；
+        # 本类原为 3168（短 416）→ 补齐至 3584，使字段偏移与真实结构对齐。
+        # ⚠️ 短 416 **不会**造成越界：本类只嵌在 _NvEncPresetConfig.presetConfig(@8)
+        # 里，驱动写入止于 8+3584=3592 < 该结构总长 5128，故从未写坏堆。
+        # 见 _NvEncPresetConfig docstring 的「不要把本修正当成 qp=0 SIGSEGV 根因」。
+        ("reserved7",      c_uint32 * 356),
     ]
 
 class _NvEncPresetConfig(Structure):
+    """[FIX-NVENC-PRESETCFG-SIZE] 必须与真实 NV_ENC_PRESET_CONFIG 布局一致。
+
+    真实布局（SDK 13.0 头文件 + gcc sizeof 实测，共 5128 字节）：
+        uint32 version;            // @0
+        uint32 reserved;           // @4
+        NV_ENC_CONFIG presetCfg;   // @8   (3584)  → 结束于 3592
+        uint32 reserved1[256];     // @3592 (1024) → 结束于 4616
+        void*  reserved2[64];      // @4616 (512)  → 5128
+
+    原定义只有 4196 字节、且 `presetConfig` 落在 @4（version@0 + presetConfig@4(3168)
+    + reserved[256](1024)）→ 与真实布局**不符**：`presetConfig` 应在 @8。改后
+    `presetConfig` 恰好落在 @8，与下方 `byref(preset_config, 8)` 的绝对偏移写法一致
+    （原注释说"ctypes _pack_=1 让它从 offset 4 开始"已不再成立）。
+
+    ⚠️ **不要把本修正当成 qp=0 SIGSEGV 的根因**（2026-09-16 实测否定）：
+    修前/修后各跑 `test_no_empty_frames_constqp_la0` ×10，段错误分别为 2/10 与 4/10
+    —— 同一量级，**未改善**。原因：驱动 `nvEncGetEncodePresetConfig` 实际只写
+    `presetCfg` 一段（@8 起 3584 字节，止于 3592），旧定义总长 4196 已能容纳，
+    故从未真正越界。本修正的价值是**布局正确性**（字段偏移与真实 SDK 对齐，
+    便于后续按结构体名而非魔数访问），与随机崩溃无关。
+
+    qp=0 崩溃的真实定位见 `Plan/NVENC硬件测试隔离_立项Prompt.md` 的
+    2026-09-16 复测节：故障在**编码阶段**（建会话 0/15 崩、编码 10/15 崩），
+    与入口函数无关，`qp=23` 同路径 0/10 崩 ⇒ 触发条件是 `qp=0`（无损）。
+    """
     _pack_ = 1
     _fields_ = [
-        ("version",       c_uint32),
-        ("presetConfig",  _NvEncConfig),
-        ("reserved",      c_uint32 * 256),
+        ("version",       c_uint32),           # @0
+        ("reserved",      c_uint32),           # @4
+        ("presetConfig",  _NvEncConfig),       # @8   (3584)
+        ("reserved1",     c_uint32 * 256),     # @3592 (1024)
+        ("reserved2",     c_void_p * 64),      # @4616 (512)
     ]
 
 class _NvEncRegisterResource(Structure):
@@ -488,6 +522,39 @@ _FUNC_IDX = {
 # 历史值：7（CRF-offset 公式，文件仍偏大）、21（加法公式，文件极大 36.9 MB）、15（CRF-offset 公式）
 _NVENC_VBR_QUALITY_OFFSET: int = 15
 
+# ── avgBitrate 天花板钳制（与 ifrnet_video 侧同公式）──
+# [FIX-BR-CLAMP] 驱动对单会话码率有上限，高分辨率×高帧率（如 720p48 算出
+# 132.6Mbps）超限会触发 InitializeEncoder code=8。该值仅作为 NVENC 的
+# "速度天花板"（防止无约束质量搜索导致 GPU 空闲/FPS 塌方），不影响实际编码
+# 质量语义（targetQuality/qvbrQuality 仍主导质量决策）。
+# 旧实现为 max(50 Mbps, w*h*fps*3.0)：只有下限没有上限，1080p30 会算出
+# ~186 Mbps，比 ifrnet 侧（钳到 50 Mbps）激进 3.7×，两侧行为不一致。
+# [FIX-BR-RES-ADAPT] 分辨率自适应：raw = w*h*fps*3 随像素线性增长，单一 50Mbps
+# 上限会把 ≥1440p 内容压到欠码率（实测 1080p 及以上 raw 估算 149~373Mbps，
+# 而实际 CQ 产物最高仅 42Mbps，故基线档对 ≤1080p 足够）。>1080p 提升到高档。
+_NVENC_BR_CLAMP_MAX: int = 50_000_000        # 50 Mbps（≤1080p 基线）
+_NVENC_BR_CLAMP_MAX_HIGH: int = 100_000_000  # 100 Mbps（>1080p；maxBitRate=2×）
+_NVENC_BR_CLAMP_MIN: int = 5_000_000         # 5 Mbps（保底）
+_NVENC_BR_ADAPT_PIXELS: int = 1920 * 1080    # 分辨率分档阈值（像素数）
+
+
+def _max_avg_bitrate(width: int, height: int) -> int:
+    """按分辨率返回 avgBitrate 天花板：>1080p 用高档，其余用基线。
+
+    分辨率未知（0/0）时按基线处理，保持旧行为。
+    """
+    if width > 0 and height > 0 and width * height > _NVENC_BR_ADAPT_PIXELS:
+        return _NVENC_BR_CLAMP_MAX_HIGH
+    return _NVENC_BR_CLAMP_MAX
+
+
+def _clamp_bitrate(raw_bps: int, width: int = 0, height: int = 0) -> int:
+    """钳制 NVENC avgBitrate 估算值到 [min, max(分辨率)] 区间。"""
+    if raw_bps <= 0:
+        return _NVENC_BR_CLAMP_MIN
+    return max(_NVENC_BR_CLAMP_MIN,
+               min(_max_avg_bitrate(width, height), raw_bps))
+
 # ── _NVENC_CRF0_FORCE_CONSTQP ──
 # crf=0 时是否强制使用 CONSTQP + 禁用 lookahead。
 #   True  (默认) — crf=0 时强制 rate_mode→"constqp", la_depth=0
@@ -577,10 +644,9 @@ class NVENCEncoder:
                   f"rate_mode={rate_mode} qp={self._qp} LA={la_depth}", flush=True)
 
         # ── 概念分离（参见 pipeline-depth-slot-rotation-confusion.md）──
-        # _required_buffers: SDK 硬件安全下限 — la_depth==0 时为 1，否则 >= LA+1
+        # _required_buffers: SDK 硬件安全下限。
         # _slot_count: 实际分配的 slot 对数（buffer pool 大小 + 轮转模数）
         # LA=0 时 _slot_count=2 (ce_pipeline 真正的 2 帧流水线深度)
-        # LA>0 时 _slot_count=max(user_default, LA+1) (膨胀为 buffer pool，累积模式不参与轮转)
         # CONSTQP 下硬件静默禁用 LA，代码层面清零以与硬件行为一致
         if rate_mode == "constqp":
             la_depth = 0  # 硬件静默禁用 LA，此处显式清零
@@ -589,7 +655,19 @@ class NVENCEncoder:
         # tests/diagnose_hevc_la.py eos_probe：700 帧守恒 + ffmpeg decode OK），
         # 不再降级 LA=0。中途排空与 EOS 排空分别由 FIX-HEVC-COUNTED /
         # FIX-HEVC-EOS 处理（见 encode_frames_stream）。
-        _required_buffers = max(1, la_depth + 1)  # SDK 硬件安全要求: buffer 数 >= LA+1
+        #
+        # [FIX-LA-SLOT-HEADROOM] HEVC/AV1 的实测输出延迟是 **la_depth + 2**（不是
+        # la+1）：槽数沿用 la+1 时，提交与排空会形成循环依赖 ——
+        #   · 就绪条件：gfi k 在提交 N >= k + la + 2 + 1 = k + la + 3 时才可 Lock
+        #   · 复用条件：gfi k 必须在提交 gfi (k + slot_count) 之前取回
+        #   → 需要 slot_count >= la + 3，否则锁未就绪槽在驱动内永久阻塞
+        #     （doNotWait=0/1 皆然），或返回 SUCCESS+垃圾 size。
+        # 对齐 IFRNet 同名修复（external/ifrnet_video/nvenc_sdk.py line 619-636）。
+        # h264 保持原 la+1（空槽返回 SUCCESS+size=0，无此问题）。
+        if self._codec in ("hevc", "av1"):
+            _required_buffers = max(1, la_depth + 3)
+        else:
+            _required_buffers = max(1, la_depth + 1)  # SDK 硬件安全要求: buffer 数 >= LA+1
         _slot_count = max(pipeline_depth, _required_buffers)
 
         print("[NVENCEncoder] %s + LA=%d: %d slots (HW pipeline buffers>=%d)" %
@@ -598,6 +676,25 @@ class NVENCEncoder:
         self._preset_name = preset.lower()
         self._encoder = c_void_p(None)
         self._frame_idx = 0
+        # [P3-FIX-LockBitstream-SizeCap] 驱动异常时曾见「SUCCESS + 数十 MB 垃圾 size」
+        # （铁律 3，实测 1.66 / 3.57 / 7.42 MB）。按该长度 (c_uint8 * size).from_address()
+        # 会越界读 → SIGSEGV。用「约 4 倍原始 RGBA 上限」拒绝明显非法返回；
+        # 正常压缩码流远低于该值。
+        # ⚠️ 必须用**输出**分辨率（超分后，如 1536x1152），不是输入分辨率。
+        # 可用 ESRGAN_NVENC_MAX_BS_BYTES 覆盖（仅供故障注入验证：设成极小值
+        # 可确认钳制生效且不崩溃，见 Plan/H264_LA排空放弃缺陷_立项Prompt.md §10.4）。
+        _cap_override = os.environ.get('ESRGAN_NVENC_MAX_BS_BYTES', '')
+        self._max_valid_bitstream_bytes = (
+            int(_cap_override) if _cap_override.isdigit() and int(_cap_override) > 0
+            else max(64 * 1024, int(width) * int(height) * 4))
+        # [FIX-SIZECAP-NO-DEADLOCK] 记录每个槽被「垃圾 size 钳制」放弃的次数。
+        # 钳制的失败语义是「放弃本轮、不推进指针、交由后续 drain / 段末 EOS 回收」。
+        # 但若 EOS 同样命中钳制，该槽的 pending 记账将永久滞留 → _ensure_slot_free
+        # 无限自旋（实测：GPU 0% + 显存 10.2GiB 不退，进程挂死）。
+        # 超过阈值后强制消费该槽，宁可丢帧（验收会因帧数不符而明确失败），
+        # 也绝不允许静默挂死。
+        self._slot_illegal_count: dict = {}
+        self._sizecap_force_dropped: int = 0
         # [FIX-LA-OUTPTR] 独立输出槽位指针：跟踪下一个预期输出的 slot，
         # 确保 LA 延迟产出帧按正确顺序取回（参照 test_nvenc_la_frame_conservation.py）
         self._output_slot_idx = 0
@@ -632,6 +729,9 @@ class NVENCEncoder:
 
         # [SEGMENT-REUSE] 缓存首段 SPS+PPS NAL 单元，后续段预挂到首帧前
         self._cached_sps_pps: Optional[bytes] = None
+        # [FIX-ESRGAN-SPSPPS-REUSE] 记录 _cached_sps_pps 所属会话代数，
+        # 用于判定跨段复用时该缓存是否仍然有效（详见 _stream_begin 注释）。
+        self._cached_sps_pps_gen: int = -1
         self._sps_pps_injected: bool = False  # [FIX-SPS-PPS-V2] Writer-thread-side 注入已完成标志
         # [FIX-GLOBAL-FI] 跨 chunk 延迟输出收集列表，由 encode_frames_batch() 每次调用后填充，
         # 由 _write_la_output() 读取并优先写入。
@@ -685,9 +785,24 @@ class NVENCEncoder:
         primary_ctx = c_void_p(None)
         r = self._libcuda.cuDevicePrimaryCtxRetain(ctypes.byref(primary_ctx), c_int(0))
         if r == 0 and primary_ctx.value is not None:
-            self._libcuda.cuCtxPushCurrent.restype = c_uint32
-            self._libcuda.cuCtxPushCurrent.argtypes = [c_void_p]
-            self._libcuda.cuCtxPushCurrent(primary_ctx)
+            # [FIX-CTX-NO-UNBALANCED-PUSH]（与 IFRNet 侧同款修复）
+            # 原实现无条件 cuCtxPushCurrent(primary_ctx) 且丢弃返回值。实测：
+            #   · primary 已是 current 时该 push 恒返回 201（未真正入栈）→ 死代码；
+            #   · 一旦某路径返回 0，栈就 +1，而全文件没有配对 pop → 栈净增。
+            # 改为：仅在非 current 时用 cuCtxSetCurrent 置为 current
+            #（不进栈，因此不需要配对 pop），并对失败显式告警。
+            self._libcuda.cuCtxGetCurrent.restype = c_uint32
+            self._libcuda.cuCtxGetCurrent.argtypes = [ctypes.POINTER(c_void_p)]
+            _cur = c_void_p()
+            _is_current = (self._libcuda.cuCtxGetCurrent(ctypes.byref(_cur)) == 0
+                           and _cur.value == primary_ctx.value)
+            if not _is_current:
+                self._libcuda.cuCtxSetCurrent.restype = c_uint32
+                self._libcuda.cuCtxSetCurrent.argtypes = [c_void_p]
+                _set_rc = self._libcuda.cuCtxSetCurrent(primary_ctx)
+                if _set_rc != 0:
+                    print(f"[NVENCEncoder] ⚠️ cuCtxSetCurrent(primary) failed, "
+                          f"code={_set_rc}", flush=True)
             cuda_ctx = primary_ctx
             self._primary_ctx = c_void_p(primary_ctx.value)  # [FIX-GPU-STAY] 跨线程 CUDA context 保护
             print("[NVENCEncoder] 使用 primary CUDA context (0x%x)" % primary_ctx.value, flush=True)
@@ -906,8 +1021,9 @@ class NVENCEncoder:
             # [FIX-BR-CEILING] 提供合理的 avgBitRate 作为速度天花板。
             # targetQuality 仍主导质量决策，avgBitRate 仅防止 NVENC 在无约束下进入
             # 极慢的质量穷举搜索模式（GPU 闲置 65%，FPS 暴跌 2.2×）。
-            # 参考 v6.4.3.1 的 _est_br 计算方式。
-            _est_br = max(50000000, int(width * height * fps * 3.0))
+            # [FIX-BR-CLAMP] 与 ifrnet_video 侧统一：按分辨率钳制（≤1080p→50M，
+            # >1080p→100M），避免高分辨率下估算值失控（旧 max(50M, ...) 无上限）。
+            _est_br = _clamp_bitrate(int(width * height * fps * 3.0), width, height)
             rc_ptr[5] = _est_br                      # averageBitRate @offset 20 (速度天花板)
             rc_ptr[6] = _est_br * 2                  # maxBitRate @offset 24
             _tq = max(1, _qp_val)  # VBR_HQ targetQuality = CRF (QP标度, 1=最好, 51=最差)
@@ -921,7 +1037,8 @@ class NVENCEncoder:
             rc_ptr[1] = 64                           # NV_ENC_PARAMS_RC_QVBR (0x40)
             # [FIX-BR-CEILING] QVBR 也需要 avgBitRate 作为速度天花板，
             # 防止 NVENC 在无约束下进入极慢的质量搜索。
-            _est_br = max(50000000, int(width * height * fps * 3.0))
+            # [FIX-BR-CLAMP] 与 ifrnet_video 侧统一：按分辨率钳制（≤1080p→50M，>1080p→100M）。
+            _est_br = _clamp_bitrate(int(width * height * fps * 3.0), width, height)
             rc_ptr[5] = _est_br                      # averageBitRate @offset 20 (速度天花板)
             rc_ptr[6] = _est_br * 2                  # maxBitRate @offset 24 (码率上限)
             _tq = max(1, _qp_val)  # QVBR qvbrQuality = CRF (QP标度, 低值=高质量)
@@ -1356,6 +1473,16 @@ class NVENCEncoder:
 
             bitstream_size = cast(byref(lock_raw, 36), ctypes.POINTER(c_uint32))[0]
             if bitstream_size > 0:
+                # [P3-FIX-LockBitstream-SizeCap] 拒绝垃圾 size，避免 from_address 越界读
+                if not self._is_legal_bitstream_size(bitstream_size):
+                    _unlock_fn(self._encoder, bs_handle)
+                    self.__dict__.setdefault('_diag_illegal_size', 0)
+                    self._diag_illegal_size += 1
+                    if self._diag_illegal_size <= 5 or self._diag_illegal_size % 50 == 0:
+                        print(f'[NVENC-Enc] ⚠️ 非法 bitstream size #{self._diag_illegal_size}: '
+                              f'size={bitstream_size}, cap={self._max_valid_bitstream_bytes} '
+                              f'（放弃本轮，不重试重锁）', flush=True)
+                    return b"", bs_status
                 _raw_bsptr = cast(byref(lock_raw, 56), ctypes.POINTER(c_void_p))[0]
                 bitstream_ptr_val = _raw_bsptr if isinstance(_raw_bsptr, int) else (_raw_bsptr.value or 0)
                 if bitstream_ptr_val:
@@ -1370,6 +1497,78 @@ class NVENCEncoder:
                 backoff_us *= 2
 
         return b"", bs_status
+
+    def _is_legal_bitstream_size(self, size: int) -> bool:
+        """[P3-Fix-LockBitstream-SizeCap] 拒绝零或超出原始像素上界的垃圾返回。
+
+        铁律 3：doNotWait=1 下驱动存在「SUCCESS + 垃圾 size」竞态
+        （IFRNet 侧实测 1.66 / 3.57 / 7.42 MB，远超合法上限）。按该长度
+        `(c_uint8 * size).from_address(ptr)` 越界读会 SIGSEGV。
+        与 IFRNet 侧 external/ifrnet_video/nvenc_sdk.py:1642 同款实现。
+        """
+        return 0 < int(size) <= int(self._max_valid_bitstream_bytes)
+
+    def _apply_sps_pps(self, h264_data: bytes, is_idr: bool) -> bytes:
+        """[P2.4c-LADDER-ESRGAN] SPS/PPS 预挂 + 缓存 + muxer 预注入（统一入口）。
+
+        语义与 IFRNet 侧同名方法一致：IDR 且原生缺参数集时预挂缓存值（避免
+        avcC numSPS/numPPS=2 → NVDEC 初始化失败），首次见到数据时提取并缓存、
+        IDR 时额外预注入 muxer（原 [FIX-SPS-CACHE] / [FIX-SPS-PPS-V3]）。
+
+        **本方法只复刻改造前 ESRGAN 的既有语义，不含任何新增防御** —— 与 IFRNet
+        的差异：没有 `_cache_param_sets` 的 SPS/PPS 字节漂移检测（那是
+        [P3-FIX-NAL-COMMON] 的独立改动，须随 GPU 四组合回归一起评估）。
+
+        ⚠️ 语义边界（2026-09-15 实测清点：全侧共 **11** 个内联阶梯站点，其中
+        只有 **3 处**与本法逐字等价，故只有它们收敛到本入口）：
+          · Phase1 harvest   `_prev_idr`
+          · Phase3 drain     `_pending_idr`
+          · encode_frame     `force_idr`
+        其余 **8 处语义不同，保持内联原样**（站点处标有 [P2.4c-LADDER-ESRGAN]
+        未收敛标记），差异分三类：
+          ① `_apply_drained_entries` / EOS / final-drain 的 prev 与 results 路径：
+             缓存分支**未按 IDR 门控** → 非 IDR 首块也会预注入 muxer；
+          ② EOS / final-drain 的 prev-chunk 路径：**只 prepend、不缓存**；
+          ③ 三处辅助块（无 VCL）路径：**只缓存、不注入**。
+        这些差异**不是**纯重构能吸收的 —— 统一的前提是先判定"哪种行为才对"，
+        属行为改动，必须带 LA=0 / LA=8 × h264 / hevc 四组合回归。
+        """
+        if is_idr and self._cached_sps_pps is not None and \
+                not self._has_sps_pps(h264_data):
+            return self._cached_sps_pps + h264_data
+        if self._cached_sps_pps is None and h264_data:
+            self._cached_sps_pps = self._extract_sps_pps(h264_data)
+            if self._cached_sps_pps:
+                print("\n[NVENCEncoder] Cached SPS+PPS: %d bytes"
+                      % len(self._cached_sps_pps), flush=True)
+                if is_idr and self._muxer_ref is not None:
+                    try:
+                        self._muxer_ref.write_sps_pps(self._cached_sps_pps)
+                        self._sps_pps_injected = True
+                    except Exception:
+                        pass
+        return h264_data
+
+    # [FIX-HEVC-READY] HEVC/AV1 排空就绪余量（对齐 IFRNet `_HEVC_DRAIN_MARGIN`）。
+    # 实测输出延迟 = la_depth + margin；margin=1 仍会偶发误锁（先返回 SUCCESS+垃圾
+    # size，再重锁即永久阻塞），故默认 2。可用 NVENC_HEVC_DRAIN_MARGIN 覆盖（回滚置 0）。
+    _HEVC_DRAIN_MARGIN = int(os.environ.get("NVENC_HEVC_DRAIN_MARGIN", "2"))
+
+    def _hevc_ready_count(self, limit: int) -> int:
+        """[FIX-HEVC-READY] 本次调用最多可安全 Lock 的帧数上界。
+
+        与 IFRNet `_hevc_ready_count` 同口径：
+            ready = (submitted - la_depth - MARGIN) - drained
+
+        仅对 **HEVC/AV1 且 LA>0** 收紧；h264 与 LA=0（ce_pipeline 靠 completionEvent
+        判就绪）一律原样返回 limit —— 这两条路径的行为**逐字不变**。
+        """
+        if self._codec not in ("hevc", "av1") or self._la_depth <= 0:
+            return max(0, int(limit))
+        _ready = ((self._frame_idx - self._strm_ts_base)
+                  - self._la_depth - self._HEVC_DRAIN_MARGIN
+                  - (self._output_slot_idx - self._strm_ts_base))
+        return max(0, min(int(limit), _ready))
 
     def _drain_outputs_blocking(self, max_slots: int = None) -> list:
         """按 _output_slot_idx 顺序循环 LockBitstream
@@ -1395,6 +1594,12 @@ class NVENCEncoder:
         """
         if max_slots is None:
             max_slots = self._slot_count
+        # [FIX-HEVC-READY] 集中就绪门控：HEVC/AV1 + LA>0 只允许 Lock 已就绪帧，
+        # 避免锁未就绪槽在驱动内永久阻塞（doNotWait=0/1 皆然）。
+        # 对 h264 / LA=0 是恒等变换（_hevc_ready_count 走普通 pending 上界）。
+        max_slots = self._hevc_ready_count(max_slots)
+        if max_slots <= 0:
+            return []
         outputs = []
         _LockBS = ctypes.CFUNCTYPE(c_uint32, c_void_p, ctypes.POINTER(c_uint8 * 1544))
         _UnlockBS = ctypes.CFUNCTYPE(c_uint32, c_void_p, c_void_p)
@@ -1423,11 +1628,96 @@ class NVENCEncoder:
             if bs_status == NV_ENC_ERR_NEED_MORE_INPUT:
                 break  # 无更多已完成帧（交由后续提交推进后再排空）
             if bs_status != NV_ENC_SUCCESS:
+                # [P0-FIX-RC-TOLERANT] 从 ifrnet_video/nvenc_sdk.py 同名站点移植
+                # "容忍 + 遥测 + 打印"语义（该侧注释记为"静默→fail-fast→容忍+遥测"
+                # 三轮演进）。
+                #
+                # 原实现是**裸 break**：无计数、无打印，等于 IFRNet 演进前的第一版。
+                # 超分侧因此长期无法观测 LA 预热期的排空失败，只能靠段级帧数守恒
+                # 审计兜底 —— 一旦真丢帧，"少帧/花帧"的现象与"LockBitstream 返回码"
+                # 的原因之间没有任何可关联的证据，排障只能靠猜。
+                #
+                # 定性（IFRNet 侧 T4 生产实测，smoke 双模式确定性复现）：
+                # LA 流式**首排空期** LockBitstream 稳定返回 INVALID_PARAM(code=8)
+                # —— EncodePicture 本身成功、帧已在 LA 管线内，本应返回
+                # NEED_MORE_INPUT(17)，是**驱动用错了错误码**，不是真的参数非法。
+                # 故此处不 raise：记录诊断计数后安全退出本轮 drain。
+                # 帧数守恒仍由段级帧数比对兜底（_loop 的 [FIX-PER-CHUNK-DIAG]），
+                # 短差即判段失败。
+                #
+                # 判读：打印有节流（_n<=3 或 %200==0），且编码器跨段复用、计数全程
+                # 累加。只出现 #1/#2/#3 属正常（LA 预热期）；若出现 #200/#400 说明
+                # 是持续性失败，不是预热期，需排查。
+                key = "_diag_lock_err_%d" % bs_status
+                self.__dict__.setdefault(key, 0)
+                setattr(self, key, getattr(self, key) + 1)
+                _n = getattr(self, key)
+                if _n <= 3 or _n % 200 == 0:
+                    # 回收路径按 LA 分支区分（与 IFRNet 侧 [FIX-RC-TOLERANT-LOG] 同构）：
+                    #   · LA>0：encode_frames_batch 分块累积，段末最后一块
+                    #     send_eos=True 完整排空所有 slot（_loop 的 [FIX-CHUNKED-LA]
+                    #     最终块，见本文件 3186-3194 行）；
+                    #   · LA=0：encode_frames_batch_ce_pipeline per-batch，由
+                    #     本文件 2452 行的 BLKRETRY blocking 重试取回。
+                    #
+                    # ⚠️ 与 IFRNet 的一处**实质差异**：ESRGAN 侧没有 `[FIX-LA-REDRAIN]`
+                    #    二次排空安全网（IFRNet 在 _ce_final_drain 里有，用于兜底
+                    #    BLKRETRY 也失败的帧）。本侧若 BLKRETRY 同样失败，帧即静默
+                    #    丢失，只能靠段级帧数守恒审计发现。故这里的遥测对超分侧
+                    #    **比插帧侧更关键** —— 它是唯一能关联"少帧"与
+                    #    "LockBitstream 返回码"的证据。
+                    #
+                    # 另注：BLKRETRY 的触发条件是 `_pending_ep_s == NEED_MORE_INPUT`
+                    # （**EncodePicture** 的返回码），而非 LockBitstream 的 bs_status
+                    # —— 与 IFRNet 的 [FIX-LA-BLKRETRY-ALWAYS] 语义等价："只要帧被
+                    # LA 缓冲，无论 LockBitstream 返回什么都再 blocking 试一次"。
+                    # 因此本站点报 code=8 时，帧通常已由该 BLKRETRY 取回。
+                    _recover = ('LA>0 分块流式：由段末 EOS 完整排空回收'
+                                if self._la_depth > 0 else
+                                'LA=0：由批末 BLKRETRY 阻塞重试取回')
+                    print(f'[NVENC-Enc] ⚠️ drain LockBitstream code={bs_status} '
+                          f'(slot={slot_idx}, fi={self._frame_idx}) '
+                          f'#{_n} — 跳过本轮，{_recover}', flush=True)
                 break
 
             bitstream_size = cast(byref(lock_raw, 36), ctypes.POINTER(c_uint32))[0]
             if bitstream_size == 0:
                 unlock_fn(self._encoder, bs_handle)
+                break
+            # [P3-FIX-LockBitstream-SizeCap] 垃圾 size：unlock 后放弃本轮、
+            # **不推进 _output_slot_idx**（重锁同槽在 HEVC 下会永久阻塞），
+            # 交由后续 drain / 段末 EOS 回收——但加了有界兜底，见下方 force-drop。
+            if not self._is_legal_bitstream_size(bitstream_size):
+                unlock_fn(self._encoder, bs_handle)
+                self.__dict__.setdefault('_diag_illegal_size', 0)
+                self._diag_illegal_size += 1
+                if self._diag_illegal_size <= 5 or self._diag_illegal_size % 50 == 0:
+                    print(f'[NVENC-Enc] ⚠️ 非法 bitstream size #{self._diag_illegal_size}: '
+                          f'size={bitstream_size}, cap={self._max_valid_bitstream_bytes} '
+                          f'(slot={slot_idx}, fi={self._frame_idx}) — 放弃本轮，不推进指针',
+                          flush=True)
+                # [FIX-SIZECAP-NO-DEADLOCK] 关键修正：LockBitstream 已返回
+                # SUCCESS，说明该槽的输出**已被取出**——只是 size 是垃圾值、
+                # 不可信。因此正确处理是 unlock → **强制消费该槽**
+                # （清 pending + 推进指针）→ 丢弃该帧。
+                #
+                # 若沿用 IFRNet 侧「放弃本轮、不推进指针」的语义，该槽的
+                # pending 记账会永久滞留：实测（ESRGAN_NVENC_MAX_BS_BYTES=1024
+                # 故障注入）**仅需 1 次**钳制，就会在 9 个槽全部占满后让
+                # _ensure_slot_free 无限自旋——GPU 0% + 显存 10.2GiB 不退，
+                # 进程永久挂死，日志停在 528/900。
+                #
+                # 代价：丢弃该帧 → 帧数不再守恒 → 验收会**明确失败**。
+                # 这远优于静默挂死（后者没有任何可诊断信号）。
+                # [FIX-LA-OUTPTR-ESRGAN] 允许推进：size 非法但 LockBitstream 已
+                # SUCCESS → 该槽输出已被取出，必须强制消费并推进指针
+                # （不推进则 pending 永久滞留 → _ensure_slot_free 无限自旋 → 挂死）。
+                self._slot_pending.pop(slot_idx, None)
+                self._output_slot_idx += 1
+                self._sizecap_force_dropped += 1
+                print(f'[NVENC-Enc] ⚠️ 槽 {slot_idx}: 非法 size 已强制消费，'
+                      f'丢弃该帧（累计丢弃 {self._sizecap_force_dropped} 帧，'
+                      f'帧数将不再守恒）', flush=True)
                 break
 
             _raw_bsptr = cast(byref(lock_raw, 56), ctypes.POINTER(c_void_p))[0]
@@ -1439,6 +1729,9 @@ class NVENCEncoder:
                 est_fi = self._output_slot_idx
                 outputs.append((est_fi, out_ts, h264_data))
                 unlock_fn(self._encoder, bs_handle)
+                # [FIX-LA-OUTPTR-ESRGAN] 允许推进：唯一「正常取回」路径 ——
+                # 已有有效数据指针且已 Unlock。对照下面的 else 分支：
+                # 数据指针为空 → 不推进（否则帧计数超前于实际取回 = 相位漂移）。
                 self._output_slot_idx += 1
             else:
                 # [FIX-DRAIN-COUNTER-DRIFT] size>0 但数据指针为空：未取到码流。
@@ -1474,6 +1767,7 @@ class NVENCEncoder:
                     print(f'\n[NVENC-Enc] ℹ️ 辅助块 #{self._diag_aux_block} '
                           f'(est={_est_fi} slot={_est_fi % self._slot_count} '
                           f'{len(_h264_data)}B) 仅缓存参数集，不占帧槽', flush=True)
+                                # [P2.4c-LADDER-ESRGAN] 未收敛：语义与 _apply_sps_pps 不同（见该方法 docstring）
                 if self._cached_sps_pps is None:
                     _sps_a = self._extract_sps_pps(_h264_data)
                     if _sps_a:
@@ -1507,6 +1801,7 @@ class NVENCEncoder:
                 # 属于前一个 chunk（或前一段残留）的延迟输出。不能丢弃，
                 # 收集到 prev_chunk_outputs，由调用方在写入本 chunk 输出之前先写入。
                 if _h264_data:
+                                    # [P2.4c-LADDER-ESRGAN] 未收敛：语义与 _apply_sps_pps 不同（见该方法 docstring）
                     if _is_idr and self._cached_sps_pps is not None and \
                             not self._has_sps_pps(_h264_data):
                         _h264_data = self._cached_sps_pps + _h264_data
@@ -1527,6 +1822,7 @@ class NVENCEncoder:
                 continue
 
             if _h264_data:
+                                # [P2.4c-LADDER-ESRGAN] 未收敛：语义与 _apply_sps_pps 不同（见该方法 docstring）
                 if _is_idr and self._cached_sps_pps is not None and \
                         not self._has_sps_pps(_h264_data):
                     _h264_data = self._cached_sps_pps + _h264_data
@@ -1587,12 +1883,21 @@ class NVENCEncoder:
             # （NEED_MORE_INPUT 之外的分支才会 break）。这里给一个
             # 保守的循环次数上限，避免因意外状态导致死循环卡死整个进程。
             _guard += 1
-            if _guard > self._slot_count * 4:
+            # [FIX-HEVC-READY] HEVC/AV1 + LA>0：就绪不足时**跳过**下面的目标槽
+            # blocking 探测（锁未就绪槽在驱动内永久阻塞，doNotWait=0/1 皆然），
+            # 直接落到"空帧占位兜底"分支 —— 宁可丢帧被段级验收判失败，
+            # 也绝不静默挂死进程。
+            _hevc_not_ready = (self._codec in ("hevc", "av1") and self._la_depth > 0
+                               and self._hevc_ready_count(self._slot_count) <= 0)
+            if _guard > self._slot_count * 4 or _hevc_not_ready:
                 # [FIX-SLOT-DRAIN-TARGET] 轮转探测无法触达目标槽（LA 重路由/
                 # 辅助块使目标槽输出晚于其他槽就绪）→ 直接对目标槽自身做
                 # blocking LockBitstream（doNotWait=0）。
-                _h264_t, _st_t = self._lock_bitstream_blocking(
-                    self._slots[slot_idx]['bs_buf'], timeout_ms=2000)
+                if _hevc_not_ready:
+                    _h264_t, _st_t = b"", None
+                else:
+                    _h264_t, _st_t = self._lock_bitstream_blocking(
+                        self._slots[slot_idx]['bs_buf'], timeout_ms=2000)
                 if _h264_t:
                     self._apply_drained_entries([(slot_idx, None, _h264_t)],
                                                 chunk_start_global, n_frames,
@@ -1620,6 +1925,8 @@ class NVENCEncoder:
                             results[_actual_fi_f] = _fill
                         _dq.popleft()
                     del self._slot_pending[slot_idx]
+                    # [FIX-LA-OUTPTR-ESRGAN] 允许推进：排空超限兜底已把该槽队首
+                    # 全部以 prev 填充写入 results 并删除 _slot_pending → 记账同步前进。
                     self._output_slot_idx += 1
                 break
             continue
@@ -1646,6 +1953,17 @@ class NVENCEncoder:
         bitstream_size = cast(byref(lock_raw, 36), ctypes.POINTER(c_uint32))[0]
         if bitstream_size == 0:
             unlock_fn(self._encoder, bs_handle)
+            return b"", bs_status
+        # [P3-FIX-LockBitstream-SizeCap] 拒绝垃圾 size，避免 from_address 越界读。
+        # unlock 后放弃本轮、不重试重锁（HEVC 下重锁同槽会永久阻塞）。
+        if not self._is_legal_bitstream_size(bitstream_size):
+            unlock_fn(self._encoder, bs_handle)
+            self.__dict__.setdefault('_diag_illegal_size', 0)
+            self._diag_illegal_size += 1
+            if self._diag_illegal_size <= 5 or self._diag_illegal_size % 50 == 0:
+                print(f'[NVENC-Enc] ⚠️ 非法 bitstream size #{self._diag_illegal_size}: '
+                      f'size={bitstream_size}, cap={self._max_valid_bitstream_bytes} '
+                      f'（放弃本轮，不重试重锁）', flush=True)
             return b"", bs_status
 
         _raw_bsptr = cast(byref(lock_raw, 56), ctypes.POINTER(c_void_p))[0]
@@ -1873,15 +2191,12 @@ class NVENCEncoder:
                     # 与 _ensure_slot_free() 的提交前背压检查共用同一套实现。
                     _pending_cnt = self._frame_idx - self._output_slot_idx
                     _max_drain = min(_pending_cnt, self._slot_count)
-                    # [FIX-HEVC-COUNTED] HEVC/AV1：只排空已就绪帧——gfi k 在提交
-                    # sub(k+LA) 后就绪（diagnose_hevc_la.py 实测）；锁未就绪/空槽
-                    # 会触发驱动永久阻塞（test4 根因）。H.264 保持原行为。
-                    if self._codec in ("hevc", "av1"):
-                        _max_drain = min(
-                            _max_drain,
-                            max(0, (self._frame_idx - self._strm_ts_base)
-                                - self._la_depth
-                                - (self._output_slot_idx - self._strm_ts_base)))
+                    # [FIX-HEVC-COUNTED] HEVC/AV1：只排空已就绪帧——就绪口径为
+                    # (submitted - la - MARGIN) - drained（margin 默认 2，见
+                    # _HEVC_DRAIN_MARGIN）。旧口径 margin=0 属 off-by-one，
+                    # 会在段尾偶发锁未就绪槽 → 驱动内永久阻塞 / SUCCESS+垃圾 size。
+                    # H.264 与 LA=0 保持原行为（_hevc_ready_count 为恒等变换）。
+                    _max_drain = self._hevc_ready_count(_max_drain)
                     _drained = self._drain_outputs_blocking(max_slots=_max_drain) if _max_drain > 0 else []
                     self._apply_drained_entries(_drained, _chunk_start_global, n_frames,
                                                  results, _prev_chunk_outputs)
@@ -1911,8 +2226,18 @@ class NVENCEncoder:
                     # 已就绪、按 pending 条数取回（test5 验证帧数守恒）。
                     # H.264 保持原 while-True 轮转（空槽返回 SUCCESS+size=0）。
                     _hevc_eos = self._codec in ("hevc", "av1")
-                    _drain_slots = (sorted(self._slot_pending.keys())
+                    # [P2-FIX-EOS-OUTPUT-ORDER] 只过滤空槽，且**保持** _output_slot_idx
+                    # 起始的全局轮转顺序：slot = gfi % slot_count 在段尾回绕，
+                    # 按物理槽号升序排空 ≠ 帧输出顺序 → 段尾帧乱序
+                    # （解码报 "Could not find ref with POC"）。对齐 IFRNet 同名修复。
+                    _pending_slots = {k for k, _dq in self._slot_pending.items() if _dq}
+                    _drain_slots = ([_s for _s in _drain_order if _s in _pending_slots]
                                     if _hevc_eos else _drain_order)
+                    _eos_debug = os.environ.get("NVENC_EOS_DEBUG") == "1"
+                    _eos_debug_seq = []
+                    if _eos_debug:
+                        print(f'[NVENC-Enc] [EOS-DEBUG] drain_slots={_drain_slots} '
+                              f'out_idx={self._output_slot_idx}', flush=True)
                     for _ds in _drain_slots:
                         _bs_h = self._slots[_ds]['bs_buf']
                         while True:
@@ -1932,6 +2257,17 @@ class NVENCEncoder:
                             if _bs_size == 0:
                                 _UnlockBS(self._func_ptrs[_FUNC_IDX["UnlockBitstream"]])(self._encoder, _bs_h)
                                 break
+                            # [P3-FIX-LockBitstream-SizeCap] EOS 排空同样要钳制
+                            if not self._is_legal_bitstream_size(_bs_size):
+                                _UnlockBS(self._func_ptrs[_FUNC_IDX["UnlockBitstream"]])(self._encoder, _bs_h)
+                                self.__dict__.setdefault('_diag_illegal_size', 0)
+                                self._diag_illegal_size += 1
+                                if self._diag_illegal_size <= 5 or self._diag_illegal_size % 50 == 0:
+                                    print(f'[NVENC-Enc] ⚠️ 非法 bitstream size '
+                                          f'#{self._diag_illegal_size} (EOS): '
+                                          f'size={_bs_size}, cap={self._max_valid_bitstream_bytes} '
+                                          f'（放弃本轮，不重试重锁）', flush=True)
+                                break
                             _bs_ptr_raw = cast(byref(_lr, 56), ctypes.POINTER(c_void_p))[0]
                             _bs_ptr = _bs_ptr_raw if isinstance(_bs_ptr_raw, int) else (_bs_ptr_raw.value or 0)
                             if _bs_ptr:
@@ -1947,6 +2283,7 @@ class NVENCEncoder:
                                         print(f'[NVENC-Enc] ℹ️ EOS 辅助块 '
                                               f'#{self._diag_aux_block} '
                                               f'(slot={_ds}) 跳过帧记账', flush=True)
+                                                    # [P2.4c-LADDER-ESRGAN] 未收敛：语义与 _apply_sps_pps 不同（见该方法 docstring）
                                     if self._cached_sps_pps is None:
                                         _sps_e = self._extract_sps_pps(_eos_data)
                                         if _sps_e:
@@ -1962,21 +2299,32 @@ class NVENCEncoder:
                                     # [FIX-GLOBAL-FI] 全局 fi → local fi，负值属于前一 chunk。
                                     _actual_fi_d = _global_fi_d - _chunk_start_global
                                     if _actual_fi_d < 0:
+                                                        # [P2.4c-LADDER-ESRGAN] 未收敛：语义与 _apply_sps_pps 不同（见该方法 docstring）
                                         if _is_idr_d and self._cached_sps_pps is not None and \
                                                 not self._has_sps_pps(_eos_data):
                                             _eos_data = self._cached_sps_pps + _eos_data
                                         _prev_chunk_outputs.append(_eos_data)
                                         _entry_deque.popleft()
+                                        _eos_debug_seq.append(_global_fi_d)
                                         if not _entry_deque:
                                             del self._slot_pending[_ds]
+                                        # [FIX-LA-OUTPTR-ESRGAN] 允许推进：EOS 排空 ·
+                                        # 前一段残留帧已写入 _prev_chunk_outputs 并出队。
                                         self._output_slot_idx += 1
                                     elif _actual_fi_d < n_frames:
                                         results[_actual_fi_d] = _eos_data
                                         _entry_deque.popleft()
+                                        _eos_debug_seq.append(_global_fi_d)
                                         if not _entry_deque:
                                             del self._slot_pending[_ds]
+                                        # [FIX-LA-OUTPTR-ESRGAN] 允许推进：EOS 排空 ·
+                                        # 本段帧已写入 results 并出队。
                                         self._output_slot_idx += 1
                             _UnlockBS(self._func_ptrs[_FUNC_IDX["UnlockBitstream"]])(self._encoder, _bs_h)
+                    if _eos_debug:
+                        _sorted_ok = _eos_debug_seq == sorted(_eos_debug_seq)
+                        print(f'[NVENC-Enc] [EOS-DEBUG] gfi_seq={_eos_debug_seq} '
+                              f'顺序正确={_sorted_ok}', flush=True)
 
                 else:
                     # Without EOS: final drain attempt (LA frames may not be ready)
@@ -1984,12 +2332,7 @@ class NVENCEncoder:
                     _final_pending = self._frame_idx - self._output_slot_idx
                     _final_max = min(_final_pending, self._slot_count)
                     # [FIX-HEVC-COUNTED] 同 per-frame drain：HEVC/AV1 限界到就绪帧
-                    if self._codec in ("hevc", "av1"):
-                        _final_max = min(
-                            _final_max,
-                            max(0, (self._frame_idx - self._strm_ts_base)
-                                - self._la_depth
-                                - (self._output_slot_idx - self._strm_ts_base)))
+                    _final_max = self._hevc_ready_count(_final_max)
                     _drained_final = self._drain_outputs_blocking(
                         max_slots=_final_max) if _final_max > 0 else []
                     for _est_fi, _out_ts_f, _h264_data in _drained_final:
@@ -2002,6 +2345,7 @@ class NVENCEncoder:
                                 print(f'[NVENC-Enc] ℹ️ 末尾辅助块 '
                                       f'#{self._diag_aux_block} '
                                       f'(est={_est_fi}) 跳过帧记账', flush=True)
+                                            # [P2.4c-LADDER-ESRGAN] 未收敛：语义与 _apply_sps_pps 不同（见该方法 docstring）
                             if self._cached_sps_pps is None:
                                 _sps_f = self._extract_sps_pps(_h264_data)
                                 if _sps_f:
@@ -2019,6 +2363,7 @@ class NVENCEncoder:
                         _actual_fi = _global_fi - _chunk_start_global
                         if _actual_fi < 0:
                             if _h264_data:
+                                                # [P2.4c-LADDER-ESRGAN] 未收敛：语义与 _apply_sps_pps 不同（见该方法 docstring）
                                 if _is_idr and self._cached_sps_pps is not None and \
                                         not self._has_sps_pps(_h264_data):
                                     _h264_data = self._cached_sps_pps + _h264_data
@@ -2161,28 +2506,13 @@ class NVENCEncoder:
                             print(f'[NVENC-Enc] ⚠️ Phase1 harvest _prev_fi={_prev_fi} 超出本批次范围 '
                                   f'[0,{n_frames})，跳过写入（slot={slot_idx}）', flush=True)
                         elif h264_data:
-                            # [SEGMENT-REUSE] SPS/PPS caching and pre-pending
-                            if _prev_idr and self._cached_sps_pps is not None and \
-                                    not self._has_sps_pps(h264_data):
-                                h264_data = self._cached_sps_pps + h264_data
-                            elif _prev_idr and self._cached_sps_pps is None and h264_data:
-                                self._cached_sps_pps = self._extract_sps_pps(h264_data)
-                                if self._cached_sps_pps:
-                                    print("\n[NVENCEncoder] Cached SPS+PPS: %d bytes" %
-                                          len(self._cached_sps_pps), flush=True)
-                                    # [FIX-SPS-PPS-V3] 首帧已含 NVENC 初始化 SPS+PPS, 不 prepend, 仅预注入 muxer
-                                    if self._muxer_ref is not None:
-                                        try:
-                                            self._muxer_ref.write_sps_pps(self._cached_sps_pps)
-                                            self._sps_pps_injected = True
-                                        except Exception:
-                                            pass
-                            elif not _prev_idr and self._cached_sps_pps is None and h264_data:
-                                self._cached_sps_pps = self._extract_sps_pps(h264_data)
-                                if self._cached_sps_pps:
-                                    print("\n[NVENCEncoder] Cached SPS+PPS: %d bytes" %
-                                          len(self._cached_sps_pps), flush=True)
+                            # [SEGMENT-REUSE] [P2.4c-LADDER-ESRGAN] 收敛到
+                            # _apply_sps_pps（三段式阶梯，逐字等价；原
+                            # [FIX-SPS-PPS-V3] 的 muxer 预注入语义在该方法内保留）
+                            h264_data = self._apply_sps_pps(h264_data, _prev_idr)
                             results[_prev_fi] = h264_data
+                            # [FIX-LA-OUTPTR-ESRGAN] harvest 成功 → 推进输出指针
+                            self._output_slot_idx += 1
                         elif _prev_ep_s == NV_ENC_ERR_NEED_MORE_INPUT:
                             results[_prev_fi] = b""
                         else:
@@ -2328,6 +2658,7 @@ class NVENCEncoder:
                                     print(f'[NVENC-Enc] ℹ️ inline 辅助块 '
                                           f'#{self._diag_aux_block} '
                                           f'(est={_est_fi}) 跳过帧记账', flush=True)
+                                                # [P2.4c-LADDER-ESRGAN] 未收敛：语义与 _apply_sps_pps 不同（见该方法 docstring）
                                 if self._cached_sps_pps is None:
                                     _sps_i = self._extract_sps_pps(_h264_data)
                                     if _sps_i:
@@ -2355,76 +2686,9 @@ class NVENCEncoder:
                                 del self._slot_pending[_drain_slot]
 
                 # ═══════════════════════════════════════════════
-                # Phase 3: Drain remaining pending slots
-                # [FIX-SLOT-DEQUE] 每个 slot 可能有多条待处理条目，while 循环全部排空
-                # ═══════════════════════════════════════════════
-                for slot_idx in range(pd):
-                    while True:
-                        _entry_deque = self._slot_pending.get(slot_idx)
-                        if not _entry_deque:
-                            break
-                        _pending_ce, _pending_fi, _pending_ep_s, _pending_idr, _pending_bs = \
-                            _entry_deque[0]
-                        if _pending_ce.value is not None:
-                            self._libcuda.cuEventSynchronize.restype = c_uint32
-                            self._libcuda.cuEventSynchronize.argtypes = [c_void_p]
-                            # [FIX-RC-CHECK] 返回码检查（理由见 Phase1 处注释）
-                            _r_esync3 = self._libcuda.cuEventSynchronize(_pending_ce)
-                            if _r_esync3 != 0:
-                                raise RuntimeError(
-                                    f'[NVENC-Enc] cuEventSynchronize failed code={_r_esync3} '
-                                    f'(Phase3 slot={slot_idx} '
-                                    f'gen={getattr(self, "_session_gen", "?")})')
-                            self._libcuda.cuEventDestroy.restype = c_uint32
-                            self._libcuda.cuEventDestroy.argtypes = [c_void_p]
-                            _r_edes3 = self._libcuda.cuEventDestroy(_pending_ce)
-                            if _r_edes3 != 0:
-                                raise RuntimeError(
-                                    f'[NVENC-Enc] cuEventDestroy failed code={_r_edes3} '
-                                    f'(Phase3 slot={slot_idx} '
-                                    f'gen={getattr(self, "_session_gen", "?")})')
-                        h264_data, bs_status = self._lock_bitstream_with_retry(_pending_bs)
-                        # [FIX-BOUNDS-CE-PHASE3] 防御性边界检查：同 Phase 1，_pending_fi
-                        # 理论上总在 [0, n_frames) 内，加检查避免任何未预见路径下越界/错位写入。
-                        if not (0 <= _pending_fi < n_frames):
-                            print(f'[NVENC-Enc] ⚠️ Phase3 drain _pending_fi={_pending_fi} 超出本批次范围 '
-                                  f'[0,{n_frames})，跳过写入（slot={slot_idx}）', flush=True)
-                        elif h264_data:
-                            # [SEGMENT-REUSE] SPS/PPS caching
-                            if _pending_idr and self._cached_sps_pps is not None and \
-                                    not self._has_sps_pps(h264_data):
-                                h264_data = self._cached_sps_pps + h264_data
-                            elif _pending_idr and self._cached_sps_pps is None and h264_data:
-                                self._cached_sps_pps = self._extract_sps_pps(h264_data)
-                                if self._cached_sps_pps:
-                                    print("\n[NVENCEncoder] Cached SPS+PPS: %d bytes" %
-                                          len(self._cached_sps_pps), flush=True)
-                                    # [FIX-SPS-PPS-V3] 首帧已含 NVENC 初始化 SPS+PPS, 不 prepend, 仅预注入 muxer
-                                    if self._muxer_ref is not None:
-                                        try:
-                                            self._muxer_ref.write_sps_pps(self._cached_sps_pps)
-                                            self._sps_pps_injected = True
-                                        except Exception:
-                                            pass
-                            elif not _pending_idr and self._cached_sps_pps is None and h264_data:
-                                self._cached_sps_pps = self._extract_sps_pps(h264_data)
-                                if self._cached_sps_pps:
-                                    print("\n[NVENCEncoder] Cached SPS+PPS: %d bytes" %
-                                          len(self._cached_sps_pps), flush=True)
-                            results[_pending_fi] = h264_data
-                        elif _pending_ep_s == NV_ENC_ERR_NEED_MORE_INPUT:
-                            # [FIX-LA-BLKRETRY] LA frame may have completed by Phase 3.
-                            # Use blocking LockBitstream to get delayed output.
-                            _retry_data, _retry_bs = self._lock_bitstream_blocking(_pending_bs)
-                            if _retry_data:
-                                results[_pending_fi] = _retry_data
-                            else:
-                                results[_pending_fi] = b""
-                        # else: None stays — real empty frame
-                        _entry_deque.popleft()
-                        if not _entry_deque:
-                            del self._slot_pending[slot_idx]
-
+                # [P3.1-SPLIT-CE] 批末统一调用独立 _ce_final_drain（等价 IFRNet line 3059-3145）。
+                # 包含 Phase 3 剩余 pending 排空 + [FIX-LA-REDRAIN] 二次排空安全网。
+                self._ce_final_drain(pd, n_frames, results)
                 return results
         finally:
             if _need_pop:
@@ -2435,6 +2699,73 @@ class NVENCEncoder:
                     self._libcuda.cuCtxPopCurrent(ctypes.byref(_ctx_out))
                 except Exception:
                     pass
+
+    def _ce_final_drain(self, pd: int, n_frames: int, results: list) -> None:
+        """[P3.1-SPLIT-CE] Phase 3 批末排空 + [FIX-LA-REDRAIN] 二次排空安全网（ESRGAN 适配，dict[int, deque] 结构）。
+
+        - 与 IFRNet _ce_final_drain (line 3059-3145) 逐行等价，指针推进语义一致。
+        - REDRAIN：_la_depth > 0 时执行 _drain_outputs_blocking 兜底回收。
+        """
+        # Phase 3: Drain remaining pending slots (dict-based deque)
+        for slot_idx in range(pd):
+            while True:
+                _entry_deque = self._slot_pending.get(slot_idx)
+                if not _entry_deque:
+                    break
+                _pending_ce, _pending_fi, _pending_ep_s, _pending_idr, _pending_bs = \
+                    _entry_deque[0]
+                if _pending_ce.value is not None:
+                    self._libcuda.cuEventSynchronize.restype = c_uint32
+                    self._libcuda.cuEventSynchronize.argtypes = [c_void_p]
+                    _sync_rc = self._libcuda.cuEventSynchronize(_pending_ce)
+                    if _sync_rc != 0:
+                        raise RuntimeError(
+                            f"[NVENCEncoder] [CE-FINAL-DRAIN] cuEventSynchronize failed, code={_sync_rc} "
+                            f"(slot={slot_idx}, fi={_pending_fi})")
+                    self._libcuda.cuEventDestroy.restype = c_uint32
+                    self._libcuda.cuEventDestroy.argtypes = [c_void_p]
+                    self._libcuda.cuEventDestroy(_pending_ce)
+                h264_data, bs_status = self._lock_bitstream_with_retry(_pending_bs)
+                if not (0 <= _pending_fi < n_frames):
+                    pass  # 边界防御：跳过越界写入
+                elif h264_data:
+                    h264_data = self._apply_sps_pps(h264_data, _pending_idr)
+                    results[_pending_fi] = h264_data
+                    self._prev_stream_h264 = h264_data
+                    self._output_slot_idx += 1
+                elif _pending_ep_s == NV_ENC_ERR_NEED_MORE_INPUT:
+                    _h264_blk, _ = self._lock_bitstream_blocking(_pending_bs, timeout_ms=5000)
+                    if _h264_blk:
+                        _h264_blk = self._apply_sps_pps(_h264_blk, _pending_idr)
+                        results[_pending_fi] = _h264_blk
+                        self._prev_stream_h264 = _h264_blk
+                        self._output_slot_idx += 1
+                    else:
+                        results[_pending_fi] = b""
+                else:
+                    pass  # None stays — real empty frame
+                _entry_deque.popleft()
+                if not _entry_deque:
+                    del self._slot_pending[slot_idx]
+
+        # [FIX-LA-REDRAIN] 二次排空安全网
+        if getattr(self, '_la_depth', 0) > 0:
+            _redrained = self._drain_outputs_blocking()
+            if _redrained:
+                _recovered = 0
+                for _est_fi, _out_ts_r, _h264_data in _redrained:
+                    if _est_fi < n_frames and (results[_est_fi] is None or results[_est_fi] == b""):
+                        _vt_r = self._nal_first_vcl_type(_h264_data)
+                        if getattr(self, '_codec', None) == "h264":
+                            _idr_r = (_vt_r == 5)
+                        else:
+                            _idr_r = _vt_r is not None and 16 <= _vt_r <= 23
+                        _h264_data = self._apply_sps_pps(_h264_data, _idr_r)
+                        results[_est_fi] = _h264_data
+                        _recovered += 1
+                if _recovered > 0:
+                    print(f'[NVENC-Enc] [FIX-LA-REDRAIN] [CE-FINAL-DRAIN] 二次排空回收 {_recovered} '
+                          f'帧 (LA={getattr(self, "_la_depth", 0)}, pd={pd})', flush=True)
 
     def encode_frame(self, nv12_gpu_tensor, force_idr: bool = False) -> bytes:
         """Encode one NV12 GPU tensor → H.264 ES bytes (synchronous, backward compat).
@@ -2606,29 +2937,10 @@ class NVENCEncoder:
                 if status != NV_ENC_SUCCESS:
                     raise RuntimeError("[NVENCEncoder] EncodePicture failed, code=%d" % status)
 
-                # [SEGMENT-REUSE] 首段首次编码时缓存 SPS+PPS，后续段 force_idr 帧预挂
-                if force_idr and self._cached_sps_pps is not None and \
-                        not self._has_sps_pps(h264_data):
-                    h264_data = self._cached_sps_pps + h264_data
-                elif force_idr and self._cached_sps_pps is None and h264_data:
-                    # [FIX-SPS-CACHE] 首个 IDR 帧: 从码流提取并缓存 SPS+PPS
-                    self._cached_sps_pps = self._extract_sps_pps(h264_data)
-                    if self._cached_sps_pps:
-                        print("\n[NVENCEncoder] Cached SPS+PPS: %d bytes" % len(self._cached_sps_pps),
-                              flush=True)
-                        # [FIX-SPS-PPS-V3] 首帧已含 NVENC 初始化 SPS+PPS, 不 prepend, 仅预注入 muxer
-                        if self._muxer_ref is not None:
-                            try:
-                                self._muxer_ref.write_sps_pps(self._cached_sps_pps)
-                                self._sps_pps_injected = True
-                            except Exception:
-                                pass
-                elif not force_idr and self._cached_sps_pps is None and h264_data:
-                    self._cached_sps_pps = self._extract_sps_pps(h264_data)
-                    if self._cached_sps_pps:
-                        print("\n[NVENCEncoder] Cached SPS+PPS: %d bytes" % len(self._cached_sps_pps),
-                              flush=True)
-                return h264_data
+                # [SEGMENT-REUSE] [P2.4c-LADDER-ESRGAN] 收敛到 _apply_sps_pps
+                # （三段式阶梯，逐字等价；原 [FIX-SPS-CACHE] / [FIX-SPS-PPS-V3]
+                # 的缓存与 muxer 预注入语义在该方法内原样保留）
+                return self._apply_sps_pps(h264_data, force_idr)
         finally:
             if _need_pop:
                 try:
@@ -2693,7 +3005,10 @@ class NVENCEncoder:
                 # 与 encode_frames_batch() send_eos 的 FIX-HEVC-EOS 分支语义一致；
                 # H.264 保持原 while-True 轮转（空槽返回 SUCCESS+size=0，无死锁）。
                 _hevc_eos_flush = self._codec in ("hevc", "av1")
-                _drain_slots = (sorted(self._slot_pending.keys())
+                # [P2-FIX-EOS-OUTPUT-ORDER] 同 encode_frames_batch()：只过滤空槽，
+                # 但保持 _output_slot_idx 起始的轮转顺序（物理槽号升序 ≠ 输出顺序）。
+                _pending_slots_flush = {k for k, _dq in self._slot_pending.items() if _dq}
+                _drain_slots = ([_s for _s in _drain_order if _s in _pending_slots_flush]
                                 if _hevc_eos_flush else _drain_order)
                 for _slot_idx in _drain_slots:
                     _slot = self._slots[_slot_idx]
@@ -2721,6 +3036,19 @@ class NVENCEncoder:
                         if bitstream_size == 0:
                             _NvEncUnlockBitstreamProto(self._func_ptrs[_FUNC_IDX["UnlockBitstream"]])(
                                 self._encoder, _bs_handle)
+                            break
+                        # [P3-FIX-LockBitstream-SizeCap] flush() 排空同样要钳制
+                        if not self._is_legal_bitstream_size(bitstream_size):
+                            _NvEncUnlockBitstreamProto(self._func_ptrs[_FUNC_IDX["UnlockBitstream"]])(
+                                self._encoder, _bs_handle)
+                            self.__dict__.setdefault('_diag_illegal_size', 0)
+                            self._diag_illegal_size += 1
+                            if self._diag_illegal_size <= 5 or self._diag_illegal_size % 50 == 0:
+                                print(f'[NVENC-Enc] ⚠️ 非法 bitstream size '
+                                      f'#{self._diag_illegal_size} (flush): '
+                                      f'size={bitstream_size}, '
+                                      f'cap={self._max_valid_bitstream_bytes} '
+                                      f'（放弃本轮，不重试重锁）', flush=True)
                             break
 
                         _raw_bsptr = cast(byref(lock_raw, 56), ctypes.POINTER(c_void_p))[0]
@@ -2791,6 +3119,24 @@ class NVENCEncoder:
             # 保证 FIX-HEVC-COUNTED 就绪边界公式跨段正确。
             self._output_slot_idx = self._frame_idx
             self._strm_ts_base = self._frame_idx
+            # [FIX-ESRGAN-SPSPPS-REUSE] 跨段**复用会话**时不能清空 _cached_sps_pps。
+            #
+            # 原实现无条件清空，配合 [FIX-SKIP-REOPEN]（reopen() 已删除、会话跳过重建）
+            # 会形成死结：驱动在会话层面只下发一次 SPS/PPS，复用会话时不会为新段
+            # 重新下发；而缓存又在这里被清空 → 新段码流完全没有参数集，实测：
+            #   [FFmpegMuxer ERR] [hevc] PPS id out of range: 0      （每帧一次，共 224 次）
+            #   → [mp4] dimensions not set / Could not write header
+            #   → 写入帧错误: FFmpeg muxer stdin pipe broken
+            #   → 清理阶段 _close_driver_session 内 DestroyEncoder 触发 SIGSEGV (exit=139)
+            #
+            # 同一会话的 SPS/PPS 在新段依然有效（复用前已由 _cached_key == _key 保证
+            # 分辨率/preset/qp/rate_mode/la/codec 全部未变），故按**会话代数**判定：
+            #   · 会话代数变化（新建会话）→ 清空，由新会话重新提取；
+            #   · 会话代数未变（跨段复用）→ 保留，交给 _NVENCEncodeThread._write
+            #     的 `if not _sps_pps_injected` 分支注入新段的 writer。
+            if getattr(self, '_cached_sps_pps_gen', -1) != self._session_gen:
+                self._cached_sps_pps = None
+            self._cached_sps_pps_gen = self._session_gen
             self._diag_aux_block = 0
             self._diag_phase_shift = 0
             self._diag_slot_drain_fallback = 0
@@ -2880,15 +3226,50 @@ class NVENCEncoder:
                     pass
                 self._primary_ctx = c_void_p(None)
 
-            # Restore saved context
+            # Restore saved context - [FIX-CTX-RESTORE-IDEMPOTENT]
+            # （与 IFRNet 侧同款修复，逐字移植）
+            # 原实现无条件「先 pop 再 push」。实测（tests/sitecustomize.py + NVENC_CTXLOG）：
+            # 本进程只有一个 primary context 且主线程（torch）已将其设为 current，于是
+            #   · 创建时的 cuCtxPushCurrent(primary)     恒返回 201（未真正入栈）
+            #   · close 时的 cuCtxPopCurrent             返回 rc=0 但 *pctx=NULL（未真正出栈）
+            #   · 紧随的 cuCtxPushCurrent(saved)         必然返回 201（铁律 1 同源）
+            # 三者全是 no-op，警告属噪音；但原写法存在真实隐患：一旦某次 pop 真的
+            # 解绑（例如另一线程已持有该 context 使其变为 non-floating），push 仍会
+            # 返回 201，本线程就永久失去 current context（tests/probe_cuda_context.py
+            # 的 thread 模式已复现该路径）。改为先判后动 + SetCurrent 兜底。
             if getattr(self, '_saved_ctx', None) is not None and \
                     self._saved_ctx.value is not None:
                 try:
-                    self._libcuda.cuCtxPushCurrent.restype = c_uint32
-                    self._libcuda.cuCtxPushCurrent.argtypes = [c_void_p]
-                    self._libcuda.cuCtxPushCurrent(self._saved_ctx)
-                except Exception:
-                    pass
+                    self._libcuda.cuCtxGetCurrent.restype = c_uint32
+                    self._libcuda.cuCtxGetCurrent.argtypes = [ctypes.POINTER(c_void_p)]
+                    _cur_ctx = c_void_p()
+                    _get_rc = self._libcuda.cuCtxGetCurrent(ctypes.byref(_cur_ctx))
+                    if _get_rc == 0 and _cur_ctx.value == self._saved_ctx.value:
+                        pass  # 已 current：no-op，不 pop 不 push
+                    else:
+                        self._libcuda.cuCtxPopCurrent.restype = c_uint32
+                        self._libcuda.cuCtxPopCurrent.argtypes = [ctypes.POINTER(c_void_p)]
+                        _ctx_out = c_void_p()
+                        if _cur_ctx.value is not None:   # 无 current 时 pop 必然 201，跳过
+                            _pop_rc = self._libcuda.cuCtxPopCurrent(ctypes.byref(_ctx_out))
+                            if _pop_rc != 0:
+                                print(f"[NVENCEncoder] ⚠️ cuCtxPopCurrent failed during close, code={_pop_rc}", flush=True)
+                        self._libcuda.cuCtxPushCurrent.restype = c_uint32
+                        self._libcuda.cuCtxPushCurrent.argtypes = [c_void_p]
+                        _push_rc = self._libcuda.cuCtxPushCurrent(self._saved_ctx)
+                        if _push_rc != 0:
+                            # 危险路径：pop 已解绑但 push 失败 → 本线程将失去 current
+                            # context，后续 CUDA/NVENC 全部返回 201。用 SetCurrent 兜底。
+                            print(f"[NVENCEncoder] ⚠️ cuCtxPushCurrent(saved_ctx) failed, "
+                                  f"code={_push_rc}; fallback to cuCtxSetCurrent", flush=True)
+                            self._libcuda.cuCtxSetCurrent.restype = c_uint32
+                            self._libcuda.cuCtxSetCurrent.argtypes = [c_void_p]
+                            _set_rc = self._libcuda.cuCtxSetCurrent(self._saved_ctx)
+                            if _set_rc != 0:
+                                print(f"[NVENCEncoder] ❌ cuCtxSetCurrent fallback failed, "
+                                      f"code={_set_rc}; thread has NO current CUDA context", flush=True)
+                except Exception as _e:
+                    print(f"[NVENCEncoder] ⚠️ Context restore exception: {_e}", flush=True)
 
     def __del__(self):
         try:
@@ -2969,8 +3350,8 @@ class _NVENCEncodeThread:
         # SPS/PPS 注入标志属于线程层（涉及 muxer 交互），在此单独重置。
         # 每个新段创建新的 _NVENCEncodeThread + 新 muxer，
         # 确保新 muxer 总能拿到一次 SPS/PPS 预注入。
-        if getattr(self._nvenc, '_cached_sps_pps', None) is not None:
-            self._nvenc._sps_pps_injected = False
+        # _stream_begin(force=True) 现在会清除 _cached_sps_pps，因此无条件重置。
+        self._nvenc._sps_pps_injected = False
         # [EARLY-FLUSH] 两阶段 flush 的幂等守卫：begin_flush() 置位后
         # flush_and_join() 跳过重复的 q.put(SENTINEL)。每段 _NVENCEncodeThread
         # 新建，标志自然重置为 False。

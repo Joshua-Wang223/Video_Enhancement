@@ -258,6 +258,61 @@ class TestFrameConservation:
             enc.close()
 
     @gpu
+    def test_frame_conservation_vbr_hq_la8_send_eos_hevc(self):
+        """HEVC LA=8 VBR_HQ + send_eos（生产 LA>0 路由 encode_frames_batch）: 帧守恒且无空占位。
+
+        [P4-REDRAIN-HEVC] 覆盖 ESRGAN 生产 LA>0 入口的 HEVC 路径。
+        ESRGAN 侧 `_required_buffers=LA+1` 且无 `_hevc_ready_count` 就绪门控
+        （IFRNet 为 LA+3），故此处同时钉住「帧数守恒」与「零空占位」，
+        以防排空未完成被静默通过。
+        """
+        enc = nvenc_sdk.NVENCEncoder(176, 144, 30.0, qp=23,
+                                      rate_mode='vbr_hq', la_depth=8, codec='hevc')
+        try:
+            frames = self._make_test_frames(self.N_FRAMES)
+            results = enc.encode_frames_batch(frames, force_idr_first=True,
+                                               send_eos=True)
+            assert len(results) == self.N_FRAMES, \
+                f"HEVC LA=8 frame conservation failed: {len(results)} != {self.N_FRAMES}"
+            empty = sum(1 for r in results if not r)
+            assert empty == 0, \
+                f"HEVC LA=8 send_eos 后仍有 {empty} 个空占位（排空未完成）"
+        finally:
+            enc.close()
+
+    @gpu
+    def test_frame_conservation_constqp_la0_hevc(self):
+        """HEVC LA=0 CONSTQP: 帧守恒。"""
+        enc = nvenc_sdk.NVENCEncoder(176, 144, 30.0, qp=23,
+                                      rate_mode='constqp', la_depth=0, codec='hevc')
+        try:
+            frames = self._make_test_frames(self.N_FRAMES)
+            results = enc.encode_frames_batch(frames, force_idr_first=True)
+            assert len(results) == self.N_FRAMES, \
+                f"HEVC LA=0 frame conservation failed: {len(results)} != {self.N_FRAMES}"
+        finally:
+            enc.close()
+
+    @gpu
+    def test_frame_conservation_ce_pipeline_la0_hevc(self):
+        """HEVC LA=0 生产入口 `encode_frames_batch_ce_pipeline`: 帧守恒。
+
+        [P4-REDRAIN-HEVC] 生产 LA=0 走 ce_pipeline（其批末调用 `_ce_final_drain`
+        二次排空安全网）。注意：LA>0 时生产**不走**该入口（走 encode_frames_batch），
+        故此处只覆盖 LA=0。
+        """
+        enc = nvenc_sdk.NVENCEncoder(176, 144, 30.0, qp=23,
+                                      rate_mode='constqp', la_depth=0, codec='hevc')
+        try:
+            frames = self._make_test_frames(self.N_FRAMES)
+            results = enc.encode_frames_batch_ce_pipeline(frames, True)
+            assert len(results) == self.N_FRAMES, \
+                f"HEVC LA=0 ce_pipeline frame conservation failed: {len(results)} != {self.N_FRAMES}"
+        finally:
+            enc.close()
+
+    @gpu
+    @pytest.mark.skip(reason="已知 T4 / CUDA 13.0 / nvenc 580.65.06 下 qp=0 (CONSTQP) 导致 SIGSEGV，非代码回归；见 memory/nvenc-qp0-crash-workaround.md 与 tests/diagnose_nvenc_qp0_segv.py")
     def test_no_empty_frames_constqp_la0(self):
         """LA=0 CONSTQP: 零空帧。"""
         enc = nvenc_sdk.NVENCEncoder(176, 144, 30.0, qp=0,

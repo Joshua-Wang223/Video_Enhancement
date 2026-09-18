@@ -1,11 +1,25 @@
-记忆文件位置（canonical）：`D:\Workspace_Python\Video_Enhancement\Video_Enhancement\memory`（仓库根目录 `memory/`）；与 `C:\Users\Administrator\.claude\projects\D--Workspace-Python-Video-Enhancement-Video-Enhancement\memory` 互为镜像——编辑任何一侧后必须同步另一侧
-**工作约定（2026-08-14 用户确认）**：每次新建/修改 `memory/` 下任何文件后，必须**自动同步**到上述 Claude 镜像目录（同名覆盖），不得只改一侧。
+记忆文件位置（canonical）：`/workspace/Video_Enhancement/memory`（仓库根目录 `memory/`）；与 `/root/.codebuddy/projects/workspace-Video_Enhancement/memory` 互为镜像——编辑任何一侧后必须同步另一侧
+**镜像路径（2026-09-08 用户确认，Linux 生产环境生效）**：
+- A（canonical，项目内）：`/workspace/Video_Enhancement/memory`
+- B（CodeBuddy 会话侧）：`/root/.codebuddy/projects/workspace-Video_Enhancement/memory`
+- 历史镜像（Windows 开发机，路径已失效，仅存档）：`D:\Workspace_Python\Video_Enhancement\Video_Enhancement\memory`、
+  `C:\Users\Administrator\.claude\projects\D--Workspace-Python-Video-Enhancement-Video-Enhancement\memory`
+- 同步方式：`cp -a` 单向覆盖到对侧（同名覆盖），保证两侧文件集合与内容逐字节一致。
+- ⚠️ **`cp -a` 不传导删除**：一侧删除/改名后对侧同名残留不会被清掉。凡有删除或改名，
+  必须用 `rsync -a --delete "$A/" "$B/"`（或两侧分别删除）后再次 `diff -r` 复核。
+  - `--delete` 是破坏性操作：**先用 `rsync -a --delete --dry-run "$A/" "$B/"` 预览待删清单**，
+    确认无误后再去掉 `--dry-run` 执行。
+  - ⚠️ **本容器实测未安装 `rsync`**（2026-09-08 核实）。改用无依赖方式列差异、人工确认后再删：
+    `comm -13 <(cd "$A" && ls -1|sort) <(cd "$B" && ls -1|sort)`  # 仅 B 有
+    `comm -23 <(cd "$A" && ls -1|sort) <(cd "$B" && ls -1|sort)`  # 仅 A 有
+
+**工作约定（2026-08-14 用户确认，2026-09-08 重申）**：每次新建/修改 `memory/` 下任何文件后，必须**自动同步**到镜像目录（同名覆盖），不得只改一侧。2026-09-08 起镜像目录为上述 Linux A/B 两处，同步后建议用 `diff -r` 复核。
 **写入规范（2026-08-24 事故）**：禁止经 PowerShell 管道/heredoc 向 memory 写中文（控制台代码页有损转码为字面 ?，不可逆）；必须用支持 UTF-8 的直写工具，写后字节扫描抽检 0x3F。
-- [项目综合认知入口](project-core-knowledge.md) — opencode/Claude 共享的浓缩认知：架构、活跃文件、NVENC 铁律、关键 offset、生产配置、工作偏好
-- [IFRNet 水彩花屏+HEVC 尾帧损坏双症状调查](ifrnet-watercolor-tail-defect-investigation.md) — 2026-08-26 定性：尾帧参考链断裂为 LA 流式既有缺陷（备份同配置复现，包级守恒校验盲区，尾部 CRA 重启组）；水彩单帧为 H2D 预取 pinned 槽无同步竞态被方案时序改动显性化；含 Fix-1~5 修复方案与验证方法
-- [优化方案全量执行记录 2026-08](optimization-execution-2026-08.md) — P0×8+P1+P2+P3 全量落地（tile 批级接入、ESRGAN compile 实现、NVENC RC/挂起/死锁修复、指纹断点、回归测试 30/30）；含延后项与 GPU 生产验证清单；后验证三合一 → tests/verify_plan_implementation.py v2（72 项，test_regression_min.py 为兼容别名）
+- [项目综合认知入口](project-core-knowledge.md) — opencode/Claude 共享的浓缩认知：架构、活跃文件、NVENC 铁律、关键 offset、生产配置、工作偏好；含 2026-08-29 新增的 upscale 模式自动保护与 IFRNet 模型路径派生
+- [IFRNet 水彩花屏+HEVC 尾帧损坏双症状调查](ifrnet-watercolor-tail-defect-investigation.md) — 2026-08-26 定性：尾帧参考链断裂为 LA 流式既有缺陷（备份同配置复现，包级守恒校验盲区，尾部 CRA 重启组）；水彩单帧为 H2D 预取 pinned 槽无同步竞态被方案时序改动显性化；含 Fix-1~5 修复方案与验证方法；2026-08-27/28 修复落地（P1-FIX-H2D-EVENT-SYNC + EOS 硬化 + 解码级门禁），生产验证全过
+- [优化方案全量执行记录 2026-08](optimization-execution-2026-08.md) — P0×8+P1+P2+P3 全量落地（tile 批级接入、ESRGAN compile 实现、NVENC RC/挂起/死锁修复、指纹断点、回归测试 30/30）；含延后项与 GPU 生产验证清单；后验证三合一 → tests/verify_plan_implementation.py v2（72 项，test_regression_min.py 为兼容别名；后扩展至 90 项：F-修复效果 phase + FIX-HEVC-LA-OPEN，见 hevc-la-open-production.md）
 - [语言与代码修改偏好](user_language.md) — 只用中英文交流，代码修改保留原有注释
-- [开发与运行环境](project_environment.md) — 开发在 Windows，运行部署在 Linux
+- [开发与运行环境](project_environment.md) — 开发在 Windows，运行部署在 Linux；含 2026-09-02 约定：memory 结论以 Linux 生产侧为准，Windows 开发树搜不到 FIX 标记属正常滞后，不得据此推翻 `status: fixed`（附 mtime 判定法与实例）
 - [Level 1 NVENC 编码数据流](level1-nvenc-encoding-flow.md) — 四级降级架构、GPU 直通 CONSTQP 编码、FFmpegMuxer 注意事项
 - [NVENC ctypes 集成参考](nvenc-ctypes-integration.md) — SDK 13.0 struct 布局、函数索引、版本常量、码率控制、已验证的 bug 模式
 - [NVENC SPS/PPS 跨段修复](nvenc-sps-pps-debugging.md) — ctypes bitfield 布局不匹配导致 repeatSPSPPS 无效，手动缓存方案已 GPU 验证
@@ -46,10 +60,10 @@
 - [NVENC LA 帧守恒修复](nvenc-la-frame-conservation-fix.md) — SDK 合规排空逻辑的 3 项修复：循环 LockBitstream、pipeline_depth=LA+1、移除 NEED_MORE_INPUT 误弃帧，GPU 验证零丢帧 ✅
 - [CE-Pipeline LA>0 帧守恒模式](ce-pipeline-la-accumulation-pattern.md) — 全段累积+send_eos、global _frame_idx slot 分配、f0 暂存插入累积 batch
 - [ce-pipeline 首帧 f0 丢失修复](f0-first-frame-loss-ce-pipeline.md) — [FIX-PIPE4-LA8] 误删 encode_frame 导致丢失 f0，按 LA depth 分流修复，GPU 验证 ✅
-- [LA Flush Recovery — 帧守恒的必需条件](la-flush-recovery-frame-conservation.md) — 旧结论错判 LA flush 帧为花屏已修正：flush recovery 非 harmful，是实现帧数守恒的必需条件，花屏 100% 来自编码/排空逻辑的 SDK 违规
+- ~~LA Flush Recovery — 帧守恒的必需条件~~ — [文件缺失 2026-09-02 核对] `la-flush-recovery-frame-conservation.md` 两侧目录均不存在；结论保留：旧结论错判 LA flush 帧为花屏已修正，flush recovery 非 harmful，是实现帧数守恒的必需条件，花屏 100% 来自编码/排空逻辑的 SDK 违规。现行细节见 [[nvenc-la-frame-conservation-fix]]
 - [pipeline_depth 概念混淆分析](pipeline-depth-slot-rotation-confusion.md) — 一个变量三重语义（buffer 数/轮转模数/harvest 周期），因果链条与优化建议
-- [pipeline_depth 概念分离已完成](pipeline-depth-concept-separation-completed.md) — _slot_count/_required_buffers 分离、_pipeline_depth 已删除、常量重命名，全部 3 个生产脚本已实施
-- [realesrgan nvenc_sdk.py 审计](realesrgan-video-nvenc-sdk-audit.md) — 未接入生产管线的独立副本，含全部已知 LA 帧守恒 bug + pipeline_depth 混淆最严重形态
+- ~~pipeline_depth 概念分离已完成~~ — [文件缺失 2026-09-02 核对] `pipeline-depth-concept-separation-completed.md` 两侧目录均不存在；结论保留：_slot_count/_required_buffers 分离、_pipeline_depth 已删除、常量重命名，全部 3 个生产脚本已实施。混淆问题的完整分析见 [[pipeline-depth-slot-rotation-confusion]]
+- ~~realesrgan nvenc_sdk.py 审计~~ — [文件缺失 2026-09-02 核对] `realesrgan-video-nvenc-sdk-audit.md` 两侧目录均不存在；结论保留：ESRGAN 侧 nvenc_sdk 曾为未接入生产管线的独立副本，含已知 LA 帧守恒 bug + pipeline_depth 混淆最严重形态。该副本现已接入生产，现存缺口见 [[realesrgan-missing-la-redrain]]
 - [expandable_segments: synchronize 必须在 del 之后](expandable-segments-synchronize-after-del.md) — cudaFreeAsync 排队规则；synchronize 在 del 前只排空计算不排空释放
 - [TRT Batch 恢复反模式](trt-batch-recovery-anti-patterns.md) — _trt_working_bs 清零死亡螺旋、低阈值、无内存守卫、每批 empty_cache 反效
 - [Real-ESRGAN NVENC 模块架构](realesrgan-nvenc-module-architecture.md) — nvenc_sdk 合并 nvenc_writer、模块导入策略、encoder 跨段复用
@@ -68,14 +82,46 @@
 - [NVENC stream drain 消费铁律](nvenc-stream-drain-backpressure-iron-law.md) — encode_frames_stream 通用规则：drained 数据必须完整消费，丢弃即相位错位
 - [NVENC profileLevel=51 修复](nvenc-profilelevel-51-fix.md) — 结构体写入落保留区不生效根因（_NvEncConfig 错位 884B）+ FIX-SDK13-CODEC 硬编码偏移修复 + sweep 三重旁证
 - [verify v5 mpeg4 VOP 解析](verify-mpeg4-vop-analysis.md) — VOP header 真实位序（vop_coding_type 最前，非 ISO 书面顺序）、连 I 块判定>3、伪 start code 过滤、fixed.avi「21032 连 I」旧结论修正（实为容器 12 垃圾 packet）；v2/v3 多编码容错（非 h264/hevc 提示不判失败）+ HEVC 基础 NAL 分析（nal_unit_type=(b0>>1)&0x3F，IDR 19/20）
+- [老 AVI/mpeg4 缺 PTS 导致 segment 分割失败](avi-mpeg4-pts-missing-segment-muxer.md) — 2026-08-11：mpeg4-in-AVI 输入 DTS 全 N/A、PTS 仅 B 帧有（约 2/3 缺失），`-c copy` 分割无法重打时间戳 → segment muxer 切点永不触发 → 日志「分割为 5 段」却只产出 1 个全片时长片段、退化为整体处理；修复 = `split_video_by_time()` 的 ffmpeg 命令在 `-i` **前**加输入选项 `-fflags +genpts`（输入选项必须在 `-i` 前才生效，且仅 PTS 缺失时生成，对 h264/mp4 逐字节零回归）；排查口诀：见「分割 N 段但只有 1 个有效片段且时长=全片」先怀疑输入 PTS 缺失，而非关键帧稀疏或代码逻辑
 - [Chroma 色度检查误报修复](chroma-false-positive-fix-chroma-fa1.md) — fix-chroma-fa1: 跳变掩码不并入 bad_any，消除正常视频误报，保留真实污染检测
 - [IFRNet LA 辅助块槽位清理修复](ifrnet-la-aux-slot-clearing-fix.md) — v6.4.5.1 三层根因链：aux 块清空 _strm_slot_pending → 反压失效 → LA 输入覆盖错位；_reorder_next 指针卡死 → 每 132 帧周期性强制排空放大；EOS while-True 槽位错配。修复 FIX-AUX-NO-CLEAR / FIX-REORDER-NEXT / FIX-EOS-EXPLICIT-SLOT（seg2 干净对照：有 drain 无错位 → 需双条件同时成立才损坏）
 - [IFRNet LA 排空顺序防御](ifrnet-la-drain-order-fix.md) — v6.4.5.1/4.4.1/3.1 三文件修复：EOS 残留 _g NameError、_ensure_slot_free 目标槽排空（FIX-SLOT-DRAIN-TARGET）、drain 顺序一致性防御 + prev 填充（FIX-DRAIN-ORDER-DEFENSE / FIX-EMPTY-PREV-FILL）、编码线程异常上下文（FIX-ENC-EXC-CONTEXT）；test8 复现背景与验证状态
 - [IFRNet LA 辅助块账记修复（test11）](ifrnet-la-aux-no-clear-test11-fix.md) — FIX-AUX-NO-CLEAR 回归与修复：无 VCL 辅助块不再 pop 队首（不占帧槽/不进 pairs/不清 pending），目标槽直探 + 计数器防漂移 + 相位诊断；v6.4.5.1/4.4.1/3.1 + ESRGAN nvenc_sdk.py 同步，test11 生产复验通过
 - [test11 最根本原因与最直接修复（定论）](ifrnet-test11-rootcause-synthesis.md) — 一句话定论：辅助块被当帧消费破坏 FIFO 标签↔数据双射 → 相位偏移 1 槽永久传播；最直接修复 = VCL 分类后辅助块不占帧槽
-- [HEVC+LA 排空诊断](hevc-la-drain-diagnosis.md) — 2026-08-18：HEVC 阻塞死锁根因（空槽/未就绪槽 blocking Lock 永不返回）与 counted 有界排空 + EOS pending-only 修复闭环（ifrnet/esrgan LA>0 已落地）；ESRGAN LA=0 flush() 段尾死锁（FIX-HIGHRES-RC 降级 + 全槽轮转 EOS 排空）→ FIX-HEVC-EOS-FLUSH 补丁 + ce_pipeline_fix/multi_segment 验证变体；2026-08-19 FIX-HEVC-EOS-FLUSH backport 到 external/IFRNet v6.4.3+ 六历史版本（v6.4.3/4/5 零锁槽 + v6.4.3.1/4.1/5.1 pending-only），生产验证通过
+- [HEVC+LA 排空诊断](hevc-la-drain-diagnosis.md) — 2026-08-18：HEVC 阻塞死锁根因（空槽/未就绪槽 blocking Lock 永不返回）与 counted 有界排空 + EOS pending-only 修复闭环（ifrnet/esrgan LA>0 已落地）；ESRGAN LA=0 flush() 段尾死锁（FIX-HIGHRES-RC 降级 + 全槽轮转 EOS 排空）→ FIX-HEVC-EOS-FLUSH 补丁 + ce_pipeline_fix/multi_segment 验证变体；2026-08-19 FIX-HEVC-EOS-FLUSH backport 到 external/IFRNet v6.4.3+ 六历史版本（v6.4.3/4/5 零锁槽 + v6.4.3.1/4.1/5.1 pending-only），生产验证通过；2026-08-28 软退役、LA>0 生产开放（见 hevc-la-open-production.md）
+- [HEVC LA>0 生产就绪（hevc_la_disable 软退役）](hevc-la-open-production.md) — 2026-08-28/29：processor 层软退役 [FIX-HEVC-LA-SOFT-RETIRED]（命中仅 WARN 不降级）+ config 默认翻转 false + verify_plan [FIX-HEVC-LA-OPEN] 门禁；2026-08-29 复跑 90 项（88 PASS / 0 FAIL / 0 WARN / 2 SKIP），T4 三路对照（hevc LA8 / hevc LA0 / h264 LA8）verify v4 全绿；含 2026-08-27 水彩综合修复栈（H2D event sync、EOS 硬化、NAL-COMMON、SizeCap、解码级门禁）完整时间线；已双侧同步落地
+- [HEVC LA 软退役完成](hevc-la-soft-retired.md) — 2026-08-28/29 收口记录：IFRNet/RealESRGAN processor 移除 LA 降级（仅 WARN）、config `hevc_la_disable: true→false`、verify_plan [FIX-HEVC-LA-OPEN]、T4 三路对照 A/B/C 全绿；含回滚预案（置 true 或 `NVENC_HEVC_ALLOW_LA=0`）与影响面（仅 hevc + VBR_HQ/QVBR + LA>0，h264/constqp/LA=0 逐字不变）
+- [upscale_then_interpolate 自动模式保护](mode-auto-protect-upscale-then-interpolate.md) — 2026-08-29：1440p 插帧在 T4 上早期 EOF/帧丢失（bs=12 缺 58.3%、bs=6 缺 8.3%）根因 = 超分后 3.7M 像素下 IFRNet 跟不上 NVDEC 供料；新增 `processing.max_upscale_then_interpolate_pixels`（默认 3670016=2560×1440，`0` 禁用自动切换）+ `main._select_optimal_mode()` 双重调用（配置摘要 + `_process_single`）自动切 `interpolate_then_upscale` 并打印强烈警告
+- [IFRNet 模型选择 Bug 修复](ifrnet-model-selection-bug-fix.md) — 2026-08-29：`config_manager` 的 IFRNet `model_path` 硬编码 `IFRNet_S_Vimeo90K.pth`（ESRGAN 同分支正确用 model_name）→ `--ifrnet-model` 无效、S/V/L 三模型输出完全相同；修复为按 `model_name` 派生 + 新增 `_derive_model_paths()` 在 CLI 覆盖后重算；验证 S/V/L 的 TRT Engine 大小与输出 MD5 已区分（AUTO-TUNE model_factor S=1.0/V=1.6/L=3.0）
 - [HEVC LA 完全根治执行方案（软退役）](../Plan/HEVC_LA完全根治执行方案_20260828.md) — 2026-08-28：`hevc_la_disable` 保留但默认 `false`（软退役，仅 `WARN` 逃生门）；`hevc_nvenc VBR_HQ/QVBR + LA=8/16` 直通 `FIX-HEVC-COUNTED/EOS/EOS-FLUSH` 已验证路径；`processor` 层移除自动降级、配置翻转、双侧审计、三路对照 `hevc LA>0 / LA=0 / h264 LA>0` 验收、一键执行命令与回滚预案
 - [水彩花屏修复验证报告（双素材全链路）](../verification_report/水彩花屏修复验证报告_20260828.md) — 2026-08-28：`word_world_2`/`new5` TRT 复用（B24/B12 + B24/B16）、`verify_plan_implementation 89项0FAIL`、`verify_segment_bitstream_v4 6/6 PASS`（帧守恒/单IDR/单调frame_num/无pts/色度0簇）、`analyze_video_pipeline_v3` 最终帧守恒；`H2D Event 同步` + `HEVC LA=0规避` 双根因闭环
-- [大文件验收效率提升：分片并行分析](verify-bitstream-large-file-parallel.md) — 单文件 hevc 8.6 万帧串行 400s 瓶颈定位（检查1+3 全量解码不可分片、检查2 单线程 Python+全量 ES 内存）、分片策略/并行框架/内存I/O/粒度四维对比、落地 v4 检查间并行（_check2_worker 线程 + 移出 GPU 信号量 + join 聚合）
-- [IFRNet HEVC LA 软退役完成](hevc-la-soft-retired.md) — 2026-08-28：`hevc_la_disable` 保留字段默认 `false`（软退役），IFRNet/RealESRGAN processor 同步移除自动降级 LA，仅 `WARN` 逃生门；`verify_plan_implementation` 新增 `FIX-HEVC-LA-OPEN` 门禁 90项 0FAIL
-- [upscale_then_interpolate 自动模式保护](mode-auto-protect-upscale-then-interpolate.md) — 2026-08-29：新增 `_select_optimal_mode()`，检测超分后像素数 > `max_upscale_then_interpolate_pixels` (默认 2560×1440=3.7M) 时自动切换为 `interpolate_then_upscale` + 强烈警告；解决 `new5` 1440p 下 IFRNet 早期 EOF（T2=1400ms 供料不上）→ 4× 像素吞吐降低，零代码改动即可规避
+- [大文件验收效率提升：分片并行分析](verify-bitstream-large-file-parallel.md) — 单文件 hevc 8.6 万帧串行 400s 瓶颈定位（检查1+3 全量解码不可分片、检查2 单线程 Python+全量 ES 内存）、分片策略/并行框架/内存I/O/粒度四维对比、落地 v4 检查间并行（_check2_worker 线程 + 移出 GPU 信号量 + join 聚合）；⚠️ 含 **v4/v5 命名澄清**：v5 = 生产侧最新版另存，与 v4 逐字节相同但**不是冗余副本，两个都不能删**
+- [IFRNet LA=0 f0 双重消费丢帧](ifrnet-f0-la0-double-consume.md) — 2026-09-01：`_NVENCEncodeThread._loop()` 在循环前无条件取走 `_pending_f0_nv12`，LA=0 分支的 `[FIX-F0-IN-BATCH-CE]` 读到 None → f0 永久丢失（每段少 1 帧，解码级验收失败）；修复：取用下放到 LA>0 分支内，LA=0 原样留给 ce_pipeline；3 段帧数与包结构恢复，GPU 验证 ✅
+- [IFRNet 段首帧 NV12 异步拷贝竞态](ifrnet-f0-nv12-async-copy-race.md) — 2026-09-01：`[FIX-ASYNC-COPY]` 私有 non-blocking `_stream_encode` 与 PyTorch 流无依赖边 → NVENC 读到未写完的 NV12（段首帧麻布状花屏，首帧 IDR 5.2× 且 SPS 逐字节相同可排除参数集问题）；f0 路径补 `synchronize()`，Level 2/3 逐帧路径改用 CUDA event `wait_on_event()` 免阻塞 CPU；含 ESRGAN 三层对照（ESRGAN 早已修 / f0 通道结构上不存在 / code=8 静默吞）与遥测补齐
+- [IFRNet HEVC+LA 物理槽余量不足死锁](ifrnet-hevc-la-slot-headroom-deadlock.md) — 2026-09-01：LA 输出延迟实测=LA+1 而物理槽仅 LA+1 → 余量为 0 → `_ensure_slot_free` 锁定未就绪槽在**驱动内部**永久阻塞（`doNotWait=1` 救不了）；修复 `_required_buffers=LA+2` + ready 上界保护 + target_probe 补偿推进 `_output_slot_idx`；定位手段 `py-spy dump --pid --locals`，`active` 状态是判定"卡在驱动调用内"的决定性证据
+- [ESRGAN REDRAIN 缺口修复完成 + 后续测试立项](realesrgan-missing-la-redrain.md) — 2026-09-18：§4.1 独立 `_ce_final_drain()` 实现完成；**P1~P4 全部完成**（h264/hevc 生产路由 300 帧编码级+解码级守恒、P3 端到端 1149 帧解码级、P4 断言 6 passed）；**并完成 ESRGAN HEVC/LA 加固 `[FIX-HEVC-READY]`**：hevc/av1 槽数 LA+3 + `_hevc_ready_count`(margin 2) + `_ensure_slot_free` 门控 + EOS 轮转序排序修复，h264/LA=0 逐字不变；verify_plan 94/92 PASS/0 FAIL
+- [HEVC harness：死锁 → 修复 +「NVENC 引擎卡死」误判纠正](nvenc-hevc-la-harness-wedge.md) — 2026-09-18：`MinimalTestEncoder` 曾因「1 bs_buf/slot + 同步排空、无就绪门控」在 HEVC 下驱动内死锁；已移植生产架构（FIFO+就绪门控+轮转序EOS+size钳制+close 只锁 pending 槽）→ hevc LA=0/8 各 300 帧守恒，h264 输出 md5 与修复前一致。**并纠正**：早先「宿主 NVENC 被卡死需重启」实为 ffmpeg SIGTTOU 假象（`< /dev/null` 后全 rc=0）
+- [HEVC/AV1 跨段编码器复用恢复评估](ifrnet-hevc-cross-segment-reuse-restore.md) — 2026-09-02：触发链 A/B 已消除但维持禁用默认；Phase 0/1 已落地（`IFRNET_NVENC_CROSS_SEGMENT_REUSE=1` 开关 + `_sps_pps_injected` 段边界重置，含 LA=0 ce_pipeline 路径）；A/B 实测待 Linux GPU；附带发现 verify_plan BEH-B1/B3/B4 断言过期（P2-FIX-FRAG 末段合并后产出 2 段）
+- [NVENC EOS 排空槽序错误导致段尾帧乱序](nvenc-eos-drain-slot-order-tail-corruption.md) — 2026-08-31 根因：ESRGAN `encode_frames_batch()`/`flush()` 的 EOS 用 `sorted(_slot_pending.keys())`（物理槽号升序）排空，而 `slot=gfi%slot_count` 段尾回绕 → 升序≠输出顺序 → 段尾 POC 报错（帧数守恒、仅全解码可见）；**⚠️ 2026-09-18 核实：该「已修」原为不实（HEAD/工作区都无此修复、无 NVENC_EOS_DEBUG），当日已真正落地（轮转序+pending 过滤+NVENC_EOS_DEBUG）并 GPU 验证 `gfi_seq` 单调、`顺序正确=True`**
+- [无 GPU 环境下的工作模式](feedback_no_gpu_work_mode.md) — 2026-09-08：容器无 GPU 时先做纯 CPU 修复（ffprobe 全解码计数、代码审查、逻辑单测），另列需 GPU 验证清单；**会改变 GPU 运行时语义的改动只给方案不落地**
+- [容器 GPU 时有时无的判据](project_gpu_container_flaky.md) — 2026-09-08：容器重建后可能未挂载 GPU，`/dev/nvidia*` 缺失 / `CUDA_VISIBLE_DEVICES` 为空 / `libcuda.so.<ver>` 是 0 字节桩；`/proc/driver/nvidia/version` 有值**不能**作为 GPU 可用的证据
+- [本容器 ffmpeg/ffprobe 的两个环境坑](env-ffmpeg-ffprobe-gotchas.md) — 2026-09-14：① ffmpeg 在后台进程组启动时对 fd0 调 `ioctl(TCSETS)` 被 `SIGTTOU` 停住（秒卡 + 0% CPU + 无输出）；已落地永久修复 `stdin_hardening.detach_background_stdin()`（入口 + 后端 ffmpeg_io 模块导入时接入；只加固读帧器 Popen 不够，`HardwareCapability._probe_nvdec` 自己也会拉 ffmpeg）；② 本 build 的 ffprobe 无 `-hwaccel` 选项（只有 `-hwaccel_flags`），传了则 rc=1；**2026-09-16 补**：门禁进程自身也曾整组被 SIGTTOU 停住（`[FIX-STDIN-TTOU-GATE]`，`verify_plan_implementation.py` 的 R7 NVENC 探测零输出挂死，`ps` 见主进程与 ffmpeg 子进程**双双为 `T`**）——修复为 `run_cmd()` 加 `stdin=subprocess.DEVNULL` + `main()` 入口补加固（两层）；判别口诀「跑得异常久 + 完全无输出」先看 `ps -o stat` 的 `T` 与 `wchan=do_signal_stop`；`tests/` 下仍有 28 文件/102 处未显式传 `stdin=`（测试基建债，宜抽共享 helper）
+- [P2-1「reader 输出 nv12 + 消费端转换」已否决](p2-1-nv12-consumer-conversion-rejected.md) — 2026-09-14：numpy 在 4K 做 nv12→rgb24 ≈833ms/帧（400s vs 27.6s，14x 回归）；读帧降本只能靠 GPU 侧 torch/NPP 转换，且 T1 比 T2 快 25–30x 故端到端收益≈0；教训：reader 优化必须带真实消费端测量，灌 /dev/null 只测出"生产者能力"
+- [本机是多会话共享的 GPU 主机](shared-gpu-host-concurrent-jobs.md) — 2026-09-14：其他会话在跑 4K `nvinterpolate` 任务导致同一命令稳定测出 ~16s（正常 0.95s），差点误判为回归；测量前先查 `nvidia-smi` 与并发进程，计时一律多轮取中位数，别 kill 他方任务
+- [立项文档状态表可能过时，动手前先跑基线实测](feedback_verify_baseline_first.md) — 承接 `Plan/*.md` 时不要照 §0 状态表直接开工，先跑基线/复现命令用实测反推真实待办（2026-09-09 实例：文档标 ❌ 的任务实测已 4/4 PASS）
+- [内容依赖的测试假阳性：保严格判据 + 标注](feedback_keep_strict_criteria_annotate.md) — 出现内容相关假阳性时保留判据不变并标注"合成素材已知边界/真实素材已 PASS"，不为消警而放宽阈值或改产品参数
+- [verify_plan 门禁基线：7 项过期断言已修 + 覆盖自动化](gate-verify-plan-known-failures.md) — 2026-09-15 基线 94 项/88 通过/0 失败（旧「93/84/7」作废）；7 项全是过期断言且已全部修复（改断言未动产品参数）；新增 COMPILE_TARGETS 自动收集 + BEH-E2 覆盖自检、H1 缺 ffmpeg-python 转 WARN、H3 缺依赖转 SKIP
+- [段级验收曾被「容器元数据捷径」静默降级](gate-segment-validation-metadata-shortcut.md) — FIX-GATE-STRICT-COUNT：count_mode 缺省=auto，NVDEC 不可用时退回容器 nb_frames；且帧数缓存 key 不带 mode，auto 预热( count_frames_parallel )会把低可信值喂给严格验收门 → 只加 count_mode 完全无效
+- [2026-09-15 新立项 Prompt ×6](../Plan/) — 读帧器无界阻塞 / ESRGAN LA 二次排空 / NVDEC 与软解 RGB 一致性 / stdin 加固策略定稿 / 门禁与测试资产纳管 / NVENC 硬件测试隔离（**执行状态见下 4 条 + 本条**：读帧器✅、门禁纳管✅、stdin✅已定稿、ESRGAN 部分落地、RGB 诊断资产就绪待 GPU、NVENC 隔离骨架就绪待 GPU）
+- [~~未修复~~已落地：IFRNet 读帧器 read() 无界阻塞](ifrnet-reader-unbounded-queue-get.md) — 2026-09-15 落地 `[FIX-READER-UNBOUND]`：`read(timeout=None)` 有界等待 + 保守存活判定（已死 ≤1×T 抛；线程活+子进程在跑 → 再给一个观察窗 ≤2×T 抛，保住反压），异常含 thread/child/queue/frame 现场；`IFRNET_READER_TIMEOUT=0` 为回滚开关；CPU 回归 10/10 PASS（含真实 ffmpeg 帧守恒 + 逐字节比对 + 两种注入）
+- [门禁覆盖扩到 tests/（54→112 文件）](gate-tests-coverage-automation.md) — 2026-09-15：`COVERAGE_ROOTS` 加 `"tests"`，`BEH-H2` 立刻抓到 `diagnose_nvenc_rc_mode.py:178` 的 `capture_output` 与 `stderr=DEVNULL` 互斥（被 `except` 吞掉多年、py_compile 看不见）；清点表 `tests/TEST_ASSET_INVENTORY.md`（59 文件 + v4/v5 反例 + 换行符以 Linux 侧为准）
+- [NVDEC 与软解 RGB 差异诊断（两条实测纠正）](reader-rgb-path-consistency.md) — 2026-09-15：① `-hwaccel auto` 在**无 NVIDIA GPU** 机器上会静默退到 dxva2/d3d11va 并 rc=0 → "NVDEC 可用"假阳性（必须点名逐个试 `cuda`）；② 钉住矩阵/范围**不需要 libzimg** —— `-color_range`/`-colorspace` 放 `-i` 前就真实生效（附 sha 证据；无 `bt601`，601 用 `smpte170m`/`bt470bg`）；Windows/d3d11va 已复现"平面 0 差异 + RGB 43% 不同 + reader 忠实"的定性
+- [NVENC 硬件测试隔离](nvenc-hardware-test-isolation.md) — 2026-09-15：方案 A 就绪（`tests/run_all_isolated.sh` 逐文件独立进程 + PASS/FAIL/CRASH/EMPTY 五态；`pytest.ini` 只注册 `hw` 标记**不设默认排除**）；SIGSEGV 复现与二分定位、方案 B/C 仍需 Linux+GPU；与读帧器/解码链路**无耦合**
+- [NVENC qp=0（CRF=0 无损）段错误 —— 生产规避](nvenc-qp0-crash-workaround.md) — 2026-09-16 T4/CUDA13 实测：`constqp + qp=0 + la=0` 约 35–67% 概率 SIGSEGV（同配置仅把 qp 改 23 → 0/10 崩，唯一触发条件就是 `qp=0`）；崩溃在编码阶段、faulthandler 落点游走、gdb 显示堆已损坏；已排除 6 类假设（`_NvEncPresetConfig`/`_NvEncConfig` 尺寸、`_FUNC_IDX` 函数表、`from_address` 越界、`_slot_pending` 形状、close 后释放张量、缓冲区尺寸）→ 定性为**驱动/SDK 缺陷**；规避 = 关 `nvenc._NVENC_CRF0_FORCE_CONSTQP`（改走 CRF 路径，代价是非数学无损）/ 显式 `--nvenc-qp>=1` / 启用 LA>0；复现工具 `tests/diagnose_nvenc_qp0_segv.py`（退出码 1=复现）
+- [stdin加固策略定稿 完成](stdin加固策略定稿_立项Prompt.md) — 2026-09-17：pty 架构重写（父进程不读 pty、仅 waitpid）消除 Input/Output Error 误判；6 判据全过（原故障复现 SIGTTOU 10s 超时+T态实锤、分支矩阵 5/5、异常退化 4/4、幂等性、import 顺序保证 0 子进程、两读帧器 fd0=/dev/null 覆盖）
+- [NVDEC与软解RGB一致性 完成](NVDEC与软解RGB一致性_立项Prompt.md) — 2026-09-17：`scale=in_color_matrix=bt601:in_range=tv` 显式加入 IFRNet/ESRGAN 读帧器 `-vf`；NVDEC (nv12) 与软解 (yuv420p) 两条路径逐字节一致（强制 NVDEC/软解双路对照 150 帧、多码率/分辨率验证），reader 忠实性 0 差异
+- [ESRGAN LA二次排空安全网 完成](ESRGAN_LA二次排空安全网_立项Prompt.md) — 2026-09-17：REDRAIN 移植到 `encode_frames_batch_ce_pipeline`（Phase1 harvest 推进 `_output_slot_idx`、Phase3 drain 推进 `_output_slot_idx`、批末二次排空调用 `_drain_outputs_blocking()` 并补 SPS/PPS 缓存），与 IFRNet `_ce_final_drain` 对齐
+- [IFRNet读帧器无界阻塞 完成](IFRNet读帧器无界阻塞_立项Prompt.md) — 2026-09-17：`test_reader_unbound_watchdog.py` 11/11 PASS，含真实 SIGSTOP 变体（C3：子进程 SIGSTOP → read() 在 2×T 抛出、子进程仍 STOPPED 时已判定为「活着但静默」）
+- [门禁与测试资产纳管清理 完成](门禁与测试资产纳管清理_立项Prompt.md) — 2026-09-17：门禁基线 92 PASS（BEH-H1/H3 WARN/SKIP→PASS），覆盖扩展到 tests/（54→112 文件），`BEH-H2` 抓到 `diagnose_nvenc_rc_mode.py` 互斥参数被吞掉的多年隐蔽 bug
+
+- [REDRAIN 后续测试立项 Prompt 2026-09-18](Plan/REDRAIN_后续测试立项Prompt_2026-09-18.md) —— P1 帧数守恒（h264 harness ✅；hevc 走生产路由 ✅ 双重校验；harness hevc 已 fail-fast）、P2 镜像同步 ✅（A/B 逐字节一致、B 可写）、P3 端到端冒烟 ✅（1149 帧解码级）、P4 扩展断言 ✅（6 passed）
