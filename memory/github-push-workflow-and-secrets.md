@@ -52,6 +52,19 @@ git ls-remote origin refs/heads/main   # 与本地 git rev-parse refs/heads/main
 
 **How to apply**：清理大目录时**不要停留在改名**（`mv x x.del`），改名正是绕过防线的动作；要么真删、要么同时把新名字加进 `.gitignore` 与哨兵正则。推送前用 `git ls-tree -r --name-only <tree> | grep -E '^(models|temp|output|logs)'` 之类的**宽匹配**自查一遍，别只信脚本那句 ✅。
 
+## ⚠️ `.gitignore` 对**已跟踪**文件无效 —— 全量重建索引会静默剔除它们
+
+**规则**：`.gitignore` 只作用于**未跟踪**路径。给某模式加规则后，**此前已被跟踪**的匹配文件不会自动离仓；反过来，脚本第 4 步的 `git read-tree --empty && git add -A` 会全量重建索引，此时这些文件被**静默从提交树里剔除**（对远程表现为删除）。
+
+**Why**：2026-09-23 实测——给 `Plan/*session*`、`Plan/*.txt` 加规则后，仍有 4 个 `Plan/session-ses_*.md`（合计 2.3 MB）与 `Plan/水彩花屏修复验证一次性执行Prompt.txt` 因**早已被跟踪**而滞留在远程；直到下一次全量覆盖推送才被剔除。极易误判为"我没动它们，怎么被删了"。
+
+**How to apply**：
+- 加/改 `.gitignore` 后立刻自查"被跟踪但已忽略"清单：
+  `git ls-tree -r --name-only HEAD | git check-ignore --no-index --stdin`
+  不想删的，就从规则里排除，或加 `!` 负向规则。
+- 脚本第 4 步自带 `IGN_TRACKED` 守卫会**列出清单并要求 `ALLOW_BIG=1`** 才继续（原文 `如确认要移除它们，请加 ALLOW_BIG=1 重跑`）。**看到这条守卫不是故障**，是"你正在删以前跟踪的文件"的确认请求 —— 确认再放行。
+- ⚠️ `ALLOW_BIG=1` 会**同时**放行大目录哨兵，不只 `IGN_TRACKED`；用它之前先独立确认树里确实没有大目录（见上一节）。
+
 ## 密钥红线（2026-09-23 推送被 GitHub Push Protection 拦下）
 
 - `config/cc-switch-{claude,codex}-{openrouter,deepseek}.md` 四个文件各含 **1 个真实 API Key**。它们**从未在远程**，本次新增才触发 `GH013 / Push cannot contain secrets`。
