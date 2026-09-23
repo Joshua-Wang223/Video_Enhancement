@@ -19,8 +19,29 @@ output/
 temp/
 output*.txt
 Video_Enhancement_github_token.txt
+
 # [SEC-2026-09-23] cc-switch 配置文档内含真实 API Key（OpenRouter / DeepSeek）。
-# 四个文件都在仓库根 config/ 下且 **曾不在远程** —— 首次推送被 GitHub Push
-# Protection 拦下（GH013，OpenRouter Key）。注意 DeepSeek 的 sk- 密钥 GitHub
-# **没有检测器**，只挡 OpenRouter 会让 DeepSeek 密钥静默进仓，故整体排除。
+# 四个文件都在仓库根 config/ 下；首次推送被 GitHub Push Protection 拦下（GH013，
+# OpenRouter Key）。注意 DeepSeek 的 sk- 密钥 GitHub **没有检测器**，只挡
+# OpenRouter 会让 DeepSeek 密钥静默进仓，故整体排除。
 config/cc-switch-*.md
+
+# ── 运行日志 / 临时转储（2026-09-23 清理，避免 git status 刷屏）──
+# 注：force_push_github.sh、tar_excludes.txt 属同步工作流工具，保留 tracked（不忽略）
+and
+Found_Cropped.txt
+*.err
+conversation-*.txt
+tmp/
+tests/validation_report_final.txt
+
+# 工具/会话本地配置，不入库
+.codebuddy/
+
+# Plan/ 下的会话转储与历史快照（保留 *.md 设计/立项文档）
+Plan/history_*
+Plan/*session*
+Plan/conversation*
+Plan/Conversation-*
+Plan/2026-*
+Plan/*.txt
