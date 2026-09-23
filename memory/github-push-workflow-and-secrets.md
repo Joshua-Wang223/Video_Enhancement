@@ -80,7 +80,7 @@ clone 成功本身即证明**对象完整、推送未被截断**（`ls-remote` �
 
 `force_push_github.sh` 第 4 步用 `git read-tree --empty && git add -A` 重建索引，**完全以本地 `.gitignore` 为准**；而原第 3 节只在 `.gitignore` 缺失时才从远程取。⇒ **任一环境带着旧规则跑脚本，就会用旧规则覆盖远程**——这正是 2026-09-23「另一环境缺 `.gitattributes` + 未锚定的 `models/` → 覆盖后 EOL 锁定丢失、`external/IFRNet/models/` 等架构源码被剔除、全新 clone 起不来」的机制。
 
-现已改为：第 3 节对 `.gitignore` 与 `.gitattributes` **一律采用 `origin/$BRANCH` 版本**，本地有差异只告警、不采纳；需要本地优先时设 `IGNORE_LOCAL=1`。
+现已改为：第 3 节对 `.gitignore`、`.gitattributes`、`tar_excludes.txt` **一律采用 `origin/$BRANCH` 版本**，本地有差异只告警、不采纳；需要本地优先时设 `IGNORE_LOCAL=1`。
 
 **How to apply**：
 - 要改这两个文件，**必须先 `git push` 到 origin** 再由各环境取用。只改本地不推 = 白改（下次跑脚本会被 origin 版本覆盖）。
@@ -116,7 +116,8 @@ clone 成功本身即证明**对象完整、推送未被截断**（`ls-remote` �
 
 ⇒ 更稳的替代：`git archive --format=tar.gz -o snap.tgz HEAD`（只含已跟踪文件，天然无权重/缓存/转储）。
 
-**⚠️ 反复被覆盖**：2026-09-23 实测并行会话的 force_push 在 `[FIX-IGNORE-CANONICAL]` 落地后**仍会把 `tar_excludes.txt` 退回旧版**（该保护目前只覆盖 `.gitignore`/`.gitattributes`）。根治需把 `tar_excludes.txt` 也加入脚本第 3 节的治理文件清单；**但不要把 `force_push_github.sh` 自身加进去**——脚本运行中被改写会让 bash 重读、行为未定义。
+**✅ 已根治（2026-09-23）**：当初该保护只覆盖 `.gitignore`/`.gitattributes`，实测并行会话的 force_push **连续两轮把 `tar_excludes.txt` 退回旧版**（未锚定的 `models` → 会把 `external/IFRNet/models/` 等架构源码从快照里排掉）。现已把 `tar_excludes.txt` 加入脚本第 3 节治理文件清单，三者一并归一（提交 `979db44`，克隆实测篡改后能被纠正）。
+**注意不要把 `force_push_github.sh` 自身加进去**——脚本运行中被改写会让 bash 重读、行为未定义。
 
 ## 密钥红线（2026-09-23 推送被 GitHub Push Protection 拦下）
 
