@@ -30,6 +30,16 @@ git ls-remote origin refs/heads/main   # 与本地 git rev-parse refs/heads/main
 
 **How to apply**：把这条当成推送动作的固定收尾步骤（省下的是"以为推上去了、其实没有"这类返工）。看到"脚本跑完了但远程没变"，先查是不是被 `set -e`+管道早闭静默中止，而不是怀疑网络或凭据。
 
+**最强复核 = 独立浅克隆**（2026-09-23 两次用于收口，比 `ls-remote` 更硬）：
+
+```bash
+git clone -q --depth 1 --single-branch --branch main \
+  git@github.com:Joshua-Wang223/Video_Enhancement.git /tmp/vc
+# 然后在 /tmp/vc 里按 config.py 的方式跑目标链路（import 后端 / 加载模型架构）
+```
+
+clone 成功本身即证明**对象完整、推送未被截断**（`ls-remote` 只报 ref SHA，不校验对象可获取）；在 clone 里跑一遍导入链，还能证明"仓库内容足以让新机器跑起来"，而不只是"文件都在"。用完 `rm -rf /tmp/vc`。
+
 **Provenance**：2026-09-23 用户在本会话明确要求「补充一条以后省事的经验：推送后一律独立复核 `git ls-remote origin refs/heads/main`」—— 即这条是**用户指定的长期经验**，不要因为"脚本的 SIGPIPE 缺陷已修"就把它删掉或降级。
 
 ### 怎么读推送日志（2026-09-23 用户要求「检查推送日志确认无报错」时实测出的两条反直觉）
@@ -46,6 +56,7 @@ git ls-remote origin refs/heads/main   # 与本地 git rev-parse refs/heads/main
 2026-09-23 清理根目录 stray 权重目录时实测：把 `models/` 改名成 **`models.del/`**（"待删"的常见做法）后，**两道防线都拦不住它**——
 
 - `.gitignore` 里是 `/models/`、`/models_*/`（2026-09-23 已**锚定到仓库根**；仍匹配不到 `models.del/`；且 `.gitignore` 只作用于未跟踪路径）；
+  ⚠️ 反过来说：**未锚定**的 `models/` 会连带忽略 `external/**/models/` 这类**源码**目录 —— 2026-09-23 实测它把两个运行期必需目录长期锁在仓库外（IFRNet 架构 + vendored realesrgan 的 models 子包），任何全新 clone 都因此跑不起来，见 [报 No module named 'models' / 'realesrgan.models'](ifrnet-models-package-missing.md)；
 - 脚本第 5 步哨兵正则 `^(models|models_[^/]*|temp|output|logs|gfpgan|\.trt_cache|\.t2_cache)/` 同样不匹配 `models.del/`。
 
 ⇒ 该目录 **128 MB（含两个 67 MB 的 .pth 权重）会直接进提交树被推上去**，而哨兵会照常打印 `✅ 大目录未被纳入`，给出假的安心感。
@@ -76,6 +87,17 @@ git ls-remote origin refs/heads/main   # 与本地 git rev-parse refs/heads/main
 - 在别的环境看到 `⚠️ .gitignore 与 origin 不一致 → 覆盖为 origin 版本` 是**预期行为**，不是故障。
 - 验证手段：`bash -n force_push_github.sh` + 在**一次性克隆**里 `PUSH=0` 实跑。⚠️ 该脚本会 `update-ref refs/heads/main` 改写本地 main，**切勿**在主仓库直接实跑验证。
 - 配套的仓库侧锚定（同一类隐患，2026-09-23 完成）：`.gitignore` 中所有「运行/权重目录」模式已锚定为 `/logs/ /models/ /models_*/ /gfpgan/ /output/ /temp/ /tmp/`；缓存/工具目录（`__pycache__/`、`.trt_cache/`、`.vscode/`、`.codebuddy/` 等）**有意保持未锚定**，勿再"修正"。
+
+## ⚠️ `git reset --hard` 会删掉**已暂存**的原未跟踪文件
+
+**事实**：`reset --hard` 清理的范围是"**索引/HEAD 里有、目标提交里没有**"的路径，**不看**它当初是不是未跟踪。因此只要在对比过程中跑过一次 `git add -A`（哪怕只是为了 `git diff origin/main <work-tree-tree>`），原本 untracked 的文件就变成**已暂存**，`reset --hard` 会把它从工作区**一并删除**。
+
+**Why**：2026-09-23 对齐远程时实测 —— `memory/memory-write-discipline.md` 本是 `??` 未跟踪（纯 untracked 本可毫发无损地活过 `reset --hard`），但我在先前步骤里用 `git add -A` + `git write-tree` 做过全量对比，它已被暂存 → `reset --hard origin/main` 直接删了它。若没有提前快照，这份只存在于工作区的记忆就永久丢了。
+
+**How to apply**：
+- 执行 `reset --hard` / `checkout -f` / `read-tree --empty` 这类操作前，先**明确"工作区里哪些内容不在任何 commit 里"**（未跟踪 + 未提交修改），把它们 `cp -a` 到工作区外（如 `/tmp/`）后再动手。
+- 想保留 untracked 安全性，对比工作区时优先用 `git diff --no-index` 或 `git stash create`，**避免**用 `git add -A` 把文件"升格"为已暂存。
+- 事后想找回：`git show <old-sha>:<path>` 只能救**曾经被提交过**的；纯工作区内容只能靠预先前置的快照。
 
 ## 密钥红线（2026-09-23 推送被 GitHub Push Protection 拦下）
 

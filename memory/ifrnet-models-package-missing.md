@@ -1,6 +1,6 @@
 ---
-name: IFRNet 报 "No module named 'models'" ⇒ external/IFRNet/models/ 架构源码目录缺失
-description: 工作区重建/恢复后 external/IFRNet/models/（IFRNet.py/IFRNet_S.py/IFRNet_L.py 上游架构源码）可能整体丢失，导致 import ifrnet_video.main 直接失败；含恢复来源、报错形态判据与排查口诀
+name: 报 "No module named 'models'" / 'realesrgan.models' ⇒ 目录型 .gitignore 未锚定把源码锁在仓库外（两个受害者）
+description: 未锚定的 `models/` 规则会匹配任意层级目录，把 external/IFRNet/models/（IFRNet 架构源码）与 external/realesrgan_video/realesrgan/models/（其 __init__.py 即 `from .models import *`，运行期必需）长期锁在仓库外 → 任何全新 clone 都跑不起来；含报错形态判据、恢复来源、[FIX-GITIGNORE-MODELS-ANCHOR] 根因修复与 clone 端到端验证
 type: project
 ---
 

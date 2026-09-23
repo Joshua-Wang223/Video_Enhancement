@@ -1463,6 +1463,142 @@ _HWACCEL_INIT_FAIL_KW = (
 _BENIGN_PROBE_KW = ("avhwdevicecontext", "instance creation failure")
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# [PROBE-CACHE-PERSIST] 帧数探测缓存的断点恢复（落盘 sidecar）
+# ═══════════════════════════════════════════════════════════════════════════
+# 背景：[PROBE-OPT] 预热把分段帧数写入 _PROBE_FRAME_CACHE，但那是纯进程内
+# dict —— 断点重启后全部归零，而 resume 时分段走 split_video_by_time() 的
+# 复用分支（字节/mtime 不变），于是同一批分段每次都要重新全解码一遍。
+#
+# 处理：把缓存落盘到 checkpoint 同目录的 sidecar（由调用方用
+# set_probe_cache_file() 指定路径），启动时加载、命中即免重复解码。缓存 key
+# （路径+size+mtime_ns）已随文件内容变化自动失效，无需额外校验。
+#
+# ⚠️ 只持久化**成功**项：帧数为 None，或来源为 'metadata'（低可信，见
+# [FIX-GATE-STRICT-COUNT]）的条目一律不写 —— 否则一次瞬时失败/元数据捷径会
+# 被永久固化，让 mode='decode' 的严格验收门静默失效。detail
+# （error_lines/rc/hw_failed）同理，只写 rc==0 且无错误行的证据，否则恢复后
+# validate_decodable_video 会错误地跳过解码错误检查。
+# 可用 NVENC_PROBE_CACHE_PERSIST=0 关闭持久化（退回纯进程内行为）。
+_PROBE_CACHE_FILE: Optional[str] = None
+_PROBE_CACHE_VERSION = 1
+_PROBE_CACHE_LOCK = threading.Lock()
+
+
+def _probe_key_to_str(key: tuple) -> str:
+    """缓存 key（tuple）→ JSON 键字符串（用 JSON 数组编码，避免分隔符歧义）。"""
+    return json.dumps(list(key), ensure_ascii=False)
+
+
+def _probe_key_from_str(s: str):
+    """JSON 键字符串 → 缓存 key；格式不符返回 None。"""
+    try:
+        v = json.loads(s)
+        if isinstance(v, list) and len(v) == 3:
+            return (str(v[0]), int(v[1]), int(v[2]))
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
+def _probe_detail_persistable(detail) -> bool:
+    """只有「解码成功且无错误行」的证据才可固化（失败不得跨进程复用）。"""
+    if not isinstance(detail, dict):
+        return False
+    if detail.get("frames") is None:
+        return False
+    if detail.get("rc") not in (0, None):
+        return False
+    return not detail.get("error_lines")
+
+
+def _load_probe_cache() -> None:
+    """从 sidecar 加载帧数/解码证据缓存（版本不符或损坏则忽略）。"""
+    if not _PROBE_CACHE_FILE:
+        return
+    try:
+        with open(_PROBE_CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return
+    if not isinstance(data, dict) or data.get("version") != _PROBE_CACHE_VERSION:
+        return
+    for ks, item in (data.get("frames") or {}).items():
+        k = _probe_key_from_str(ks)
+        if k is None or not isinstance(item, dict):
+            continue
+        val, kind = item.get("value"), item.get("kind")
+        if val is None or kind != "decode":
+            continue                      # 低可信/失败值绝不回流
+        _PROBE_FRAME_CACHE[k] = (int(val), "decode")
+    for ks, detail in (data.get("detail") or {}).items():
+        k = _probe_key_from_str(ks)
+        if k is None or not _probe_detail_persistable(detail):
+            continue
+        _PROBE_DETAIL_CACHE[k] = detail
+
+
+def _persist_probe_cache() -> None:
+    """把成功项原子写回 sidecar（tmp + os.replace，沿用断点的 [P1-FIX-ATOMIC]）。"""
+    if not _PROBE_CACHE_FILE:
+        return
+    if os.environ.get("NVENC_PROBE_CACHE_PERSIST", "1").strip() == "0":
+        return
+    frames = {}
+    for k, entry in list(_PROBE_FRAME_CACHE.items()):
+        try:
+            val, kind = entry
+        except (TypeError, ValueError):
+            continue
+        if val is None or kind != "decode":
+            continue
+        frames[_probe_key_to_str(k)] = {"value": int(val), "kind": "decode"}
+    detail = {}
+    for k, d in list(_PROBE_DETAIL_CACHE.items()):
+        if _probe_detail_persistable(d):
+            detail[_probe_key_to_str(k)] = d
+    payload = {"version": _PROBE_CACHE_VERSION,
+               "frames": frames, "detail": detail}
+    try:
+        with _PROBE_CACHE_LOCK:
+            _tmp = _PROBE_CACHE_FILE + ".tmp"
+            with open(_tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+            os.replace(_tmp, _PROBE_CACHE_FILE)
+    except Exception:
+        pass
+
+
+def set_probe_cache_file(path) -> None:
+    """指定帧数缓存 sidecar 路径并加载已有内容；None 关闭持久化（纯进程内）。
+
+    由 processor 在 _setup_temp_dirs() 之后调用，路径取 checkpoint 同目录
+    （随 temp/{stage}/{prefix}_{video}/ 生命周期清理）。
+
+    切换到**不同** sidecar 时先清空内存缓存：同一进程可能先后处理不同视频/
+    阶段（source 段 → from_segments 段 → ESRGAN 段），否则前一个视频的条目会
+    被写进后一个 sidecar（虽因 key 携带路径而不会误命中，但会污染文件且随
+    视频数无界增长）。
+    """
+    global _PROBE_CACHE_FILE
+    _new = str(path) if path else None
+    if _new != _PROBE_CACHE_FILE:
+        _PROBE_FRAME_CACHE.clear()
+        _PROBE_DETAIL_CACHE.clear()
+    _PROBE_CACHE_FILE = _new
+    if _PROBE_CACHE_FILE:
+        _load_probe_cache()
+
+
+def get_probe_cache_file() -> Optional[str]:
+    return _PROBE_CACHE_FILE
+
+
+def probe_cache_persist_enabled() -> bool:
+    return bool(_PROBE_CACHE_FILE) and \
+        os.environ.get("NVENC_PROBE_CACHE_PERSIST", "1").strip() != "0"
+
+
 def _probe_decode_error(path: Path, ffmpeg: str, use_hwaccel: bool,
                         timeout: int = _PROBE_TIMEOUT_S) -> Optional[Dict[str, object]]:
     """[P0-3] 单次 `-v error -stats -f null` 全量解码，一次产出帧数与错误行。
@@ -1663,6 +1799,10 @@ def count_decoded_video_frames(video_path: Union[str, Path],
 
     if key is not None:
         _PROBE_FRAME_CACHE[key] = (result, result_kind)
+        # [PROBE-CACHE-PERSIST] 只有真解码出来的成功值才落盘（断点重启免重算）；
+        # None / metadata 来源一律不写，避免把失败或低可信值固化进 sidecar。
+        if result is not None and result_kind == "decode":
+            _persist_probe_cache()
 
     _elapsed = _t.perf_counter() - _t0
     _PROBE_STATS["seconds"] += _elapsed
@@ -1958,6 +2098,9 @@ def validate_decodable_video(video_path: Union[str, Path],
             _key = _probe_cache_key(path)
             if _key is not None:
                 _PROBE_DETAIL_CACHE[_key] = detail
+                # [PROBE-CACHE-PERSIST] 成功证据一并落盘，恢复后免第二次解码
+                if _probe_detail_persistable(detail):
+                    _persist_probe_cache()
     if detail is None:
         report["reason"] = "decode_timeout"
         return False, report

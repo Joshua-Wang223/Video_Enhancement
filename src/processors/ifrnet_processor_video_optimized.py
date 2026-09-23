@@ -50,6 +50,7 @@ from video_utils import (
     get_video_duration, format_time, verify_video_integrity,
     split_video_by_time, count_decoded_video_frames, validate_decodable_video,
     count_frames_parallel,   # [PROBE-OPT-P3] 并行预热帧数缓存
+    set_probe_cache_file,    # [PROBE-CACHE-PERSIST] 帧数缓存落盘（断点恢复）
 )
 
 
@@ -240,6 +241,8 @@ class IFRNetProcessor:
         self._current_input_video = input_video
         self._setup_temp_dirs(video_name, "ifrnet_source")
         checkpoint = self._load_checkpoint()
+        # [PROBE-CACHE-PERSIST]/[SCENE-CUT-PERSIST] 启用预扫描缓存落盘（断点恢复）
+        self._configure_prescan_caches()
 
         duration = get_video_duration(input_video)
         if duration is None:
@@ -360,6 +363,8 @@ class IFRNetProcessor:
             '|'.join(_fp_parts).encode()
         ).hexdigest()
         checkpoint = self._load_checkpoint()
+        # [PROBE-CACHE-PERSIST]/[SCENE-CUT-PERSIST] 启用预扫描缓存落盘（断点恢复）
+        self._configure_prescan_caches()
         return self._process_segments(input_segments, checkpoint)
 
     def process_video(self, input_video: str, output_video: str) -> bool:
@@ -468,6 +473,27 @@ class IFRNetProcessor:
 
         self.segment_dir.mkdir(parents=True, exist_ok=True)
         self.processed_dir.mkdir(parents=True, exist_ok=True)
+
+    def _configure_prescan_caches(self):
+        """[PROBE-CACHE-PERSIST]/[SCENE-CUT-PERSIST] 把两个预扫描缓存落盘到
+        checkpoint 同目录的 sidecar，让断点重启直接命中、不再重算。
+
+        分段文件在 resume 时走 split_video_by_time() 复用分支，字节与 mtime
+        不变 → 两个缓存的 key（path+size+mtime_ns）跨进程稳定，落盘安全。
+        任何异常都不影响主流程：未配置即退回原「纯进程内」行为。
+        """
+        if not getattr(self, "checkpoint_file", None):
+            return
+        _cache_dir = os.path.dirname(str(self.checkpoint_file))
+        try:
+            set_probe_cache_file(os.path.join(_cache_dir, "probe_cache.json"))
+        except Exception as e:
+            print(f"   ⚠️  [PROBE-OPT] 帧数缓存 sidecar 未启用: {e}", flush=True)
+        try:
+            from ifrnet_video.pipeline import set_scene_cut_cache_file
+            set_scene_cut_cache_file(os.path.join(_cache_dir, "scene_cuts.json"))
+        except Exception as e:
+            print(f"   ⚠️  [P3-2] 切镜缓存 sidecar 未启用: {e}", flush=True)
 
     def _load_checkpoint(self) -> dict:
         """加载断点信息；文件不存在/损坏/配置不兼容时返回空断点。"""

@@ -1008,17 +1008,13 @@ def detect_scene_cut_pairs(video_path, threshold=None, timeout=1800):
     import tempfile
 
     # [P3-2] 命中预扫描缓存则直接返回，避免段循环里再付一次全量软件解码。
-    # 由 prescan_scene_cuts() 在段循环前并行填充（见其 docstring）。
-    _ck = _scene_cut_cache_key(video_path)
+    # 由 prescan_scene_cuts() 在段循环前并行填充（见其 docstring）；
+    # [SCENE-CUT-PERSIST] 也可来自已落盘的 sidecar（断点重启直接命中）。
+    # 阈值必须先解析再算 key —— 阈值是 key 的一部分，否则改环境变量会读到旧值。
+    threshold = _resolve_scene_cut_threshold(threshold)
+    _ck = _scene_cut_cache_key(video_path, threshold)
     if _ck in _SCENE_CUT_CACHE:
         return set(_SCENE_CUT_CACHE[_ck])
-
-    if threshold is None:
-        try:
-            threshold = float(os.environ.get('IFRNET_SCENE_CUT_THRESHOLD',
-                                             _SCENE_CUT_THRESHOLD_DEFAULT))
-        except Exception:
-            threshold = _SCENE_CUT_THRESHOLD_DEFAULT
 
     ffprobe = shutil.which('ffprobe')
     ffmpeg = shutil.which('ffmpeg')
@@ -1058,14 +1054,15 @@ def detect_scene_cut_pairs(video_path, threshold=None, timeout=1800):
             c = int(round(float(m.group(1)) * fps))   # 切镜后的第一帧
             if c >= 1:
                 pairs.add(c - 1)                       # 对应 pair (src[c-1], src[c])
-        _scene_cut_cache_put(video_path, pairs)
+        _scene_cut_cache_put(video_path, pairs, threshold=threshold, ok=True)
+        _persist_scene_cut_cache()
         return pairs
     except Exception:
         # 检测失败绝不能中断主流程：退化为"不做替换"，与修复前行为一致
         return set()
 
 
-# ── [P3-2] 切镜预扫描：并行预算 + 进程内缓存 ────────────────────────────────
+# ── [P3-2] 切镜预扫描：并行预算 + 进程内缓存 + [SCENE-CUT-PERSIST] 落盘 ──────
 # 背景：detect_scene_cut_pairs() 是一次**完整软件解码**（scene 滤镜需要像素），
 # 而它原本在 _process_segment 里逐段串行执行，位于 reader 之前 —— 于是每段
 # 都被解码两遍（先 CPU 扫切镜、再 reader 解码取帧），且两遍都在关键路径上。
@@ -1075,20 +1072,134 @@ def detect_scene_cut_pairs(video_path, threshold=None, timeout=1800):
 # 处理：把「全部段落的切镜检测」提到段循环之前，用线程池并行跑完并缓存；
 # 段循环内 detect_scene_cut_pairs() 直接命中缓存，不再解码。
 # 不在段处理期间并行（用户选择：不引入跨段并发），段循环本身保持串行。
+#
+# [SCENE-CUT-PERSIST] 缓存除进程内 dict 外另落盘为 checkpoint 同目录的
+# sidecar（调用方用 set_scene_cut_cache_file() 指定）。分段在 resume 时走
+# split_video_by_time() 复用分支（字节/mtime 不变），key 稳定 → 跨进程可复用。
 _SCENE_CUT_CACHE: Dict[str, set] = {}
+# 记录「确实扫描成功」的 key（含真无切镜的空集）。ffmpeg 缺失/超时写入的空集
+# **不进**此集合 —— 否则一次瞬时失败会被固化进 sidecar，之后所有运行都静默
+# 跳过插值（比不落盘更危险）。
+_SCENE_CUT_CACHE_OK: set = set()
+_SCENE_CUT_CACHE_FILE: Optional[str] = None
+_SCENE_CUT_CACHE_VERSION = 1
+# 判据/解析逻辑变更时 +1 → 旧 sidecar 整体失效（阈值另由 key 携带）。
+_SCENE_CUT_CRITERIA_VERSION = 1
 
 
-def _scene_cut_cache_key(video_path) -> str:
-    """缓存 key：绝对路径 + 大小 + mtime_ns（任一变化即视为新文件）。"""
+def _resolve_scene_cut_threshold(threshold=None) -> float:
+    """阈值唯一真源：显式参数 > IFRNET_SCENE_CUT_THRESHOLD > 默认值。
+
+    原实现在 detect_scene_cut_pairs / _scan_scene_cuts 里各解析一次，且
+    detect 是在**查缓存之后**才解析 —— 缓存 key 不含阈值时改环境变量会读到
+    旧结果。现统一为单一入口，供 key 计算与扫描共用。
+    """
+    if threshold is not None:
+        try:
+            return float(threshold)
+        except (TypeError, ValueError):
+            return _SCENE_CUT_THRESHOLD_DEFAULT
+    try:
+        return float(os.environ.get('IFRNET_SCENE_CUT_THRESHOLD',
+                                    _SCENE_CUT_THRESHOLD_DEFAULT))
+    except (TypeError, ValueError):
+        return _SCENE_CUT_THRESHOLD_DEFAULT
+
+
+def _scene_cut_cache_key(video_path, threshold=None) -> str:
+    """缓存 key：绝对路径 + 大小 + mtime_ns + 阈值 + 判据版本。
+
+    阈值必须并入 key：进程内缓存生命周期短时看不出问题，但 sidecar 落盘后
+    改 IFRNET_SCENE_CUT_THRESHOLD 会读到按旧阈值算出的结果。
+    """
     try:
         st = os.stat(str(video_path))
-        return '%s|%d|%d' % (os.path.abspath(str(video_path)), st.st_size, st.st_mtime_ns)
+        base = '%s|%d|%d' % (os.path.abspath(str(video_path)),
+                             st.st_size, st.st_mtime_ns)
     except OSError:
-        return os.path.abspath(str(video_path))
+        base = os.path.abspath(str(video_path))
+    return '%s|t=%.6g|v=%d' % (base, _resolve_scene_cut_threshold(threshold),
+                               _SCENE_CUT_CRITERIA_VERSION)
 
 
-def _scene_cut_cache_put(video_path, pairs) -> None:
-    _SCENE_CUT_CACHE[_scene_cut_cache_key(video_path)] = set(pairs)
+def _scene_cut_cache_put(video_path, pairs, threshold=None, ok=True) -> None:
+    """写入进程内缓存；``ok`` 标记该结果是否为「真扫描成功」（决定能否落盘）。"""
+    key = _scene_cut_cache_key(video_path, threshold)
+    _SCENE_CUT_CACHE[key] = set(pairs)
+    if ok:
+        _SCENE_CUT_CACHE_OK.add(key)
+    else:
+        _SCENE_CUT_CACHE_OK.discard(key)
+
+
+# ── [SCENE-CUT-PERSIST] sidecar 读写 ────────────────────────────────────────
+def set_scene_cut_cache_file(path) -> None:
+    """指定切镜缓存 sidecar 路径并加载已有内容；None 关闭持久化（纯进程内）。
+
+    切换到**不同** sidecar 时先清空内存缓存，避免同一进程内前一个视频/阶段的
+    条目被写进后一个 sidecar（key 携带路径故不会误命中，但会污染文件）。
+    """
+    global _SCENE_CUT_CACHE_FILE
+    _new = str(path) if path else None
+    if _new != _SCENE_CUT_CACHE_FILE:
+        _SCENE_CUT_CACHE.clear()
+        _SCENE_CUT_CACHE_OK.clear()
+    _SCENE_CUT_CACHE_FILE = _new
+    if _SCENE_CUT_CACHE_FILE:
+        _load_scene_cut_cache()
+
+
+def get_scene_cut_cache_file():
+    return _SCENE_CUT_CACHE_FILE
+
+
+def _load_scene_cut_cache() -> None:
+    """从 sidecar 加载切镜集合（版本不符或损坏则忽略）。文件里只含成功项。"""
+    if not _SCENE_CUT_CACHE_FILE:
+        return
+    try:
+        with open(_SCENE_CUT_CACHE_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:
+        return
+    if not isinstance(data, dict) or \
+            data.get('version') != _SCENE_CUT_CACHE_VERSION:
+        return
+    for key, pairs in (data.get('entries') or {}).items():
+        if not isinstance(key, str) or not isinstance(pairs, list):
+            continue
+        try:
+            vals = {int(x) for x in pairs}
+        except (TypeError, ValueError):
+            continue
+        _SCENE_CUT_CACHE[key] = vals
+        _SCENE_CUT_CACHE_OK.add(key)     # 侧车只写成功项，加载即可信
+    if _SCENE_CUT_CACHE:
+        print(f'   ♻️  [P3-2] 切镜缓存已从 sidecar 载入: '
+              f'{len(_SCENE_CUT_CACHE)} 段（免重复解码）', flush=True)
+
+
+def _persist_scene_cut_cache() -> None:
+    """把「扫描成功」的切镜集合原子写回 sidecar（tmp + os.replace）。"""
+    if not _SCENE_CUT_CACHE_FILE:
+        return
+    if os.environ.get('IFRNET_SCENE_CUT_CACHE_PERSIST', '1') in \
+            ('0', 'false', 'False'):
+        return
+    entries = {}
+    for key in _SCENE_CUT_CACHE_OK:                 # 只写成功项，失败不固化
+        if key in _SCENE_CUT_CACHE:
+            entries[key] = sorted(int(x) for x in _SCENE_CUT_CACHE[key])
+    payload = {'version': _SCENE_CUT_CACHE_VERSION,
+               'criteria': _SCENE_CUT_CRITERIA_VERSION,
+               'entries': entries}
+    try:
+        _tmp = _SCENE_CUT_CACHE_FILE + '.tmp'
+        with open(_tmp, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(_tmp, _SCENE_CUT_CACHE_FILE)
+    except Exception:
+        pass
 
 
 def prescan_scene_cuts(paths, workers=None, threads=None, threshold=None,
@@ -1100,7 +1211,8 @@ def prescan_scene_cuts(paths, workers=None, threads=None, threshold=None,
     ffmpeg 各自开满自动线程造成 CPU 过订阅。
 
     失败（含 ffmpeg 缺失）时对应段缓存为空集，与 detect_scene_cut_pairs 的
-    「检测失败退化为不做替换」语义一致，绝不中断主流程。
+    「检测失败退化为不做替换」语义一致，绝不中断主流程；该空集带 ok=False
+    标记，不会被 [SCENE-CUT-PERSIST] 固化进 sidecar。
     """
     paths = [str(p) for p in (paths or [])]
     if not paths:
@@ -1108,6 +1220,7 @@ def prescan_scene_cuts(paths, workers=None, threads=None, threshold=None,
     if os.environ.get('IFRNET_SCENE_CUT_PRESCAN', '1') in ('0', 'false', 'False'):
         # 关闭预扫描：退回原「段循环内惰性检测」行为（每段多付一次串行解码）
         return 0
+    threshold = _resolve_scene_cut_threshold(threshold)
     try:
         cpu = len(os.sched_getaffinity(0))
     except (AttributeError, OSError):
@@ -1118,8 +1231,9 @@ def prescan_scene_cuts(paths, workers=None, threads=None, threshold=None,
     if threads is None:
         threads = max(1, cpu // workers)
 
-    # 已在缓存中的段跳过（重复调用/断点续跑场景）
-    todo = [p for p in paths if _scene_cut_cache_key(p) not in _SCENE_CUT_CACHE]
+    # 已在缓存中的段跳过（重复调用 / 断点续跑 / sidecar 已载入）
+    todo = [p for p in paths
+            if _scene_cut_cache_key(p, threshold) not in _SCENE_CUT_CACHE]
     if not todo:
         return len(paths)
     if not quiet:
@@ -1131,10 +1245,14 @@ def prescan_scene_cuts(paths, workers=None, threads=None, threshold=None,
             # threads 通过环境变量无法直接传给 detect_scene_cut_pairs，
             # 这里内联同一 ffmpeg 调用并显式钳线程数（保持与主函数同一判据）。
             pairs = _scan_scene_cuts(p, threshold=threshold, threads=threads)
-            _scene_cut_cache_put(p, pairs)
+            if pairs is None:
+                # ffmpeg/ffprobe 不可用：空集仅供本进程退化使用，不落盘
+                _scene_cut_cache_put(p, set(), threshold=threshold, ok=False)
+                return p, set()
+            _scene_cut_cache_put(p, pairs, threshold=threshold, ok=True)
             return p, pairs
         except Exception:
-            _scene_cut_cache_put(p, set())
+            _scene_cut_cache_put(p, set(), threshold=threshold, ok=False)
             return p, set()
 
     done = 0
@@ -1148,27 +1266,29 @@ def prescan_scene_cuts(paths, workers=None, threads=None, threshold=None,
                           flush=True)
     except Exception as e:
         print(f'⚠️  [P3-2] 切镜预扫描异常（不影响主流程）: {e}', flush=True)
+    # 落盘本次新增的成功结果（供断点重启直接命中）
+    _persist_scene_cut_cache()
     return done
 
 
 def _scan_scene_cuts(video_path, threshold=None, threads=1, timeout=1800):
-    """切镜检测的纯计算部分（与 detect_scene_cut_pairs 同判据，额外钳线程数）。"""
+    """切镜检测的纯计算部分（与 detect_scene_cut_pairs 同判据，额外钳线程数）。
+
+    Returns:
+        set[int] —— 扫描成功（可能是真空集）；
+        None     —— ffmpeg/ffprobe 不可用，未产出可信结果（调用方不得落盘）。
+    """
     import re
     import shutil
     import subprocess
     import tempfile
 
-    if threshold is None:
-        try:
-            threshold = float(os.environ.get('IFRNET_SCENE_CUT_THRESHOLD',
-                                             _SCENE_CUT_THRESHOLD_DEFAULT))
-        except Exception:
-            threshold = _SCENE_CUT_THRESHOLD_DEFAULT
+    threshold = _resolve_scene_cut_threshold(threshold)
 
     ffprobe = shutil.which('ffprobe')
     ffmpeg = shutil.which('ffmpeg')
     if not ffprobe or not ffmpeg:
-        return set()
+        return None
     r = subprocess.run(
         [ffprobe, '-v', 'error', '-select_streams', 'v:0',
          '-show_entries', 'stream=r_frame_rate', '-of', 'csv=p=0', str(video_path)],
