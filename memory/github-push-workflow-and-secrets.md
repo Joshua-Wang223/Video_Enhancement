@@ -1,6 +1,6 @@
 ---
 name: GitHub 推送流程（SSH-over-443）与「密钥红线」
-description: force_push_github.sh 的正确调用方式、治理文件(.gitignore/.gitattributes)以 origin 为准的 [FIX-IGNORE-CANONICAL] 约定、推送后一律复核 ls-remote 的铁律与「怎么读推送日志」（0 报错≠推送成功、dry-run 行与真实行同格式）、models.del 类改名残留绕过 .gitignore 与哨兵的缺口、以及 config/cc-switch-*.md 含真实 API Key 已被 .gitignore 排除（GitHub 只认 OpenRouter，DeepSeek 无检测器）
+description: force_push_github.sh 的正确调用方式、治理文件(.gitignore/.gitattributes)以 origin 为准的 [FIX-IGNORE-CANONICAL] 约定、tar_excludes.txt 的 `./` 锚定语法（`/models` 与裸 `models` 都错）、推送后一律复核 ls-remote 的铁律与「怎么读推送日志」（0 报错≠推送成功、dry-run 行与真实行同格式）、models.del 类改名残留绕过 .gitignore 与哨兵的缺口、以及 config/cc-switch-*.md 含真实 API Key 已被 .gitignore 排除（GitHub 只认 OpenRouter，DeepSeek 无检测器）
 type: project
 ---
 
@@ -98,6 +98,25 @@ clone 成功本身即证明**对象完整、推送未被截断**（`ls-remote` �
 - 执行 `reset --hard` / `checkout -f` / `read-tree --empty` 这类操作前，先**明确"工作区里哪些内容不在任何 commit 里"**（未跟踪 + 未提交修改），把它们 `cp -a` 到工作区外（如 `/tmp/`）后再动手。
 - 想保留 untracked 安全性，对比工作区时优先用 `git diff --no-index` 或 `git stash create`，**避免**用 `git add -A` 把文件"升格"为已暂存。
 - 事后想找回：`git show <old-sha>:<path>` 只能救**曾经被提交过**的；纯工作区内容只能靠预先前置的快照。
+
+### `tar_excludes.txt` 的锚定语法（2026-09-23 实测纠正）
+
+该文件**不被 `force_push_github.sh` 使用**（脚本靠 `.gitignore` + `git add -A` 建树），只用于「把仓库打成 tar 快照交给其他环境」。它原先的模式**全未锚定**，`models` 匹配任意层级 → 把 `external/IFRNet/models/`、`external/*/realesrgan/models/` 等**架构源码**一起排掉（历史事故根因：用快照恢复的环境缺这些目录，IFRNet/ESRGAN 起不来）。
+
+**正确写法是 `./` 前缀**（GNU tar 实测，成员名以 `./` 开头时）：
+
+| 模式 | 效果 |
+|---|---|
+| `./models` | 只排根级，保留 `./external/IFRNet/models/` ✅ |
+| `/models` | **什么都匹配不到** → 权重全打进快照（比不锚定更危险）❌ |
+| `models`（裸） | 任意层级命中，排掉源码 ❌ |
+| `--anchored models` | 同样匹配不到 ❌ |
+
+前置条件：必须 `cd <仓库根> && tar ... --exclude-from=tar_excludes.txt .`（成员 `./X`）。用裸目录名或 `-C 上级 <目录名>`（成员 `Video_Enhancement/...`）时 `./` 锚定条目**全部失效、权重会全进快照**——文件头已写明约定与打包后自检命令。
+
+⇒ 更稳的替代：`git archive --format=tar.gz -o snap.tgz HEAD`（只含已跟踪文件，天然无权重/缓存/转储）。
+
+**⚠️ 反复被覆盖**：2026-09-23 实测并行会话的 force_push 在 `[FIX-IGNORE-CANONICAL]` 落地后**仍会把 `tar_excludes.txt` 退回旧版**（该保护目前只覆盖 `.gitignore`/`.gitattributes`）。根治需把 `tar_excludes.txt` 也加入脚本第 3 节的治理文件清单；**但不要把 `force_push_github.sh` 自身加进去**——脚本运行中被改写会让 bash 重读、行为未定义。
 
 ## 密钥红线（2026-09-23 推送被 GitHub Push Protection 拦下）
 
