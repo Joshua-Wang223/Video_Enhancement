@@ -36,6 +36,16 @@ if _script_dir not in sys.path:
 # if os.path.isdir(_realesrgan_path) and _realesrgan_path not in sys.path:
 #     sys.path.insert(0, _realesrgan_path)
 
+# ── 质量参数统一换算（src/utils/quality_map.py → convert_crf.py）─────────────
+# 换算表在项目里只能有一份。realesrgan_video 是独立包，这里显式把 src/utils
+# 挂进 sys.path 复用它，而不是在本包内另存一份 QUALITY_MAP（否则两处刻度漂移）。
+_UTILS_DIR = os.path.normpath(os.path.join(
+    _script_dir, os.pardir, os.pardir, 'src', 'utils'))
+if os.path.isdir(_UTILS_DIR) and _UTILS_DIR not in sys.path:
+    sys.path.insert(0, _UTILS_DIR)
+
+from quality_map import resolve_quality, to_constqp_qp                   # noqa: E402
+
 from basicsr.utils.download_util import load_file_from_url
 from realesrgan import RealESRGANer
 from realesrgan_video.config import MODEL_CONFIG, models_RealESRGAN, models_GFPGAN, gfpgan_weights_dir
@@ -714,11 +724,15 @@ def create_video_enhancer(args):
     return enhancer
 
 
-def run_pipeline_for_video(enhancer, input_video, output_video):
+def run_pipeline_for_video(enhancer, input_video, output_video, segment_idx: int = 0):
     """
     使用预初始化的 enhancer 处理单个视频文件。
     负责创建 reader、writer、pipeline 并运行。
     处理结束后会关闭这些一次性对象，但不会关闭 enhancer 中的重型组件。
+
+    Args:
+        segment_idx: 当前分段序号（**0-based**）。用于 [FIX-ESRGAN-HEVC-SEGMENT-REUSE]
+            判定是否允许跨段复用 NVENC 编码器。默认 0（单段场景，行为不变）。
     """
     upsampler = enhancer['upsampler']
     face_enhancer = enhancer['face_enhancer']
@@ -741,6 +755,22 @@ def run_pipeline_for_video(enhancer, input_video, output_video):
     args.codec = HardwareCapability.best_encoder(_codec, hw_profile=args._hw_profile)
     if 'nvenc' in args.codec:
         print(f'\n[GPU0] NVENC 编码已激活: {args.codec}', flush=True)
+
+    # [QUALITY-UNIFY] 编码器已定 → 把质量参数换算到该编码器的量纲。
+    # 必须在 best_encoder 之后：codec 被自动升级（libx264 → h264_nvenc）时，
+    # 用户给的字面量按其原量纲等效换算，而不是被当作同刻度数值静默下发。
+    # 同时覆盖 SDK Level 1 直通（args.crf → _sdk_qp）与 FFmpegWriter 两条路径。
+    _q_param, _q_val, _q_extra, _q_note = resolve_quality(
+        args.codec,
+        crf=None if getattr(args, 'cq', None) is not None else getattr(args, 'crf', 23),
+        cq=getattr(args, 'cq', None),
+        crf_ref=getattr(args, 'crf_ref', None),
+        cq_ref=getattr(args, 'cq_ref', None),
+    )
+    if _q_val != getattr(args, 'crf', 23) or args.codec != str(_codec).lower():
+        print(f'[GPU0] 质量参数解析: {_codec} → {args.codec}，'
+              f'{_q_note} → {_q_param} {_q_val}', flush=True)
+    args.crf = _q_val
 
     vlog("[优化架构] 阶段 3: 创建视频读写器...")
     reader = FFmpegReader(
@@ -771,6 +801,19 @@ def run_pipeline_for_video(enhancer, input_video, output_video):
                   f'（消除高分辨率 NVENC drain 背压）', flush=True)
             args.rate_mode = 'constqp'
             args.lookahead_depth = 0
+            # [QUALITY-UNIFY] args.crf 始终保留在 CQ/targetQuality 轴上；改为 CONSTQP
+            # 后由两条下发路径（SDK Level 1 / FFmpegWriter）各自用 to_constqp_qp()
+            # 换算成真实 QP 并打印 -qp，避免在这里改值后被下游二次换算。
+
+    # [FIX-RATEMODE] CONSTQP 硬件静默禁用 LA：决策层显式清零，保证 [GPU0] 日志与
+    # encoder cache key 不携带无意义的 LA 值（NVENCEncoder 内部也会清零，此处与
+    # ifrnet 侧 _setup_level1_nvenc 的同类处理对齐）。覆盖显式 --rate-mode-esrgan
+    # constqp 与上面 ≥2160p 自动切换两种情况。
+    if (str(getattr(args, 'rate_mode', '')).lower() == 'constqp'
+            and int(getattr(args, 'lookahead_depth', 0) or 0) != 0):
+        print(f'[FIX-RATEMODE] rate_mode=constqp → lookahead_depth '
+              f'{args.lookahead_depth}→0（硬件静默禁用 LA）', flush=True)
+        args.lookahead_depth = 0
     # [SDK-NVENC] 编码路径: SDK Level 1 默认优先 → 失败自动回退 FFmpeg CLI
     # encoder 缓存在 enhancer['_sdk_nvenc_encoder'] 中跨段复用，
     # flush_and_join 在段末排空 LA FIFO，下一段从干净状态启动。
@@ -784,6 +827,12 @@ def run_pipeline_for_video(enhancer, input_video, output_video):
         try:
             _sdk_qp = getattr(args, 'crf', 23)
             _sdk_rate = getattr(args, 'rate_mode', 'vbr_hq')
+            # [QUALITY-UNIFY] CONSTQP 与 CQ/targetQuality 是两条刻度：args.crf 始终
+            # 位于生效编码器的 CQ 轴上（targetQuality/qvbrQuality 刻度），切到
+            # CONSTQP 后 NVENC 会把同一数值当作真实 QP → 画质偏松。按 constqp 轴
+            # 换算回真实 QP（qp=0 的无损语义保持不变）。
+            if _sdk_rate == 'constqp' and _sdk_qp > 0:
+                _sdk_qp = to_constqp_qp(args.codec, _sdk_qp)
             _sdk_la = getattr(args, 'lookahead_depth',
                               _NVENC_LOOKAHEAD_VBR if _sdk_qp > 0 else 0)
             _sdk_preset = getattr(args, 'encode_preset', 'medium')
@@ -818,7 +867,41 @@ def run_pipeline_for_video(enhancer, input_video, output_video):
                 _key = (out_w, out_h, reader.fps, _nvenc_preset,
                         _sdk_qp, _sdk_rate, _sdk_la, _sdk_codec)
                 _cached_key = enhancer.get('_sdk_nvenc_key')
-                if _cached_key == _key:
+
+                # [FIX-ESRGAN-HEVC-SEGMENT-REUSE] HEVC/AV1 默认禁止跨段复用编码器，
+                # 与 IFRNet 侧 [P0-FIX-HEVC-SEGMENT-HANG] 完全对齐。
+                #
+                # 根因（R1 实测，2026-09-04）：ESRGAN 侧原本无条件复用，配合
+                # nvenc_sdk.py 的 [FIX-SKIP-REOPEN]（reopen() 已删除、会话跳过重建）
+                # 会导致第 2 段起的码流缺少新的 SPS/PPS，实测失败链：
+                #   [FIX-SKIP-REOPEN] 跨段复用，会话跳过重建 (gen=1, frame_idx=9110)
+                #   → [FFmpegMuxer ERR] PPS id out of range: 0   (重复 223 次)
+                #   → [mp4] dimensions not set / Could not write header
+                #   → 写入帧错误: FFmpeg muxer stdin pipe broken
+                #   → 清理阶段 _close_driver_session 内 DestroyEncoder 触发 SIGSEGV (exit=139)
+                #
+                # 开关：ESRGAN_NVENC_CROSS_SEGMENT_REUSE=1 可放行（默认 '0' = 禁用，
+                # 与 IFRNET_NVENC_CROSS_SEGMENT_REUSE 的默认口径一致）。
+                _reuse_env = os.environ.get('ESRGAN_NVENC_CROSS_SEGMENT_REUSE', '0')
+                _force_new = (_sdk_codec in ("hevc", "av1")
+                              and _reuse_env != '1'
+                              and segment_idx > 0)
+                if _force_new:
+                    print(f'[NVENCEncoder] 新建编码器（HEVC/AV1 跨段不复用，'
+                          f'规避 SPS/PPS 未重置导致的 "PPS id out of range"）'
+                          f' ({out_w}x{out_h}@{reader.fps:.1f}fps codec={_sdk_codec})',
+                          flush=True)
+                    try:
+                        _encoder.close()
+                    except Exception:
+                        pass
+                    _encoder = NVENCEncoder(out_w, out_h, reader.fps,
+                                             preset=_nvenc_preset, qp=_sdk_qp,
+                                             rate_mode=_sdk_rate,
+                                             la_depth=_sdk_la,
+                                             codec=_sdk_codec)
+                    enhancer['_sdk_nvenc_encoder'] = _encoder
+                elif _cached_key == _key:
                     print(f'[NVENCEncoder] 复用编码器 ({out_w}x{out_h}@{reader.fps:.1f}fps '
                           f'rc={_encoder._rate_mode})', flush=True)
                 else:
@@ -1051,7 +1134,13 @@ def main():
     # 编码参数
     parser.add_argument('--codec', type=str, default='libx264',
                         help='偏好编码器（libx264/libx265/h264_nvenc/hevc_nvenc 等，有 NVENC 时自动升级）')
-    parser.add_argument('--crf', type=int, default=23, help='编码质量')
+    parser.add_argument('--crf', type=int, default=23, help='编码质量（软编字面量，原样下发）')
+    parser.add_argument('--cq', type=int, default=None,
+                        help='硬编字面量 CQ（0~51，原样下发）')
+    parser.add_argument('--crf-ref', type=int, default=None,
+                        help='以 libx264 CRF 为统一基准（0~51），按等效表换算到实际编码器')
+    parser.add_argument('--cq-ref', type=int, default=None,
+                        help='以 h264_nvenc CQ 为统一基准（0~51），按等效表换算到实际编码器')
     parser.add_argument('--encode-preset', type=str, default='medium',
                         choices=['ultrafast', 'superfast', 'veryfast', 'faster', 'fast',
                                  'medium', 'slow', 'slower', 'veryslow'],
@@ -1089,4 +1178,11 @@ def main():
 if __name__ == "__main__":
     import warnings
     warnings.filterwarnings('ignore')
+    # [FIX-STDIN-TTOU] 直接以本包为入口时同样加固 fd0（后台进程组 + tty stdin
+    # 会让子 ffmpeg 被 SIGTTOU 停住）。经 src/ 下处理器驱动时由上层入口负责。
+    try:
+        from stdin_hardening import detach_background_stdin
+        detach_background_stdin()
+    except Exception:
+        pass
     main()

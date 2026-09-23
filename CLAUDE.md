@@ -21,6 +21,7 @@ python src/main_video_optimized.py -c config/default_config.json -i input.mp4 -o
 Two processing modes:
 - `interpolate_then_upscale` (default) — interpolate at original resolution first, then upscale
 - `upscale_then_interpolate` — upscale first, then interpolate on higher-res frames
+  - **auto-protect (2026-08-29)**: if post-upscale pixels exceed `processing.max_upscale_then_interpolate_pixels` (default `3670016` ≈ 2560×1440; `0` disables), `_select_optimal_mode()` in `src/main_video_optimized.py` auto-switches to `interpolate_then_upscale` with a strong warning (called both in the config summary and in `_process_single`). Rationale: interpolating at 1440p on T4-class GPUs starves the reader queue → early EOF / dropped frames (bs=12: 58.3% missing). See [mode-auto-protect-upscale-then-interpolate](memory/mode-auto-protect-upscale-then-interpolate.md).
 
 To skip a stage: `--skip-interpolate` or `--skip-upscale`. Common flags: `--use-tensorrt-ifrnet`, `--use-tensorrt-esrgan`, `--face-enhance`, `--batch-mode`, `--dry-run`.
 
@@ -45,7 +46,9 @@ The "direct segment passthrough" optimization skips the intermediate merge+re-sp
 
 **`config/default_config.json`** holds all defaults. When the JSON and README/code comments disagree, the JSON wins. `src/utils/config_manager.py` (`Config` class) loads JSON, derives paths from `base_dir` upward, and applies CLI overrides.
 
-Key config sections: `processing` (mode, factors, segment duration), `paths` (auto-derived from `base_dir`), `models.ifrnet`, `models.realesrgan`, `output`, `temp_files`, `logging`.
+Key config sections: `processing` (mode, factors, segment duration, `max_upscale_then_interpolate_pixels` auto-protect threshold), `paths` (auto-derived from `base_dir`), `models.ifrnet`, `models.realesrgan`, `output`, `temp_files`, `logging`.
+
+Model paths are derived from `model_name`: `config_manager` builds `models_IFRNet/checkpoints/{model_name}.pth`, and `_derive_model_paths()` re-derives after CLI overrides (so `--ifrnet-model` actually takes effect; `--ifrnet-model-path` wins).
 
 The JSON uses `"// key"` convention for documentation comments — these keys are ignored at runtime.
 
@@ -89,6 +92,40 @@ The multi-GPU variant `process_video_v6_3_3.py` (historical) has equivalent code
 | 原始数据速查 | [v6.4.x-benchmark-raw-data.md](memory/v6.4.x-benchmark-raw-data.md) | Batch+Individual 全部数据表、帧计数诊断 |
 | T2 估算修正 | [t2-static-estimation-undershoot.md](memory/t2-static-estimation-undershoot.md) | _T2_VAR_MS_TRT 25ms→335ms 修复 |
 | bitrate 退化修复 | [v6.4.5-bitrate-unconstrained-degradation.md](memory/v6.4.5-bitrate-unconstrained-degradation.md) | avgBitrate=0 导致 GPU 65% 空闲 |
+| 无 GPU 环境下的工作模式 | [feedback_no_gpu_work_mode.md](memory/feedback_no_gpu_work_mode.md) | 无 GPU 时先做纯 CPU 修复，另列需 GPU 验证清单；运行时语义改动只给方案 |
+| 容器 GPU 时有时无的判据 | [project_gpu_container_flaky.md](memory/project_gpu_container_flaky.md) | 容器重建后可能未挂载 GPU 的判定命令与特征 |
+
+### 记忆文件镜像同步（强制规则，2026-09-08 用户确认）
+
+`memory/` 有两处镜像，**编辑任何一侧后必须立即同步另一侧，不得只改一侧**：
+
+| | 路径 |
+|---|---|
+| A（canonical） | `/workspace/Video_Enhancement/memory` |
+| B（会话侧） | `/root/.codebuddy/projects/workspace-Video_Enhancement/memory` |
+
+```bash
+A=/workspace/Video_Enhancement/memory
+B=/root/.codebuddy/projects/workspace-Video_Enhancement/memory
+cp -a "$A/." "$B/"     # A → B（同名覆盖；反向同理，以最后改动的一侧为准）
+diff -r "$A" "$B" && echo "✅ 两处一致"
+```
+
+- 每次新建/修改 `memory/` 下任何文件（含 `MEMORY.md` 索引条目）后都要同步。
+- 同步用 `cp -a` 同名覆盖；同步后必须用 `diff -r` 复核两侧文件集合与内容一致。
+- ⚠️ **`cp -a` 不传导删除**：在一侧删除/改名文件后，对侧的同名残留不会被清掉。
+  凡有删除或改名，必须用 `rsync -a --delete "$A/" "$B/"`（或两侧分别删除）后再次复核。
+  - `--delete` 是破坏性操作：**先用 `rsync -a --delete --dry-run "$A/" "$B/"` 预览**，
+    确认待删清单无误后再去掉 `--dry-run` 执行。
+  - ⚠️ **本容器实测未安装 `rsync`**（2026-09-08 核实）。改用无依赖方式列出差异文件，
+    人工确认后再删（只列不删，安全）：
+    `comm -13 <(cd "$A" && ls -1|sort) <(cd "$B" && ls -1|sort)`  # 仅 B 有
+    `comm -23 <(cd "$A" && ls -1|sort) <(cd "$B" && ls -1|sort)`  # 仅 A 有
+- 写中文必须用支持 UTF-8 的直写工具，**禁止**经 shell 管道/heredoc 写中文
+  （历史事故：中文被转码成字面 `?`，不可逆）。写后抽检：中文相邻的 `0x3F` 应为 0。
+- 历史镜像（Windows 开发机，已失效，仅存档）：
+  `D:\Workspace_Python\Video_Enhancement\Video_Enhancement\memory`、
+  `C:\Users\Administrator\.claude\projects\D--Workspace-Python-Video-Enhancement-Video-Enhancement\memory`
 
 ## Real-ESRGAN backend (v6.4, realesrgan_video)
 
@@ -239,6 +276,7 @@ CONSTQP 模式下 Tier 1-B/A 可 100% 恢复空帧，验证见 [pipe4-la8-tier-d
 | 灰色输出 | R=G=B | height 设 NV12 total height 或 D2H 缺 synchronize |
 | CRF 不生效 | 码率无区分 | targetQuality 写到错误 offset（3 轮迭代才修复） |
 | 文件膨胀 3.3x | 码率失控 | `ctypes.Structure` 缺失 rcParams 字段 → 驱动用默认码率 |
+| HEVC 死锁（中途/段尾） | 编码线程卡在 LockBitstream，持 `_lock` → 后续段冻结 1%/GPU 0% | HEVC 空槽/未就绪槽 LockBitstream 永久阻塞（h264 返回 SUCCESS+size=0，HEVC 挂死）→ counted 限界 + EOS pending-only |
 
 ### 关键经验总结
 
@@ -271,6 +309,18 @@ CONSTQP 模式下 Tier 1-B/A 可 100% 恢复空帧，验证见 [pipe4-la8-tier-d
 
 详细数据见 [v4-production-best-config](memory/v4-production-best-config.md)、[rc-mode-performance-ranking](memory/rc-mode-performance-ranking.md)、[benchmark-ifrnet-v6.4.x-summary](memory/benchmark-ifrnet-v6.4.x-summary.md)。
 
+### HEVC/LA 与 2026-08 修复栈（当前状态）
+
+| 修复 | 位置 | 说明 |
+|------|------|------|
+| FIX-HEVC-COUNTED / FIX-HEVC-EOS / FIX-HEVC-EOS-FLUSH | 双侧 `nvenc_sdk.py` | HEVC 空槽/未就绪槽 LockBitstream 永久阻塞（doNotWait 无效）→ 中途 counted 限界排空 + EOS pending-only + flush() 同语义 |
+| P1-FIX-H2D-EVENT-SYNC | `external/ifrnet_video/pipeline.py` + `ifrnet_utils.py` | 预取 pinned 槽 event 同步，根治"水彩单帧"竞态 |
+| EOS 排空硬化（EOS-OUTPUT-ORDER / STRICT-EOS / SIZE-CAP / NAL-COMMON） | 双侧 `nvenc_sdk.py` | 垃圾块 size 钳制、HEVC 参数集识别切 `nal_utils`（"Cached SPS+PPS" 33B→101B） |
+| 解码级验收门禁 | `src/utils/video_utils.py` + `tests/verify_plan_implementation.py` | `validate_decodable_video` / `count_decoded_video_frames`；RT-4 解码级帧数守恒 + RT-5 解码错误零容忍 + FIX-GATE（F-修复效果 phase，全量 90 项；Linux 生产基准 88 PASS / 0 FAIL / 0 WARN / 2 SKIP，Windows 无 GPU 环境为 86 PASS / 2 WARN / 2 SKIP） |
+| FIX-HEVC-LA-SOFT-RETIRED（2026-08-28，08-29 双侧同步完成） | 两个 processor + config | `hevc_la_disable` 软退役：默认 false，命中仅 WARN 不降级；`hevc_nvenc + VBR_HQ/QVBR + LA>0` 生产开放；回滚 = 显式置 true 或 `NVENC_HEVC_ALLOW_LA=0` |
+
+参考：[hevc-la-drain-diagnosis](memory/hevc-la-drain-diagnosis.md)、[ifrnet-watercolor-tail-defect-investigation](memory/ifrnet-watercolor-tail-defect-investigation.md)、[hevc-la-open-production](memory/hevc-la-open-production.md)。
+
 ### Bug 修复历史速查
 
 | Bug | 影响版本 | 修复版本 | 记忆文件 |
@@ -283,6 +333,11 @@ CONSTQP 模式下 Tier 1-B/A 可 100% 恢复空帧，验证见 [pipe4-la8-tier-d
 | T2 静态估算低估 1039% | 所有版本 | v6.4.5.1 + backport | [t2-static-estimation-undershoot](memory/t2-static-estimation-undershoot.md) |
 | avgBitRate=0 性能塌方 2.2× | v6.4.5/.1 | 设置 avbBitRate 估计值 | [v6.4.5-bitrate-unconstrained-degradation](memory/v6.4.5-bitrate-unconstrained-degradation.md) |
 | ctypes bitfield SPS/PPS 不匹配 | 所有 NVENC 版本 | 手动缓存 SPS/PPS NAL | [nvenc-sps-pps-debugging](memory/nvenc-sps-pps-debugging.md) |
+| HEVC+LA 排空死锁（含 LA=0 flush 段尾死锁） | v6.4.3.1+（h264 逐字不变） | FIX-HEVC-COUNTED/EOS/EOS-FLUSH（2026-08-18/19，六历史版本 backport） | [hevc-la-drain-diagnosis](memory/hevc-la-drain-diagnosis.md) |
+| 水彩花屏（H2D 预取竞态）+ HEVC 尾帧损坏 | 2026-08 方案期间显性化 | P1-FIX-H2D-EVENT-SYNC + EOS 硬化 + 解码级门禁（2026-08-27） | [ifrnet-watercolor-tail-defect-investigation](memory/ifrnet-watercolor-tail-defect-investigation.md) |
+| HEVC LA>0 被规避路由降级（两层语义分叉） | 2026-08-27 规避版 | hevc_la_disable 软退役 + FIX-HEVC-LA-OPEN 门禁（2026-08-28/29，90 项 88 PASS/0 FAIL，三路对照全绿） | [hevc-la-open-production](memory/hevc-la-open-production.md) / [hevc-la-soft-retired](memory/hevc-la-soft-retired.md) |
+| upscale_then_interpolate 高分辨率早期 EOF / 丢帧 | 2026-08-29（T4 1440p 插帧） | auto mode protect：`max_upscale_then_interpolate_pixels` + `_select_optimal_mode()` | [mode-auto-protect-upscale-then-interpolate](memory/mode-auto-protect-upscale-then-interpolate.md) |
+| `--ifrnet-model` 无效（S/V/L 输出完全一致） | config_manager 硬编码 `IFRNet_S_Vimeo90K.pth` | 按 `model_name` 派生 `model_path` + `_derive_model_paths()`（CLI 覆盖后重算） | [ifrnet-model-selection-bug-fix](memory/ifrnet-model-selection-bug-fix.md) |
 
 ## TRT engine caching
 
@@ -359,6 +414,15 @@ Each processor maintains `temp/{video_name}_ifrnet/checkpoint.json` and `temp/{v
 | [phase4-constqp-defense-failure](memory/phase4-constqp-defense-failure.md) | CONSTQP 高速编码缩小 DMA 竞态窗口 Tier 防御失效 |
 | [v6.4.5-bitrate-unconstrained-degradation](memory/v6.4.5-bitrate-unconstrained-degradation.md) | avgBitRate=0 导致 GPU 65% 空闲 |
 | [v6.4.x-backport-fixes](memory/v6.4.x-backport-fixes.md) | T2估算/bitrate天花板/SPS-PPS backport 到四个旧版本 |
+| [hevc-la-drain-diagnosis](memory/hevc-la-drain-diagnosis.md) | HEVC 空槽 LockBitstream 永久阻塞根因 + counted/EOS/EOS-FLUSH 修复闭环 + 六历史版本 backport |
+| [ifrnet-watercolor-tail-defect-investigation](memory/ifrnet-watercolor-tail-defect-investigation.md) | 水彩花屏 + HEVC 尾帧损坏双症状调查、Fix-1~5 方案与 2026-08-27/28 落地验证 |
+| [hevc-la-open-production](memory/hevc-la-open-production.md) | 2026-08-28/29 HEVC LA>0 生产就绪：hevc_la_disable 软退役 + FIX-HEVC-LA-OPEN 门禁 + 三路对照 |
+| [hevc-la-soft-retired](memory/hevc-la-soft-retired.md) | HEVC LA 软退役收口：processor 移除降级、config 翻转、门禁与回滚预案、影响面 |
+| [mode-auto-protect-upscale-then-interpolate](memory/mode-auto-protect-upscale-then-interpolate.md) | upscale_then_interpolate 在 T4 高分辨率下早期 EOF 根因 + 自动模式保护实现与验证 |
+| [ifrnet-model-selection-bug-fix](memory/ifrnet-model-selection-bug-fix.md) | IFRNet model_path 硬编码 bug → 按 model_name 派生 + _derive_model_paths()，三模型输出已区分 |
+| [verify-bitstream-large-file-parallel](memory/verify-bitstream-large-file-parallel.md) | 大文件码流验收分片并行（verify v4 检查间并行） |
+| [stream-ts-reassociation-fix](memory/stream-ts-reassociation-fix.md) | LA stream outputTimeStamp@40 重关联 + writer 流式重排（段1 frames==packets 修复） |
+| [nvenc-profilelevel-51-fix](memory/nvenc-profilelevel-51-fix.md) | profileLevel=51 结构体写入落保留区根因 + FIX-SDK13-CODEC 硬编码偏移修复 |
 
 ### 性能测试与配置
 

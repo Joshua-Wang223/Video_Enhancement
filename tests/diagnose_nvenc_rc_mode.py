@@ -175,9 +175,14 @@ def find_all_nvenc_headers():
 
     # Search entire filesystem for nvEncodeAPI.h (limit depth)
     try:
+        # [GATE-FIX-H2-ARGS] capture_output=True 含有 stdout/stderr=PIPE，
+        # 与显式 stderr=DEVNULL 互斥 → 运行时必抛 ValueError；而它被下面的
+        # `except Exception: pass` 吞掉，导致这段"兜底全盘查找"从未真正生效。
+        # 改为显式 stdout=PIPE + stderr=DEVNULL（保留原意：只收 stdout、丢弃 stderr）。
         result = subprocess.run(
             ["find", "/", "-maxdepth", "5", "-name", "nvEncodeAPI.h", "-type", "f"],
-            capture_output=True, text=True, timeout=30, stderr=subprocess.DEVNULL
+            stdout=subprocess.PIPE, text=True, timeout=30,
+            stderr=subprocess.DEVNULL
         )
         for p in result.stdout.strip().split("\n"):
             p = p.strip()

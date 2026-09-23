@@ -266,12 +266,25 @@ def get_video_meta_info(video_path: str) -> dict:
     elif 'nb_frames' in vs and str(vs['nb_frames']).isdigit():
         nb = int(vs['nb_frames'])
 
+    # [P2-2] 码率用于读帧器 hwaccel 自适应决策（src/utils/reader_hwaccel.py）。
+    # 流级 bit_rate 优先，缺失时退到容器 overall bit_rate（含音频，作上界）。
+    bit_rate = 0
+    for _src in (vs.get('bit_rate'), probe.get('format', {}).get('bit_rate')):
+        try:
+            _v = int(_src)
+        except (TypeError, ValueError):
+            continue
+        if _v > 0:
+            bit_rate = _v
+            break
+
     return {
         'width': vs['width'],
         'height': vs['height'],
         'fps': fps,
         'audio': ffmpeg.input(video_path).audio if has_audio else None,
         'nb_frames': nb,
+        'bit_rate': bit_rate,
     }
 
 

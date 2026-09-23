@@ -19,3 +19,25 @@ output/
 temp/
 output*.txt
 Video_Enhancement_github_token.txt
+
+# ── 运行日志 / 临时转储（2026-09-23 清理，避免 git status 刷屏）──
+and
+Found_Cropped.txt
+*.err
+conversation-*.txt
+tar_excludes.txt
+force_push_github.sh
+tmp/
+tests/validation_report_final.txt
+
+# 工具/会话本地配置，不入库
+.codebuddy/
+config/cc-switch-*.md
+
+# Plan/ 下的会话转储与历史快照（保留 *.md 设计/立项文档）
+Plan/history_*
+Plan/*session*
+Plan/conversation*
+Plan/Conversation-*
+Plan/2026-*
+Plan/*.txt

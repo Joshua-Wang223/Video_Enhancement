@@ -166,9 +166,18 @@ for _p in (_utils_path, _processors_path, str(_SRC_DIR)):
 # 项目内部导入
 # ─────────────────────────────────────────────────────────────────────────────
 from config_manager import Config                    # noqa: E402
+# [FIX-STDIN-TTOU] 后台进程组 + tty stdin 时，子 ffmpeg 会对 fd0 调 ioctl(TCSETS)
+# 触发 SIGTTOU 被停住（表现为"秒卡、0% CPU、无输出"，极易误判为码流/GPU 故障）。
+# 入口处把 fd0 换成 /dev/null，一次修好本进程树内全部子进程。
+# 详见 src/utils/stdin_hardening.py。
+from stdin_hardening import detach_background_stdin   # noqa: E402
+detach_background_stdin()
+# [P0-FIX-QUALITY-RANGE] 质量参数量程取编码器技术规范（单一真源 QUALITY_MAP）
+from quality_map import literal_range, supports_cq, supports_crf   # noqa: E402
 from video_utils import (                            # noqa: E402
     format_time,
     get_video_duration,
+    get_video_content_duration,
     merge_videos_by_codec,
     build_color_args,
     smart_extract_audio,
@@ -230,7 +239,8 @@ def _select_optimal_mode(
         return mode
 
     # 读取可配置阈值（0 = 禁用自动切换）
-    max_pixels = config.get("processing", "max_upscale_then_interpolate_pixels", default=3670016)
+    # 默认 4K UHD (3840×2160) = 8294400：超分后达到 4K 才自动切换
+    max_pixels = config.get("processing", "max_upscale_then_interpolate_pixels", default=8294400)
     if max_pixels <= 0:
         return mode
 
@@ -374,6 +384,28 @@ def _print_environment(env_info: dict):
 # 配置摘要
 # =============================================================================
 
+def _quality_label(getter) -> str:
+    """把某环节的质量参数渲染成摘要里的一小段（基准参数优先于字面量）。
+
+    实际下发的数值要等编码器自动升级/降级之后才能确定，由
+    ``quality_map.resolve_quality()`` 在后端换算；这里只呈现用户的输入意图。
+    """
+    ref = getter("crf_ref")
+    if ref is not None:
+        return f" | CRF-ref: {ref}（libx264 基准，按等效表换算）"
+    cq_ref = getter("cq_ref")
+    if cq_ref is not None:
+        return f" | CQ-ref: {cq_ref}（h264_nvenc 基准，按等效表换算）"
+    cq = getter("cq")
+    if cq is not None:
+        return f" | CQ: {cq}"
+    _crf = getter("crf")
+    if _crf is not None:
+        return f" | CRF: {_crf}"
+    # [QUALITY-UNIFY] 未显式给质量 → 后端按 libx264 CRF 基准 21 换算
+    return " | 质量: 默认基准 21"
+
+
 def _print_startup_info(config: Config, args: argparse.Namespace, mode: str) -> None:
     """打印完整启动配置摘要（覆盖 V1 的 print_config_summary 与 V2 的 _print_startup_info）。"""
     ifr = lambda k, d=None: config.get("models", "ifrnet",     k, default=d)
@@ -419,7 +451,7 @@ def _print_startup_info(config: Config, args: argparse.Namespace, mode: str) -> 
         print(f"     编码器     : copy")
     else:
         print(f"     编码器     : {ifr('codec', 'libx264')}"
-              f" | CRF: {ifr('crf', 21)}"
+              f"{_quality_label(ifr)}"
               f" | preset: {ifr('encode_preset', 'medium')}")
 
     # ── Real-ESRGAN ──────────────────────────────────────────────────────────
@@ -442,7 +474,7 @@ def _print_startup_info(config: Config, args: argparse.Namespace, mode: str) -> 
         print(f"     编码器     : copy")
     else:
         print(f"     编码器     : {esr('codec', 'libx264')}"
-              f" | CRF: {esr('crf', 21)}"
+              f"{_quality_label(esr)}"
               f" | preset: {esr('encode_preset', 'medium')}")
 
     # face_enhance
@@ -478,26 +510,27 @@ def _print_startup_info(config: Config, args: argparse.Namespace, mode: str) -> 
         # 显示第二阶段处理器的编码参数（决定实际画质的是第二阶段）
         if mode == "upscale_then_interpolate":
             _2nd_codec  = ifr("codec",       "libx264")
-            _2nd_crf    = ifr("crf",         23)
+            _2nd_q      = _quality_label(ifr)
             _2nd_preset = ifr("encode_preset", "medium")
             _2nd_label  = "IFRNet"
         else:  # interpolate_then_upscale / skip_*
             _2nd_codec  = esr("codec",       "libx264")
-            _2nd_crf    = esr("crf",         23)
+            _2nd_q      = _quality_label(esr)
             _2nd_preset = esr("encode_preset", "medium")
             _2nd_label  = "ESRGan"
         _norm_skip = getattr(args, "skip_seg_normalize", False)
-        _norm_note = "已禁用 --skip-seg-normalize" if _norm_skip else "含 FIX-C extradata 归一化"
+        _norm_note = ("已禁用 --skip-seg-normalize" if _norm_skip
+                      else "含分段 timescale 归一化")
         print(f"  最终合并输出  : -c:v copy ({_norm_note})"
               f"（继承 {_2nd_label}: {_2nd_codec}"
-              f" | CRF: {_2nd_crf}"
+              f"{_2nd_q}"
               f" | preset: {_2nd_preset}）")
     else:
         _oc   = config.get("output", "codec",  default="")
-        _ocrf = config.get("output", "crf",    default="")
         _op   = config.get("output", "preset", default="")
+        _out_get = lambda k, d=None: config.get("output", k, default=d)
         print(f"  最终合并输出  : codec={_oc or '默认'}"
-              f" | CRF={_ocrf or '默认'}"
+              f"{_quality_label(_out_get)}"
               f" | preset={_op or '默认'}")
 
     # 预览与报告
@@ -614,6 +647,8 @@ def _rewrite_audio_and_cleanup(output_video: str, audio_path: Optional[str],
         # [COLOR-FIX] 合并输出注入源视频色彩元数据（有值透传，无值回退 BT.709+Full Range）
         _merge_cfg = {
             **_merge_cfg,
+            # [QUALITY-UNIFY] 音频回写只是容器级 remux，强制 -c:v copy，避免二次代损
+            "codec": "copy",
             "extra_args": list(_merge_cfg.get("extra_args", []))
                           + build_color_args(input_video),
         }
@@ -621,6 +656,9 @@ def _rewrite_audio_and_cleanup(output_video: str, audio_path: Optional[str],
             [output_video], _tmp_out,
             audio_path=audio_path,
             config=_merge_cfg,
+            reencode=False,
+            # [META-KEEP] 回写原片容器级元数据（tags / creation_time / 旋转 / 位深）
+            source_video=input_video,
         )
         if audio_ok:
             shutil.move(_tmp_out, output_video)
@@ -860,14 +898,23 @@ def _write_final_report(
         "batch_size_ifrnet", "max_batch_size_ifrnet",
         "no_fp16_ifrnet", "no_compile_ifrnet", "no_cuda_graph_ifrnet",
         "use_tensorrt_ifrnet", "no_tensorrt_ifrnet",
+        # 分段输出质量参数（字面量 / 基准轴，两侧同构）
+        "crf_ifrnet", "cq_ifrnet", "crf_ifrnet_ref", "cq_ifrnet_ref",
+        "codec_ifrnet", "encode_preset_ifrnet",
+        "rate_mode_ifrnet", "lookahead_depth_ifrnet",
         "batch_size_esrgan", "prefetch_factor_esrgan",
         "no_fp16_esrgan", "no_compile_esrgan", "no_cuda_graph_esrgan",
         "use_tensorrt_esrgan", "no_tensorrt_esrgan",
+        "crf_esrgan", "cq_esrgan", "crf_esrgan_ref", "cq_esrgan_ref",
+        "codec_esrgan", "encode_preset_esrgan",
+        "rate_mode_esrgan", "lookahead_depth_esrgan",
         "tile_size", "tile_pad", "pre_pad", "denoise_strength",
         "face_enhance", "gfpgan_model", "gfpgan_weight",
         "gfpgan_batch_size", "face_det_threshold",
         "no_adaptive_batch_esrgan", "gfpgan_trt",
-        "output_codec", "output_crf", "output_preset",
+        "output_codec", "output_crf", "output_cq",
+        "output_crf_ref", "output_cq_ref", "output_preset",
+        "split_codec", "split_crf_ref", "split_cq_ref", "split_preset",
         "denoise", "denoise_model", "denoise_strength_pre",
         "auto_cleanup", "keep_intermediate",
     ]
@@ -907,12 +954,21 @@ def _print_failure_hints(elapsed: float):
 # 命令行参数覆盖配置                                                     [V2]
 # =============================================================================
 
-def _validate_effective_config(config: Config) -> bool:
+def _validate_effective_config(config: Config,
+                               args: Optional[argparse.Namespace] = None) -> bool:
     """[P1-FIX-VALIDATE] 对"JSON + CLI 覆盖"后的生效配置做范围校验。
 
     原实现仅在 Config 加载期执行 _validate_config，CLI 数值参数（argparse 多数
     无范围约束）覆盖后直达 ffmpeg/NVENC。任一项不合法即拒绝启动。
+
+    args 用于"用户是否显式给了某参数"的判定（互斥校验依赖它）；缺省时只做
+    范围校验（此时所有质量参数按 JSON 配置值校验）。
+
+    [P0-FIX-QUALITY-RANGE] 质量量程一律取编码器技术规范定义的实际可用范围，
+    超限即拒绝启动并给出明确错误，不静默放行、不自动截断。
     """
+    if args is None:
+        args = argparse.Namespace()      # 缺省：全部质量参数走 JSON 配置值分支
     _errors = []
     seg = config.get("processing", "segment_duration", default=30)
     if not isinstance(seg, (int, float)) or isinstance(seg, bool) or seg <= 0:
@@ -924,9 +980,6 @@ def _validate_effective_config(config: Config) -> bool:
     if not (isinstance(up, (int, float)) and not isinstance(up, bool) and 1.0 <= up <= 4.0):
         _errors.append(f"processing.upscale_factor 需在 1~4（当前 {up!r}）")
     for sect in ("ifrnet", "realesrgan"):
-        crf = config.get("models", sect, "crf", default=23)
-        if not isinstance(crf, int) or isinstance(crf, bool) or not (0 <= crf <= 51):
-            _errors.append(f"models.{sect}.crf 需为 0~51 整数（当前 {crf!r}）")
         bs = config.get("models", sect, "batch_size", default=1)
         if not isinstance(bs, int) or isinstance(bs, bool) or bs < 1:
             _errors.append(f"models.{sect}.batch_size 必须 ≥1（当前 {bs!r}）")
@@ -943,6 +996,149 @@ def _validate_effective_config(config: Config) -> bool:
         rate = config.get("models", sect, "rate_mode", default="vbr_hq")
         if rate not in ("constqp", "vbr_hq", "qvbr"):
             _errors.append(f"models.{sect}.rate_mode 需为 constqp/vbr_hq/qvbr（当前 {rate!r}）")
+
+    # ── 分段输出质量参数（IFRNet / ESRGan 两侧同规则）─────────────────────────
+    # [P0-FIX-QUALITY-RANGE] 所有质量输入（字面量 crf/cq 与基准 crf_ref/cq_ref，
+    # CLI 与 JSON 配置两条来源）都必须校验，且量程取"技术规范定义的实际可用范围"：
+    #   · 字面量：按**生效编码器**的 QUALITY_MAP 量程（libx264 0~51、libvpx-vp9 0~63、
+    #     h264_qsv 1~51 …）。跨族时值会经换算，故取源轴量程（crf→libx264，
+    #     cq→h264_nvenc，均为 0~51）。
+    #   · 基准轴：统一为 libx264 CRF / h264_nvenc CQ 刻度 0~51。
+    # 超限一律**拒绝执行**并给出明确错误，绝不静默放行或自动截断。
+    # 互斥判定基于 CLI 实参：config 里 crf 恒有默认值（23），无法区分"用户显式给了"
+    # 与"配置默认"，用 config 判互斥会把默认配置误判成冲突。
+    for _stage, _sfx in (("IFRNet", "ifrnet"), ("ESRGan", "esrgan")):
+        _codec = config.get("models", _sfx, "codec", default="libx264") or "libx264"
+        _lit = [(f"--{_n}-{_sfx}", _v) for _n, _v in
+                (("crf", getattr(args, f"crf_{_sfx}", None)),
+                 ("cq",  getattr(args, f"cq_{_sfx}",  None))) if _v is not None]
+        _refs = [(f"--{_n}-{_sfx}-ref", _v) for _n, _v in
+                 (("crf", getattr(args, f"crf_{_sfx}_ref", None)),
+                  ("cq",  getattr(args, f"cq_{_sfx}_ref",  None))) if _v is not None]
+        _ln = [n for n, _ in _lit]
+        _rn = [n for n, _ in _refs]
+        if len(_rn) > 1:
+            _errors.append(f"{_stage} 质量基准参数互斥：{' / '.join(_rn)} 只能给一个")
+        if _rn and _ln:
+            _errors.append(f"{_stage} 质量参数互斥：基准参数 {' / '.join(_rn)}"
+                           f" 不能与字面量参数 {' / '.join(_ln)} 同时使用")
+
+        # 字面量量程：随生效编码器而定；CLI 显式给出的用 CLI 标签，否则校验配置值
+        for _kind in ("crf", "cq"):
+            _cli_v = getattr(args, f"{_kind}_{_sfx}", None)
+            if _cli_v is not None:
+                _label, _val = f"--{_kind}-{_sfx}", _cli_v
+            else:
+                _val = config.get("models", _sfx, _kind, default=None)
+                _label = f"models.{_sfx}.{_kind}"
+                if _val is None:
+                    continue
+            _lo, _hi = literal_range(_codec, _kind)
+            if not (isinstance(_val, int) and not isinstance(_val, bool)
+                    and _lo <= _val <= _hi):
+                _native = (supports_cq(_codec) if _kind == "cq"
+                           else supports_crf(_codec))
+                if _native:
+                    _errors.append(
+                        f"{_label} 超出编码器 {_codec} 的可用质量范围 "
+                        f"{_lo}~{_hi}（当前 {_val!r}）")
+                else:
+                    _axis = "h264_nvenc CQ" if _kind == "cq" else "libx264 CRF"
+                    _errors.append(
+                        f"{_label} 超出 {_axis} 量纲的可用质量范围 {_lo}~{_hi}"
+                        f"（当前 {_val!r}）：生效编码器 {_codec} 不使用该参数，"
+                        f"值会按等效表换算，故须落在源轴量程内")
+
+        # 基准轴量程：统一为 0~51（libx264 CRF / h264_nvenc CQ 刻度）
+        for _kind in ("crf", "cq"):
+            _cli_v = getattr(args, f"{_kind}_{_sfx}_ref", None)
+            if _cli_v is not None:
+                _label, _val = f"--{_kind}-{_sfx}-ref", _cli_v
+            else:
+                _val = config.get("models", _sfx, f"{_kind}_ref", default=None)
+                _label = f"models.{_sfx}.{_kind}_ref"
+                if _val is None:
+                    continue
+            if not (isinstance(_val, int) and not isinstance(_val, bool)
+                    and 0 <= _val <= 51):
+                _errors.append(
+                    f"{_label} 超出质量基准轴可用范围 0~51（当前 {_val!r}）")
+
+    # ── 环节③ 最终合并输出质量（[QUALITY-UNIFY] / [P0-FIX-QUALITY-RANGE]）─────
+    _out_codec = str(config.get("output", "codec", default="libx264") or "libx264")
+    _out_is_copy = _out_codec.lower() == "copy"
+    _o_lit = [(f"--output-{n}", getattr(args, f"output_{n}", None))
+              for n in ("crf", "cq")
+              if getattr(args, f"output_{n}", None) is not None]
+    _o_ref = [(f"--output-{n}-ref", getattr(args, f"output_{n}_ref", None))
+              for n in ("crf", "cq")
+              if getattr(args, f"output_{n}_ref", None) is not None]
+    if len(_o_ref) > 1:
+        _errors.append("最终合并质量基准参数互斥："
+                       + " / ".join(n for n, _ in _o_ref) + " 只能给一个")
+    if _o_ref and _o_lit:
+        _errors.append("最终合并质量参数互斥：基准参数 "
+                       + " / ".join(n for n, _ in _o_ref)
+                       + " 不能与字面量参数 " + " / ".join(n for n, _ in _o_lit)
+                       + " 同时使用")
+    if _out_is_copy and (_o_lit or _o_ref or getattr(args, "output_preset", None)):
+        _errors.append("--output-codec copy 不能与 --output-crf/cq/-ref/preset 同时使用")
+    if not _out_is_copy:
+        for _kind in ("crf", "cq"):
+            _cli_v = getattr(args, f"output_{_kind}", None)
+            _val = (_cli_v if _cli_v is not None
+                    else config.get("output", _kind, default=None))
+            _label = f"--output-{_kind}" if _cli_v is not None else f"output.{_kind}"
+            if _val is None:
+                continue
+            _lo, _hi = literal_range(_out_codec, _kind)
+            if not (isinstance(_val, int) and not isinstance(_val, bool)
+                    and _lo <= _val <= _hi):
+                _errors.append(f"{_label} 超出编码器 {_out_codec} 的可用质量范围 "
+                               f"{_lo}~{_hi}（当前 {_val!r}）")
+        for _kind in ("crf", "cq"):
+            _cli_v = getattr(args, f"output_{_kind}_ref", None)
+            _val = (_cli_v if _cli_v is not None
+                    else config.get("output", f"{_kind}_ref", default=None))
+            _label = (f"--output-{_kind}-ref" if _cli_v is not None
+                      else f"output.{_kind}_ref")
+            if _val is None:
+                continue
+            if not (isinstance(_val, int) and not isinstance(_val, bool)
+                    and 0 <= _val <= 51):
+                _errors.append(
+                    f"{_label} 超出质量基准轴可用范围 0~51（当前 {_val!r}）")
+
+    # ── 环节① 归一化质量（[QUALITY-UNIFY] / [P0-FIX-QUALITY-RANGE]）──────────
+    _split_codec = str(config.get("split", "codec", default="libx264") or "libx264")
+    _s_ref = [(f"--split-{n}-ref", getattr(args, f"split_{n}_ref", None))
+              for n in ("crf", "cq")
+              if getattr(args, f"split_{n}_ref", None) is not None]
+    if len(_s_ref) > 1:
+        _errors.append("归一化质量基准参数互斥："
+                       + " / ".join(n for n, _ in _s_ref) + " 只能给一个")
+    for _kind in ("crf", "cq"):
+        _cli_v = getattr(args, f"split_{_kind}_ref", None)
+        _val = (_cli_v if _cli_v is not None
+                else config.get("split", f"{_kind}_ref", default=None))
+        _label = (f"--split-{_kind}-ref" if _cli_v is not None
+                  else f"split.{_kind}_ref")
+        if _val is None:
+            continue
+        if not (isinstance(_val, int) and not isinstance(_val, bool)
+                and 0 <= _val <= 51):
+            _errors.append(
+                f"{_label} 超出质量基准轴可用范围 0~51（当前 {_val!r}）")
+    for _kind in ("crf", "cq"):
+        _val = config.get("split", _kind, default=None)
+        if _val is None:
+            continue
+        _lo, _hi = literal_range(_split_codec, _kind)
+        if not (isinstance(_val, int) and not isinstance(_val, bool)
+                and _lo <= _val <= _hi):
+            _errors.append(f"split.{_kind} 超出编码器 {_split_codec} 的可用质量范围 "
+                           f"{_lo}~{_hi}（当前 {_val!r}）")
+
     gw = config.get("models", "realesrgan", "gfpgan_weight", default=0.7)
     if not (isinstance(gw, (int, float)) and not isinstance(gw, bool) and 0.0 <= gw <= 1.0):
         _errors.append(f"models.realesrgan.gfpgan_weight 需在 0~1（当前 {gw!r}）")
@@ -970,10 +1166,26 @@ def _apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
         config.set("processing", "upscale_factor",       value=args.upscale_factor)
     if args.segment_duration is not None:  # [P1-FIX-VALIDATE] falsy 值(0)不再被静默忽略
         config.set("processing", "segment_duration",     value=args.segment_duration)
+    if args.skip_validate:
+        config.set("processing", "skip_validate", value=True)
+    if args.validate_workers is not None:
+        config.set("processing", "validate_workers", value=args.validate_workers)
+    if args.validate_mode:
+        config.set("processing", "validate_mode", value=args.validate_mode)
+    if args.validate_gpu_workers is not None:
+        config.set("processing", "validate_gpu_workers", value=args.validate_gpu_workers)
+    if args.auto_parallel is not None:
+        config.set("processing", "auto_parallel", value=args.auto_parallel)
+    if args.max_parallel_workers:
+        config.set("processing", "max_parallel_workers", value=args.max_parallel_workers)
     if args.auto_cleanup:
         config.set("processing", "auto_cleanup_temp",    value=True)
     if getattr(args, "no_auto_cleanup", False):
         config.set("processing", "auto_cleanup_temp",    value=False)
+
+    # 注：Video_Enhancement 侧不做 color_range 强制覆盖，固定走 auto
+    # （源有值取源值、unknown 取 tv）。强制 tv/pc 并在 AI 编码阶段做真实值域
+    # 转换的能力已单独立项：Plan/Video_Enhancement_color_range_强制转换_立项Prompt.md
 
     # ── IFRNet 模型参数（与 v6 完全一致）─────────────────────────────────────
     if args.ifrnet_model_path:
@@ -982,6 +1194,10 @@ def _apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
     elif args.ifrnet_model:
         config.set("models", "ifrnet", "model_name", value=args.ifrnet_model)
         config.set("models", "ifrnet", "model_path", value="")
+    
+    # 重新派生模型路径（基于可能被 CLI 覆盖的 model_name）
+    _base_dir = config.get("paths", "base_dir", default="") or os.getcwd()
+    config._derive_model_paths(Path(_base_dir))
 
     # ── IFRNet 推理优化（与 v6 完全一致）─────────────────────────────────────
     if args.no_fp16_ifrnet:
@@ -1000,6 +1216,23 @@ def _apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
         config.set("models", "ifrnet", "max_batch_size", value=args.max_batch_size_ifrnet)
     if args.crf_ifrnet is not None:
         config.set("models", "ifrnet", "crf",            value=args.crf_ifrnet)
+    if args.cq_ifrnet is not None:
+        config.set("models", "ifrnet", "cq",             value=args.cq_ifrnet)
+    if args.crf_ifrnet_ref is not None:
+        config.set("models", "ifrnet", "crf_ref",        value=args.crf_ifrnet_ref)
+        # 配置里 crf_ref 有默认值（21），给了 cq_ref 就必须摘掉它，否则基准轴
+        # 判定顺序（crf_ref 优先）会把 --cq-ifrnet-ref 静默吞掉
+        config.set("models", "ifrnet", "cq_ref",         value=None)
+    if args.cq_ifrnet_ref is not None:
+        config.set("models", "ifrnet", "cq_ref",         value=args.cq_ifrnet_ref)
+        config.set("models", "ifrnet", "crf_ref",        value=None)
+    if (args.crf_ifrnet is not None or args.cq_ifrnet is not None):
+        # 字面量与基准轴量纲不同：显式给了字面量就摘掉配置里的默认基准，
+        # 否则 crf_ref（默认 21）会静默覆盖用户的 --crf-ifrnet。
+        if args.crf_ifrnet_ref is None:
+            config.set("models", "ifrnet", "crf_ref",    value=None)
+        if args.cq_ifrnet_ref is None:
+            config.set("models", "ifrnet", "cq_ref",     value=None)
     if args.codec_ifrnet:
         config.set("models", "ifrnet", "codec",          value=args.codec_ifrnet)
     if args.encode_preset_ifrnet:
@@ -1086,6 +1319,22 @@ def _apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
         config.set("models", "realesrgan", "pre_pad",         value=args.pre_pad)
     if args.crf_esrgan is not None:
         config.set("models", "realesrgan", "crf",             value=args.crf_esrgan)
+    if args.cq_esrgan is not None:
+        config.set("models", "realesrgan", "cq",              value=args.cq_esrgan)
+    if args.crf_esrgan_ref is not None:
+        config.set("models", "realesrgan", "crf_ref",         value=args.crf_esrgan_ref)
+        # 配置里 crf_ref 有默认值（21），给了 cq_ref 就必须摘掉它，否则基准轴
+        # 判定顺序（crf_ref 优先）会把 --cq-esrgan-ref 静默吞掉
+        config.set("models", "realesrgan", "cq_ref",          value=None)
+    if args.cq_esrgan_ref is not None:
+        config.set("models", "realesrgan", "cq_ref",          value=args.cq_esrgan_ref)
+        config.set("models", "realesrgan", "crf_ref",         value=None)
+    if args.crf_esrgan is not None or args.cq_esrgan is not None:
+        # 给了字面量就摘掉配置里的默认基准，否则 crf_ref 会静默覆盖 --crf-esrgan
+        if args.crf_esrgan_ref is None:
+            config.set("models", "realesrgan", "crf_ref",     value=None)
+        if args.cq_esrgan_ref is None:
+            config.set("models", "realesrgan", "cq_ref",      value=None)
     if args.codec_esrgan:
         config.set("models", "realesrgan", "codec",           value=args.codec_esrgan)
     if args.encode_preset_esrgan:
@@ -1161,22 +1410,56 @@ def _apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
     if getattr(args, "preview_interval_esrgan", None) is not None:
         config.set("models", "realesrgan", "preview_interval", value=args.preview_interval_esrgan)
 
-    # ── 最终合并输出参数 ─────────────────────────────────────────────────────
-    # ── 最終合并输出参数：copy-by-default ──────────────────────────────────
-    # 记录三个输出参数是否有任意一个在 CLI 中被显式指定。
-    # 若均未指定，最终合并阶段自动使用 -c:v copy，不重新编码。
-    _output_cli_any = False
+    # ── 最终合并输出参数：copy-by-default ──────────────────────────────────
+    # [QUALITY-UNIFY] 四类质量输入互斥（字面量 crf/cq vs 基准轴 crf_ref/cq_ref）。
+    # 只要 CLI 显式给了 codec 或任一质量参数，即触发重编码；否则保持 -c:v copy。
+    _output_quality_cli = any(getattr(args, _n, None) is not None for _n in (
+        "output_crf", "output_cq", "output_crf_ref", "output_cq_ref"))
+    _output_codec_copy = (str(getattr(args, "output_codec", "") or "")
+                          .strip().lower() == "copy")
+
     if args.output_codec:
-        config.set("output", "codec",  value=args.output_codec)
-        _output_cli_any = True
+        config.set("output", "codec", value=args.output_codec)
     if args.output_crf is not None:
-        config.set("output", "crf",    value=args.output_crf)
-        _output_cli_any = True
+        config.set("output", "crf", value=args.output_crf)
+        config.set("output", "cq", value=None)
+        config.set("output", "crf_ref", value=None)
+        config.set("output", "cq_ref", value=None)
+    if getattr(args, "output_cq", None) is not None:
+        config.set("output", "cq", value=args.output_cq)
+        config.set("output", "crf", value=None)
+        config.set("output", "crf_ref", value=None)
+        config.set("output", "cq_ref", value=None)
+    if getattr(args, "output_crf_ref", None) is not None:
+        config.set("output", "crf_ref", value=args.output_crf_ref)
+        config.set("output", "crf", value=None)
+        config.set("output", "cq", value=None)
+        config.set("output", "cq_ref", value=None)
+    if getattr(args, "output_cq_ref", None) is not None:
+        config.set("output", "cq_ref", value=args.output_cq_ref)
+        config.set("output", "crf", value=None)
+        config.set("output", "cq", value=None)
+        config.set("output", "crf_ref", value=None)
     if args.output_preset:
         config.set("output", "preset", value=args.output_preset)
-        _output_cli_any = True
-    # 写入 use_copy 标志供合并步骤读取
+    # 写入 use_copy：显式 --output-codec copy（且无质量/preset）也算 copy
+    _output_cli_any = (bool(args.output_codec) or _output_quality_cli
+                       or bool(args.output_preset))
+    if _output_codec_copy and not _output_quality_cli and not args.output_preset:
+        _output_cli_any = False
     config.set("output", "use_copy", value=(not _output_cli_any))
+
+    # ── 环节① 归一化质量参数（--normalize-source 重编码时使用）──────────────
+    if getattr(args, "split_codec", None):
+        config.set("split", "codec", value=args.split_codec)
+    if getattr(args, "split_crf_ref", None) is not None:
+        config.set("split", "crf_ref", value=args.split_crf_ref)
+        config.set("split", "cq_ref", value=None)
+    if getattr(args, "split_cq_ref", None) is not None:
+        config.set("split", "cq_ref", value=args.split_cq_ref)
+        config.set("split", "crf_ref", value=None)
+    if getattr(args, "split_preset", None):
+        config.set("split", "preset", value=args.split_preset)
 
     # ── 最终报告输出路径（--report）──────────────────────────────────────
     if getattr(args, "report", None):
@@ -1189,199 +1472,15 @@ def _apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
 
 
 # =============================================================================
-# FIX-C: 合并前分段 extradata 归一化                                    [FIX-C]
+# [FIX-C] 分段 timescale 归一化 —— 已迁移至 src/utils/video_utils.py
 # =============================================================================
+# 原 _get_seg_codec / _normalize_segs_for_copy 已迁移为
+# video_utils._detect_seg_codec / normalize_segments_timescale，并由
+# merge_videos_by_codec 在 copy 合并前统一调用，使「单阶段」（各 processor
+# 内部合并）与「两阶段」（main 层最终合并）路径获得一致保护。
+# 旧名 "extradata 归一化" 系早期 -bsf:v dump_extra 实现的遗留，实际动作
+# 一直是 timescale 归一化，迁移时一并更正。
 
-def _get_seg_codec(seg_path: str) -> str:
-    """
-    用 ffprobe 检测视频分段的编解码器名称，返回小写规范名：
-      "h264" | "hevc" | "vp9" | "av1" | "" (无法检测)
-    """
-    import subprocess
-    try:
-        r = subprocess.run(
-            ["ffprobe", "-v", "error",
-             "-select_streams", "v:0",
-             "-show_entries", "stream=codec_name",
-             "-of", "csv=p=0", str(seg_path)],
-            capture_output=True, text=True, timeout=30,
-        )
-        raw = r.stdout.strip().lower() if r.returncode == 0 else ""
-    except Exception:
-        raw = ""
-
-    if "264" in raw or raw == "avc":
-        return "h264"
-    if "265" in raw or "hevc" in raw:
-        return "hevc"
-    return raw  # vp9 / av1 / mpeg4 / "" 等原样返回
-
-
-def _normalize_segs_for_copy(
-    seg_paths: list,
-    codec_hint: str = "",
-) -> list:
-    """
-    FIX-C: copy 合并前对所有分段执行零损耗 remux 归一化，统一 MP4 时间基，
-    修复独立 ffmpeg 子进程编码时各分段 timescale 微差导致的
-    concat demuxer AVERROR_EXIT(254) 问题。
-
-    处理步骤（仅对 H.264 / H.265）：
-      1. -video_track_timescale 90000 — 统一 MP4 时间基为 90 kHz
-
-    注意：不使用 -bsf:v dump_extra（该 BSF 专为 Annex B 格式设计，
-    用于 MP4/AVCC 时会产生畸形 packet 导致视频流静默丢失）。
-
-    其他编码格式（VP9 / AV1 / ProRes 等）无此 timescale 问题，直接跳过。
-
-    参数
-    ----
-    seg_paths   : 待处理的分段路径列表（Path 或 str）
-    codec_hint  : 已知编解码器名称（可省略，会自动检测）
-
-    Returns
-    -------
-    归一化后的路径列表（原地替换，路径对象不变）
-    """
-    import subprocess
-    from pathlib import Path as _Path
-
-    if not seg_paths:
-        return seg_paths
-
-    # ── 确定编解码器 ──────────────────────────────────────────────────────────
-    codec = codec_hint.lower() if codec_hint else ""
-    if codec:
-        # 规范化 hint（h264_nvenc → h264，hevc_nvenc → hevc 等）
-        if "264" in codec or codec == "avc":
-            codec = "h264"
-        elif "265" in codec or "hevc" in codec:
-            codec = "hevc"
-    else:
-        codec = _get_seg_codec(str(seg_paths[0]))
-
-    # ── 只处理 H.264 / H.265 ─────────────────────────────────────────────────
-    if codec not in ("h264", "hevc"):
-        if codec:
-            print(f"   ℹ️  [FIX-C] 编解码器 '{codec}' 无需 timescale 归一化，跳过")
-        else:
-            print("   ⚠️  [FIX-C] 无法检测编解码器，跳过归一化（若合并失败请检查分段文件）")
-        return seg_paths
-
-    print(f"   🔧 [FIX-C] 对 {len(seg_paths)} 个分段执行 timescale 归一化"
-          f"（codec={codec}, timescale=90000）...")
-
-    def _has_decodable_video(path: _Path) -> bool:
-        """
-        验证文件中存在视频流，且该流包含可解码帧（duration > 0）。
-
-        仅检查容器元数据"流存在"不够——某些写法会写入 duration=0 的空
-        视频轨（元数据存在但无有效帧）；ffprobe 能看到流，但 ffmpeg concat
-        读不出任何视频帧，最终输出只有音频。必须同时验证 duration。
-        """
-        try:
-            r2 = subprocess.run(
-                ["ffprobe", "-v", "error",
-                 "-select_streams", "v:0",
-                 "-show_entries", "stream=codec_type,duration",
-                 "-of", "csv=p=0", str(path)],
-                capture_output=True, text=True, timeout=30,
-            )
-            if r2.returncode != 0 or not r2.stdout.strip():
-                return False
-            line = r2.stdout.strip().split("\n")[0]
-            parts = line.split(",")
-            if not parts or "video" not in parts[0].lower():
-                return False
-            if len(parts) >= 2:
-                dur_str = parts[1].strip()
-                if dur_str in ("N/A", "0", "0.000000", ""):
-                    return False
-            return True
-        except Exception:
-            return False
-
-    normalized: list = []
-    ok_count   = 0
-    fail_count = 0
-
-    for seg in seg_paths:
-        seg_p = _Path(str(seg))
-        tmp_p = seg_p.with_suffix(".fixc_tmp.mp4")
-
-        try:
-            # FIX-C-CMD: 仅做 timescale 归一化，不使用任何 BSF。
-            #
-            # ❌ 之前 -bsf:v dump_extra 的根本问题：
-            #   dump_extra 是为 Annex B 格式 H.264（MPEG-TS/裸流）设计，
-            #   其作用是把 SPS/PPS extradata 注入每个 IDR 帧 packet 前缀。
-            #   MP4 使用 AVCC 格式（length-prefixed NAL）。在 AVCC→AVCC
-            #   copy remux 上应用 dump_extra，ffmpeg 会把 Annex B 风格的
-            #   extradata 插入 AVCC packet 头部，产生格式畸形的 packet。
-            #   结果（取决于 ffmpeg 版本）：rc=0 但视频流无有效帧，或整个
-            #   视频轨被静默丢弃——这就是合并输出"只有音频"的直接原因。
-            #
-            # ✅ 真实根因是 timescale 不一致，不是 extradata 不一致：
-            #   独立 ffmpeg 子进程编码时，各分段 MP4 timescale 可能存在
-            #   微差；concat demuxer 遇到跳变时触发 AVERROR_EXIT(254)。
-            #   NVENC 以相同参数编码的分段 SPS/PPS 本就一致，无需 BSF。
-            #   仅用 -video_track_timescale 90000 统一时间基即可。
-            cmd = [
-                "ffmpeg", "-y", "-i", str(seg_p),
-                "-map", "0:v:0",   # 显式映射，防止隐式映射歧义
-                "-map", "0:a?",    # ? = 无音频流时静默跳过
-                "-c:v", "copy",
-                "-c:a", "copy",
-                # FIX-C-TS: 统一 MP4 时间基为 90 kHz
-                "-video_track_timescale", "90000",
-                str(tmp_p),
-            ]
-            r = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=300,
-            )
-
-            # FIX-C-VERIFY: 三重校验 —— rc=0 + 文件非空 + 视频帧可解码
-            # 必须用 ffprobe 主动验证 duration，不能只检查流元数据是否
-            # 存在（空视频轨可通过元数据检查但 duration=0，无法播放）。
-            tmp_ok = (
-                r.returncode == 0
-                and tmp_p.exists()
-                and tmp_p.stat().st_size > 4096
-                and _has_decodable_video(tmp_p)
-            )
-
-            if tmp_ok:
-                seg_p.unlink()
-                tmp_p.rename(seg_p)
-                normalized.append(seg)
-                ok_count += 1
-            else:
-                _stderr = r.stderr[-600:] if r.stderr else "(无输出)"
-                _reason = (
-                    f"rc={r.returncode}" if r.returncode != 0
-                    else "视频帧校验失败（duration=0 或流不存在）"
-                )
-                print(f"   ⚠️  [FIX-C] {seg_p.name} 归一化失败"
-                      f"（{_reason}），使用原始文件\n"
-                      f"       ffmpeg stderr: {_stderr}")
-                if tmp_p.exists():
-                    tmp_p.unlink()
-                normalized.append(seg)
-                fail_count += 1
-        except Exception as exc:
-            print(f"   ⚠️  [FIX-C] {seg_p.name} 归一化异常: {exc}，使用原始文件")
-            if tmp_p.exists():
-                tmp_p.unlink()
-            normalized.append(seg)
-            fail_count += 1
-
-    if fail_count == 0:
-        print(f"   ✅ [FIX-C] 全部 {len(seg_paths)} 个分段归一化完成")
-    else:
-        print(f"   ⚠️  [FIX-C] {ok_count}/{len(seg_paths)} 个分段归一化成功"
-              f"，{fail_count} 个失败（已保留原始文件，合并可能仍会失败）")
-
-    return normalized
 
 # =============================================================================
 # 单文件处理
@@ -1439,6 +1538,14 @@ def _process_single(
         print(f"  🧹 预去噪: {getattr(args, 'denoise_model', 'nafnet')}"
               f" (strength={getattr(args, 'denoise_strength_pre', 0.5)})")
     print("=" * 70 + "\n")
+
+    # ── 0. [可选] 源时间轴归一化 ─────────────────────────────────────────────
+    # [P3-FIX-NORM] VFR 源（时间戳空洞）与非零起始偏移会让段级帧数验收和时长
+    # 统计失真；归一化后一次性根除。未开启时只做检测与提示，不改变行为。
+    input_video = _run_normalize_source(config, input_video, args)
+    if input_video is None:
+        return False
+    video_name = Path(input_video).stem
 
     # [P2-FIX-MODE-AUTO] 自动选择最优模式：防止 upscale_then_interpolate 在高分辨率下 OOM/EOF
     mode = _select_optimal_mode(config, input_video, mode, quiet=args.quiet)
@@ -1556,6 +1663,81 @@ def _process_single(
 
 
 # ── [P3.1-SPLIT] _process_single 阶段子函数 ───────────────────────────────────
+
+def _run_normalize_source(config: Config, input_video: str,
+                          args: argparse.Namespace) -> Optional[str]:
+    """[P3-FIX-NORM] 可选前处理：把源时间轴归一化为均匀 CFR。
+
+    · --normalize-source：检测到异常即重编码归一化（一次软编码开销），产物落在
+      temp/normalized/<name>_norm.mp4，同名同源且产物不旧于源时直接复用。
+    · 未开启：仅检测并提示，返回原路径，行为与之前完全一致。
+    """
+    from video_utils import detect_timestamp_anomaly, normalize_video_timeline
+
+    enable = bool(getattr(args, "normalize_source", False))
+    quiet = bool(getattr(args, "quiet", False))
+
+    try:
+        rep = detect_timestamp_anomaly(input_video)
+    except Exception as e:
+        if not quiet:
+            print(f"   ⚠️  源时间轴检测异常（跳过）: {e}")
+        return input_video
+
+    if not rep.get("ok"):
+        if not quiet:
+            print("   ℹ️  源时间轴无法判定，跳过归一化")
+        return input_video
+
+    if not rep.get("anomaly"):
+        if not quiet:
+            print(f"   ✅ 源时间轴均匀（{rep.get('frame_count')} 帧，"
+                  f"起始 {rep.get('start_time')}s），无需归一化")
+        return input_video
+
+    if not quiet:
+        print(f"   ⚠️  检测到源时间轴异常: {rep.get('detail')}")
+
+    if not enable:
+        print("      → 如需修复请加 --normalize-source（会做一次重编码）")
+        return input_video
+
+    out_dir = Path(config.get_temp_dir("normalized"))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{Path(input_video).stem}_norm.mp4"
+
+    try:
+        if (out_path.exists()
+                and out_path.stat().st_mtime >= Path(input_video).stat().st_mtime):
+            print(f"   ♻️  复用已归一化文件: {out_path.name}")
+            return str(out_path)
+    except OSError:
+        pass
+
+    print(f"   🔧 归一化源时间轴 → {out_path.name} …")
+    # [QUALITY-UNIFY] 环节① 质量参数来自 --split-* / config.split（默认基准 21）
+    _sp = config.get_section("split", {}) or {}
+    if not normalize_video_timeline(
+            input_video, str(out_path),
+            encoder=_sp.get("codec", "libx264"),
+            preset=_sp.get("preset", "veryfast"),
+            crf=_sp.get("crf"), cq=_sp.get("cq"),
+            crf_ref=_sp.get("crf_ref"), cq_ref=_sp.get("cq_ref")):
+        print("   ❌ 源时间轴归一化失败，回退使用原始输入")
+        try:
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return input_video
+
+    if not quiet:
+        after = detect_timestamp_anomaly(str(out_path))
+        if after.get("ok"):
+            print(f"   ✅ 归一化完成: {after.get('frame_count')} 帧 | "
+                  f"起始 {after.get('start_time')}s | "
+                  f"空洞 {len(after.get('gaps') or [])} 处")
+    return str(out_path)
+
 
 def _extract_source_audio(config: Config, input_video: str, quiet: bool = False) -> Optional[str]:
     """[P3.1-SPLIT] 从原始输入一次性提取音频；失败仅告警不阻断（返回 None）。"""
@@ -1765,6 +1947,47 @@ def _run_two_stage(config: Config, actual_input: str, video_name: str,
         esrgan_proc.close_enhancer()
         print("   🧹 ESRGAN GPU 资源已释放（enhancer/TRT/GFPGAN 子进程/torch 缓存）")
 
+        # [FIX-STAGE2-VRAM] 进入 Step 2 前的显存水位闸门。
+        # 实测：本模式下插帧紧接超分同进程启动时，若阶段间显存未真正归还，
+        # 推理速率会从 9.6 帧/s 掉到 2.2 帧/s（4.4 倍），并最终触发
+        # 「推理线程 1822s 未退出」→ 提前 EOF → 缺帧 → exit=1。
+        # 这里做：同步 → 二次回收 → 打印水位 → 可用显存不足阈值时告警并等待回落。
+        try:
+            import gc as _gc
+            import time as _time
+            import torch as _torch
+            if _torch.cuda.is_available():
+                _torch.cuda.synchronize()
+                _gc.collect()
+                _torch.cuda.empty_cache()
+                _torch.cuda.synchronize()
+                _free, _total = _torch.cuda.mem_get_info()
+                _free_gib = _free / 2 ** 30
+                _total_gib = _total / 2 ** 30
+                # 阈值：可用显存需 ≥ 总量的 55%（IFRNet 在 1536x1152 下
+                # 需要 TRT engine + 模型 + 多批 pinned/显存缓冲的连续空间）。
+                _need_gib = _total_gib * 0.55
+                if _free_gib < _need_gib:
+                    print(f"   ⚠️ [显存水位] 进入插帧前可用显存偏低: "
+                          f"{_free_gib:.2f} GiB < 需求 {_need_gib:.2f} GiB"
+                          f"（total {_total_gib:.2f} GiB）— 等待回落…", flush=True)
+                    for _i in range(12):          # 最多等 60s
+                        _time.sleep(5)
+                        _gc.collect()
+                        _torch.cuda.empty_cache()
+                        _torch.cuda.synchronize()
+                        _free, _total = _torch.cuda.mem_get_info()
+                        _free_gib = _free / 2 ** 30
+                        if _free_gib >= _need_gib:
+                            break
+                    print(f"   {'✅' if _free_gib >= _need_gib else '⚠️'} [显存水位] "
+                          f"最终可用 {_free_gib:.2f} GiB / {_total_gib:.2f} GiB", flush=True)
+                else:
+                    print(f"   ✅ [显存水位] 进入插帧前可用 {_free_gib:.2f} GiB / "
+                          f"{_total_gib:.2f} GiB（满足 ≥{_need_gib:.2f} GiB）", flush=True)
+        except Exception as _e:
+            print(f"   ⚠️ [显存水位] 检查异常（不阻断流程）: {_e}", flush=True)
+
         # Step 2: IFRNet
         _print_stage(2, "Step 2/2 — IFRNet 插帧", "🎞️", quiet=args.quiet)
         try:
@@ -1808,23 +2031,16 @@ def _merge_and_finalize(config: Config, final_segs, mode: str,
     # copy-by-default：三个输出参数均未在 CLI 中指定时，直接 stream copy
     _use_copy = config.get("output", "use_copy", default=True)
     if _use_copy:
-        print("   ℹ️  未指定 --output-codec/crf/preset，最终合并使用 -c:v copy（不重新编码）")
+        print("   ℹ️  未指定 --output-codec/质量/preset，最终合并使用 -c:v copy（不重新编码）")
         _merge_cfg = {**output_config, "codec": "copy"}
     else:
         _merge_cfg = output_config
 
-    # ── FIX-C: copy 合并前对分段执行 extradata 归一化 ────────────────────────
-    # 消除 NVENC/libx264 多次独立编码导致的 SPS/PPS 不一致与 MP4 时间基差异，
-    # 确保 -c:v copy concat 不因 extradata mismatch 触发 AVERROR_EXIT(254)。
-    # 仅在 use_copy=True 且未指定 --skip-seg-normalize 时执行。
-    # 对 VP9/AV1 等编码自动跳过（不依赖 extradata 机制）。
-    if _use_copy and not getattr(args, "skip_seg_normalize", False):
-        # 从 config 提取最后一个处理阶段的编码器名称，避免重复 ffprobe
-        if mode == "upscale_then_interpolate":
-            _last_codec = config.get("models", "ifrnet",     "codec", default="")
-        else:
-            _last_codec = config.get("models", "realesrgan", "codec", default="")
-        final_segs = _normalize_segs_for_copy(final_segs, codec_hint=_last_codec)
+    # ── [FIX-C] 分段 timescale 归一化（已下沉至 merge_videos_by_codec）──────
+    # 归一化统一由 merge_videos_by_codec 在 copy 合并前执行，使"单阶段"路径
+    # （各 processor 内部合并）与"两阶段"路径（此处最终合并）获得一致保护。
+    # 旧实现只挂在 main 层，单阶段完全无保护；此处仅保留开关。
+    _skip_ts_norm = bool(getattr(args, "skip_seg_normalize", False))
 
     # ── LA 音频同步修正：比较输出时长与预期时长，修剪音频开头 ──────────
     if audio_path and final_segs:
@@ -1837,8 +2053,11 @@ def _merge_and_finalize(config: Config, final_segs, mode: str,
                 if d:
                     output_dur += d
 
-            # 预期时长 = 原始时长（插帧改变帧率，不改变时长）
-            expected_dur = input_dur
+            # 预期时长 = 源"内容时长"（插帧改变帧率，不改变时长）
+            # [FIX-DUR-CONTENT] 源若带非零 start_time（-c copy 剪辑残留），
+            # format.duration 会把它一并算入，而各阶段输出时间轴都从 0 开始，
+            # 直接用会凭空多出这段起始偏移（实测虚增 0.988s）。
+            expected_dur = get_video_content_duration(input_video) or input_dur
 
             # [P1-FIX-LA-ACTUAL] 原实现以"SDK 模块可导入"推断"本次分段确实走了
             # SDK NVENC"——输出≥1080p 时后端自动切 constqp+LA=0，此时高估丢帧；
@@ -1909,21 +2128,62 @@ def _merge_and_finalize(config: Config, final_segs, mode: str,
         final_segs, output_video,
         audio_path=audio_path,
         config=_merge_cfg,
+        # [QUALITY-UNIFY] 显式请求输出编码/质量才重编码；否则 -c:v copy（无损、快）
+        reencode=(not _use_copy),
         actual_output=_actual_out,
+        normalize_timescale=not _skip_ts_norm,
+        # [META-KEEP] 回写原片容器级元数据（tags / creation_time / 旋转 / 位深）
+        source_video=input_video,
     )
     if success and _actual_out:
         output_video = _actual_out[0]
     # [P4-FIX-GATE] 分段通过不代表 concat/remux 没有引入新错误。
     if success and output_video and os.path.exists(output_video):
-        dec_ok, dec_report = validate_decodable_video(output_video)
-        if not dec_ok:
-            print("❌ 最终合并输出解码级验收失败: "
-                  f"decoded={dec_report.get('decoded_frames')} "
-                  f"reason={dec_report.get('reason')}")
-            tail = str(dec_report.get('decode_stderr_tail', '')).strip()
-            if tail:
-                print(f"   ↳ {tail[-500:]}")
-            success = False
+        # [P3-1] 最终输出验收严格度按「是否分段 + 分段是否已逐段解码级验收通过」决定：
+        #   · 分段模式且全部分段已通过逐段解码级验收
+        #       → 合并阶段只做 -c:v copy 不重编码，缺陷只可能出在容器层，
+        #         故最终产物走「容器级校验（不解码）」，避免对同一视频再付
+        #         一次全量解码代价（实测 4K 每次 7~15s，大文件更甚）。
+        #   · 整体处理不分段（时长 <= segment_duration 的直接处理路径），
+        #     或分段验收未全部通过/被 skip_validate 跳过
+        #       → 最终输出是唯一的严格门槛，必须解码级验收（count_mode='decode'）。
+        # 依据由各处理器在 _process_segments 末尾写入（_was_segmented /
+        # _segments_decode_verified）。
+        # 走到本函数的只有两个双步模式（单步模式由 _run_*_only 自行收尾），
+        # 因此 ifrnet_proc 与 esrgan_proc 都实际参与了处理链 —— 要求**两者**
+        # 的产出分段都通过逐段解码级验收，才允许最终产物降级为容器级校验。
+        _participants = [p for p in (ifrnet_proc, esrgan_proc) if p is not None]
+        _seg_verified = bool(_participants) and all(
+            getattr(p, '_was_segmented', False)
+            and getattr(p, '_segments_decode_verified', False)
+            for p in _participants)
+        if _seg_verified:
+            print("🔎 最终输出验收: 分段已逐段解码级验收通过 → 走容器级校验（不解码）")
+            dec_ok, dec_report = validate_decodable_video(
+                output_video, skip_decode_check=True)
+            if not dec_ok:
+                print("❌ 最终合并输出容器级校验失败: "
+                      f"packets={dec_report.get('packets')} "
+                      f"reason={dec_report.get('reason')}")
+                tail = str(dec_report.get('decode_stderr_tail', '')).strip()
+                if tail:
+                    print(f"   ↳ {tail[-500:]}")
+                success = False
+        else:
+            print("🔎 最终输出验收: 未分段或分段验收未全覆盖 → 解码级验收（全解码）")
+            # [PROBE-OPT] 最终交付门强制全解码计数（count_mode='decode'）：
+            # 容器 nb_frames 对"包存在但解码失败/参考链断裂"完全盲区，中间分段
+            # 可用 auto 提速，但最终合并产出必须保留 [P4-FIX-COUNT] 的严格语义。
+            dec_ok, dec_report = validate_decodable_video(output_video,
+                                                          count_mode="decode")
+            if not dec_ok:
+                print("❌ 最终合并输出解码级验收失败: "
+                      f"decoded={dec_report.get('decoded_frames')} "
+                      f"reason={dec_report.get('reason')}")
+                tail = str(dec_report.get('decode_stderr_tail', '')).strip()
+                if tail:
+                    print(f"   ↳ {tail[-500:]}")
+                success = False
     # [P5-FIX-PROVENANCE] 成功时输出 QA/代际侧车，禁止把增强输出当无损原片。
     if success and output_video and os.path.exists(output_video):
         qa_path = Path(str(output_video) + ".qa.json")
@@ -2079,7 +2339,9 @@ ESRGan 模型选项 (--esrgan-model):
                --face-det-threshold / --no-adaptive-batch-esrgan / --gfpgan-trt /
                --report-esrgan / --preview-esrgan / --preview-interval-esrgan
   人脸增强   : --face-enhance / --gfpgan-model / --gfpgan-weight / --gfpgan-batch-size
-  合并输出   : --output-codec / --output-crf / --output-preset
+  合并输出   : --output-codec / --output-crf / --output-cq /
+               --output-crf-ref / --output-cq-ref / --output-preset
+  归一化分段 : --split-codec / --split-crf-ref / --split-cq-ref / --split-preset
   TRT 缓存   : --trt-cache-dir（IFRNet 与 ESRGan 共享同一目录）
   
 使用示例：
@@ -2143,6 +2405,22 @@ ESRGan 模型选项 (--esrgan-model):
                    help="跳过 IFRNet 插帧，仅执行超分")
     g.add_argument("--skip-upscale", action="store_true",
                    help="跳过 Real-ESRGAN 超分，仅执行插帧")
+    g.add_argument("--skip-validate", action="store_true",
+               default=False, help="跳过解码级验收（加速流程，不推荐生产使用）")
+    g.add_argument("--validate-workers", type=int, metavar="N",
+               default=None, help="验收阶段并行度（默认自动：基于 CPU/RAM/GPU 计算）")
+    g.add_argument("--validate-mode", choices=["thread", "process"],
+               default="thread", help="验收并行模式（默认 thread）")
+    g.add_argument("--validate-gpu-workers", type=int, metavar="N",
+               default=None, help="验收 GPU 并发上限（默认自动按 GPU 型号，0=禁用 GPU）")
+    g.add_argument("--auto-parallel", action="store_true",
+               default=True, help="启用自动并行度计算（默认开启）")
+    g.add_argument("--max-parallel-workers", type=int, default=0, metavar="N",
+               help="全局并行度上限（0=不限制，仅受资源约束）")
+    g.add_argument("--normalize-source", action="store_true",
+                   help="处理前把源时间轴归一化为均匀 CFR（按帧号重编号 pts，需一次"
+                        "重编码）。用于修复 VFR 源（时间戳空洞）与首帧非零起始偏移"
+                        "导致的段级帧数验收失败/时长偏差")
 
     # ── 去噪参数（可选前处理阶段）──────────────────────────────────   [V1]
     g = parser.add_argument_group("去噪参数（可选前处理阶段）")
@@ -2178,7 +2456,21 @@ ESRGan 模型选项 (--esrgan-model):
     g.add_argument("--no-audio-ifrnet",      action="store_true",
                    help="IFRNet 分段处理时不保留音轨（主流程会统一处理音频）")
     g.add_argument("--crf-ifrnet",  type=int, metavar="N",
-                   help="IFRNet 分段输出 CRF（0~51，默认 23）")
+                   help="IFRNet 分段输出 CRF 字面量（软编原样下发）。量程随编码器而定"
+                        "（libx264/libx265 0~51、libvpx-vp9 0~63），超限报错退出")
+    g.add_argument("--cq-ifrnet",   type=int, metavar="N",
+                   help="IFRNet 分段输出 CQ 字面量（硬编原样下发）。量程随编码器而定"
+                        "（NVENC 0~51、QSV 1~51、VideoToolbox 1~100），超限报错退出")
+    g.add_argument("--crf-ifrnet-ref", type=int, metavar="N",
+                   help="IFRNet 分段输出质量：以 libx264 CRF 为统一基准（0~51，默认 21），"
+                        "按等效表换算到实际编码器。"
+                        "例：--codec-ifrnet hevc_nvenc --crf-ifrnet-ref 21 → -cq:v 28。"
+                        "与 --crf-ifrnet / --cq-ifrnet 互斥")
+    g.add_argument("--cq-ifrnet-ref",  type=int, metavar="N",
+                   help="IFRNet 分段输出质量：以 h264_nvenc CQ 为统一基准（0~51），"
+                        "按等效表换算到实际编码器。"
+                        "例：--codec-ifrnet hevc_nvenc --cq-ifrnet-ref 26 → -cq:v 28。"
+                        "与 --crf-ifrnet / --cq-ifrnet 互斥")
     g.add_argument("--codec-ifrnet", metavar="CODEC",
                    help="IFRNet 分段输出编码器（默认 libx264，有 NVENC 时自动升级）")
     g.add_argument("--encode-preset-ifrnet", metavar="PRESET",
@@ -2241,7 +2533,21 @@ ESRGan 模型选项 (--esrgan-model):
     g.add_argument("--no-hwaccel-esrgan", action="store_true",
                    help="禁用 ESRGan NVDEC 硬件解码")
     g.add_argument("--crf-esrgan", type=int, metavar="N",
-                   help="ESRGan 分段输出 CRF（0~51，默认 23）")
+                   help="ESRGan 分段输出 CRF 字面量（软编原样下发）。量程随编码器而定"
+                        "（libx264/libx265 0~51、libvpx-vp9 0~63），超限报错退出")
+    g.add_argument("--cq-esrgan",   type=int, metavar="N",
+                   help="ESRGan 分段输出 CQ 字面量（硬编原样下发）。量程随编码器而定"
+                        "（NVENC 0~51、QSV 1~51、VideoToolbox 1~100），超限报错退出")
+    g.add_argument("--crf-esrgan-ref", type=int, metavar="N",
+                   help="ESRGan 分段输出质量：以 libx264 CRF 为统一基准（0~51，默认 21），"
+                        "按等效表换算到实际编码器。"
+                        "例：--codec-esrgan hevc_nvenc --crf-esrgan-ref 21 → -cq:v 28。"
+                        "与 --crf-esrgan / --cq-esrgan 互斥")
+    g.add_argument("--cq-esrgan-ref",  type=int, metavar="N",
+                   help="ESRGan 分段输出质量：以 h264_nvenc CQ 为统一基准（0~51），"
+                        "按等效表换算到实际编码器。"
+                        "例：--codec-esrgan hevc_nvenc --cq-esrgan-ref 26 → -cq:v 28。"
+                        "与 --crf-esrgan / --cq-esrgan 互斥")
     g.add_argument("--codec-esrgan", metavar="CODEC",
                    help="ESRGan 分段输出编码器（默认 libx264，有 NVENC 时自动升级；可选 libx265/h264_nvenc）")
     g.add_argument("--encode-preset-esrgan", metavar="PRESET",
@@ -2304,14 +2610,31 @@ ESRGan 模型选项 (--esrgan-model):
     g.add_argument("--preview-interval-esrgan", type=int, default=30, metavar="N",
                    help="ESRGan 预览帧间隔（每多少帧刷新一次，默认 30）")
 
-    # ── 最终合并输出参数 ─────────────────────────────────────────────────────
+    # ── 最终合并输出参数（环节③）────────────────────────────────────────────
     g = parser.add_argument_group("最终合并输出参数")
     g.add_argument("--output-codec",  metavar="CODEC",
-                   help="最终合并编码器（覆盖配置，默认 libx264）")
+                   help="最终合并编码器（显式指定即触发重编码；'copy' 表示强制直接复制）")
     g.add_argument("--output-crf",    type=int, metavar="N",
-                   help="最终合并 CRF 质量（0~51，覆盖配置，默认 23）")
+                   help="最终合并 CRF 字面量（软编原样下发，量程随编码器）")
+    g.add_argument("--output-cq",     type=int, metavar="N",
+                   help="最终合并 CQ 字面量（硬编原样下发，如 h264_nvenc 0~51）")
+    g.add_argument("--output-crf-ref", type=int, metavar="N",
+                   help="最终合并质量：libx264 CRF 基准 0~51（默认 21），按等效表换算")
+    g.add_argument("--output-cq-ref",  type=int, metavar="N",
+                   help="最终合并质量：h264_nvenc CQ 基准 0~51，按等效表换算")
     g.add_argument("--output-preset", metavar="PRESET",
                    help="最终合并编码预设（如 medium / slow，覆盖配置）")
+
+    # ── 归一化 / 分段参数（环节①）──────────────────────────────────────────
+    g = parser.add_argument_group("归一化 / 分段参数（环节①）")
+    g.add_argument("--split-codec",   metavar="CODEC",
+                   help="源时间轴归一化重编码编码器（默认 libx264）")
+    g.add_argument("--split-crf-ref", type=int, metavar="N",
+                   help="归一化质量：libx264 CRF 基准 0~51（默认 21），按等效表换算")
+    g.add_argument("--split-cq-ref",  type=int, metavar="N",
+                   help="归一化质量：h264_nvenc CQ 基准 0~51，按等效表换算")
+    g.add_argument("--split-preset",  metavar="PRESET",
+                   help="归一化重编码预设（默认 veryfast）")
 
     # ── TRT 缓存目录（全局）─────────────────────────────────────────────────
     g = parser.add_argument_group("TRT Engine 缓存（IFRNet / ESRGan 共用）")
@@ -2334,8 +2657,9 @@ ESRGan 模型选项 (--esrgan-model):
     g.add_argument("--keep-intermediate", action="store_true",
                    help="保留去噪等中间文件（调试用）")
     g.add_argument("--skip-seg-normalize", action="store_true",
-                   help="跳过合并前的分段 extradata 归一化（FIX-C）；"
-                        "调试用，或已确认分段 extradata 完全一致时可跳过以节省时间")
+                   help="跳过合并前的分段 timescale 归一化（FIX-C：统一 MP4 "
+                        "时间基为 90kHz 的零损耗 remux）；调试用，或已确认各分段"
+                        "时间基完全一致时可跳过以节省 I/O")
     g.add_argument("--dry-run", action="store_true",
                    help="仅打印配置和环境信息，不实际处理")
     g.add_argument("--report", metavar="PATH",
@@ -2397,7 +2721,7 @@ def main() -> int:
     _apply_cli_overrides(config, args)
     # [P1-FIX-VALIDATE] CLI 数值参数无 argparse 范围约束，覆盖会绕过加载期校验，
     # 非法值可直达 ffmpeg/NVENC（故障点远离出错原因）。覆盖后重验关键范围。
-    if not _validate_effective_config(config):
+    if not _validate_effective_config(config, args):
         return 2
 
     # [P2.5] 初始化统一日志（控制台兼容 + 可选 UTF-8 文件落盘）

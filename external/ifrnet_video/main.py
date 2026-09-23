@@ -440,6 +440,16 @@ _script_dir = os.path.dirname(os.path.abspath(__file__))
 if _script_dir not in sys.path:
     sys.path.insert(0, _script_dir)
 
+# ── 质量参数统一换算（src/utils/quality_map.py → convert_crf.py）─────────────
+# 换算表在项目里只能有一份。ifrnet_video 是独立包，这里显式把 src/utils 挂进
+# sys.path 复用它，而不是在本包内另存一份 QUALITY_MAP（否则两处刻度会漂移）。
+_UTILS_DIR = os.path.normpath(os.path.join(
+    _script_dir, os.pardir, os.pardir, 'src', 'utils'))
+if os.path.isdir(_UTILS_DIR) and _UTILS_DIR not in sys.path:
+    sys.path.insert(0, _UTILS_DIR)
+
+from quality_map import resolve_quality, to_constqp_qp                   # noqa: E402
+
 from ifrnet_video.config import MODEL_NAME_MAP, MODEL_STRIDE, base_dir, models_ifrnet
 from ifrnet_video.ifrnet_utils import (
     PinnedResultPool,
@@ -479,6 +489,7 @@ from ifrnet_video.pipeline import (
     _compute_max_pair_queue,
     _compute_max_result_queue,
     _detect_hw_profile,
+    detect_scene_cut_pairs,
 )
 from ifrnet_video.tensorrt_accel import TensorRTAccelMixin
 
@@ -506,6 +517,11 @@ class IFRNetVideoProcessor(TensorRTAccelMixin):
         use_hwaccel:      bool = True,
         codec:            str  = 'libx264',
         crf:              int  = 23,
+        # 统一质量基准 / 硬编字面量 cq。四者经 quality_map.resolve_quality()
+        # 换算到**实际生效编码器**的量纲（crf_ref / cq_ref 优先于 crf / cq）。
+        cq:               Optional[int] = None,
+        crf_ref:          Optional[int] = None,
+        cq_ref:           Optional[int] = None,
         encode_preset:    str  = 'medium',
         rate_mode:        str  = _NVENC_LEVEL1_RATE_MODE,
         lookahead_depth:  int  = _NVENC_LEVEL1_LOOKAHEAD,
@@ -530,6 +546,14 @@ class IFRNetVideoProcessor(TensorRTAccelMixin):
         self.use_hwaccel     = use_hwaccel
         self.codec           = codec
         self.crf             = crf
+        # _crf_original 保留用户给出的字面量：self.crf 会被换算结果覆盖，
+        # 换算时必须用原始值，否则跨段会重复换算。
+        self._crf_original   = crf
+        self._cq             = cq
+        self._crf_ref        = crf_ref
+        self._cq_ref         = cq_ref
+        # 换算结果缓存：(生效 codec) -> 值。同一 codec 只换算（并打印）一次。
+        self._resolved_crf_cache: dict = {}
         self.encode_preset   = encode_preset
         self._rate_mode      = rate_mode          # 实例级 rate_mode（可被 processor 层覆盖模块常量）
         self._la_depth       = lookahead_depth    # 实例级 lookahead 深度
@@ -1092,11 +1116,26 @@ class IFRNetVideoProcessor(TensorRTAccelMixin):
         """跨段复用 NVENC 编码器，参数不变时跳过 11 行初始化日志和 DLL 加载。"""
         # [FIX-CODEC-SUPPORT] cache key 加入 codec 维度，防御 h264/hevc/av1 混用复用错误编码器。
         key = (W, H, fps, preset, qp, rate_mode, la_depth, pipeline_depth, codec)
-        if self._cached_nvenc_encoder is not None and self._cached_nvenc_key == key:
+        # [P0-FIX-HEVC-SEGMENT-HANG] HEVC/AV1 默认禁止跨段复用编码器。
+        # 触发链 A/B 已由 [FIX-F0-ALWAYS-IN-BATCH]（f0 不再走 encode_frame）与
+        # [FIX-LA-SLOT-HEADROOM] + [FIX-ESF-NO-LOCK-WHEN-EMPTY]（LA+2 槽、
+        # ready<=0 不 Lock）从源头消除，故禁用降级为保守默认；
+        # IFRNET_NVENC_CROSS_SEGMENT_REUSE=1 放开（A/B 实测用，
+        # 见 Memory/plan_hevc_cross_segment_reuse_restore.md）。
+        _reuse_env = os.environ.get('IFRNET_NVENC_CROSS_SEGMENT_REUSE', '0')  # 默认 '0' = 禁用跨段复用
+        _force_new = (codec in ("hevc", "av1")
+                      and _reuse_env != '1'
+                      and not self._is_first_segment())
+        if (self._cached_nvenc_encoder is not None
+                and self._cached_nvenc_key == key
+                and not _force_new):
             if not self.quiet:
                 print(f'   [NVENC] 复用已激活编码器 ({W}x{H}@{fps:.1f}fps rate={rate_mode} codec={codec})', flush=True)
             return self._cached_nvenc_encoder
         if self._cached_nvenc_encoder is not None:
+            if not self.quiet and _force_new:
+                print(f'   [NVENC] 新建编码器（HEVC/AV1 跨段不复用，规避空槽 LockBitstream 挂死）'
+                      f' ({W}x{H}@{fps:.1f}fps codec={codec})', flush=True)
             self._cached_nvenc_encoder.close()
         encoder = NVENCEncoder(W, H, fps, preset=preset, qp=qp,
                                rate_mode=rate_mode, la_depth=la_depth,
@@ -1209,6 +1248,28 @@ class IFRNetVideoProcessor(TensorRTAccelMixin):
         result_queue_override: Optional[int] = None,
         t3_fps_measured:       float = 0.0,   # [FIX-T3-FPS] 跨段实测 T3 fps
     ) -> Tuple[bool, int, int]:
+        # [FIX-SCENE-CUT-EOF] 段前一次性切镜预扫描 —— 必须在 FFmpegFrameReader
+        # 创建**之前**完成。
+        #
+        # 原因（实测 2026-09-05 定位）：detect_scene_cut_pairs() 会拉起第二个
+        # ffmpeg 解码同一输入。若在 reader 的 ffmpeg 子进程已经启动之后再跑，
+        # 两个 1536x1152 HEVC 解码进程争抢 CPU/内存，reader 侧因取帧超时被
+        # 判定为「提前 EOF」，直接导致本段丢帧：
+        #   检测耗时 1.6s(768x576)  → 无丢失
+        #   检测耗时 5.2s(1536x1152)→ 丢失 17.4%（预期408/实际读取337）
+        #   检测耗时 115.4s(1536x1152)→ 丢失 51.4%（预期9110/实际读取4425）
+        # 丢失后进而触发「输出帧数严重不足 ... (缺 16.0 帧)」→ 段失败 → exit=1。
+        #
+        # 开关：IFRNET_SCENE_CUT_FIX=0 关闭（退化为修复前行为）。
+        _cut_pairs_pre: set = set()
+        if os.environ.get('IFRNET_SCENE_CUT_FIX', '1') not in ('0', 'false', 'False'):
+            _t_cut = time.time()
+            _cut_pairs_pre = detect_scene_cut_pairs(input_path)
+            if _cut_pairs_pre:
+                print(f'[切镜检测] {os.path.basename(input_path)}: '
+                      f'{len(_cut_pairs_pre)} 处硬切镜，将跳过插值 '
+                      f'(耗时 {time.time()-_t_cut:.1f}s, reader 启动前完成)', flush=True)
+
         reader = FFmpegFrameReader(
             input_path,
             frame_start  = frame_start,
@@ -1244,6 +1305,8 @@ class IFRNetVideoProcessor(TensorRTAccelMixin):
         use_codec, use_extra = self._select_encoder_codec(codec_override,
                                                           extra_codec_args,
                                                           worker_label)
+        # [QUALITY-UNIFY] 编码器已定 → 把质量参数换算到该编码器的量纲
+        self._resolve_effective_crf(use_codec, worker_label)
 
         # [FIX-TSTART] 含 warmup 的端到端计时
         t_start = time.time()
@@ -1335,6 +1398,10 @@ class IFRNetVideoProcessor(TensorRTAccelMixin):
                 ffmpeg_bin       = self.ffmpeg_bin,
                 quiet            = self.quiet,
                 rc_mode          = _level1_rate,
+                # [QUALITY-UNIFY] 透传 processor 的 lookahead_depth：
+                # 旧实现 Level 2 恒用模块常量 _NVENC_LOOKAHEAD_VBR，
+                # --lookahead-depth-ifrnet 只对 SDK Level 1 生效（两侧不一致）。
+                lookahead_depth  = getattr(self, '_la_depth', None),
             )
         # [FIX-NVENC-AWARE] 保存实际使用的编码器，供段后诊断代码使用
         self._last_used_codec = use_codec
@@ -1367,17 +1434,43 @@ class IFRNetVideoProcessor(TensorRTAccelMixin):
                 if _nvenc_encoder is not None:
                     first_gpu = torch.from_numpy(first).cuda()
                     first_nv12 = _rgb_to_nv12_gpu(first_gpu, input_is_bgr=False)
+                    # [FIX-F0-NV12-STREAM-SYNC] 首帧 NV12 产出后必须同步当前 PyTorch 流。
+                    #
+                    # _rgb_to_nv12_gpu() 是**异步**的：它在 PyTorch 当前流上排入十余个
+                    # elementwise kernel（Y/Cb/Cr 计算、2x2 降采样、UV 交织、torch.cat），
+                    # 返回的 tensor 此刻尚在写入中。而 NVENC 的输入拷贝走
+                    # self._stream_encode —— 一条 cuStreamCreate(NON_BLOCKING) 私有流
+                    # （[FIX-ASYNC-COPY]），它与 PyTorch 流之间**没有任何依赖边**：
+                    # cuStreamSynchronize(self._stream_encode) 只等私有流自身的拷贝，
+                    # 不会等 PyTorch 流上的 NV12 kernel。
+                    #
+                    # 段首这段窗口尤其危险：f0 的 NV12 kernel 刚入队，紧接着就是
+                    # PinnedResultPool 重建 + 流水线冷启动，等到第一个 batch 把 f0 取走
+                    # 编码时，kernel 可能仍未落盘 → NVENC 读到未初始化/半写完的输入面
+                    # → 段首帧被编码成噪声。实测特征：CONSTQP QP=21 下段首 IDR 从正常
+                    # ~71KB 膨胀到 ~375KB（噪声不可压缩），解码后上半幅麻布状网格花屏
+                    # （new5.mp4 两轮复现，均落在 concat frame 1219 = segment_002 帧 0）。
+                    #
+                    # 批量路径（pipeline.py [FIX-ENC-THREAD]）在 _rgb_to_nv12_gpu_batch()
+                    # 之后已有 torch.cuda.current_stream().synchronize()，此处对齐补上。
+                    # 每段仅一次，开销可忽略。
+                    if os.environ.get('IFRNET_F0_NV12_SYNC', '1') != '0':
+                        torch.cuda.current_stream().synchronize()
                     force_idr_f0 = not self._is_first_segment()
-                    if _nvenc_encoder._la_depth > 0:
-                        # [FIX-F0-IN-BATCH] LA>0 时 encode_frame 返回 0 bytes（LA 缓冲），
-                        # 将 f0 NV12 tensor 暂存 encoder，由编码线程插入累积 batch 开头。
-                        _nvenc_encoder._pending_f0_nv12 = first_nv12
-                        _nvenc_encoder._pending_f0_force_idr = force_idr_f0
-                    else:
-                        # LA=0: 无缓冲延迟，直接 encode_frame 即可返回数据
-                        h264_data = _nvenc_encoder.encode_frame(first_nv12, force_idr=force_idr_f0)
-                        writer.write(h264_data)
-                        output_count += 1
+                    # [FIX-F0-ALWAYS-IN-BATCH] 无论 LA 深度，f0 一律暂存 encoder，
+                    # 由首个 batch 的 CE pipeline 插入批开头处理（见 nvenc_sdk
+                    # encode_frames_batch_ce_pipeline 的 [FIX-F0-IN-BATCH-CE]）。
+                    #
+                    # 原 LA=0 分支走 encode_frame() 单帧路径：提交 1 帧后立即
+                    # _drain_outputs_blocking()，没有 per-slot pending 追踪，于是
+                    #  · HEVC/AV1：对上一段残留的异常槽调用 LockBitstream 时 T4 驱动
+                    #    不返回（无视 doNotWait）→ 段间挂死，GPU 0% / 显存不回落；
+                    #  · 所有 codec：drain 遇 code=8 直接 break，该帧被写成"仅含
+                    #    参数集"的无效包 → 每段"差 -1.0 帧"。
+                    # 超分侧 realesrgan_video 从不调用 encode_frame()，因而不存在这两
+                    # 个问题 —— 此处照搬其已验证设计：f0 纳入 batch。
+                    _nvenc_encoder._pending_f0_nv12 = first_nv12
+                    _nvenc_encoder._pending_f0_force_idr = force_idr_f0
                 else:
                     writer.write(first)
                     output_count += 1
@@ -1415,6 +1508,12 @@ class IFRNetVideoProcessor(TensorRTAccelMixin):
                 result_queue_override = result_queue_override,
                 t3_fps_measured       = t3_fps_measured,   # [FIX-T3-FPS]
             )
+
+            # [FIX-SCENE-CUT-EOF] 切镜集合已在 FFmpegFrameReader 创建**之前**
+            # 算好（见本函数开头的 [FIX-SCENE-CUT-EOF] 注释：晚于此会与 reader
+            # 的 ffmpeg 子进程争抢资源，导致提前 EOF 丢帧）。此处仅挂到 pipeline。
+            pipeline._cut_pairs = _cut_pairs_pre
+            pipeline._pair_cursor = 0
             try:
                 fc_extra, oc_extra = pipeline.run(
                     reader            = reader,
@@ -1448,6 +1547,11 @@ class IFRNetVideoProcessor(TensorRTAccelMixin):
                     if _leftover:
                         writer.write(_leftover)
                 # [SEGMENT-REUSE] 编码器跨段复用，仅 flush 不 close；由 cleanup() 统一销毁
+            # [FIX-SCENE-CUT-GHOST] 汇总本段切镜替换情况
+            if getattr(pipeline, '_cut_pairs', None):
+                print(f'[切镜检测] 本段共替换 {pipeline._cut_replaced}/'
+                      f'{len(pipeline._cut_pairs)} 处切镜插值帧（帧数守恒 2N-1 不变）',
+                      flush=True)
             # [GPU-MONITOR-v2] 保存实际队列深度，供 print_report() 调优建议使用
             self._record_pipeline_diagnostics(pipeline, effective_bs, H, W,
                                               pad_h, pad_w, timesteps)  # [P3.1-SPLIT]
@@ -1627,6 +1731,39 @@ class IFRNetVideoProcessor(TensorRTAccelMixin):
                 print(f'\n[{worker_label}] NVENC 编码已激活: {use_codec}')
         return use_codec, use_extra
 
+    def _resolve_effective_crf(self, use_codec: str, worker_label: str) -> int:
+        """[QUALITY-UNIFY] 把 crf / cq / crf_ref / cq_ref 换算到 use_codec 的量纲。
+
+        必须在**实际生效编码器**确定之后调用：若 codec 被 best_encoder 自动升级
+        或降级（如 libx264 → h264_nvenc），用户给的字面量按其原量纲做等效换算，
+        而不是被当作同一刻度静默下发（此前同一 crf 数字直接喂给 -cq:v，画质
+        漂移约 ±7 档）。
+
+        换算结果写入 self.crf，下游 FFmpegWriter（Level 2/3）与 NVENC SDK
+        Level 1 直通路径都读它，无需额外改动。
+        """
+        if use_codec in self._resolved_crf_cache:
+            self.crf = self._resolved_crf_cache[use_codec]
+            return self.crf
+
+        # config 里 crf 恒有默认值，若不剔除，它会抢先命中"字面量同族 → 原样
+        # 下发"分支，把用户显式给的 --cq 静默吞掉。给了 cq 就不再把 crf 当字面量。
+        _crf_literal = None if self._cq is not None else self._crf_original
+
+        _param, value, _extra, note = resolve_quality(
+            use_codec,
+            crf=_crf_literal,
+            cq=self._cq,
+            crf_ref=self._crf_ref,
+            cq_ref=self._cq_ref,
+        )
+        if value != self._crf_original or use_codec != str(self.codec).lower():
+            print(f'[{worker_label}] 质量参数解析: {self.codec} → {use_codec}，'
+                  f'{note} → {_param} {value}', flush=True)
+        self._resolved_crf_cache[use_codec] = value
+        self.crf = value
+        return value
+
     def _setup_level1_nvenc(self, W: int, H: int, new_fps: float,
                             output_path: str, audio_src: Optional[str],
                             use_codec: str):
@@ -1659,6 +1796,13 @@ class IFRNetVideoProcessor(TensorRTAccelMixin):
             _level1_qp = self.crf
             _level1_rate = getattr(self, '_rate_mode', _NVENC_LEVEL1_RATE_MODE)
             _level1_la = getattr(self, '_la_depth', _NVENC_LEVEL1_LOOKAHEAD)
+
+        # [QUALITY-UNIFY] CONSTQP 与 CQ/targetQuality 是两条刻度：self.crf 始终位于
+        # 生效编码器的 CQ 轴上（vbr_hq/qvbr 的 targetQuality/qvbrQuality 刻度），
+        # 切到 CONSTQP 后 NVENC 会把同一数值当作真实 QP 使用 → 画质偏松。
+        # 这里按 constqp 轴换算回真实 QP（qp=0 的无损语义保持不变）。
+        if _level1_rate == "constqp" and _level1_qp > 0:
+            _level1_qp = to_constqp_qp(use_codec, _level1_qp)
 
         # CONSTQP 硬件静默禁用 LA；决策层清零避免 [NVENC] 日志和 cache key 携
         # 带无意义的 LA 值（NVENCEncoder 内部也会清零，但决策层需保证自身一致性）。
@@ -2180,6 +2324,12 @@ def main():
     # 编码参数
     parser.add_argument('--codec',       default='libx264')
     parser.add_argument('--crf',         type=int, default=23)
+    parser.add_argument('--cq',          type=int, default=None,
+                        help='硬编字面量 CQ（0~51，原样下发）')
+    parser.add_argument('--crf-ref',     type=int, default=None,
+                        help='以 libx264 CRF 为统一基准（0~51），按等效表换算到实际编码器')
+    parser.add_argument('--cq-ref',      type=int, default=None,
+                        help='以 h264_nvenc CQ 为统一基准（0~51），按等效表换算到实际编码器')
     parser.add_argument('--encode-preset', type=str, default='medium',
                         choices=['ultrafast','superfast','veryfast','faster','fast',
                                  'medium','slow','slower','veryslow'])
@@ -2287,6 +2437,9 @@ def main():
         use_hwaccel    = not args.no_hwaccel,
         codec          = args.codec,
         crf            = args.crf,
+        cq             = args.cq,
+        crf_ref        = args.crf_ref,
+        cq_ref         = args.cq_ref,
         encode_preset  = args.encode_preset,
         keep_audio     = not args.no_audio,
         ffmpeg_bin     = args.ffmpeg_bin,
@@ -2315,4 +2468,11 @@ def main():
 
 
 if __name__ == '__main__':
+    # [FIX-STDIN-TTOU] 直接以本包为入口时同样加固 fd0（后台进程组 + tty stdin
+    # 会让子 ffmpeg 被 SIGTTOU 停住）。经 src/ 下处理器驱动时由上层入口负责。
+    try:
+        from stdin_hardening import detach_background_stdin
+        detach_background_stdin()
+    except Exception:
+        pass
     main()

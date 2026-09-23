@@ -24,6 +24,13 @@ class Config:
             "auto_fix_corrupted":   False,
             "auto_cleanup_temp":    True,
             "batch_mode":           False,
+            "max_upscale_then_interpolate_pixels": 8294400,   # 4K UHD 3840×2160
+            "skip_validate":        False,
+            "validate_workers":     None,
+            "validate_mode":        "thread",
+            "validate_gpu_workers": None,
+            "auto_parallel":        True,
+            "max_parallel_workers": 0,
         },
         "paths": {
             "base_dir":    "",
@@ -52,8 +59,15 @@ class Config:
                 "use_hwaccel":    True,
                 "codec":          "libx264",
                 "crf":            18,
+                # crf_ref: 统一质量基准（libx264 CRF 轴，0-51）。设置后优先于 crf，
+                # 由 src/utils/quality_map.py 按 QUALITY_MAP 换算到实际编码器
+                # （例：基准 21 → libx264 -crf 21 / hevc_nvenc -cq:v 28）。
+                "crf_ref":        21,
                 "keep_audio":     True,
                 "ffmpeg_bin":     "ffmpeg",
+                # v5 NVENC 码率控制（与 realesrgan 段保持一致的 vbr_hq / 8）
+                "rate_mode":       "vbr_hq",
+                "lookahead_depth": 8,
                 # 性能报告
                 "report_json":    None,
             },
@@ -88,7 +102,12 @@ class Config:
                 "codec":          "libx264",   # 底层 argparse 使用的字段名（与 ifrnet 统一为 codec）
                 "encode_preset":  "medium",
                 "crf":            23,
+                # crf_ref: 统一质量基准（libx264 CRF 轴，0-51），优先于 crf
+                "crf_ref":        21,
                 "ffmpeg_bin":     "ffmpeg",
+                # v6 NVENC 码率控制（与 ifrnet 段保持一致的 vbr_hq / 8）
+                "rate_mode":       "vbr_hq",
+                "lookahead_depth": 8,
                 # v6 预览与报告
                 "preview":         False,
                 "preview_interval": 30,
@@ -99,13 +118,29 @@ class Config:
             "format":        "mp4",
             "codec":         "libx264",
             "preset":        "medium",
-            "crf":           18,
+            # [QUALITY-UNIFY] 质量四键互斥、基准轴优先；均未给时按基准 crf_ref=21 换算。
+            # use_copy=True（默认）：最终合并走 -c:v copy（无损、快），仅在显式指定
+            # --output-codec / 质量参数 / preset 时才重编码。
+            "crf":           None,
+            "cq":            None,
+            "crf_ref":       21,
+            "cq_ref":        None,
+            "use_copy":      True,
             "pix_fmt":       "yuv420p",
             "audio_format":  "smart",
             "audio_codec":   "copy",
             "audio_bitrate": "192k",
             # extract_audio() 内部读取 config.get('bitrate')，与 audio_bitrate 保持一致
             "bitrate":       "192k",
+        },
+        # [QUALITY-UNIFY] 环节① 源时间轴归一化（--normalize-source）的重编码质量
+        "split": {
+            "codec":   "libx264",
+            "preset":  "veryfast",
+            "crf":     None,
+            "cq":      None,
+            "crf_ref": None,   # None → resolve_quality 使用默认基准 21
+            "cq_ref":  None,
         },
         "temp_files": {
             "segment_prefix":    "segment_",
@@ -224,8 +259,10 @@ class Config:
         if not ifrnet_model_path or not isinstance(ifrnet_model_path, str) or ifrnet_model_path.strip() == "":
             # model_path 是必须字段：IFRNetVideoProcessor 直接调用 torch.load(model_path)
             # 空值无前置校验，会在模型加载阶段抛出 FileNotFoundError
+            # 使用 model_name 派生路径（而非硬编码），避免 --ifrnet-model 指定其他模型时仍加载 S 权重
+            _model_name = ifrnet_cfg.get("model_name", "IFRNet_S_Vimeo90K")
             ifrnet_cfg["model_path"] = str(
-                base_dir / "models_IFRNet" / "checkpoints" / "IFRNet_S_Vimeo90K.pth"
+                base_dir / "models_IFRNet" / "checkpoints" / f"{_model_name}.pth"
             )
             print(f"   ℹ️  IFRNet 模型路径已自动派生: {ifrnet_cfg['model_path']}")
 
@@ -316,6 +353,31 @@ class Config:
         
         print(f"✅ 配置已保存到: {output_path}")
     
+    def _derive_model_paths(self, base_dir: Path):
+        """
+        根据 model_name 派生 model_path（用于 CLI 覆盖后重新计算）。
+        """
+        ifrnet_cfg = self.config["models"]["ifrnet"]
+        esrgan_cfg = self.config["models"]["realesrgan"]
+
+        # IFRNet: model_path 为空时按 model_name 派生
+        ifrnet_model_path = ifrnet_cfg.get("model_path")
+        if not ifrnet_model_path or not isinstance(ifrnet_model_path, str) or ifrnet_model_path.strip() == "":
+            _model_name = ifrnet_cfg.get("model_name", "IFRNet_S_Vimeo90K")
+            ifrnet_cfg["model_path"] = str(
+                base_dir / "models_IFRNet" / "checkpoints" / f"{_model_name}.pth"
+            )
+            print(f"   ℹ️  IFRNet 模型路径已自动派生: {ifrnet_cfg['model_path']}")
+
+        # RealESRGAN: model_path 为空时按 model_name 派生
+        esrgan_model_path = esrgan_cfg.get("model_path")
+        if not esrgan_model_path or not isinstance(esrgan_model_path, str) or esrgan_model_path.strip() == "":
+            esrgan_cfg["model_path"] = str(
+                base_dir / "models_RealESRGAN"
+                / (esrgan_cfg.get("model_name", "realesr-general-x4v3") + ".pth")
+            )
+            print(f"   ℹ️  RealESRGAN 模型路径已自动派生: {esrgan_cfg['model_path']}")
+
     def get_temp_dir(self, subdir: str = "") -> Path:
         """
         获取临时目录路径

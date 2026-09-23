@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Test: verify chroma checking in verify_segment_bitstream_v4.py.
+Test: verify chroma checking in verify_segment_bitstream_v5.py.
 
 Tests two scenarios:
 1. Normal video with random noise -> should NOT trigger false positive (bad_count < 3)
@@ -17,6 +17,24 @@ import tempfile
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+
+def _load_chroma_check():
+    """[FIX-VERIFY-RENAME] 取 check_chroma_corruption。
+
+    2026-09-15 起该验收脚本在生产侧已改名为 `verify_segment_bitstream_v5.py`
+    （内容与旧 `..._v4.py` 逐字节相同，见 Plan/门禁与测试资产纳管清理_立项Prompt.md）。
+    这里做**双名兼容**，避免改名期间任一侧缺失导致本测试 ModuleNotFoundError。
+    """
+    import importlib
+    last = None
+    for _name in ("verify_segment_bitstream_v5", "verify_segment_bitstream_v4"):
+        try:
+            return getattr(importlib.import_module(_name), "check_chroma_corruption")
+        except (ImportError, AttributeError) as e:
+            last = e
+    raise ImportError("找不到 verify_segment_bitstream_v5 / _v4 里的 "
+                      "check_chroma_corruption: %s" % last)
 
 
 def make_yuv420_frame(width, height, frame_idx, rng, chroma_std=25.0):
@@ -134,7 +152,7 @@ def test_normal_video_no_false_positive():
         write_yuv_then_encode(raw_path, video_path, 120, 640, 360, generate_normal_frame, rng)
         os.unlink(raw_path)
 
-        from verify_segment_bitstream_v4 import check_chroma_corruption
+        check_chroma_corruption = _load_chroma_check()
         result = check_chroma_corruption(video_path, hwaccel=False, n_shards=1)
         assert result is not None, "check_chroma_corruption returned None"
 
@@ -162,7 +180,7 @@ def test_corrupted_video_detected():
         write_yuv_then_encode(raw_path, video_path, 120, 640, 360, generate_corrupted_frame, rng)
         os.unlink(raw_path)
 
-        from verify_segment_bitstream_v4 import check_chroma_corruption
+        check_chroma_corruption = _load_chroma_check()
         result = check_chroma_corruption(video_path, hwaccel=False, n_shards=1)
         assert result is not None, "check_chroma_corruption returned None"
 

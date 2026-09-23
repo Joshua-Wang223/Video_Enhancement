@@ -110,3 +110,22 @@ tests/diagnose_hevc_la.py 增加"槽位放弃后继续提交"变体，复现 CRA
 - 备份对照：Video_Enhancement.bak20260824/temp/benchmark_ww2/（hevc vbr_hq la8/la16）
 - 用户更正：word_world seg003（h264 21帧）属另一次测试；两次测试均 LA=8；
   temp/word_world_2.mp4 是本次合并输出，原视频在 input_videos/。
+
+## 修复落地与验证状态（2026-08-27/28 更新）
+
+- **Fix-1（水彩根治）已落地**：[P1-FIX-H2D-EVENT-SYNC] —— pipeline.py
+  `_try_prefetch_next` 在 stream_h2d 上按槽 record_event；`PinnedBufferPool.get_for_frames`
+  覆写前对在途槽 event 同步（同步路径 frames_to_tensor 共享）。
+- **Fix-3（短期规避）经历两阶段**：先以 config 默认 `constqp + LA=0` +
+  `hevc_la_disable` 规避路由止血（2026-08-27/28 生产验证：verify_plan 93 项 0 失败、
+  verify_segment_bitstream_v4 双视频全 PASS、
+  `verification_report/水彩花屏修复验证报告_20260828.md`）；2026-08-28 随 HEVC LA
+  完全根治转为软退役（[[hevc-la-open-production]]）。
+- **Fix-4（验收门禁升级）已落地**：video_utils `validate_decodable_video` /
+  `count_decoded_video_frames`；verify_plan RT-4 解码级帧数守恒 + RT-5 解码错误
+  零容忍 + FIX-GATE（F-修复效果 phase）。
+- **Fix-5 部分落地**：doNotWait=1 未回退，改用 [P3-FIX-LockBitstream-SizeCap]
+  垃圾块 size 上限钳制兜底；[P3-FIX-NAL-COMMON] 切 nal_utils 修复 HEVC 参数集
+  识别（"Cached SPS+PPS" 33B→101B）；[P2.3-LA-PINNED-REUSE] 池深公式仍未改（潜伏项）。
+- **Fix-2（CRA 重启组专项定位）**：未单独立项推进，由 EOS 排空硬化
+  （P2-FIX-EOS-OUTPUT-ORDER / P2-FIX-STRICT-EOS）与解码级门禁覆盖，生产回归未再复现。

@@ -597,6 +597,10 @@ python src/main_video_optimized.py -i input.mp4 -o output.mp4 --dry-run
 
 适用于**低分辨率**视频（<1080p），优先提升画质；或需要人脸增强（减轻人脸增强所需的高计算量）。插帧基于高分辨率帧，光流估计更精确。
 
+> ⚠️ **自动保护（2026-08-29 起）**：当「超分后像素数」超过 `processing.max_upscale_then_interpolate_pixels`（默认 `3670016`，即 2560×1440）时，引擎会**自动切换**为 `interpolate_then_upscale` 并打印强烈警告。
+> 原因：高分辨率插帧（如 1440p）在 T4 级 GPU 上 IFRNet 跟不上 NVDEC 供料，会触发早期 EOF / 帧丢失（实测 bs=12 缺 58.3%、bs=6 缺 8.3%）。
+> 需要强制使用本模式：将 `max_upscale_then_interpolate_pixels` 设为 `0`（禁用自动切换，需自行评估显存与吞吐风险）；A10/A100 等高端 GPU 可调大阈值（如 `8000000` ≈ 4K）。
+
 ---
 
 ## 处理示例
@@ -605,6 +609,8 @@ python src/main_video_optimized.py -i input.mp4 -o output.mp4 --dry-run
 
 **场景**：720p 真人视频，30fps，需提升分辨率至 1440p 并开启人脸精修。  
 **策略**：先超分（`upscale_then_interpolate`），画质优先；GFPGAN 1.4 融合权重 0.7 + 检测阈值 0.7 过滤模糊人脸；TRT 加速加快推理；缓存目录统一指定，Engine 构建一次全程复用。
+
+> 注：720p ×2 超分后为 2560×1440，会触发默认的自动保护阈值（3670016）而切换为 `interpolate_then_upscale`。若确需保持「先超分再插帧」，请在配置中将 `max_upscale_then_interpolate_pixels` 设为 `0`（需自行评估显存与吞吐风险），或改用 1080p 及以下的目标分辨率。
 
 ```bash
 python src/main_video_optimized.py \
@@ -860,7 +866,8 @@ IFRNet v6.4.x NVENC SDK Level 1 GPU 直通 + CE-Pipeline 异步编码相比旧�
     "segment_duration": 30,
     "auto_fix_corrupted": false,
     "auto_cleanup_temp": true,
-    "batch_mode": false
+    "batch_mode": false,
+    "max_upscale_then_interpolate_pixels": 3670016
   },
   "paths": {
     "base_dir": "",
@@ -889,7 +896,11 @@ IFRNet v6.4.x NVENC SDK Level 1 GPU 直通 + CE-Pipeline 异步编码相比旧�
       "x264_preset": "medium",
       "keep_audio": true,
       "ffmpeg_bin": "ffmpeg",
-      "report_json": null
+      "report_json": null,
+      "rate_mode": "constqp",
+      "lookahead_depth": 0,
+      "hevc_la_disable": false,
+      "prefetch_event_sync": true
     },
     "realesrgan": {
       "model_name": "realesr-general-x4v3",
@@ -921,7 +932,10 @@ IFRNet v6.4.x NVENC SDK Level 1 GPU 直通 + CE-Pipeline 异步编码相比旧�
       "ffmpeg_bin": "ffmpeg",
       "preview": false,
       "preview_interval": 30,
-      "report_json": null
+      "report_json": null,
+      "rate_mode": "constqp",
+      "lookahead_depth": 0,
+      "hevc_la_disable": false
     }
   },
   "output": {
@@ -958,6 +972,11 @@ IFRNet v6.4.x NVENC SDK Level 1 GPU 直通 + CE-Pipeline 异步编码相比旧�
 > - `realesrgan`：默认 `batch_size` **24**、`prefetch_factor` **96**、`use_tensorrt` **false**；`video_codec` 为底层主键，`codec` 为兼容别名。
 > - `realesrgan.gfpgan_weight` / `gfpgan_batch_size` / `face_det_threshold`：与当前 JSON 一致（如权重 0.7、GFPGAN 批 4、检测阈值 0.7）；`preview` / `report_json` 控制实时预览与性能报告路径。
 > - `output`：最终合并采用 **copy-by-default** 策略（未指定 `--output-codec/crf/preset` 时自动 `-c:v copy`，不重新编码），`audio_format: smart`、`audio_codec: copy` 等为默认智能/无损回写策略。
+> - NVENC 码率控制：`rate_mode`（`constqp` 最快/最低延迟 | `vbr_hq` CQ 质量优先 | `qvbr`）与 `lookahead_depth`（LA 仅在 VBR_HQ/QVBR 下生效，CONSTQP 下硬件静默禁用）；输出 ≥1080p 时 ESRGAN 后端自动切 constqp+LA=0（FIX-HIGHRES-RC）。
+> - `hevc_la_disable`：HEVC LA 应急开关（软退役语义）。`hevc_nvenc + VBR_HQ/QVBR + LA>0` 已由 FIX-HEVC-COUNTED/EOS/EOS-FLUSH 生产验证并通过 T4 三路对照（hevc LA=8 / hevc LA=0 / h264 LA=8）码流验收，故默认 `false`；命中 `true` 时仅告警不降级。异常回滚：显式置 `true` 或 `NVENC_HEVC_ALLOW_LA=0`。
+> - `prefetch_event_sync`（IFRNet）：H2D 预取 pinned 槽事件同步开关（默认开启，消除跨批 pinned 覆写竞态导致的"水彩"花屏）。
+> - `max_upscale_then_interpolate_pixels`：`upscale_then_interpolate` 自动保护阈值（默认 `3670016` ≈ 2560×1440），超分后像素超阈值即自动切 `interpolate_then_upscale` 并告警；`0` 表示禁用自动切换。详见「处理模式 → 模式 2」。
+> - `model_name` / `model_path`：模型路径由 `model_name` 自动派生（如 `models_IFRNet/checkpoints/IFRNet_S_Vimeo90K.pth`），CLI `--ifrnet-model` 覆盖后会重新派生；显式 `--ifrnet-model-path` 优先级最高。
 > - `temp_files`：分段与中间文件命名前缀；`logging`：日志级别与输出目标。
 
 完整配置说明见 [GUIDE.md](GUIDE.md)。

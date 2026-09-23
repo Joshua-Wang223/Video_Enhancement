@@ -380,6 +380,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import functools
 import json
 import os
 import queue
@@ -1193,7 +1194,17 @@ class NVENCEncoder:
         if rate_mode == "constqp":
             la_depth = 0  # 硬件静默禁用 LA，此处显式清零
             self._la_depth = 0  # 同步更新实例变量，确保后续代码路径与 Ready 日志一致
-        _required_buffers = max(1, la_depth + 1)  # SDK 硬件安全要求: buffer 数 >= LA+1
+        # [FIX-LA-SLOT-HEADROOM] 实测（T4 / HEVC / VBR_HQ / LA=8，py-spy + trace 定位）：
+        # 提交 gfi k 之后，gfi (k - la_depth) 并非立刻可 LockBitstream 取回 —— 实际
+        # LA 输出延迟是 la_depth+1：提交 gfi 8（frame_idx=9）时锁 slot 0 仍返回
+        # NEED_MORE_INPUT。故 "buffers >= LA+1" 只是驱动不报错的下限，不是"物理槽
+        # 可安全复用"的下限。当 _slot_count == LA+1 时余量为 0：slot 0 在
+        # frame_idx=LA+1 就要被复用，而其上一任 gfi 0 要到 frame_idx=LA+2 才就绪
+        # → _ensure_slot_free(0) 要求"先排空 gfi 0 才能提交"，而排空又需更多提交
+        # → 提交↔排空循环依赖 → 编码线程在 LockBitstream 内永久阻塞 → 写线程卡在
+        # submit() → 外层报"写线程在 140s 内未退出（疑似死锁）"。
+        # 修复：物理槽下限提到 LA+2，预留 1 帧余量，从结构上消除该循环依赖。
+        _required_buffers = max(1, la_depth + 2)  # LA 输出延迟实测 = LA+1，+1 为安全余量
         _slot_count = max(pipeline_depth, _required_buffers)
 
         print("[NVENCEncoder] %s + LA=%d: %d slots (HW pipeline buffers>=%d)" %
@@ -2097,7 +2108,24 @@ class NVENCEncoder:
         """
         _guard = 0
         while self._strm_slot_pending.get(slot_idx):
-            _drained = self._drain_outputs_blocking(max_slots=1)
+            # [FIX-ESF-NO-LOCK-WHEN-EMPTY] HEVC/AV1 驱动对"未就绪 / 空"槽的
+            # LockBitstream 会永久不返回（doNotWait=0 与 doNotWait=1 均实测挂死；
+            # py-spy 现场：NVENC-Enc active @ _drain_outputs_blocking → lock_bs_fn）。
+            # 本函数是唯一在"提交新帧之前"无条件发起 Lock 的站点，先算出
+            # "已就绪但未取回"的帧数上界（与 encode_frames_stream 的
+            # [FIX-HEVC-COUNTED] 同口径）：ready<=0 说明硬件此刻没有任何可 Lock
+            # 的输出，等待也无意义（排空需要更多提交，而提交正被本函数阻塞 →
+            # 循环依赖）。此时绝不发起任何 Lock，直接落到下方空帧占位兜底。
+            # 注：pending 非空 ⟹ frame_idx > output_slot_idx ⟹ LA=0 时 ready 恒 > 0，
+            # 因此 H.264/LA=0 原有行为完全不变。
+            _ready = self._frame_idx - self._la_depth - self._output_slot_idx
+            if _ready <= 0:
+                _guard = self._slot_count * 4 + 1
+                _drained = []
+                _allow_probe = False
+            else:
+                _drained = self._drain_outputs_blocking(max_slots=1)
+                _allow_probe = True
             if _drained:
                 # [FIX-AUX-NO-CLEAR] 辅助块会被 _apply_drained_entries 跳过
                 # （不 pop），但物理轮转指针已推进 —— 循环继续直至目标槽排空。
@@ -2109,10 +2137,21 @@ class NVENCEncoder:
                 # [FIX-SLOT-DRAIN-TARGET] 轮转探测无法触达目标槽（LA 重路由/
                 # 辅助块使目标槽输出晚于其他槽就绪）→ 直接对目标槽自身做
                 # blocking LockBitstream（doNotWait=0）。
-                _h264_t, _st_t = self._lock_bitstream_blocking(
-                    self._slots[slot_idx]['bs_buf'], timeout_ms=2000)
+                # [FIX-ESF-NO-LOCK-WHEN-EMPTY] ready<=0 时禁止该探测（同样会挂死）。
+                _h264_t, _st_t = (b"", 0)
+                if _allow_probe:
+                    _h264_t, _st_t = self._lock_bitstream_blocking(
+                        self._slots[slot_idx]['bs_buf'], timeout_ms=2000)
                 if _h264_t:
+                    # [FIX-ESF-PROBE-ADVANCE] 本路径绕过 _drain_outputs_blocking，
+                    # 取回的帧不会自动推进 _output_slot_idx；不补偿会让 out_idx
+                    # 落后于 FIFO 实际消费量 → 后续 drain 重复锁同一个已取空的
+                    # 物理槽（HEVC 下即驱动挂死）。按实际消费条目数补偿推进。
+                    _dq_before = len(self._strm_slot_pending.get(slot_idx) or ())
                     self._apply_drained_entries([(slot_idx, None, _h264_t)], pairs)
+                    _dq_after = len(self._strm_slot_pending.get(slot_idx) or ())
+                    if _dq_after < _dq_before:
+                        self._output_slot_idx += (_dq_before - _dq_after)
                     _guard = 0
                     continue
                 # [FIX-SLOT-BACKPRESSURE-B] 硬件仍无数据：绝不带 pending 复用，
@@ -3589,7 +3628,20 @@ class _NVENCEncodeThread:
         """
         if self.error is not None:
             raise self.error
-        self._q.put((nv12_list, force_idr_first))
+        # [FIX-ENC-SUBMIT-TIMEOUT] 原为无超时的阻塞 put()。一旦编码线程因异常
+        # 提前退出（_loop 内 except 分支 return），_q 不再被消费，写线程会永久
+        # 卡在 put() 上 —— 外层只能看到"写线程在 Ns 内未退出（疑似死锁）"，
+        # 而真正的根因（编码线程异常）被藏在 self.error 里永远没人读。
+        # 改为带超时的 put + 每次超时复查线程存活/error，快速失败并暴露根因。
+        while True:
+            try:
+                self._q.put((nv12_list, force_idr_first), timeout=1.0)
+                break
+            except queue.Full:
+                if self.error is not None:
+                    raise self.error
+                if not self._th.is_alive():
+                    raise RuntimeError('[NVENC-Enc] 编码线程已退出，无法继续提交帧')
         # [FIX-DYN-TIMEOUT] 提交即计数（而非编码完成后才计数），这样在 SENTINEL
         # 尚未处理完、编码线程仍在追赶队列积压时，外层也能读到接近真实的总量。
         self.submitted_frames += len(nv12_list)
@@ -6562,6 +6614,29 @@ def _clamp_decode_threads(requested: Optional[int] = None) -> int:
         n = _MAX_DECODE_THREADS
     return n
 
+@functools.lru_cache(maxsize=8)
+def _ffmpeg_has_fps_mode(ffmpeg_bin: str = 'ffmpeg') -> bool:
+    """[FIX-VFR-READ] fps_mode 是 FFmpeg 5.0 引入的 vsync 替代品。
+
+    旧版 FFmpeg 传入 -fps_mode 会因"未知选项"直接退出，读帧器拿不到首帧，
+    因此这里按版本号决定用哪个参数。
+    """
+    try:
+        out = subprocess.run([ffmpeg_bin, '-hide_banner', '-version'],
+                             capture_output=True, text=True, timeout=10).stdout
+        for line in (out or '').splitlines():
+            line = line.strip()
+            if line.startswith('ffmpeg version'):
+                parts = line.split()
+                token = parts[2] if len(parts) > 2 else ''
+                major = ''.join(ch for ch in token.split('-')[0].split('.')[0]
+                                if ch.isdigit())
+                return int(major) >= 5 if major else False
+    except Exception:
+        pass
+    return False
+
+
 class FFmpegFrameReader:
     _SENTINEL = object()
 
@@ -6614,8 +6689,18 @@ class FFmpegFrameReader:
             vf_args = [
                 '-vf',
                 f"select='between(n\\,{frame_start}\\,{actual_end})',setpts=N/FR/TB",
-                '-vsync', '0',
             ]
+
+        # [FIX-VFR-READ] 必须显式 passthrough（输出侧选项，须在 -f rawvideo 之前）：
+        # rawvideo 输出默认走 CFR，遇到 VFR 源（时间戳空洞，例如源视频尾部丢帧留下的
+        # Δ=2 帧间隔）会复制帧补洞，使读入帧数 > 真实解码帧数。段级验收用
+        # ffprobe -count_frames（真实解码帧数）推算期望值，二者口径不一致就会误判
+        # decoded_frame_mismatch（表现为"最后一个分段总是失败"）。
+        # 与 Real-ESRGAN 读帧器的 fps_mode=passthrough 保持一致。
+        if _ffmpeg_has_fps_mode(ffmpeg_bin):
+            sync_args = ['-fps_mode', 'passthrough']
+        else:
+            sync_args = ['-vsync', '0']          # ffmpeg < 5.0 回退
 
         # [FIX-NVDEC-THREAD-CAP] 解码线程钳位到 ≤8，避免多核机上
         # NVDEC 解码 surface 超过驱动 32 上限（-threads 9 → 33 surfaces 被拒）。
@@ -6625,6 +6710,7 @@ class FFmpegFrameReader:
             + ['-threads', str(_clamp_decode_threads())]
             + ['-i', video_path]
             + vf_args
+            + sync_args
             + ['-f', 'rawvideo', '-pix_fmt', 'rgb24', '-loglevel', 'error', 'pipe:1']
         )
         self._proc   = subprocess.Popen(

@@ -49,6 +49,7 @@ if utils_path not in sys.path:
 from video_utils import (
     get_video_duration, format_time, verify_video_integrity,
     split_video_by_time, count_decoded_video_frames, validate_decodable_video,
+    count_frames_parallel,   # [PROBE-OPT-P3] 并行预热帧数缓存
 )
 
 
@@ -115,9 +116,16 @@ class IFRNetProcessor:
         self.use_hwaccel = config.get("models", "ifrnet", "use_hwaccel", default=True)
         self.codec       = config.get("models", "ifrnet", "codec",       default="libx264")
         self.crf         = config.get("models", "ifrnet", "crf",         default=23)
+        # 统一质量基准（libx264 CRF 轴 / h264_nvenc CQ 轴）与硬编字面量 cq。
+        # 由 external/ifrnet_video 在**实际生效编码器**确定后按 QUALITY_MAP 换算
+        # （见 src/utils/quality_map.py）。三者均为 None 时回退到 crf 字面量。
+        self.cq          = config.get("models", "ifrnet", "cq",          default=None)
+        self.crf_ref     = config.get("models", "ifrnet", "crf_ref",     default=None)
+        self.cq_ref      = config.get("models", "ifrnet", "cq_ref",      default=None)
         self.encode_preset = config.get("models", "ifrnet", "encode_preset", default="medium")
-        self.rate_mode       = config.get("models", "ifrnet", "rate_mode",       default="constqp")
-        self.lookahead_depth = config.get("models", "ifrnet", "lookahead_depth", default=0)
+        # 与 realesrgan 段统一：vbr_hq(CQ 质量优先) + LA=8
+        self.rate_mode       = config.get("models", "ifrnet", "rate_mode",       default="vbr_hq")
+        self.lookahead_depth = config.get("models", "ifrnet", "lookahead_depth", default=8)
         # [P0/P1] 综合修复安全开关：HEVC+LA 自动规避；H2D 预取事件同步默认开启。
         # [FIX-HEVC-LA-SOFT-RETIRED] hevc_la_disable 软退役：已由 FIX-HEVC-COUNTED/EOS 保障，不再改写 LA
         self.hevc_la_disable     = bool(config.get(
@@ -179,6 +187,17 @@ class IFRNetProcessor:
         # [v6.4.5.1 新增] 跟踪是否有分段处理失败，供上游主流程判断是否继续
         self._has_failure = False
 
+        # [P3-1] 最终输出验收的严格度依据：
+        #   _was_segmented          —— 本次是否真的走了「切分成多段」的路径
+        #                              （时长 <= segment_duration 时直接整体处理，
+        #                                此时不存在任何分段级验收）
+        #   _segments_decode_verified —— 全部产出分段是否都通过了逐段【解码级】
+        #                              验收（_process_segments 末尾的批量验收）
+        # 只有当两者同时为真，最终合并输出才可降级为「不解码」的容器级校验；
+        # 否则（整体处理不分段 / 分段验收未全通过）最终输出必须解码级验收。
+        self._was_segmented = False
+        self._segments_decode_verified = False
+
         # [v6.1 新增] 底层 IFRNetVideoProcessor 实例缓存，避免每个分段重新初始化
         self._video_processor = None
 
@@ -237,6 +256,9 @@ class IFRNetProcessor:
         # 视频较短时直接整体处理
         if duration <= self.segment_duration:
             print("📦 视频较短，直接处理整个视频...")
+            # [P3-1] 整体处理不分段：无分段级验收可依赖，最终输出必须解码级验收
+            self._was_segmented = False
+            self._segments_decode_verified = False
             output_file = self.processed_dir / f"interpolated_{Path(input_video).name}"
             success = self._process_segment(input_video, str(output_file))
             return [str(output_file)] if success else []
@@ -251,7 +273,54 @@ class IFRNetProcessor:
             print("❌ 视频分割失败")
             return []
 
+        # [P3-1] 确已切分为多段：分段级（解码级）验收将覆盖全部产出，
+        # 最终合并输出据此可降级为容器级校验。
+        self._was_segmented = True
+        self._segments_decode_verified = False
+
         print(f"✅ 共 {len(segment_files)} 个片段")
+
+        # [P3-2] 切镜预扫描前置：detect_scene_cut_pairs() 是一次完整软件解码，
+        # 原本在 _process_segment 内逐段串行执行且位于 reader 之前 —— 每段被解码
+        # 两遍（先 CPU 扫切镜、再 reader 取帧），两遍都在关键路径上，大分段实测
+        # 可达数十秒至 115s，并与 reader 争抢 CPU 造成过「提前 EOF 丢帧」。
+        # 现提前到段循环之前并行跑完全部段落并缓存，段循环内直接命中缓存。
+        # 单段（整体处理）路径无需预扫描，保持原惰性行为。
+        # 可用 IFRNET_SCENE_CUT_PRESCAN=0 退回原行为。
+        if len(segment_files) > 1:
+            try:
+                import time as _sc_t
+                from ifrnet_video.pipeline import prescan_scene_cuts
+                _sc0 = _sc_t.perf_counter()
+                _sc_done = prescan_scene_cuts(segment_files)
+                print(f"   ✂️  [P3-2] 切镜预扫描完成: {_sc_done}/{len(segment_files)} 段，"
+                      f"耗时 {_sc_t.perf_counter() - _sc0:.1f}s", flush=True)
+            except Exception as _sc_e:
+                print(f"   ⚠️  [P3-2] 切镜预扫描失败（退回逐段惰性检测，不影响主流程）: "
+                      f"{_sc_e}", flush=True)
+
+        # [PROBE-OPT-P3] 并行预热帧数探测缓存。
+        # 段验收会对每个分段调用 count_decoded_video_frames()（ffprobe -count_frames
+        # 全解码，1536x1152 单段约 1.6 分钟）。此处在正式处理前**并行**把全部分段
+        # 的帧数算好写入进程内缓存，把 5 段串行约 8 分钟的探测压缩到约 2 分钟，
+        # 且后续逐段验收直接命中缓存。任何异常都不影响主流程（缓存未预热只是
+        # 退回原串行探测）。可用 NVENC_PREWARM_PROBE=0 关闭。
+        if os.environ.get("NVENC_PREWARM_PROBE", "1") != "0" and len(segment_files) > 1:
+            try:
+                import time as _pw_t
+                _pw0 = _pw_t.perf_counter()
+                # [FIX-GATE-STRICT-COUNT] 预热必须与验收同口径（mode='decode'）：
+                # 验收门固定走全解码计数，若这里用 auto 预热出容器元数据值写进缓存，
+                # 后续严格调用要么复用低可信值（门失效）、要么忽略缓存再解码一次
+                # （白预热）。同口径后缓存必然被命中，既严格又不重复付费。
+                _frames = count_frames_parallel(segment_files, max_workers=4,
+                                                mode="decode")
+                _ok = sum(1 for v in _frames.values() if v)
+                print(f"   ⏱️  [PROBE-OPT] 并行预热帧数缓存: {_ok}/{len(segment_files)} 段，"
+                      f"耗时 {_pw_t.perf_counter() - _pw0:.1f}s", flush=True)
+            except Exception as _pw_e:
+                print(f"   ⚠️  [PROBE-OPT] 帧数缓存预热失败（不影响主流程）: {_pw_e}", flush=True)
+
         return self._process_segments(segment_files, checkpoint)
 
     def process_segments_directly(self, input_segments: List[str],
@@ -277,6 +346,9 @@ class IFRNetProcessor:
         # [P1-FIX-FINGERPRINT] 原指纹仅拼接排序后的路径名：上游换参重跑产出同名
         # 分段时 hash 不变 → 断点误命中，新旧质量分段混流。现加入每段 size+mtime_ns，
         # 内容变更必然改变指纹。
+        # [P3-1] 上游已给多段 → 视同分段模式；严格度仍取决于本段批量验收结果
+        self._was_segmented = len(input_segments) >= 2
+        self._segments_decode_verified = False
         _fp_parts = []
         for _p in sorted(input_segments):
             try:
@@ -347,7 +419,11 @@ class IFRNetProcessor:
         # 合并
         print(f"\n🔗 合并 {len(processed_segments)} 个插帧分段...")
         output_config = self.config.get_section("output", {})
-        # [COLOR-FIX] 合并输出注入源视频色彩元数据（有值透传，无值回退 BT.709+Full Range）
+        # [QUALITY-UNIFY] copy-by-default：未显式请求输出编码/质量 → -c:v copy（无损、快）
+        _use_copy = self.config.get("output", "use_copy", default=True)
+        if _use_copy:
+            output_config = {**output_config, "codec": "copy"}
+        # [COLOR-FIX] 合并输出注入源视频色彩元数据（有值透传，unknown 按内容推断）
         output_config = {
             **output_config,
             "extra_args": list(output_config.get("extra_args", []))
@@ -357,6 +433,9 @@ class IFRNetProcessor:
             processed_segments, output_video,
             audio_path=audio_path,
             config=output_config,
+            reencode=(not _use_copy),
+            # [META-KEEP] 回写原片容器级元数据（tags / creation_time / 旋转 / 位深）
+            source_video=input_video,
         )
 
         if success:
@@ -527,6 +606,9 @@ class IFRNetProcessor:
             use_hwaccel    = self.use_hwaccel,
             codec          = self.codec,
             crf            = self.crf,
+            cq             = self.cq,
+            crf_ref        = self.crf_ref,
+            cq_ref         = self.cq_ref,
             encode_preset  = self.encode_preset,
             rate_mode      = self.rate_mode,
             lookahead_depth = self.lookahead_depth,
@@ -625,6 +707,82 @@ class IFRNetProcessor:
                 print(f"   ⏱️  已用时: {format_time(elapsed)}, "
                       f"预计剩余: {format_time(remaining)}")
 
+        # [P4-FIX-BATCH] 并行解码级验收（参考三个脚本并行引擎模式）
+        # [P3-1] _verified_all 仅在「逐段解码级验收确实跑过且全部通过」时为真，
+        # 它是最终合并输出能否降级为容器级校验的唯一依据。
+        _candidates = len(processed_files)
+        self._segments_decode_verified = False
+        if processed_files and not getattr(self.config, 'get', lambda *a: False)("processing", "skip_validate", default=False):
+            try:
+                from video_utils import validate_decodable_video_batch
+                from video_utils import count_decoded_video_frames
+                # 计算期望帧数（每段）
+                # [FIX-EXPECT-FROM-SRC] 期望帧数必须由**输入**分段的帧数推导。
+                # 原实现读的是输出文件（已插帧）：src=2N-1 → expected=((2N-1)-1)*2+1
+                # = 4N-3，而输出实际解码帧数是 2N-1，二者必然不等 → 每段必判
+                # decoded_frame_mismatch（R1 实测 0/5 全部失败）。
+                # 同时改为按输出路径建索引，保证 expected_list 与 processed_files
+                # 一一对齐（原按 segment_files 顺序构造，断点跳段时会整体错位）。
+                expected_by_out = {}
+                seg_index_by_out = {}
+                for _i, _seg_path in enumerate(segment_files):
+                    _out = str(self.processed_dir /
+                               f"interpolated_{Path(_seg_path).name}")
+                    seg_index_by_out[_out] = _i
+                    _src_frames = None
+                    try:
+                        # [FIX-GATE-STRICT-COUNT] 期望值必须与批量验收的实际帧数同源
+                        # 严格：验收侧固定 count_mode='decode'，这里若走 auto 的容器
+                        # 元数据捷径，无 NVDEC 机器上会系统性不等 → 假失败。
+                        _src_frames = count_decoded_video_frames(_seg_path, mode="decode")
+                    except Exception:
+                        _src_frames = None
+                    _scale = float(self.interpolation_factor)
+                    expected_by_out[_out] = (
+                        int((_src_frames - 1) * _scale + 1)
+                        if _src_frames and _src_frames > 0 else None)
+                expected_list = [expected_by_out.get(str(p))
+                                 for p in processed_files]
+
+                # 执行批量并行验收
+                val_results = validate_decodable_video_batch(
+                    [str(p) for p in processed_files],
+                    expected_frames_list=expected_list,
+                    workers=self.config.get("processing", "validate_workers") if hasattr(self, 'config') else None,
+                    parallel_mode=self.config.get("processing", "validate_mode", default="thread") if hasattr(self, 'config') else "thread",
+                    gpu_workers=self.config.get("processing", "validate_gpu_workers") if hasattr(self, 'config') else None,
+                    skip_validate=False,
+                )
+                # 过滤失败分段（参考三个脚本的错误处理模式）
+                final_files = []
+                for idx, (ok, report) in enumerate(val_results):
+                    if ok:
+                        final_files.append(str(processed_files[idx]))
+                    else:
+                        print(f"   ❌ 分段验收失败: {Path(str(processed_files[idx])).name} - {report.get('reason', 'unknown')}")
+                        # 更新断点（如需要重试）
+                        # [FIX-CHECKPOINT-REMOVE-BY-SEGIDX] 必须按**分段序号**移除。
+                        # 原代码用 processed_files 的下标调 list.remove(value)：
+                        # [0,1,2,3,4] → remove(0)/remove(1)/remove(2) 后退化成 [3,4]
+                        # （R1 实测 checkpoint 正是 [3,4]），既错删又漏删。
+                        _seg_i = seg_index_by_out.get(str(processed_files[idx]))
+                        if _seg_i is not None and \
+                                _seg_i in checkpoint.get("processed_segments", []):
+                            checkpoint["processed_segments"].remove(_seg_i)
+                            self._save_checkpoint(checkpoint)
+                processed_files = final_files
+                # [P3-1] 全部候选分段都通过了逐段解码级验收 → 最终合并输出可
+                # 降级为容器级校验（不含解码）。任一段缺失/失败则保持严格。
+                self._segments_decode_verified = (
+                    len(final_files) == _candidates and _candidates > 0)
+                if self._segments_decode_verified:
+                    print(f"   🔎 全部分段已通过解码级验收 "
+                          f"({_candidates}/{_candidates})，最终合并输出将走容器级校验")
+            except Exception as exc:
+                # 验收阶段异常不终止流程（参考三个脚本的容错模式）
+                print(f"⚠️  并行解码级验收异常（不影响主流程）: {exc}")
+                self._segments_decode_verified = False
+
         if processed_files:
             print(f"\n✅ IFRNet 处理完成: "
                   f"{len(processed_files)}/{len(segment_files)} 个分段")
@@ -677,13 +835,17 @@ class IFRNetProcessor:
 
             if ok and verify_video_integrity(output_path):
                 # [P4-FIX-GATE] 容器可打开不足以验收，必须校验解码级帧守恒与错误。
-                src_frames = count_decoded_video_frames(segment_path)
+                # [FIX-GATE-STRICT-COUNT] 期望值与实测值必须**同源严格**：期望帧数取自
+                # 源分段，若它走 auto 的容器元数据捷径而实际帧数走全解码，两者在无
+                # NVDEC 的机器上会系统性不等 → 假失败并 unlink 掉正确产物。
+                src_frames = count_decoded_video_frames(segment_path, mode="decode")
                 expected_frames = None
                 if src_frames is not None and int(src_frames) > 0:
                     scale = float(self.interpolation_factor)
                     expected_frames = int((src_frames - 1) * scale + 1)
                 dec_ok, dec_report = validate_decodable_video(
-                    output_path, expected_frames=expected_frames)
+                    output_path, expected_frames=expected_frames,
+                    count_mode="decode")
                 if not dec_ok:
                     print("   ❌ 解码级验收失败: "
                           f"decoded={dec_report.get('decoded_frames')} "
@@ -770,6 +932,14 @@ def main():
       python ifrnet_processor_v6_3_0_single.py -i input.mp4 -o output.mp4 \\
              --no-fp16 --no-compile --no-cuda-graph --no-hwaccel
     """
+    # [FIX-STDIN-TTOU] 后台进程组 + tty stdin 时子 ffmpeg 会被 SIGTTOU 停住
+    # （"秒卡、0% CPU、无输出"）；入口处把 fd0 换成 /dev/null。
+    # 详见 src/utils/stdin_hardening.py。
+    try:
+        from stdin_hardening import detach_background_stdin
+        detach_background_stdin()
+    except Exception:
+        pass
     import argparse
 
     _script_dir  = Path(os.path.abspath(__file__)).parent        # src/processors

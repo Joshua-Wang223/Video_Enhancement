@@ -49,6 +49,7 @@ Level 1 NVENC SDK GPU 直通（ctypes + byte array 手动 offset）→ Level 2 P
 5. GUID 必须从 driver 动态查询，不能硬编码；RegisterResource 在 T4/driver 580 上 segfault，用 CreateInputBuffer
 6. `avgBitRate=0`+`maxBitRate=0` → NVENC 无码率天花板 → GPU 65% 空闲、FPS 暴跌 2.2×；须设估计值（如 7000）
 7. **drain 数据必须完整消费**，丢弃即相位错位（`nvenc-stream-drain-backpressure-iron-law`）
+8. **HEVC 空槽/未就绪槽 LockBitstream 永久阻塞**（doNotWait=0/1 均无效，h264 空槽返回 SUCCESS+size=0）→ 只锁就绪帧（counted 限界 `submitted-la_depth-drained`）+ EOS pending-only 排空 + flush() 同语义（FIX-HEVC-COUNTED/EOS/EOS-FLUSH）
 
 ### 关键 offset（SDK 13.0）
 - NV_ENC_RC_PARAMS：version@0, mode@4, constQP@8-16, avgBR@20, maxBR@24, targetQuality@88, lookaheadDepth@90, multiPass@100
@@ -62,7 +63,17 @@ Level 1 NVENC SDK GPU 直通（ctypes + byte array 手动 offset）→ Level 2 P
 异步 NVENC ~7% completionEvent 空帧率（DMA 竞态假说）。Tier 0 首 LockBitstream 重试 → Tier 1-B 零长度 IDR 重编码（~67%）→ Tier 1-A Writer 帧计数插值（~33%）→ Tier 3-E `__del__` 兜底。CONSTQP 零空帧可跳 Tier 1-B。
 
 ### RC 模式排名
-CONSTQP 🥇（+29~66%，文件最小）> QVBR 🥈 > VBR_HQ 🥉。避免：v6.4.3.1+VBR_HQ+LA=8+pipe=4（-4.5% 丢帧）；VBR_HQ+LA=8（-35%）；VBR/QVBR+avgBitrate=0。
+CONSTQP 🥇（+29~66%，文件最小）> QVBR 🥈 > VBR_HQ 🥉。避免：v6.4.3.1+VBR_HQ+LA=8+pipe=4（-4.5% 丢帧）；VBR/QVBR+avgBitrate=0。
+
+### HEVC LA 与 2026-08 修复栈（当前状态）
+- HEVC 空槽 LockBitstream 永久阻塞 → FIX-HEVC-COUNTED / FIX-HEVC-EOS / FIX-HEVC-EOS-FLUSH（[[hevc-la-drain-diagnosis]]）
+- 水彩花屏根治 → P1-FIX-H2D-EVENT-SYNC（预取槽 event 同步）；EOS 硬化 P2-FIX-EOS-OUTPUT-ORDER / STRICT-EOS / SIZE-CAP / NAL-COMMON（[[ifrnet-watercolor-tail-defect-investigation]]）
+- 解码级验收门禁：video_utils `validate_decodable_video` / `count_decoded_video_frames`；verify_plan RT-4/RT-5 + FIX-GATE
+- 2026-08-28/29 `hevc_la_disable` 软退役完成并双侧同步（默认 false，命中仅 WARN 不降级；回滚置 true 或 `NVENC_HEVC_ALLOW_LA=0`），`hevc_nvenc + VBR_HQ/QVBR + LA>0` 生产开放（[[hevc-la-open-production]]、[[hevc-la-soft-retired]]）
+
+### 2026-08-29 两处新修复（须知）
+- **upscale 模式自动保护**：`upscale_then_interpolate` 在 T4 上做 1440p(3.7M px) 插帧会早期 EOF/丢帧（bs=12 缺 58.3%）→ `processing.max_upscale_then_interpolate_pixels`（默认 3670016，`0` 禁用）+ `main._select_optimal_mode()`（配置摘要 + `_process_single` 双重调用）自动切 `interpolate_then_upscale`（[[mode-auto-protect-upscale-then-interpolate]]）
+- **IFRNet 模型路径派生**：`config_manager` 一度硬编码 `IFRNet_S_Vimeo90K.pth` 致 `--ifrnet-model` 无效 → 改为按 `model_name` 派生，CLI 覆盖后由 `config._derive_model_paths()` 重算；`--ifrnet-model-path` 优先级高于 `--ifrnet-model`（[[ifrnet-model-selection-bug-fix]]）
 
 ## 5. 工作偏好
 
@@ -80,3 +91,5 @@ CONSTQP 🥇（+29~66%，文件最小）> QVBR 🥈 > VBR_HQ 🥉。避免：v6.
 - 生产配置：[[v4-production-best-config]]、[[rc-mode-performance-ranking]]、[[benchmark-ifrnet-v6.4.x-summary]]
 - 跨段优化：[[esrgan-cross-segment-optimization-complete]]
 - 完整坑清单：[[nvenc-ctypes-integration]]、[[nvenc_ctypes_verified_layouts]]、[[nvenc-ce-pipeline-architecture]]、[[nvenc-empty-frame-defense]]
+- HEVC LA 修复栈：[[hevc-la-drain-diagnosis]]、[[hevc-la-open-production]]、[[hevc-la-soft-retired]]、[[ifrnet-watercolor-tail-defect-investigation]]
+- 入口与配置（2026-08-29）：[[mode-auto-protect-upscale-then-interpolate]]、[[ifrnet-model-selection-bug-fix]]

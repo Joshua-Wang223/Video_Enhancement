@@ -493,3 +493,13 @@ test4 定论）。
 
 生产验证（2026-08-19 用户确认）：六文件 backport 生产实跑通过——HEVC 无
 段尾死锁、分段正常复用 encoder、帧数守恒。
+
+## 后续：LA>0 生产就绪（软退役，2026-08-28）
+
+本文件的 counted/EOS 修复栈经水彩综合方案（EOS 排空硬化 + NAL-COMMON +
+LockBitstream SizeCap）加固与生产验证后，`hevc_nvenc + VBR_HQ/QVBR + LA=8/16`
+生产开放：processor 层 `hevc_la_disable` 软退役（[FIX-HEVC-LA-SOFT-RETIRED]，
+命中仅 WARN 不降级）、config 默认翻转 false、verify_plan 新增 FIX-HEVC-LA-OPEN
+门禁（2026-08-29：90 项 = 88 PASS / 0 FAIL / 0 WARN / 2 SKIP）、T4 三路对照
+（hevc LA=8 / hevc LA=0 / h264 LA=8）verify v4 全绿。
+详见 [[hevc-la-open-production]]（时间线）与 [[hevc-la-soft-retired]]（收口记录）。

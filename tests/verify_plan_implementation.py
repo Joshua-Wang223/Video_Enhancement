@@ -60,6 +60,8 @@ verify_plan_implementation.py — 优化方案·最终后验证脚本（v2，三
 from __future__ import annotations
 
 import argparse
+import ast
+import inspect
 import json
 import os
 import re
@@ -107,18 +109,64 @@ FILES = {
     # 公共包 / 测试
     "nal_common":     PROJECT_ROOT / "external" / "nvenc_common" / "nal_utils.py",
     "regression_min": PROJECT_ROOT / "tests" / "test_regression_min.py",
+    # [GATE-FIX-COVERAGE] 两个后端共用的 src/utils 模块此前不在编译清单里
+    # （reader_hwaccel = 读帧器 hwaccel 自适应；stdin_hardening = 子进程 fd0 加固），
+    # 导致它们的语法错误与调用契约都不会被任何门禁项覆盖。
+    "reader_hwaccel": PROJECT_ROOT / "src" / "utils" / "reader_hwaccel.py",
+    "stdin_hardening": PROJECT_ROOT / "src" / "utils" / "stdin_hardening.py",
 }
 
-# E 组编译扫描清单（全部活跃 py 文件）
-COMPILE_TARGETS = [
-    FILES["main_entry"], FILES["ifrnet_proc"], FILES["esrgan_proc"],
-    FILES["video_utils"], FILES["logger_mod"], FILES["config_manager"],
-    FILES["if_main"], FILES["if_pipeline"], FILES["if_nvenc"], FILES["if_ffmpeg"],
-    FILES["if_utils"], FILES["if_trt"],
-    FILES["es_main"], FILES["es_pipeline"], FILES["es_nvenc"], FILES["es_ffmpeg"],
-    FILES["es_dispatcher"], FILES["es_utils"], FILES["es_gfpgan_sub"],
-    FILES["nal_common"], FILES["regression_min"],
-]
+# ---------------------------------------------------------------------------
+# 覆盖清单：按目录自动收集（替代原手工白名单）
+# ---------------------------------------------------------------------------
+# [GATE-FIX-COVERAGE-AUTO] 原 FILES/COMPILE_TARGETS 是手工白名单，新增模块极易漏 ——
+# 实测漏过 src/utils/reader_hwaccel.py、src/utils/stdin_hardening.py、
+# src/utils/system_resources.py（后者被 P1-3 改过却从未被任何门禁项扫到）。
+# 现改为按目录自动收集「活跃生产代码」，只保留显式排除项，并由 BEH-E2 自检兜住
+# 三类漂移：① 条目数跌破下限 ② FILES 具名文件未被覆盖 ③ external/ 下出现未纳管的新包。
+COVERAGE_ROOTS = (
+    "src",
+    "external/ifrnet_video",
+    "external/realesrgan_video",
+    "external/nvenc_common",
+    # [GATE-FIX-COVERAGE-TESTS] tests/ 此前**完全不在扫描范围**内（只有
+    # test_regression_min.py 经 COVERAGE_EXTRA 单点纳入），意味着 50+ 个
+    # 验收/回归资产即使语法错误也不会被任何门禁项发现。
+    # 实测（2026-09-15）52 个 tests/*.py 全部 py_compile 通过、H1 调用契约亦无
+    # 违规，故整体纳入 —— 比"手工挑活跃文件"更不容易漏，且不需要维护白名单。
+    # 唯一例外是备份（*_bak* / *.bak*）与 pytest 已忽略的 " - Copy" 变体，见下。
+    "tests",
+)
+# 历史/备份文件（与 CODEBUDDY.md 的「历史文件」口径一致）
+COVERAGE_EXCLUDE_GLOBS = ("*_bak*", "*.bak*", "* - Copy*", "* - Copy (*)")
+# external/ 下**有意不纳入**的包：IFRNet = 拆包前的历史单体脚本（25 个 process_video_v*）；
+# Real-ESRGAN = 上游第三方原始仓库。二者都不是生产调用链。
+COVERAGE_EXTERNAL_KNOWN_EXCLUDED = ("IFRNet", "Real-ESRGAN")
+# 条目数下限：2026-09-15 实测活跃 105 个
+# （生产 53：src 18 + ifrnet_video 8 + realesrgan_video 25 + nvenc_common 2
+#   − 排除 realesrgan_video/nvenc_sdk_bak.py；tests 52）。
+# 取 95 留出合理删除余量，同时能抓住「收集逻辑失效（根目录改名/整体消失）」。
+COVERAGE_MIN_FILES = 95
+
+
+def _coverage_excluded(p: Path) -> bool:
+    return ("__pycache__" in p.parts
+            or any(p.match(g) for g in COVERAGE_EXCLUDE_GLOBS))
+
+
+def _collect_coverage_files() -> List[Path]:
+    """按 COVERAGE_ROOTS 递归收集活跃 py 文件（去重、排序）。"""
+    found = set()
+    for rel in COVERAGE_ROOTS:
+        d = PROJECT_ROOT / rel
+        if not d.is_dir():
+            continue
+        found.update(p for p in d.rglob("*.py") if not _coverage_excluded(p))
+    return sorted(found)
+
+
+# E 组编译扫描 / BEH-H1 调用契约扫描的共同目标清单（自动收集）
+COMPILE_TARGETS = _collect_coverage_files()
 
 # 裸 except 扫描范围：
 #   · src/ 用「活跃文件白名单」——生产/开发仓库的归档进度可能不同
@@ -207,8 +255,17 @@ def register(phase: str, cid: str, name: str, method: str, criteria: str):
 # ---------------------------------------------------------------------------
 
 def read_text(path: Path) -> str:
+    """读取源码文本。
+
+    [GATE-FIX-BOM] 统一用 ``utf-8-sig`` 读取：``src/main_video_optimized.py``
+    带 UTF-8 BOM（ef bb bf），按 utf-8 读出来首字符是 U+FEFF —— 对纯 search 类
+    检查无害，但 ``ast.parse`` 会直接报
+    ``SyntaxError: invalid non-printable character U+FEFF (line 1)``，
+    导致该文件在 AST 类检查里被整体跳过（BEH-H1 实测踩到）。
+    utf-8-sig 对无 BOM 文件与 utf-8 行为一致。
+    """
     try:
-        return path.read_text(encoding="utf-8", errors="replace")
+        return path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
         return ""
 
@@ -265,7 +322,24 @@ def which(tool: str) -> Optional[str]:
 
 def run_cmd(args: List[str], timeout: int = 60) -> Tuple[int, str, str]:
     try:
+        # [FIX-STDIN-TTOU-GATE] 显式 stdin=DEVNULL（与 src/utils/stdin_hardening.py
+        # 的 FFMPEG_SAFE_KW 同一意图）。
+        #
+        # 为什么必须在这里传：2026-09-16 在「后台进程组 + tty stdin」下实跑门禁，
+        # 本函数拉起的 `ffmpeg -vcodec h264_nvenc ... -f null -`（A 阶段 R7
+        # NVENC 探测）因 fd0 是 tty 而触发 ioctl(TCSETS) → SIGTTOU →
+        # **门禁主进程与其 ffmpeg 子进程一起被 group-stop**（ps 状态 `T`，
+        # wchan=do_signal_stop），进程永久挂死、无任何输出。
+        #
+        # 为什么不能只靠模块/入口级的 detach_background_stdin()：
+        # 该加固在 `_setup_behavior_paths()`（行为阶段，见 run_behavior_phase）
+        # 里才执行，而 A-前置条件的 NVENC 探测在它**之前**——加固来不及覆盖。
+        # 两层都做才是本仓既有的设计（入口加固 + 调用点显式 DEVNULL）。
+        #
+        # 语义安全：capture_output=True 只设定 stdout/stderr=PIPE，与 stdin 不互斥
+        # （互斥的是 input= 与 stdin=，本函数从不传 input）。
         p = subprocess.run(args, capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL,
                            encoding="utf-8", errors="replace", timeout=timeout)
         return p.returncode, p.stdout, p.stderr
     except FileNotFoundError:
@@ -765,7 +839,11 @@ def c_p1_7():
 def c_p1_8():
     me = read_text(FILES["main_entry"])
     defined = "def _validate_effective_config" in me
-    invoked = "if not _validate_effective_config(config):" in me
+    # [GATE-FIX-P1-8] 断言原为字面量 "if not _validate_effective_config(config):"，
+    # 但该函数签名后来加了 args（现在是 (config, args)）—— 校验器**一直在被调用**，
+    # 只是断言串没跟着更新。改为容忍空白/实参形式的正则，避免签名再变时又误报。
+    invoked = bool(re.search(
+        r"if\s+not\s+_validate_effective_config\(\s*config\s*(?:,\s*args\s*)?\)", me))
     falsy_fixed = len(re.findall(
         r"args\.(?:segment_duration|batch_size_ifrnet|max_batch_size_ifrnet|"
         r"batch_size_esrgan|gfpgan_batch_size) is not None", me))
@@ -901,7 +979,7 @@ def c_p2_5():
 # ===========================================================================
 
 @register("B-静态·阶段3", "P3-1", "上帝函数拆解（已实施，含 ce_pipeline）",
-          "四个目标函数 <阈值；各阶段子方法存在且带 [P3.1-SPLIT*] 标签",
+          "四个目标函数 <阈值（阈值随 FIX 增长复核调整）；各阶段子方法存在且带 [P3.1-SPLIT*] 标签",
           "阈值+结构锚双确认")
 def c_p3_1():
     def method_lines(path: Path, name: str) -> int:
@@ -909,6 +987,19 @@ def c_p3_1():
         return len(seg.splitlines()) if seg else 0
 
     # (文件键, 函数名, 阈值, 拆解后应存在的阶段子方法)
+    #
+    # [GATE-FIX-P3-1] _process_segment 阈值 400 → 450（2026-09-15）。
+    # 依据：实测 424 行，是历史 FIX 逐条追加（[FIX-SCENE-CUT-EOF] / [FIX-F0-*] /
+    # [FIX-NVENC-*] / [P3.1-SPLIT] 收尾判定）累积的结果，不是拆解回归。
+    # 抬阈值只是止住误报，**不等于放弃拆解**；下一次结构性改动请优先按下面的
+    # 待拆清单减重（拆任意两块即可把 424 降回 400 以内）：
+    #   ① 切镜预扫描块          main.py L1251–1288  ≈38 行 → _prescan_segment_scene_cuts()
+    #   ② torch.compile 预热    main.py L1314–1344  ≈31 行 → _warmup_torch_compile()
+    #   ③ 四级编码路径装配      main.py L1345–1415  ≈70 行 → _select_and_setup_encode_path()
+    #   ④ 首帧读取 + f0 保护    main.py L1416–1496  ≈80 行 → _read_and_encode_first_frame()
+    #   ⑤ 主处理循环            main.py L1497–1634 ≈137 行 → _run_main_processing_loop()
+    # 同时记录全局余量（同日实测）：nvenc_sdk.__init__ 29/100、
+    # _process_single 177/200、encode_frames_batch_ce_pipeline 123/130（最紧，仅 +7）。
     targets = [
         ("if_nvenc", "__init__", 100,
          ["_init_session_state", "_load_dlls_and_detect_api",
@@ -916,7 +1007,7 @@ def c_p3_1():
           "_select_codec_and_preset_guid", "_build_encoder_config",
           "_initialize_encoder", "_create_slot_buffers",
           "_setup_copy_and_stream", "_log_ready"]),
-        ("if_main", "_process_segment", 400,
+        ("if_main", "_process_segment", 450,
          ["_decide_effective_batch", "_resolve_scale_timesteps",
           "_select_encoder_codec", "_setup_level1_nvenc",
           "_record_pipeline_diagnostics", "_finalize_segment"]),
@@ -1061,6 +1152,19 @@ def _setup_behavior_paths():
         sp = str(p)
         if sp not in sys.path:
             sys.path.insert(0, sp)
+    # [GATE-FIX-STDIN] 本门禁是「重度拉 ffmpeg 的入口点」（BEH-B 切分/合并、
+    # H3 读帧器冒烟等）。若在「后台进程组 + tty stdin」下启动，子 ffmpeg 会对
+    # fd0 调 ioctl(TCSETS) 触发 SIGTTOU 被停住，run_cmd 只能靠 timeout 兜底 →
+    # 实测门禁会从 ~1.5 分钟退化到 6 分钟以上，且报出「素材生成失败」类误导结论。
+    # 与 run.py / 主入口 / 两个后端 / verify 脚本一致，在这里也加固一次。
+    # 详见 src/utils/stdin_hardening.py。
+    try:
+        from stdin_hardening import detach_background_stdin
+        if detach_background_stdin():
+            print("[门禁] 检测到后台 tty stdin，已把 fd0 指向 /dev/null"
+                  "（避免子 ffmpeg 被 SIGTTOU 停住）", flush=True)
+    except Exception:
+        pass
 
 
 def beh_group_a() -> List[CheckResult]:
@@ -1114,17 +1218,25 @@ def beh_group_b() -> List[CheckResult]:
         # [输出卫生] split 内部的 ✅/⚠️ 打印为受控测试动作，统一捕获后写入详情，
         # 避免被误读为主流程重复执行（生产反馈：verification_2 提问"为何分割3次"
         # —— 实为 B1 切/B3 复用命中/B4 换源重切三次**设计内调用**）。
+        # [GATE-FIX-BEH-B] 期望段数 = 2 而非 3。
+        # 依据：[P2-FIX-FRAG]（video_utils.py 的 merge_trailing_fragment）会把末段
+        # <2s 的碎片并入前段；9s 源按 4s 切分本是 4+4+1，末尾 1s 被并入 → 实际 2 段。
+        # 断言原文写死 len==3，自该修复落地起必然失败（memory 2026-09-02 已记录）。
+        # 判据仍是「段数」，但把来源写清楚，避免同类漂移再次发生。
+        exp_segs = 2
         with _capture_stdout() as cap1:
             segs = video_utils.split_video_by_time(str(src), str(seg_dir), 4,
                                                    reuse_existing=False)
-        out.append(_beh(ph, "BEH-B1", "切片产出3段", len(segs) == 3,
+        out.append(_beh(ph, "BEH-B1", f"切片产出{exp_segs}段（末段<2s已并入）",
+                        len(segs) == exp_segs,
                         f"实际 {len(segs)}；动作: {_capture_stdout.brief(cap1.text)}"))
         out.append(_beh(ph, "BEH-B2", "指纹侧车已写入",
                         (seg_dir / ".segments_fingerprint.json").exists()))
         with _capture_stdout() as cap3:
             segs2 = video_utils.split_video_by_time(str(src), str(seg_dir), 4,
                                                     reuse_existing=True)
-        out.append(_beh(ph, "BEH-B3", "同源复用命中", len(segs2) == 3,
+        out.append(_beh(ph, "BEH-B3", f"同源复用命中（{exp_segs}段）",
+                        len(segs2) == exp_segs,
                         f"动作: {_capture_stdout.brief(cap3.text)}"))
         src_b = td / "src_b.mp4"
         run_cmd(gen + [str(src_b)], timeout=120)
@@ -1132,7 +1244,9 @@ def beh_group_b() -> List[CheckResult]:
         with _capture_stdout() as cap4:
             segs3 = video_utils.split_video_by_time(str(src_b), str(seg_dir), 4,
                                                     reuse_existing=True)
-        out.append(_beh(ph, "BEH-B4", "换源触发重切(指纹不符)", len(segs3) == 3,
+        out.append(_beh(ph, "BEH-B4",
+                        f"换源触发重切(指纹不符，{exp_segs}段)",
+                        len(segs3) == exp_segs,
                         f"动作: {_capture_stdout.brief(cap4.text)}"))
         # 重编码扩展名传播：mpeg4 源 + .mkv 目标 → 实际写出 .mp4 并回传
         mpeg_src = td / "legacy.avi"
@@ -1233,7 +1347,7 @@ def beh_group_d() -> List[CheckResult]:
 
 
 def beh_group_e() -> List[CheckResult]:
-    """BEH-E：全量 py_compile 扫描。"""
+    """BEH-E：全量 py_compile 扫描 + 覆盖清单自检。"""
     out: List[CheckResult] = []
     ph = "C-行为·编译"
     bad = []
@@ -1246,8 +1360,60 @@ def beh_group_e() -> List[CheckResult]:
             bad.append(f"{f.name}: {err[:80]}")
     out.append(_beh(ph, "BEH-E1", f"py_compile ×{len(COMPILE_TARGETS)} 全通过",
                     not bad, "; ".join(bad)[:300] if bad else
-                    f"{len(COMPILE_TARGETS)} 个活跃文件语法全部通过",
+                    f"{len(COMPILE_TARGETS)} 个活跃文件语法全部通过（按目录自动收集）",
                     "修复语法错误后重跑" if bad else ""))
+
+    # ── [GATE-FIX-COVERAGE-AUTO] 覆盖清单自检 ───────────────────────────────
+    # 自动收集解决了「手工白名单会漏」，但引入了新风险：根目录改名/整体消失会让
+    # 收集结果悄悄变少（扫描 0 个文件 → 全绿）。故三项兜底：下限、具名文件覆盖、
+    # external 新包纳管。
+    probs: List[str] = []
+    covered = {str(p.resolve()) for p in COMPILE_TARGETS}
+    if len(COMPILE_TARGETS) < COVERAGE_MIN_FILES:
+        probs.append(f"清单条目 {len(COMPILE_TARGETS)} < 下限 {COVERAGE_MIN_FILES}"
+                     "（收集根目录被改名/移除了？）")
+    missing_named = sorted(k for k, v in FILES.items()
+                           if str(v.resolve()) not in covered)
+    if missing_named:
+        probs.append("FILES 具名文件未被覆盖: " + ", ".join(missing_named))
+    ext = PROJECT_ROOT / "external"
+    if ext.is_dir():
+        unknown = sorted(
+            d.name for d in ext.iterdir()
+            if d.is_dir()
+            and d.name not in COVERAGE_EXTERNAL_KNOWN_EXCLUDED
+            and f"external/{d.name}" not in COVERAGE_ROOTS
+            and any(d.rglob("*.py")))
+        if unknown:
+            probs.append("external/ 下未纳管的包（需加入 COVERAGE_ROOTS 或"
+                         " COVERAGE_EXTERNAL_KNOWN_EXCLUDED）: " + ", ".join(unknown))
+    # [GATE-FIX-COVERAGE-TESTS] tests/ 纳管自检：光把 "tests" 写进 COVERAGE_ROOTS
+    # 还不够 —— 排除规则写宽了（例如误加 "*"）会把测试资产整批悄悄剔掉。
+    tests_dir = PROJECT_ROOT / "tests"
+    n_tests = 0
+    if tests_dir.is_dir():
+        test_py = [p for p in tests_dir.rglob("*.py") if not _coverage_excluded(p)]
+        n_tests = len(test_py)
+        uncovered = [p.name for p in test_py
+                     if str(p.resolve()) not in covered]
+        if uncovered:
+            probs.append(f"tests/ 有 {len(uncovered)} 个文件未被覆盖"
+                         f"（排除规则写宽了？）: " + ", ".join(sorted(uncovered)[:5]))
+    # 备份类文件不进扫描是**有意**的，但必须能被看见（有理由的排除，而非静默）
+    excluded = [p.relative_to(PROJECT_ROOT).as_posix()
+                for rel in COVERAGE_ROOTS
+                for p in (PROJECT_ROOT / rel).rglob("*.py")
+                if _coverage_excluded(p)]
+    out.append(_beh(ph, "BEH-E2",
+                    f"覆盖清单自检（{len(COMPILE_TARGETS)} 文件，下限 "
+                    f"{COVERAGE_MIN_FILES}）",
+                    not probs,
+                    "; ".join(probs)[:300] if probs else
+                    f"自动收集 ✓ / FILES 具名文件全覆盖 ✓ / external 无未纳管包 ✓"
+                    f" / tests/ 全覆盖（{n_tests} 个）✓"
+                    + (f"；按规则排除 {len(excluded)} 个: {', '.join(excluded)}"
+                       if excluded else "；无排除文件"),
+                    "补充覆盖范围或修正排除规则" if probs else ""))
     return out
 
 
@@ -1379,11 +1545,406 @@ def beh_group_g() -> List[CheckResult]:
     return out
 
 
+# ── H 组：子进程 / 第三方调用「静态契约」+ 读帧器功能冒烟 ────────────────────
+# [GATE-FIX-CONTRACT] 背景（2026-09-14 实测教训）：
+#   一次改动把 ffmpeg-python 的 `.run_async(..., stdin=subprocess.DEVNULL)` 写进
+#   external/realesrgan_video/ffmpeg_io.py。该版本的 run_async 是【固定签名、
+#   无 **kwargs】，运行时必抛 TypeError；而它被 _read_loop 的 except 吞掉，
+#   表现为「ESRGAN 读取 0 帧 + 一行 traceback」。当时门禁只有 BEH-E1
+#   （py_compile），语法完全合法 → 全绿放行，缺陷直到手工实跑才暴露。
+#   本组补上两类 py_compile 看不见的检查：
+#     H1/H2 静态契约：实参名必须被目标签名接受 / 参数组合不得互斥
+#     H3    功能冒烟：两个读帧器各跑一遍完整读取，帧数须与 ffprobe 一致
+#
+# 已知盲区（有意为之，避免误报）：
+#   · 只识别 `subprocess.<name>(...)` 与 `xxx.run_async(...)` 两种调用形式；
+#     别名导入（`from subprocess import run`）或 getattr 动态取用不覆盖。
+#   · `**SOME_DICT` 展开的关键字无法静态定名，按设计跳过。
+#   · run_async 规则仅在文件确实 import 了 ffmpeg 时生效，避免误伤同名 API。
+
+_SUBPROCESS_CALL_NAMES = ("run", "Popen", "call", "check_call", "check_output")
+
+# 本次扫描中 AST 解析失败的文件（由 _iter_subproc_calls 填充；H1 会据此判失败）
+_PARSE_FAILED: List[str] = []
+
+# H3 冒烟：整段逻辑放在【有界子进程】里执行。
+# 为什么必须隔离：FFmpegFrameReader.read() 是 `self._queue.get()`（无界阻塞），
+# 一旦 reader 线程既不出帧也不送 EOF，read() 会永久挂起 —— 实测确实把门禁挂了
+# 10 分钟（本组首次实现就踩到）。门禁绝不允许能被挂死，故：
+#   · 父进程用 run_cmd(timeout=...) 包住整个子进程；
+#   · 子进程内部再用线程 join(60s) 分别给两个读帧器设上界，超时给出精确原因。
+_H_SMOKE_SNIPPET = r'''
+import json, os, subprocess, sys, tempfile, threading, time
+try:
+    sys.stdout.reconfigure(errors="replace")
+except Exception:
+    pass
+root = sys.argv[1]
+for p in (os.path.join(root, "external"), os.path.join(root, "src", "utils"),
+          os.path.join(root, "external", "ifrnet_video")):
+    if p not in sys.path:
+        sys.path.insert(0, p)
+# 先加固自身 fd0：下面的 ffmpeg 才不会被 SIGTTOU 停住（否则会假报"读帧器阻塞"）
+try:
+    from stdin_hardening import detach_background_stdin
+    detach_background_stdin()
+except Exception:
+    pass
+
+DN = dict(stdin=subprocess.DEVNULL)
+res = {"ok": False, "detail": "", "expect": None,
+       "ifrnet": None, "esrgan": None, "blocked": None}
+
+
+def run(args, timeout=120):
+    try:
+        p = subprocess.run(args, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout, **DN)
+        return p.returncode, p.stdout, p.stderr
+    except Exception as e:
+        return -1, "", "%s: %s" % (type(e).__name__, e)
+
+
+tmp = tempfile.mkdtemp(prefix="beh_h_smoke_")
+vid = os.path.join(tmp, "src.mp4")
+rc, _, err = run(["ffmpeg", "-hide_banner", "-v", "error", "-y",
+                  "-f", "lavfi", "-i", "testsrc=size=96x96:rate=12:duration=2",
+                  "-c:v", "libx264", "-pix_fmt", "yuv420p", vid])
+if rc != 0 or not os.path.exists(vid):
+    res["detail"] = "合成素材生成失败 rc=%s: %s" % (rc, err.strip()[:120])
+    res["blocked"] = "gen"
+    print("BEH_H_RESULT " + json.dumps(res))
+    sys.exit(0)
+rc, out, _ = run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                  "-count_frames", "-show_entries", "stream=nb_read_frames",
+                  "-of", "csv=p=0", vid])
+try:
+    expect = int(out.strip().splitlines()[-1])
+except Exception:
+    res["detail"] = "ffprobe 帧数解析失败: %r" % out[:80]
+    res["blocked"] = "probe"
+    print("BEH_H_RESULT " + json.dumps(res))
+    sys.exit(0)
+res["expect"] = expect
+
+
+def in_thread(fn, label, cap=60):
+    """在有界线程里跑，返回 (值, 是否超时)。"""
+    box = {}
+    def _w():
+        try:
+            box["v"] = fn()
+        except ImportError as e:
+            # [GATE-FIX-H3-DEP] 依赖缺失（torch / ffmpeg-python / numpy …）不是读帧器
+            # 缺陷：本门禁应当能在没装这些包的机器上跑出「SKIP」而不是「FAIL」。
+            box["v"] = "DEP:%s" % e
+        except Exception as e:
+            box["v"] = "EXC:%s:%s" % (type(e).__name__, e)
+    t = threading.Thread(target=_w, daemon=True)
+    t.start()
+    t.join(cap)
+    if t.is_alive():
+        return None, True
+    return box.get("v"), False
+
+
+# ① IFRNet 读帧器
+def _ifrnet():
+    import ifrnet_video.ffmpeg_io as io
+    rd = io.FFmpegFrameReader(vid, frame_start=0, frame_end=-1,
+                              prefetch=8, use_hwaccel=True)
+    n = 0
+    while n < expect + 120:
+        if rd.read() is None:
+            break
+        n += 1
+    rd.close()
+    return n
+
+
+v, to = in_thread(_ifrnet, "ifrnet")
+if to:
+    res["blocked"] = "ifrnet"
+    res["detail"] = "IFRNet 读帧器 60s 未读完（read() 无界阻塞）"
+    print("BEH_H_RESULT " + json.dumps(res))
+    sys.exit(0)
+res["ifrnet"] = v
+
+# ② Real-ESRGAN 读帧器（上一轮 run_async TypeError 破坏的正是这条路径）
+def _esrgan():
+    import realesrgan_video.ffmpeg_io as io
+    rd = io.FFmpegReader(vid, use_hwaccel=True, quiet=True)
+    n, big = 0, 0
+    while n < expect + 120:
+        fr = rd.get_frame()
+        if fr is io.FFmpegReader.FRAME_TIMEOUT:
+            big += 1
+            if big > 600:
+                break
+            time.sleep(0.05)
+            continue
+        if fr is None:
+            break
+        n += 1
+    err = getattr(rd, "_last_error", None)
+    rd.close()
+    return {"n": n, "err": err}
+
+
+v2, to2 = in_thread(_esrgan, "esrgan")
+if to2:
+    res["blocked"] = "esrgan"
+    res["detail"] = "Real-ESRGAN 读帧器 60s 未读完"
+    print("BEH_H_RESULT " + json.dumps(res))
+    sys.exit(0)
+res["esrgan"] = v2
+
+# [GATE-FIX-H3-DEP] 任一侧因缺依赖（ImportError/ModuleNotFoundError）起不来 →
+# 报 dep，由父进程记 SKIP（依赖缺失 ≠ 读帧器缺陷，门禁应能在缺依赖机器上跑）。
+_dep = [nm for nm, val in (("ifrnet", res["ifrnet"]), ("esrgan", v2))
+        if isinstance(val, str) and val.startswith("DEP:")]
+if _dep:
+    res["blocked"] = "dep"
+    res["detail"] = ("读帧器依赖缺失（%s）: %s"
+                     % (", ".join(_dep),
+                        "; ".join(str(res[n])[4:] for n in _dep)[:160]))
+    print("BEH_H_RESULT " + json.dumps(res, ensure_ascii=False))
+    sys.exit(0)
+
+if res["ifrnet"] == expect and isinstance(v2, dict) \
+        and v2.get("n") == expect and v2.get("err") is None:
+    res["ok"] = True
+    res["detail"] = ("期望 %d 帧 / IFRNet %s 帧 / ESRGAN %s 帧（last_error=%r）"
+                     % (expect, res["ifrnet"], v2.get("n"), v2.get("err")))
+else:
+    res["detail"] = ("期望 %d 帧 / IFRNet %r / ESRGAN %r"
+                     % (expect, res["ifrnet"], v2))
+print("BEH_H_RESULT " + json.dumps(res, ensure_ascii=False))
+'''
+
+
+def _popen_kwarg_names() -> set:
+    """subprocess.run/call/check_* 均转发给 Popen，故以 Popen 的显式参数为准。
+
+    单看 subprocess.run 自身无效 —— 它的签名带 ``**other_popen_kwargs``，
+    等于不设防（这正是本组要补的漏）。
+    """
+    names = set(inspect.signature(subprocess.Popen).parameters)
+    names |= {"input", "capture_output", "timeout", "check"}   # 转发层额外接受的
+    return names
+
+
+def _run_async_kwarg_names() -> Optional[set]:
+    """ffmpeg-python ``run_async`` 接受的参数名；不可用则 None。"""
+    try:
+        import ffmpeg
+    except Exception:
+        return None
+    try:
+        names = set(inspect.signature(ffmpeg.run_async).parameters)
+    except (TypeError, ValueError):
+        return None
+    names.discard("stream_spec")          # 以方法形式调用时已绑定
+    return names
+
+
+def _subprocess_aliases(tree) -> Tuple[set, set]:
+    """扫描导入语句，返回 (模块别名集合, 直接导入的函数名集合)。
+
+    ``import subprocess``            → 模块别名 {'subprocess'}
+    ``import subprocess as _sp``     → 模块别名 {'_sp'}
+    ``from subprocess import run``   → 函数名   {'run'}
+    ``from subprocess import run as r`` → 函数名 {'r'}
+    """
+    mods, funcs = set(), set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "subprocess":
+                    mods.add(a.asname or "subprocess")
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "subprocess":
+                for a in node.names:
+                    if a.name in _SUBPROCESS_CALL_NAMES:
+                        funcs.add(a.asname or a.name)
+    return mods, funcs
+
+
+def _iter_subproc_calls(path: Path):
+    """产出 (行号, 目标标签, {关键字名: 值节点}, {** 展开的表达式名})。
+
+    注：文件存在语法错误时本函数无产出（静默跳过）—— 语法错误由 BEH-E1 负责，
+    但 H1 必须把「解析失败的文件」单独报出来，否则会像 2026-09-14 那次注入验证
+    一样：目标文件没被扫到，检查却显示 PASS（调用点数下降是唯一线索）。
+    """
+    src = read_text(path)
+    if not src:
+        return
+    try:
+        tree = ast.parse(src)
+    except SyntaxError as e:
+        _PARSE_FAILED.append("%s:%s" % (path.name, e.lineno))
+        return
+    imports_ffmpeg = re.search(r"^\s*(import ffmpeg|from ffmpeg import)",
+                               src, flags=re.MULTILINE) is not None
+    # [GATE-FIX-ALIAS] 解析 subprocess 的导入别名：`import subprocess as _subprocess`
+    # 与 `from subprocess import run` 都是常见写法（main_video_optimized.py:619
+    # 正是 `_subprocess.run([...])`）—— 只认字面名 "subprocess" 会整段漏扫。
+    mod_aliases, fn_aliases = _subprocess_aliases(tree)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        label = None
+        if isinstance(f, ast.Attribute):
+            if (isinstance(f.value, ast.Name) and f.value.id in mod_aliases
+                    and f.attr in _SUBPROCESS_CALL_NAMES):
+                label = "subprocess." + f.attr
+            elif f.attr == "run_async" and imports_ffmpeg:
+                label = "run_async"
+        elif isinstance(f, ast.Name) and f.id in fn_aliases:
+            label = "subprocess." + f.id
+        if label is None:
+            continue
+        kwmap = {k.arg: k.value for k in node.keywords if k.arg is not None}
+        star = {getattr(k.value, "id", "?") for k in node.keywords if k.arg is None}
+        yield node.lineno, label, kwmap, star
+
+
+def _is_literal_none(node) -> bool:
+    return isinstance(node, ast.Constant) and node.value is None
+
+
+def _is_literal_true(node) -> bool:
+    return isinstance(node, ast.Constant) and node.value is True
+
+
+def _h_smoke_readers() -> Tuple[bool, str, bool]:
+    """在【有界子进程】里跑两个读帧器的完整读取。
+
+    Returns:
+        (ok, detail, skipped) —— skipped=True 表示依赖/素材缺失，调用方记 SKIP。
+    """
+    rc, out, err = run_cmd([sys.executable, "-c", _H_SMOKE_SNIPPET,
+                            str(PROJECT_ROOT)], timeout=240)
+    if rc == -124:
+        return (False,
+                "冒烟子进程 240s 超时（可能有读帧器无界阻塞；"
+                "子进程内已按 60s/读帧器设上界，出现本结果说明连上界都没生效）",
+                False)
+    line = ""
+    for ln in (out or "").splitlines():
+        if ln.startswith("BEH_H_RESULT "):
+            line = ln[len("BEH_H_RESULT "):]
+    if not line:
+        if rc == -127:
+            return False, "无法启动 python 子进程: %s" % err.strip()[:120], True
+        return (False, "冒烟子进程未产出结果 rc=%s: %s"
+                % (rc, (err or out or "").strip()[-160:]), True)
+    try:
+        res = json.loads(line)
+    except ValueError:
+        return False, "结果解析失败: %s" % line[:160], True
+
+    blocked = res.get("blocked")
+    if blocked in ("gen", "probe", "dep"):
+        # gen/probe = 素材准备失败；dep = 读帧器依赖（torch / ffmpeg-python …）缺失
+        return False, res.get("detail", "素材准备失败"), True
+    if blocked:
+        # 依赖齐备、素材正常，却读不完 → 判 FAIL（正是要抓的那类运行时缺陷）
+        return False, res.get("detail", "%s 读帧器阻塞" % blocked), False
+    return bool(res.get("ok")), str(res.get("detail", "")), False
+
+
+def beh_group_h() -> List[CheckResult]:
+    """BEH-H：子进程/第三方调用静态契约 + 读帧器功能冒烟（4 断言）。"""
+    out: List[CheckResult] = []
+    ph = "C-行为·调用契约"
+
+    targets = [f for f in COMPILE_TARGETS if f.exists()]
+    accepted_popen = _popen_kwarg_names()
+    accepted_async = _run_async_kwarg_names()
+    _PARSE_FAILED.clear()
+
+    bad_names, bad_combos, scanned = [], [], 0
+    async_unchecked = 0
+    for f in targets:
+        for lineno, label, kwmap, _star in _iter_subproc_calls(f):
+            scanned += 1
+            allowed = accepted_popen if label.startswith("subprocess.") else accepted_async
+            if allowed is None:
+                # [GATE-FIX-H1-UNCHECKED] ffmpeg-python 不可用 → 取不到 run_async 签名，
+                # 该子集的实参名无法校验。按本组既有原则（「没被扫到的不许伪装成
+                # PASS」，见上面 AST 解析失败的处理）必须显式降级为 WARN，不能静默跳过。
+                async_unchecked += 1
+                continue
+            unknown = sorted(k for k in kwmap if k not in allowed)
+            if unknown:
+                bad_names.append("%s:%d %s 不接受 %s"
+                                 % (f.name, lineno, label, unknown))
+            if label.startswith("subprocess."):
+                if "input" in kwmap and "stdin" in kwmap \
+                        and not _is_literal_none(kwmap["stdin"]):
+                    bad_combos.append("%s:%d input 与 stdin 互斥（会 ValueError）"
+                                      % (f.name, lineno))
+                if "capture_output" in kwmap and _is_literal_true(kwmap["capture_output"]) \
+                        and ("stdout" in kwmap or "stderr" in kwmap):
+                    bad_combos.append("%s:%d capture_output=True 与 stdout/stderr 互斥"
+                                      % (f.name, lineno))
+
+    # 解析失败的文件必须显式失败：否则「目标文件没被扫到」会伪装成 PASS
+    problems = list(bad_names)
+    if _PARSE_FAILED:
+        problems += ["AST 解析失败（该文件未被检查）: " + ", ".join(_PARSE_FAILED)]
+    if problems:
+        out.append(_beh(ph, "BEH-H1",
+                        f"实参名被目标签名接受（{len(targets)} 文件 / {scanned} 调用点）",
+                        False, "; ".join(problems)[:400],
+                        "改用目标签名接受的参数名（py_compile 看不出这类错误）"))
+    elif async_unchecked:
+        # 显式 WARN：见上面 [GATE-FIX-H1-UNCHECKED]。在本机（无 ffmpeg-python）呈现，
+        # 生产机装了 ffmpeg-python 时走下面的 PASS 分支。
+        out.append(CheckResult(
+            id="BEH-H1", phase=ph,
+            name=f"实参名被目标签名接受（{len(targets)} 文件 / {scanned} 调用点）",
+            status=Status.WARN, method="行为执行",
+            criteria="所有调用点的实参名都被目标签名接受",
+            detail=(f"{len(targets)} 个文件、{scanned} 个调用点：subprocess.* 已全部校验"
+                    f"且合法；但 ffmpeg-python 不可用 → {async_unchecked} 个 run_async "
+                    f"调用点的实参名**未被校验**"),
+            suggestion="安装 ffmpeg-python 后重跑本组以覆盖 run_async 子集"))
+    else:
+        out.append(_beh(ph, "BEH-H1",
+                        f"实参名被目标签名接受（{len(targets)} 文件 / {scanned} 调用点）",
+                        True,
+                        f"{len(targets)} 个文件、{scanned} 个子进程/run_async 调用点的"
+                        f"字面量参数名全部合法"))
+    out.append(_beh(ph, "BEH-H2", "参数组合无互斥冲突",
+                    not bad_combos,
+                    "; ".join(bad_combos)[:400] if bad_combos else
+                    "未发现 input/stdin、capture_output/stdout|stderr 同时传入",
+                    "移除互斥参数之一" if bad_combos else ""))
+    try:
+        ok3, detail3, skipped3 = _h_smoke_readers()
+    except Exception as e:
+        ok3, detail3, skipped3 = False, "%s: %s" % (type(e).__name__, e), False
+    if skipped3:
+        out.append(_beh_skip(ph, "BEH-H3", "读帧器功能冒烟（IFRNet + ESRGAN）",
+                             detail3))
+    else:
+        out.append(_beh(ph, "BEH-H3",
+                        "读帧器功能冒烟：两读帧器完整读完且帧数==ffprobe",
+                        ok3, detail3,
+                        "查 _read_loop 的异常/帧数（异常会被 except 吞成 0 帧）"
+                        if not ok3 else ""))
+    return out
+
+
 def run_behavior_phase() -> List[CheckResult]:
     _setup_behavior_paths()
     results: List[CheckResult] = []
     for fn in (beh_group_a, beh_group_b, beh_group_c, beh_group_d,
-               beh_group_e, beh_group_f, beh_group_g):
+               beh_group_e, beh_group_f, beh_group_g, beh_group_h):
         try:
             results.extend(fn())
         except Exception as e:
@@ -1422,12 +1983,19 @@ def _run_fix_effect_phase() -> List[CheckResult]:
     if cfg is not None:
         for model in ("ifrnet", "realesrgan"):
             sec = cfg.get("models", {}).get(model, {})
-            safe = (sec.get("rate_mode") == "constqp"
-                    and int(sec.get("lookahead_depth", -1)) == 0)
+            # [GATE-FIX-LA0] 原断言要求 rate_mode=constqp 且 lookahead_depth=0，
+            # 那是 HEVC+LA 问题修复期的**临时**保守默认。2026-08-28/29 的软退役
+            # 有意把两侧默认翻转为 vbr_hq + LA=8（见 config/default_config.json 的
+            # lookahead_depth_note，以及 memory/hevc-la-open-production.md），断言
+            # 未同步 → 长期假失败。现改为断言**当前产品默认**。
+            # （hevc_la_disable=False 由本阶段 [FIX-HEVC-LA-OPEN] 单独断言，此处不重复。）
+            safe = (sec.get("rate_mode") == "vbr_hq"
+                    and int(sec.get("lookahead_depth", -1)) == 8)
             out.append(CheckResult(
                 f"FIX-{model.upper()}-LA0", "F-修复效果",
-                f"{model} 默认 LA=0/constqp", Status.PASS if safe else Status.FAIL,
-                "读取配置", "rate_mode=constqp 且 lookahead_depth=0",
+                f"{model} 默认 LA=8/vbr_hq（原 LA=0/constqp 断言已过期）",
+                Status.PASS if safe else Status.FAIL,
+                "读取配置", "rate_mode=vbr_hq 且 lookahead_depth=8",
                 f"rate_mode={sec.get('rate_mode')}, "
                 f"lookahead_depth={sec.get('lookahead_depth')}"))
 
@@ -1779,6 +2347,20 @@ def _force_utf8_stdout():
 
 def main(argv: Optional[List[str]] = None) -> int:
     _force_utf8_stdout()
+    # [FIX-STDIN-TTOU-GATE] 入口即加固 fd0 —— 必须早于**任何** CHECKS。
+    #
+    # 行为阶段的 `_setup_behavior_paths()` 里也有一次，但那太晚：
+    # A-前置条件的 R7「NVENC 环境探测」会拉起 `ffmpeg -vcodec h264_nvenc`，
+    # 在「后台进程组 + tty stdin」下会被 SIGTTOU group-stop（实测门禁主进程
+    # 与子 ffmpeg 同时变 `T`，永久挂死且无输出）。这里提前做，
+    # 与 run_cmd() 的 stdin=DEVNULL 构成两层防护。
+    try:
+        from stdin_hardening import detach_background_stdin
+        if detach_background_stdin():
+            print("[门禁] 检测到后台 tty stdin，已把 fd0 指向 /dev/null"
+                  "（避免子 ffmpeg 被 SIGTTOU 停住）", flush=True)
+    except Exception:
+        pass
     parser = argparse.ArgumentParser(
         description="优化方案·最终后验证脚本（三合一整合版 v2）")
     parser.add_argument("--input", "-i", default=None,

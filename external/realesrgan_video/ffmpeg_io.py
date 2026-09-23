@@ -17,6 +17,32 @@ import re
 import numpy as np
 import ffmpeg
 
+# 质量参数换算的唯一真源（src/utils/quality_map.py → convert_crf.py）。
+# 依赖 main.py 在包入口处把 src/utils 挂进 sys.path —— 本包只经 main.py 进入，
+# 单独 import 本模块不成立。
+from quality_map import to_constqp_qp
+
+# [P2-2] 读帧器 hwaccel 自适应决策：与 quality_map 同样取自 src/utils 的唯一
+# 真源（与 ifrnet_video 侧共用同一份阈值，避免两侧漂移）。
+from reader_hwaccel import decide_reader_hwaccel, cpu_core_count
+
+# [FIX-STDIN-TTOU] 本模块是「拉起 ffmpeg 子进程」的归属地，在此做一次幂等的
+# fd0 加固，一次覆盖本模块内全部 ffmpeg 调用（能力探测、读帧器、写帧器…）。
+# 仅在「stdin 是 tty 且本进程不在其前台进程组」时动手，前台交互运行是纯 no-op；
+# 原因与现象见 src/utils/stdin_hardening.py。导入失败不影响本包可用性。
+try:
+    from stdin_hardening import (FFMPEG_SAFE_KW,
+                                 detach_background_stdin as _detach_bg_stdin)
+    _detach_bg_stdin()
+except Exception:
+    # src/utils 不可用（包被单独拷出等）→ 本地兜底一份等价 kwargs，
+    # 保证长驻子进程仍显式拿到 /dev/null。
+    FFMPEG_SAFE_KW = {'stdin': subprocess.DEVNULL}
+
+    def _detach_bg_stdin():
+        """兜底：拿不到共享实现时不做任何事（返回 False，语义同「无需加固」）。"""
+        return False
+
 from realesrgan_video.realesrgan_utils import get_video_meta_info
 from realesrgan_video.nvenc_sdk import _PRESET_P_INDEX
 
@@ -179,7 +205,8 @@ class HardwareCapability:
                 '-i', 'testsrc=size=64x64:duration=0.04:rate=25',
                 '-vcodec', 'libx264', '-f', 'h264', 'pipe:1', '-loglevel', 'error',
             ]
-            enc = subprocess.run(enc_cmd, capture_output=True, timeout=10)
+            enc = subprocess.run(enc_cmd, capture_output=True, timeout=10,
+                                  **FFMPEG_SAFE_KW)
             if enc.returncode != 0 or not enc.stdout:
                 return False
             dec_cmd = [
@@ -211,7 +238,8 @@ class HardwareCapability:
             '-f', 'null', '-',
         ]
         try:
-            result = subprocess.run(cmd, capture_output=True, timeout=10)
+            result = subprocess.run(cmd, capture_output=True, timeout=10,
+                                    **FFMPEG_SAFE_KW)
             if result.returncode != 0:
                 _err = result.stderr.decode('utf-8', errors='replace').strip()
                 print(
@@ -320,8 +348,23 @@ class FFmpegReader:
         self.audio = meta['audio']
 
         input_kwargs = {}
+        # [P2-2] 由「有 NVDEC 就用」改为自适应：NVDEC 只接管熵解码+运动补偿，
+        # 之后仍要 hwdownload + swscale nv12→rgb24（单线程），低码率/多核主机上
+        # 反而不如软解（实测 4K 8.5Mbps on 8 vCPU：NVDEC 26.35s vs 软解 16.73s）。
+        # use_hwaccel=False 仍为强制软解。
         if self.use_hwaccel:
-            input_kwargs['hwaccel'] = 'auto'
+            use_hw = decide_reader_hwaccel(
+                self.width, self.height, self.fps, meta.get('bit_rate', 0),
+                nvdec_available=HardwareCapability.has_nvdec(),
+                label='(%s)' % os.path.basename(str(input_path)))
+            self.use_hwaccel = use_hw
+            if use_hw:
+                input_kwargs['hwaccel'] = 'auto'
+        # [META-KEEP] 禁止 ffmpeg 把 display matrix 烘焙成像素旋转：烘焙后 rawvideo
+        # 帧宽高被交换，而流水线按 ffprobe 的存储坐标系尺寸 reshape，旋转视频会
+        # 静默错乱；不烘焙则由合并阶段统一把旋转标签写回产物。
+        # ffmpeg-python 里 kwarg 值为 None 即输出裸 flag（-noautorotate）。
+        input_kwargs['noautorotate'] = None
 
         self._ffmpeg_input = ffmpeg.input(input_path, **input_kwargs)
 
@@ -340,6 +383,17 @@ class FFmpegReader:
 
         self._thread = threading.Thread(target=self._read_loop, daemon=True,
                                         name='ffmpeg_reader_loop')
+
+        # [FIX-STDIN-TTOU-L2] 在「真正要拉起子进程之前」再加固一次 fd0。
+        # 原因：本读帧器的 ffmpeg 由 ffmpeg-python 的 `run_async()` 拉起，而本环境
+        # 安装版本的 run_async 是**固定签名、没有 **kwargs**（传 `stdin=` 直接
+        # TypeError，实测），因此它是全仓**唯一**无法显式传 `stdin=DEVNULL` 的
+        # ffmpeg 调用点（详见下方 _read_loop 内的 [FIX-STDIN-TTOU] 注释）。
+        # 模块导入时已加固过一次（覆盖绝大多数场景），这里是补齐那"少掉的一层"。
+        # 幂等：第 2 次调用时 fd0 已非 tty（或本就在前台），立即返回 False，零副作用。
+        # 决策记录见 Plan/stdin加固策略定稿_立项Prompt.md（决策 B-1）。
+        _detach_bg_stdin()
+
         self._thread.start()
 
     def _vlog(self, *args, **kwargs):
@@ -426,9 +480,15 @@ class FFmpegReader:
         #         .run_async(pipe_stdout=True, pipe_stderr=True, quiet=False)
         #     )
         #     self._ffmpeg_process = process
+        # [FIX-NVDEC-RGB-CONSISTENCY] 显式指定 scale 滤镜的色彩矩阵与范围，
+        # 使 NVDEC (nv12) 与软解 (yuv420p) 两条路径的 nv12/yuv420p→rgb24 转换一致：
+        # 统一使用 tv (limited) range + bt601 矩阵，与 NVDEC 硬解路径的默认行为对齐。
+        filtered_input = self._ffmpeg_input.filter(
+            'scale', in_color_matrix='bt601', in_range='tv'
+        )
         try:
             process = (
-                self._ffmpeg_input
+                filtered_input
                 .output(
                     'pipe:',
                     format='rawvideo',
@@ -440,6 +500,15 @@ class FFmpegReader:
                 # NVDEC 解码 surface 超过驱动 32 上限（-threads 9 → 33 surfaces 被拒）。
                 .global_args('-hide_banner', '-loglevel', 'error', '-nostats',
                              '-threads', str(_clamp_decode_threads()))  # 屏蔽 banner / info 行 / 进度行
+                # [FIX-STDIN-TTOU] 此处**无法**传 stdin：本环境安装的
+                # ffmpeg-python，其 run_async() 是固定签名
+                #   run_async(stream_spec, cmd, pipe_stdin, pipe_stdout,
+                #             pipe_stderr, quiet, overwrite_output)
+                # 既没有 **kwargs，也只能在 "PIPE" 与 "None(继承父进程)" 之间二选一
+                # —— 传 stdin=... 会直接 TypeError（实测）。
+                # 该路径的加固由本模块【导入时】的 detach_background_stdin() 覆盖：
+                # 它把父进程 fd0 换成 /dev/null，子进程自然继承。实测本调用生成的
+                # ffmpeg 子进程 /proc/<pid>/fd/0 确实是 /dev/null。
                 .run_async(pipe_stdout=True, pipe_stderr=True, quiet=False)
             )
             self._ffmpeg_process = process
@@ -761,6 +830,8 @@ class FFmpegWriter:
         _x265_ft = max(2, min(4, _par['cpu_logical'] // 2))
         # x265 pool：线程池总大小 = encode_threads
         _x265_pool = _et
+        # CONSTQP 分支算出的 QP（None = 非 CONSTQP 模式）；在参数摘要中复用
+        _nvenc_qp: Optional[int] = None
 
         # [FIX-PRESET-UNIFY] NVENC preset 映射：x264 名称 → p1~p7 体系（统一 _PRESET_P_INDEX 口径）
         if video_codec in ('h264_nvenc', 'hevc_nvenc'):
@@ -805,8 +876,12 @@ class FFmpegWriter:
                 if crf == 0:
                     # [FIX-LOSSLESS] NVENC 无损：常量 QP=0，去掉 vbr 码率控制
                     # [FIX-NVENC-PIPE] pipe 场景优化：-bf 0 + -surfaces N + -delay 0
+                    # [QUALITY-UNIFY] 显式补 `-rc constqp`，与 ifrnet_video 侧无损
+                    # 分支同形（ffmpeg 在 -qp>=0 且未给 -rc 时本就会自选 CONSTQP，
+                    # 此处仅消除两侧命令差异，不改变行为）。
                     quality_args = [
                         '-preset', nvenc_preset,
+                        '-rc', 'constqp',
                         '-qp', '0', '-b:v', '0',
                         '-bf', '0',
                         '-surfaces', str(_NVENC_SURFACES_PIPE),
@@ -821,14 +896,33 @@ class FFmpegWriter:
                     # 映射到 vbr_hq（语义等价：VBR + -cq:v 质量目标控制）。
                     _NVENC_RC_MAP = {'constqp': 'constqp', 'vbr_hq': 'vbr_hq', 'qvbr': 'vbr_hq'}
                     nvenc_rc = _NVENC_RC_MAP.get(rc_mode, 'vbr_hq')
-                    print(f'[FFmpegWriter] rate_mode={rc_mode} rc-lookahead={rc_lookahead}')
-                    quality_args = [
-                        '-preset', nvenc_preset,
-                        '-rc:v', nvenc_rc, '-cq:v', str(crf), '-b:v', '0',
-                        '-bf', '0',
-                        '-rc-lookahead', str(rc_lookahead),
-                        '-surfaces', str(_NVENC_SURFACES_PIPE),
-                    ]
+                    if nvenc_rc == 'constqp':
+                        # [QUALITY-UNIFY] CONSTQP 专用参数是 -qp，不是 -cq:v：
+                        #   ffmpeg: -cq "…for constant quality mode in VBR rate control"（仅 VBR 有效）
+                        #           -qp "Constant quantization parameter rate control method"
+                        # 旧实现在 constqp 下仍发 -cq:v，被 ffmpeg 静默丢弃 → 质量回落到
+                        # preset 推导值；与 Level 1 SDK 直通路径（真 CONSTQP）不一致。
+                        # 此处对齐 Level 1，并按 constqp 轴把已算好的 CQ 值换算成 QP。
+                        # CONSTQP 下 LA 被硬件静默禁用，故不发 -rc-lookahead；
+                        # -b:v 0 对 CONSTQP 无意义，一并省略。
+                        _nvenc_qp = to_constqp_qp(video_codec, crf)
+                        print(f'[FFmpegWriter] rate_mode=constqp qp={_nvenc_qp} '
+                              f'(la=off, 硬件禁用)', flush=True)
+                        quality_args = [
+                            '-preset', nvenc_preset,
+                            '-rc:v', 'constqp', '-qp', str(_nvenc_qp),
+                            '-bf', '0',
+                            '-surfaces', str(_NVENC_SURFACES_PIPE),
+                        ]
+                    else:
+                        print(f'[FFmpegWriter] rate_mode={rc_mode} rc-lookahead={rc_lookahead}')
+                        quality_args = [
+                            '-preset', nvenc_preset,
+                            '-rc:v', nvenc_rc, '-cq:v', str(crf), '-b:v', '0',
+                            '-bf', '0',
+                            '-rc-lookahead', str(rc_lookahead),
+                            '-surfaces', str(_NVENC_SURFACES_PIPE),
+                        ]
                 cmd_args += ['-vcodec', video_codec, '-pix_fmt', 'yuv420p'] + quality_args
             elif video_codec == 'libx265':
                 # [FIX-LOSSLESS] crf=0 在 x265 中不是无损！仅为极高质量有损。
@@ -901,6 +995,13 @@ class FFmpegWriter:
                     f'[FIX-NVENC-PIPE] NVENC 无损(QP=0): '
                     f'preset={nvenc_preset}  bf=0  '
                     f'surfaces={_NVENC_SURFACES_PIPE}  delay=0  '
+                    f'ffmpeg_threads={_ft}(全局demux，不影响NVENC硬件单元)'
+                )
+            elif _nvenc_qp is not None:
+                _enc_info = (
+                    f'[FIX-NVENC-PIPE] NVENC CONSTQP(-qp {_nvenc_qp}): '
+                    f'preset={nvenc_preset}  bf=0  la=off(constqp 硬件禁用)  '
+                    f'surfaces={_NVENC_SURFACES_PIPE}  '
                     f'ffmpeg_threads={_ft}(全局demux，不影响NVENC硬件单元)'
                 )
             else:
@@ -1405,7 +1506,8 @@ class FFmpegWriter:
         cmd = [ffmpeg_bin, '-i', filepath]
         try:
             # ffmpeg 会将元信息输出到 stderr，我们需要捕获它
-            result = subprocess.run(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, 
+            result = subprocess.run(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    **FFMPEG_SAFE_KW, 
                                     text=True, timeout=10)
             stderr = result.stderr
             # 查找视频流标识：例如 "Stream #0:0(und): Video: h264"
@@ -1529,6 +1631,7 @@ class FFmpegWriter:
                             _mux_cmd,
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.PIPE,
+                            **FFMPEG_SAFE_KW,
                             timeout=300,
                         )
                         if _r.returncode == 0:

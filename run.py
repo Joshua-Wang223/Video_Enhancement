@@ -113,10 +113,18 @@ import sys
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 _SRC = os.path.join(_ROOT, "src")
-if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
+_UTILS = os.path.join(_SRC, "utils")
+for _p in (_SRC, _UTILS):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
-from main_video_optimized import main
+# [FIX-STDIN-TTOU] 后台进程组 + tty stdin 时，子 ffmpeg 会对 fd0 调 ioctl(TCSETS)
+# 触发 SIGTTOU 被停住（表现为"秒卡、0% CPU、无输出"）。入口处把 fd0 换成
+# /dev/null，一次修好本进程树内的全部子进程。详见 src/utils/stdin_hardening.py。
+from stdin_hardening import detach_background_stdin      # noqa: E402
+detach_background_stdin()
+
+from main_video_optimized import main                   # noqa: E402
 
 if __name__ == "__main__":
     sys.exit(main())

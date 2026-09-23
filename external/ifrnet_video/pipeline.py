@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 from collections import deque
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -972,6 +972,238 @@ def _auto_queue_depths(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# [FIX-SCENE-CUT-GHOST] 切镜检测（段前一次性预扫描）
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SCENE_CUT_THRESHOLD_DEFAULT = 0.25
+
+
+def detect_scene_cut_pairs(video_path, threshold=None, timeout=1800):
+    """返回该分段内「必须跳过插值」的 pair 索引集合（段内 0-based）。
+
+    背景（实测，temp/retest/analyze_ghost.py + scan_cuts.py）：
+      IFRNet 是光流法插帧，当相邻两源帧分属两个不同镜头时，光流在语义上失效，
+      模型会把两帧无关内容做 warp + 混合，产出"水彩画样润开"的鬼影帧。
+      实测 R2 产物：segment_000 16/16、segment_001 15/15、segment_002 19/19，
+      **每一个硬切镜都恰好产生一张鬼影帧**，且鬼影只出现在插值位 out[2k+1]，
+      源帧位 out[2k] 完全守恒（PSNR 37~41dB）。
+
+    为什么不用「相邻帧 MAD」自行判定：
+      实测标定（calib_scene_threshold.py）显示单纯 MAD 无法分离——
+      segment_000 切镜处 MAD 低至 0.071，而普通快速运动帧高达 0.186，
+      满召回时误报 63 个（误报=把正常运动帧复制成重复帧，出现可见卡顿，比鬼影更糟）。
+      ffmpeg 的 scene 滤镜是专门针对切镜调优的，实测对本片精确率与召回率均为 100%。
+
+    Args:
+        video_path: 分段源视频
+        threshold:  scene 分数阈值，默认 0.25（可由 IFRNET_SCENE_CUT_THRESHOLD 覆盖）
+    Returns:
+        set[int] —— 需要跳过插值的 pair 索引。
+        ffmpeg scene 滤镜给出的切镜源帧号 c 表示 src[c-1]→src[c] 之间是硬切，
+        对应插值 pair 索引 = c-1。检测失败时返回空集（退化为原行为，不会中断处理）。
+    """
+    import re
+    import shutil
+    import subprocess
+    import tempfile
+
+    # [P3-2] 命中预扫描缓存则直接返回，避免段循环里再付一次全量软件解码。
+    # 由 prescan_scene_cuts() 在段循环前并行填充（见其 docstring）。
+    _ck = _scene_cut_cache_key(video_path)
+    if _ck in _SCENE_CUT_CACHE:
+        return set(_SCENE_CUT_CACHE[_ck])
+
+    if threshold is None:
+        try:
+            threshold = float(os.environ.get('IFRNET_SCENE_CUT_THRESHOLD',
+                                             _SCENE_CUT_THRESHOLD_DEFAULT))
+        except Exception:
+            threshold = _SCENE_CUT_THRESHOLD_DEFAULT
+
+    ffprobe = shutil.which('ffprobe')
+    ffmpeg = shutil.which('ffmpeg')
+    if not ffprobe or not ffmpeg:
+        return set()
+
+    try:
+        # 1) 取帧率，用于把 pts_time 换算成帧号
+        r = subprocess.run(
+            [ffprobe, '-v', 'error', '-select_streams', 'v:0',
+             '-show_entries', 'stream=r_frame_rate', '-of', 'csv=p=0', str(video_path)],
+            capture_output=True, text=True, timeout=60)
+        num, den = (r.stdout or '30/1').strip().split('/')[:2]
+        fps = float(num) / float(den) if float(den) else 30.0
+        if fps <= 0:
+            fps = 30.0
+
+        # 2) scene 检测，结果写入临时文件
+        with tempfile.NamedTemporaryFile(mode='w+', suffix='.txt', delete=False) as tf:
+            meta_path = tf.name
+        try:
+            subprocess.run(
+                [ffmpeg, '-hide_banner', '-i', str(video_path),
+                 '-vf', "select='gt(scene,%s)',metadata=print:file=%s" % (threshold, meta_path),
+                 '-f', 'null', '-'],
+                capture_output=True, text=True, timeout=timeout)
+            with open(meta_path, 'r', errors='replace') as f:
+                meta = f.read()
+        finally:
+            try:
+                os.unlink(meta_path)
+            except OSError:
+                pass
+
+        pairs = set()
+        for m in re.finditer(r'pts_time:([0-9.]+)', meta):
+            c = int(round(float(m.group(1)) * fps))   # 切镜后的第一帧
+            if c >= 1:
+                pairs.add(c - 1)                       # 对应 pair (src[c-1], src[c])
+        _scene_cut_cache_put(video_path, pairs)
+        return pairs
+    except Exception:
+        # 检测失败绝不能中断主流程：退化为"不做替换"，与修复前行为一致
+        return set()
+
+
+# ── [P3-2] 切镜预扫描：并行预算 + 进程内缓存 ────────────────────────────────
+# 背景：detect_scene_cut_pairs() 是一次**完整软件解码**（scene 滤镜需要像素），
+# 而它原本在 _process_segment 里逐段串行执行，位于 reader 之前 —— 于是每段
+# 都被解码两遍（先 CPU 扫切镜、再 reader 解码取帧），且两遍都在关键路径上。
+# 大分段实测可达数十秒到 115s（见 main.py 的 [FIX-SCENE-CUT-EOF] 记录：
+# 1536x1152 上检测耗时 115.4s 时，reader 侧因争抢被判「提前 EOF」丢帧 51.4%）。
+#
+# 处理：把「全部段落的切镜检测」提到段循环之前，用线程池并行跑完并缓存；
+# 段循环内 detect_scene_cut_pairs() 直接命中缓存，不再解码。
+# 不在段处理期间并行（用户选择：不引入跨段并发），段循环本身保持串行。
+_SCENE_CUT_CACHE: Dict[str, set] = {}
+
+
+def _scene_cut_cache_key(video_path) -> str:
+    """缓存 key：绝对路径 + 大小 + mtime_ns（任一变化即视为新文件）。"""
+    try:
+        st = os.stat(str(video_path))
+        return '%s|%d|%d' % (os.path.abspath(str(video_path)), st.st_size, st.st_mtime_ns)
+    except OSError:
+        return os.path.abspath(str(video_path))
+
+
+def _scene_cut_cache_put(video_path, pairs) -> None:
+    _SCENE_CUT_CACHE[_scene_cut_cache_key(video_path)] = set(pairs)
+
+
+def prescan_scene_cuts(paths, workers=None, threads=None, threshold=None,
+                       quiet=False) -> int:
+    """[P3-2] 并行预扫描多段的硬切镜集合并写入缓存，返回成功产出的段数。
+
+    并行度默认 ``min(段数, max(1, cpu//2))``（留给同时运行的 reader/编码线程），
+    每个检测子进程的 ffmpeg 线程数钳到 ``max(1, cpu//workers)``，避免 N 个
+    ffmpeg 各自开满自动线程造成 CPU 过订阅。
+
+    失败（含 ffmpeg 缺失）时对应段缓存为空集，与 detect_scene_cut_pairs 的
+    「检测失败退化为不做替换」语义一致，绝不中断主流程。
+    """
+    paths = [str(p) for p in (paths or [])]
+    if not paths:
+        return 0
+    if os.environ.get('IFRNET_SCENE_CUT_PRESCAN', '1') in ('0', 'false', 'False'):
+        # 关闭预扫描：退回原「段循环内惰性检测」行为（每段多付一次串行解码）
+        return 0
+    try:
+        cpu = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        cpu = os.cpu_count() or 1
+    if workers is None:
+        workers = max(1, min(len(paths), max(1, cpu // 2)))
+    workers = max(1, min(int(workers), len(paths)))
+    if threads is None:
+        threads = max(1, cpu // workers)
+
+    # 已在缓存中的段跳过（重复调用/断点续跑场景）
+    todo = [p for p in paths if _scene_cut_cache_key(p) not in _SCENE_CUT_CACHE]
+    if not todo:
+        return len(paths)
+    if not quiet:
+        print(f'[P3-2] 切镜预扫描: {len(todo)} 段 (并行 {workers} 路, 每路 threads={threads})',
+              flush=True)
+
+    def _one(p):
+        try:
+            # threads 通过环境变量无法直接传给 detect_scene_cut_pairs，
+            # 这里内联同一 ffmpeg 调用并显式钳线程数（保持与主函数同一判据）。
+            pairs = _scan_scene_cuts(p, threshold=threshold, threads=threads)
+            _scene_cut_cache_put(p, pairs)
+            return p, pairs
+        except Exception:
+            _scene_cut_cache_put(p, set())
+            return p, set()
+
+    done = 0
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for _p, pairs in ex.map(_one, todo):
+                done += 1
+                if pairs and not quiet:
+                    print(f'   [切镜] {os.path.basename(_p)}: {len(pairs)} 处硬切镜 -> 跳过插值',
+                          flush=True)
+    except Exception as e:
+        print(f'⚠️  [P3-2] 切镜预扫描异常（不影响主流程）: {e}', flush=True)
+    return done
+
+
+def _scan_scene_cuts(video_path, threshold=None, threads=1, timeout=1800):
+    """切镜检测的纯计算部分（与 detect_scene_cut_pairs 同判据，额外钳线程数）。"""
+    import re
+    import shutil
+    import subprocess
+    import tempfile
+
+    if threshold is None:
+        try:
+            threshold = float(os.environ.get('IFRNET_SCENE_CUT_THRESHOLD',
+                                             _SCENE_CUT_THRESHOLD_DEFAULT))
+        except Exception:
+            threshold = _SCENE_CUT_THRESHOLD_DEFAULT
+
+    ffprobe = shutil.which('ffprobe')
+    ffmpeg = shutil.which('ffmpeg')
+    if not ffprobe or not ffmpeg:
+        return set()
+    r = subprocess.run(
+        [ffprobe, '-v', 'error', '-select_streams', 'v:0',
+         '-show_entries', 'stream=r_frame_rate', '-of', 'csv=p=0', str(video_path)],
+        capture_output=True, text=True, timeout=60)
+    num, den = (r.stdout or '30/1').strip().split('/')[:2]
+    fps = float(num) / float(den) if float(den) else 30.0
+    if fps <= 0:
+        fps = 30.0
+
+    with tempfile.NamedTemporaryFile(mode='w+', suffix='.txt', delete=False) as tf:
+        meta_path = tf.name
+    try:
+        subprocess.run(
+            [ffmpeg, '-hide_banner', '-v', 'error',
+             '-threads', str(max(1, int(threads))),
+             '-i', str(video_path),
+             '-vf', "select='gt(scene,%s)',metadata=print:file=%s" % (threshold, meta_path),
+             '-f', 'null', '-'],
+            capture_output=True, text=True, timeout=timeout)
+        with open(meta_path, 'r', errors='replace') as f:
+            meta = f.read()
+    finally:
+        try:
+            os.unlink(meta_path)
+        except OSError:
+            pass
+
+    pairs = set()
+    for m in re.finditer(r'pts_time:([0-9.]+)', meta):
+        c = int(round(float(m.group(1)) * fps))
+        if c >= 1:
+            pairs.add(c - 1)
+    return pairs
+
+
 # IFRNetPipelineRunner（三级流水线）
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1024,6 +1256,14 @@ class IFRNetPipelineRunner:
         self._t3_fps_measured_input = t3_fps_measured   # [FIX-T3-FPS] 跨段实测值，传给 _auto_queue_depths
         self._error: Optional[Exception] = None          # 流水线异常标志，供 run() 传播错误
 
+        # [FIX-SCENE-CUT-GHOST] 切镜处的光流插值必然失效（"水彩画"鬼影）。
+        # _cut_pairs: 需要跳过插值的 pair 索引集合（段内 0-based，由
+        # detect_scene_cut_pairs() 在段开始前一次性算出）。
+        # _pair_cursor: 推理线程已处理的 pair 计数（单写者，无需加锁）。
+        self._cut_pairs:   set  = set()
+        self._pair_cursor: int  = 0
+        self._cut_replaced: int = 0
+
         # [FIX-DOUBLEBUF-H2D] 双槽飞行中 H2D，最多保持 2 个预取 in-flight
         self._prefetch_deque: deque = deque()   # 元素: (item, img0_t, img1_t)
         self._prefetch_slot  = 0                # 轮转 slot 组: 0→pinned(0,1), 1→pinned(2,3)
@@ -1048,6 +1288,42 @@ class IFRNetPipelineRunner:
 
         # [EVENT-POOL] 预分配 CUDA Event 对象池
         self._event_pool = CudaEventPool(max_size=8)
+
+    def _apply_scene_cut_substitution(self, interp_gpu, img1_gpu, rB, rT,
+                                      pair_start: int) -> int:
+        """[FIX-SCENE-CUT-GHOST] 把切镜处的插值帧替换为源帧副本。
+
+        为什么必须"替换"而不是"跳过"：整条验收链、断点续跑、分段 timescale
+        归一化都依赖 2N-1 帧数守恒。跳过会少帧，破坏全部下游假设。
+
+        替换成什么：用本对的后一源帧 src[k+1]（= img1_gpu[bi]）填充该位置的
+        rT 个插值帧。输出序列由 [src[k], 鬼影, src[k+1]] 变为
+        [src[k], src[k+1], src[k+1]]，代价仅是切点提前 1/60s（2x@30fps），
+        换来彻底消除"水彩画"鬼影。选 img1 而非 img0 的原因：它已在 GPU 上且
+        与 interp_gpu 同处 padded 空间，零额外传输，也无跨批索引边界问题。
+
+        注意：调用方必须在推理后统一推进 _pair_cursor（而非在此推进），
+        以保证所有结果分发分支共用同一套 pair 编号。
+
+        Returns: 本批次被替换的 pair 数。
+        """
+        cuts = self._cut_pairs
+        if not cuts or rT <= 0 or rB <= 0 or interp_gpu is None or img1_gpu is None:
+            return 0
+        hit = [(bi, pair_start + bi) for bi in range(rB) if (pair_start + bi) in cuts]
+        if not hit:
+            return 0
+        try:
+            import torch as _torch
+            with _torch.no_grad():
+                for bi, _gi in hit:
+                    interp_gpu[bi * rT:(bi + 1) * rT] = \
+                        img1_gpu[bi].unsqueeze(0).expand(rT, -1, -1, -1)
+            self._cut_replaced += len(hit)
+            return len(hit)
+        except Exception:
+            # 替换失败不危及主流程：宁可保留原插值帧，也不中断整段处理
+            return 0
 
     def _get_infer_backend(self) -> str:
         proc = self.proc
@@ -1290,6 +1566,9 @@ class IFRNetPipelineRunner:
                         if _nvenc is None:
                             print('[IFRNet-Writer] GPU_RAW received but NVENC encoder lost, skip batch', flush=True)
                             continue
+                        # [PROF-STAGE] 分段计时：定位"GPU 饿死"的 CPU 单线程瓶颈
+                        import time as _t_prof
+                        _p0 = _t_prof.perf_counter()
                         # 批量 RGB→NV12（单次 kernel launch 替代 N 次调用）
                         all_frames = torch.cat([interp_gpu, img1_rgb], dim=0)  # (B*T + B, H, W, 3)
                         # [DIAG-RAW] 环境变量 IFRNET_DIAG=1 时输出诊断统计，帮助定位花屏根因
@@ -1302,10 +1581,12 @@ class IFRNetPipelineRunner:
                                   f'min={_d2.min():.0f} max={_d2.max():.0f}', flush=True)
                         all_nv12 = _rgb_to_nv12_gpu_batch(all_frames)
                         n_interp = rB * rT
+                        _p1 = _t_prof.perf_counter()
 
                         # [FIX-ENC-THREAD] CRITICAL: 等待当前 PyTorch stream 完成 NV12 写入，
                         # 再交给编码线程的 cuMemcpy2D 读取，防止 GPU 数据未就绪导致静默花帧。
                         torch.cuda.current_stream().synchronize()
+                        _p2 = _t_prof.perf_counter()
 
                         # [FIX-LA-ACC-HOST] LA>0 时 _NVENCEncodeThread._loop() 会把整个 segment
                         # 的所有批次累积到 _acc_nv12（[FIX-LA-ACCUMULATE] 设计，为保证 LA FIFO
@@ -1352,10 +1633,22 @@ class IFRNetPipelineRunner:
                                 _pinned.copy_(all_nv12, non_blocking=False)
                                 _entry['idx'] += 1
                                 all_nv12 = _pinned
-                            except RuntimeError:
+                            except RuntimeError as _e_pin:
                                 # pinned 内存分配失败（锁页额度耗尽），退化为普通
                                 # 可分页内存，仅牺牲部分 H2D 拷贝带宽，正确性不受影响。
+                                # [PROF-PINNED-FALLBACK] 原实现静默降级，是"长时超分之后
+                                # 插帧速率腰斩"的头号嫌疑：一旦走到这里，D2H/H2D 都要走
+                                # 可分页内存，实测可导致数倍降速。故必须打点上报。
+                                self.__dict__.setdefault('_diag_pin_fallback', 0)
+                                self._diag_pin_fallback += 1
+                                if self._diag_pin_fallback <= 5 or \
+                                        self._diag_pin_fallback % 50 == 0:
+                                    print(f'[PROF-PINNED-FALLBACK] ⚠️ pinned 分配失败 '
+                                          f'#{self._diag_pin_fallback}'
+                                          f'（锁页额度可能已耗尽）→ 退化为可分页内存，'
+                                          f'将显著降速: {_e_pin}', flush=True)
                                 all_nv12 = all_nv12.cpu()
+                        _p3 = _t_prof.perf_counter()
 
                         # [FIX-ENC-THREAD] 构建交叉交错顺序的帧列表，提交给独立编码线程。
                         # T3 Writer 做 RGB→NV12 kernel，编码线程做 encode_frames_batch，
@@ -1376,7 +1669,26 @@ class IFRNetPipelineRunner:
                             # 据此读取 submitted_frames 动态估算 writer 线程 join 超时。
                             self._enc_thread_ref = _enc_thread
                         _is_first_submit = (_enc_thread._written == 0 and _enc_thread._empty == 0)
+                        _p4 = _t_prof.perf_counter()
                         _enc_thread.submit(encode_order, force_idr_first=_is_first_submit)
+                        _p5 = _t_prof.perf_counter()
+                        # [PROF-STAGE] 累计各阶段耗时（ms），每 50 批打印一次
+                        _P = self.__dict__.setdefault('_prof_w', {
+                            'n': 0, 'cat_nv12': 0.0, 'sync': 0.0, 'd2h': 0.0,
+                            'order': 0.0, 'submit': 0.0})
+                        _P['n'] += 1
+                        _P['cat_nv12'] += (_p1 - _p0) * 1000.0
+                        _P['sync'] += (_p2 - _p1) * 1000.0
+                        _P['d2h'] += (_p3 - _p2) * 1000.0
+                        _P['order'] += (_p4 - _p3) * 1000.0
+                        _P['submit'] += (_p5 - _p4) * 1000.0
+                        if _P['n'] % 50 == 0:
+                            _k = _P['n']
+                            print(f'[PROF-Writer] {_k} 批均值(ms): cat+nv12={_P["cat_nv12"]/_k:.1f} '
+                                  f'sync={_P["sync"]/_k:.1f} d2h={_P["d2h"]/_k:.1f} '
+                                  f'order={_P["order"]/_k:.1f} submit={_P["submit"]/_k:.1f} '
+                                  f'| 合计={sum(v for kk, v in _P.items() if kk != "n")/_k:.1f}',
+                                  flush=True)
                         _n_pairs_total += rB
                         # [FIX-LA-ACC-HOST] all_nv12/encode_order 的 GPU 版本源（all_frames/
                         # interp_gpu/img1_rgb）在 LA>0 时已不再需要，显式断开引用而不是等待
@@ -1681,20 +1993,48 @@ class IFRNetPipelineRunner:
         if self._writer_th is not None:
             self._writer_th.join(timeout=10.0)
 
-        # [FIX-JOIN-TIMEOUT] 动态超时：基于分段帧数估算，避免长分段误触发。
-        # n_seg_est / 5.0 表示最慢 5 fps 仍可完成；下限 120s 保底，上限 7200s 防止
-        # 极端大分段数值溢出。推理线程正常应在 ~n_seg_est / actual_fps 秒内完成。
+        # [FIX-INFER-PROGRESS-WATCHDOG] 改为**基于进度**的看门狗。
+        #
+        # 原实现：_infer_timeout = max(120, min(n_seg_est / 5.0, 7200))，
+        # 即假设"最慢 5 fps 仍可完成"。该假设对 768x576 输入有 8.6 倍余量
+        # （实测 43 fps），但对**超分后 1536x1152 输入不成立**：
+        #   · R1 实测仅 ~4 fps（长时超分之后会更慢），9110 帧需 ~2277s，
+        #     而超时只有 9110/5 = 1822s
+        #   · 结果：**把仍在正常推进的推理线程杀死** → reader 提前 EOF
+        #     → 输出帧数不足（固定缺 16 帧 = 2×LA）→ 段失败 → exit=1
+        #   · 连续两轮 R1 失败均为此因，日志里的 1822s 即 9110/5.0
+        #
+        # 新逻辑：轮询已处理 pair 数，只要还在推进就继续等；
+        # 连续 _stall_limit 秒**完全无推进**才判定为死锁。与分辨率、
+        # 实际帧率无关，且对真死锁依然有效。
         _infer_timeout = max(120.0, min(n_seg_est / 5.0, 7200.0))
-        self._infer_th.join(timeout=_infer_timeout)
+        _poll          = 15.0
+        _stall_limit   = 600.0                      # 连续 10 分钟零推进 = 死锁
+        _hard_cap      = max(_infer_timeout * 8.0, n_seg_est / 1.0)   # 兜底上限
+        _waited        = 0.0
+        _last_progress = -1
+        _stalled       = 0.0
+        while self._infer_th.is_alive() and _waited < _hard_cap:
+            self._infer_th.join(timeout=_poll)
+            _waited += _poll
+            _cur = int(getattr(self, '_diag_infer_pairs', 0) or 0)
+            if _cur != _last_progress:
+                _last_progress = _cur
+                _stalled = 0.0
+            else:
+                _stalled += _poll
+                if _stalled >= _stall_limit:
+                    break
         if self._infer_th.is_alive():
-            # 超时后发送停止信号，再给 60s 宽限期让 finally 块执行
-            print(f'\n[IFRNet] ⚠️ 推理线程 {_infer_timeout:.0f}s 未退出，'
-                  f'发送停止信号...', flush=True)
+            # 停滞（或超兜底上限）后发送停止信号，再给 60s 宽限期让 finally 块执行
+            print(f'\n[IFRNet] ⚠️ 推理线程疑似停滞（{_stalled:.0f}s 无推进，'
+                  f'已等待 {_waited:.0f}s，pairs={_last_progress}，'
+                  f'硬上限 {_hard_cap:.0f}s），发送停止信号...', flush=True)
             self.running = False
             self._infer_th.join(timeout=60.0)
             if self._infer_th.is_alive():
                 _msg = (f'推理线程在停止信号后 60s 仍未退出'
-                        f'（总等待 {_infer_timeout + 60:.0f}s，n_seg_est={n_seg_est}）')
+                        f'（总等待 {_waited + 60:.0f}s，n_seg_est={n_seg_est}）')
                 self._error = RuntimeError(_msg)
                 print(f'[IFRNet] ❌ {_msg}', flush=True)
             else:
@@ -1739,7 +2079,7 @@ class IFRNetPipelineRunner:
                 proc._retune_result_q = _rd_post
                 _dev_post = abs(_t2_post - self._t2_estimated_ms) / max(self._t2_estimated_ms, 1.0)
                 print(
-                    f'[AUTO-TUNE-RETUNE] 实测 T2={_t2_post:.1f}ms'
+                    f'\n[AUTO-TUNE-RETUNE] 实测 T2={_t2_post:.1f}ms'
                     f'（全段 {len(_stable)} batches 中位数）| '
                     f'静态估算={self._t2_estimated_ms:.1f}ms | '
                     f'偏差={_dev_post*100:.0f}% | '
@@ -1880,13 +2220,34 @@ class IFRNetPipelineRunner:
                 if not img1_raw:
                     continue
                 B = len(img0_pad)
+                # [PROF-LOOP] 整轮计时起点：用于分离"safe_infer 之外的等待"
+                import time as _t_lp
+                _l0 = _t_lp.perf_counter()
 
+                import time as _t_iprof
+                _i0 = _t_iprof.perf_counter()
                 results = proc._safe_infer(
                     img0_pad, img1_pad, timesteps, H, W,
                     prefetched_img0_t=pfimg0_t,
                     prefetched_img1_t=pfimg1_t,
                     return_gpu=(nvenc_encoder is not None),  # [FIX-T3-V643-GPU] Level 1: 保持 GPU
                 )
+
+                # [FIX-SCENE-CUT-GHOST] 本批次 pair 在段内的全局起始索引。
+                # 推理线程是 pair_queue 的唯一消费者且严格 FIFO，故此游标可靠。
+                # 在此统一推进（而非只在 GPU 分支推进），保证所有结果分发分支
+                # 共用同一套 pair 编号，不会错位。
+                _i1 = _t_iprof.perf_counter()
+                # [PROF-STAGE] 推理侧计时：与 Writer 侧对照，判明谁是瓶颈
+                _PI = self.__dict__.setdefault('_prof_i', {'n': 0, 'infer': 0.0})
+                _PI['n'] += 1
+                _PI['infer'] += (_i1 - _i0) * 1000.0
+                if _PI['n'] % 50 == 0:
+                    print(f'[PROF-Infer] {_PI["n"]} 批均值: safe_infer='
+                          f'{_PI["infer"]/_PI["n"]:.1f} ms', flush=True)
+
+                _pair_start = self._pair_cursor
+                self._pair_cursor += B
 
                 # [FIX-RETUNE-POSTRUN] 早期 T2-CACHE 更新（仅更新缓存文件，不做队列建议）
                 # 队列建议改在 run() 段完成后基于全段稳定数据统一计算，精度更高。
@@ -1923,6 +2284,10 @@ class IFRNetPipelineRunner:
                     # 改为将 GPU tensor 传递到 result_queue，由 Writer 线程
                     # 并行做批量 RGB→NV12 + NVENC SDK 编码。
                     _, interp_gpu, img1_rgb_gpu, rB, rT, rorig_H, rorig_W = results
+                    # [FIX-SCENE-CUT-GHOST] 切镜处光流失效 → 插值帧为"水彩画"鬼影，
+                    # 在此替换为源帧副本（保持 2N-1 帧数守恒）。见方法内注释。
+                    self._apply_scene_cut_substitution(interp_gpu, img1_rgb_gpu, rB, rT,
+                                                       _pair_start)
                     self._diag_gpu_stay_batches += 1
                     out_item = ('GPU_RAW', interp_gpu, img1_rgb_gpu, rB, rT, rorig_H, rorig_W)
                 elif isinstance(results, tuple) and len(results) > 0 and results[0] == 'RING':
@@ -1938,17 +2303,45 @@ class IFRNetPipelineRunner:
                     results.event.synchronize()
                     h264_frames = []
                     interp_arr = results.buf[:results.B * results.T]
+                    # [FIX-NV12-EVENT-DEPEND] _rgb_to_nv12_gpu() 在当前 PyTorch 流上
+                    # 异步排入十余个 kernel，而 NVENC 输入拷贝走 _stream_encode
+                    # （[FIX-ASYNC-COPY] 的 NON_BLOCKING 私有流），二者无依赖边：
+                    # cuStreamSynchronize(_stream_encode) 只等私有流自身的拷贝，
+                    # 不等本流上的 NV12 kernel → 拷贝可能先于转换完成，NVENC 读到
+                    # 未写完/未初始化的输入面 → 该帧被编码成噪声（段首帧麻布花屏，
+                    # CONSTQP 下 IDR 从 ~71KB 膨胀到 ~375KB）。
+                    # 这里用 CUDA event 建立依赖边而非逐帧 synchronize()：事件只让
+                    # 拷贝流等待，不阻塞 CPU，保住 T2/T3 的 GPU 并行重叠。
+                    # 同一 event 反复 record() 安全：本流工作累积有序，后记录必含前记录。
+                    _nv12_ev = torch.cuda.Event()
+                    # [DIAG-NV12-EVENT] IFRNET_DIAG=1 时统计本分支命中次数。
+                    # Level 1 正常时 results 为 'GPU' tuple，本分支**不应**被命中
+                    # （实测 new5 3/3 段命中 0 次）；若出现命中说明 Level 1 已降级。
+                    import os as _os_ev
+                    if _os_ev.environ.get('IFRNET_DIAG') == '1':
+                        self.__dict__.setdefault('_diag_nv12_event_hits', 0)
+                        self._diag_nv12_event_hits += 1
+                        if self._diag_nv12_event_hits <= 3:
+                            print(f'[DIAG-NV12-EVENT] 命中 NVENC+PinnedResultItem 分支 '
+                                  f'#{self._diag_nv12_event_hits}', flush=True)
                     for bi in range(results.B):
                         for tj in range(results.T):
                             rgb_gpu = interp_arr[bi * results.T + tj,
                                       :results.orig_H, :results.orig_W, :].cuda()
                             nv12_gpu = _rgb_to_nv12_gpu(rgb_gpu)
+                            _nv12_ev.record()
+                            if not nvenc_encoder.wait_on_event(_nv12_ev.cuda_event):
+                                # 私有流不可用/符号缺失 → 回退显式同步，保证正确性
+                                torch.cuda.current_stream().synchronize()
                             h264_data = nvenc_encoder.encode_frame(nv12_gpu)
                             h264_frames.append(h264_data)
                         # Encode img1_raw (original frame) through NVENC too
                         # img1_raw 来自 reader (RGB)，input_is_bgr=False 直接写 NV12
                         img1_gpu = torch.from_numpy(img1_raw[bi].copy()).cuda()
                         img1_nv12 = _rgb_to_nv12_gpu(img1_gpu, input_is_bgr=False)
+                        _nv12_ev.record()
+                        if not nvenc_encoder.wait_on_event(_nv12_ev.cuda_event):
+                            torch.cuda.current_stream().synchronize()
                         h264_data = nvenc_encoder.encode_frame(img1_nv12)
                         h264_frames.append(h264_data)
                     out_item = (h264_frames, results.B, results.T,
@@ -1964,6 +2357,20 @@ class IFRNetPipelineRunner:
                 # 非阻塞 put + 提前提交下一批预取（背压时先做预取再阻塞）
                 try:
                     self.result_queue.put_nowait(out_item)
+                    # [PROF-LOOP] 整轮耗时（含取 item、等待 pinned 缓冲、推理、入队）
+                    _l1 = _t_lp.perf_counter()
+                    _PL = self.__dict__.setdefault('_prof_loop',
+                                                  {'n': 0, 'total': 0.0, 'wait_put': 0.0})
+                    _PL['n'] += 1
+                    _PL['total'] += (_l1 - _l0) * 1000.0
+                    _PL['wait_put'] += (_l1 - _i1) * 1000.0
+                    if _PL['n'] % 50 == 0:
+                        print(f'[PROF-Loop] {_PL["n"]} 批均值(ms): '
+                              f'整轮={_PL["total"]/_PL["n"]:.1f} '
+                              f'(safe_infer={_PI["infer"]/_PI["n"]:.1f} '
+                              f'infer后处理={_PL["wait_put"]/_PL["n"]:.1f} '
+                              f'infer前等待={(_PL["total"]-_PL["wait_put"]-_PI["infer"])/_PL["n"]:.1f})',
+                              flush=True)
                     self._try_prefetch_next()
                 except queue.Full:
                     if self._writer_th is not None and not self._writer_th.is_alive():

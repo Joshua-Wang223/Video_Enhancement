@@ -55,6 +55,7 @@ from video_utils import (
     get_video_duration, format_time, verify_video_integrity,
     split_video_by_time, merge_videos_by_codec, build_color_args,
     count_decoded_video_frames, validate_decodable_video,
+    count_frames_parallel,   # [PROBE-OPT-P3] 并行预热帧数缓存
 )
 
 
@@ -80,6 +81,14 @@ class RealESRGANVideoProcessor:
         self._checkpoint_save_logged = False
         self._current_input_video: Optional[str] = None
         self._upstream_segments_hash: Optional[str] = None
+
+        # [P3-1] 最终输出验收的严格度依据（与 IFRNet 侧同语义）：
+        #   _was_segmented           —— 本次是否真的走了「切分成多段」路径
+        #   _segments_decode_verified —— 全部产出分段是否都通过了逐段【解码级】验收
+        # 两者同时为真时，最终合并输出才可降级为「不解码」的容器级校验；
+        # 否则（整体处理不分段 / 分段验收未全通过）最终输出必须解码级验收。
+        self._was_segmented = False
+        self._segments_decode_verified = False
         self.temp_base: Optional[Path] = None
         self.checkpoint_file: Optional[Path] = None
         self.segment_dir: Optional[Path] = None
@@ -141,6 +150,12 @@ class RealESRGANVideoProcessor:
         self.use_hwaccel = config.get("models", "realesrgan", "use_hwaccel", default=True)
         self.codec       = config.get("models", "realesrgan", "codec",       default="libx264")
         self.crf         = config.get("models", "realesrgan", "crf",         default=23)
+        # 统一质量基准（libx264 CRF 轴 / h264_nvenc CQ 轴）与硬编字面量 cq。
+        # 由 external/realesrgan_video 在**实际生效编码器**确定后按 QUALITY_MAP 换算
+        # （见 src/utils/quality_map.py）。三者均为 None 时回退到 crf 字面量。
+        self.cq          = config.get("models", "realesrgan", "cq",          default=None)
+        self.crf_ref     = config.get("models", "realesrgan", "crf_ref",     default=None)
+        self.cq_ref      = config.get("models", "realesrgan", "cq_ref",      default=None)
         self.rate_mode       = config.get("models", "realesrgan", "rate_mode",       default="vbr_hq")
         self.lookahead_depth = config.get("models", "realesrgan", "lookahead_depth", default=8)
         # [FIX-HEVC-LA-SOFT-RETIRED] hevc_la_disable 软退役：已由 FIX-HEVC-COUNTED/EOS 保障，不再改写 LA（与 IFRNet 镜像）
@@ -240,14 +255,21 @@ class RealESRGANVideoProcessor:
 
         print(f"\n🔗 合并 {len(processed_segments)} 个处理后的分段...")
         output_config = self.config.get_section("output", {})
-        # [COLOR-FIX] 合并输出注入源视频色彩元数据（有值透传，无值回退 BT.709+Full Range）
+        # [QUALITY-UNIFY] copy-by-default：未显式请求输出编码/质量 → -c:v copy（无损、快）
+        _use_copy = self.config.get("output", "use_copy", default=True)
+        if _use_copy:
+            output_config = {**output_config, "codec": "copy"}
+        # [COLOR-FIX] 合并输出注入源视频色彩元数据（有值透传，unknown 按内容推断）
         output_config = {
             **output_config,
             "extra_args": list(output_config.get("extra_args", []))
                           + build_color_args(input_video),
         }
         success = merge_videos_by_codec(processed_segments, output_video,
-                                        config=output_config)
+                                        config=output_config,
+                                        reencode=(not _use_copy),
+                                        # [META-KEEP] 回写原片容器级元数据
+                                        source_video=input_video)
 
         if success:
             total_time = time.time() - total_start
@@ -311,6 +333,9 @@ class RealESRGANVideoProcessor:
         # 视频较短时直接整体处理
         if duration <= self.segment_duration:
             print("📦 视频较短，直接处理整个视频...")
+            # [P3-1] 整体处理不分段：无分段级验收可依赖，最终输出必须解码级验收
+            self._was_segmented = False
+            self._segments_decode_verified = False
             output_file = self.processed_dir / f"upscaled_{Path(input_video).name}"
             try:
                 success = self._process_segment(input_video, str(output_file), segment_idx=0)
@@ -327,7 +352,32 @@ class RealESRGANVideoProcessor:
         if not segment_files:
             print("❌ 视频分割失败")
             return []
+        # [P3-1] 确已切分为多段：分段级（解码级）验收将覆盖全部产出，
+        # 最终合并输出据此可降级为容器级校验。
+        self._was_segmented = True
+        self._segments_decode_verified = False
         print(f"✅ 共 {len(segment_files)} 个片段")
+
+        # [PROBE-OPT-P3] 并行预热帧数探测缓存（与 IFRNet 侧同款）。
+        # 段验收会对每个分段调用 count_decoded_video_frames()（ffprobe
+        # -count_frames 全解码；超分产物为 1536x1152 时单段约 1.6 分钟）。
+        # 此处在正式处理前**并行**把全部分段的帧数算好写入进程内缓存，
+        # 把 N 段串行探测压缩到约 1 段的时间，后续逐段验收直接命中缓存。
+        # 任何异常都不影响主流程（未预热只是退回原串行探测）。
+        # 可用 NVENC_PREWARM_PROBE=0 关闭。
+        if os.environ.get("NVENC_PREWARM_PROBE", "1") != "0" and len(segment_files) > 1:
+            try:
+                import time as _pw_t
+                _pw0 = _pw_t.perf_counter()
+                # [FIX-GATE-STRICT-COUNT] 预热必须与验收同口径（mode='decode'），
+                # 否则缓存的低可信元数据值会让严格验收门失效或白预热一次。
+                _frames = count_frames_parallel(segment_files, max_workers=4,
+                                                mode="decode")
+                _ok = sum(1 for v in _frames.values() if v)
+                print(f"   ⏱️  [PROBE-OPT] 并行预热帧数缓存: {_ok}/{len(segment_files)} 段，"
+                      f"耗时 {_pw_t.perf_counter() - _pw0:.1f}s", flush=True)
+            except Exception as _pw_e:
+                print(f"   ⚠️  [PROBE-OPT] 帧数缓存预热失败（不影响主流程）: {_pw_e}", flush=True)
 
         return self._process_segments(segment_files, checkpoint)
 
@@ -352,6 +402,9 @@ class RealESRGANVideoProcessor:
         if len(input_segments) > 1 and self._la_is_active():
             print(f"   接收多分段输入 + NVENC LA={self.lookahead_depth} — 每段独立排空，帧数守恒")
         self._setup_temp_dirs(video_name, prefix="esrgan_from_segments")
+        # [P3-1] 上游已给多段 → 视同分段模式；严格度仍取决于本段批量验收结果
+        self._was_segmented = len(input_segments) >= 2
+        self._segments_decode_verified = False
         # [P1-FIX-FINGERPRINT] 指纹加入每段 size+mtime_ns（与 IFRNet 侧同口径），
         # 防止上游换参重跑同名分段时断点误命中导致新旧质量混流。
         _fp_parts = []
@@ -433,6 +486,9 @@ class RealESRGANVideoProcessor:
         ns.use_hwaccel     = self.use_hwaccel
         ns.codec           = self.codec
         ns.crf             = self.crf
+        ns.cq              = self.cq
+        ns.crf_ref         = self.crf_ref
+        ns.cq_ref          = self.cq_ref
         ns.encode_preset   = self.encode_preset
         ns.rate_mode       = self.rate_mode
         ns.lookahead_depth = self.lookahead_depth
@@ -469,6 +525,7 @@ class RealESRGANVideoProcessor:
             start = time.time()
             pipeline_ok = self._main_mod.run_pipeline_for_video(
                 enhancer, input_path, output_path,
+                segment_idx=segment_idx,   # [FIX-ESRGAN-HEVC-SEGMENT-REUSE]
             )
             elapsed = time.time() - start
             if not pipeline_ok:
@@ -476,9 +533,12 @@ class RealESRGANVideoProcessor:
                 return False
             if verify_video_integrity(output_path):
                 # [P4-FIX-GATE] 解码级帧数与错误校验；ESRGAN 超分不改帧数。
-                src_frames = count_decoded_video_frames(input_path)
+                # [FIX-GATE-STRICT-COUNT] 期望值与实测值同源严格（详见 IFRNet 侧同一
+                # 标记的说明）：避免元数据期望 vs 全解码实测在无 NVDEC 机器上假失败。
+                src_frames = count_decoded_video_frames(input_path, mode="decode")
                 dec_ok, dec_report = validate_decodable_video(
-                    output_path, expected_frames=src_frames)
+                    output_path, expected_frames=src_frames,
+                    count_mode="decode")
                 if not dec_ok:
                     print("   ❌ 解码级验收失败: "
                           f"decoded={dec_report.get('decoded_frames')} "
@@ -668,6 +728,53 @@ class RealESRGANVideoProcessor:
                     print(f"   ⏱️  已用时: {format_time(elapsed)}, "
                           f"预计剩余: {format_time(remaining)}")
 
+            # [P4-FIX-BATCH] 并行解码级验收（参考三个脚本并行引擎模式，ESRGAN 侧对称实现）
+            # [P3-1] _segments_decode_verified 仅在「逐段解码级验收确实跑过且全部
+            # 通过」时为真，是最终合并输出能否降级为容器级校验的唯一依据。
+            _candidates = len(processed_files)
+            self._segments_decode_verified = False
+            if processed_files and not getattr(getattr(self, 'config', {}), 'get', lambda *a: False)("processing", "skip_validate", default=False):
+                try:
+                    from video_utils import validate_decodable_video_batch
+                    expected_list = []
+                    for idx, seg_path in enumerate(segment_files):
+                        try:
+                            from video_utils import count_decoded_video_frames
+                            # [FIX-GATE-STRICT-COUNT] 期望值必须与批量验收的实际帧数
+                            # 同源严格：验收侧固定 count_mode='decode'，这里若走 auto 的
+                            # 容器元数据捷径，无 NVDEC 机器上会系统性不等 → 假失败。
+                            src_frames = count_decoded_video_frames(seg_path, mode="decode")
+                        except Exception:
+                            src_frames = None
+                        scale = float(getattr(self, 'upscale_factor', 1.0) if hasattr(self, 'upscale_factor') else 1.0)
+                        expected = int(src_frames) if src_frames else None
+                        expected_list.append(expected)
+                    val_results = validate_decodable_video_batch(
+                        [str(p) for p in processed_files],
+                        expected_frames_list=expected_list,
+                        workers=getattr(self, 'config', {}).get("processing", {}).get("validate_workers")
+                        if hasattr(self, 'config') and isinstance(getattr(self, 'config', {}), dict) else None,
+                        parallel_mode="thread",
+                        skip_validate=False,
+                    )
+                    final_files = []
+                    for idx, (ok, report) in enumerate(val_results):
+                        if ok:
+                            final_files.append(str(processed_files[idx]))
+                        else:
+                            print(f"   ❌ 超分分段验收失败: {Path(str(processed_files[idx])).name} - {report.get('reason', 'unknown')}")
+                    processed_files = final_files
+                    # [P3-1] 全部候选分段都通过逐段解码级验收 → 最终合并输出
+                    # 可降级为容器级校验；任一段缺失/失败则保持严格。
+                    self._segments_decode_verified = (
+                        len(final_files) == _candidates and _candidates > 0)
+                    if self._segments_decode_verified:
+                        print(f"   🔎 全部分段已通过解码级验收 "
+                              f"({_candidates}/{_candidates})，最终合并输出将走容器级校验")
+                except Exception as exc:
+                    print(f"⚠️  ESRGAN 并行解码级验收异常（不影响主流程）: {exc}")
+                    self._segments_decode_verified = False
+
             if processed_files:
                 print(f"\n✅ Real-ESRGAN 处理完成: "
                       f"{len(processed_files)}/{len(segment_files)} 个分段")
@@ -727,9 +834,12 @@ class RealESRGANVideoProcessor:
             if success:
                 if verify_video_integrity(output_path):
                     # [P4-FIX-GATE] 独立段也执行解码级验收；超分不改帧数。
-                    src_frames = count_decoded_video_frames(input_path)
+                    # [FIX-GATE-STRICT-COUNT] 期望值与实测值同源严格（详见 IFRNet 侧
+                    # 同一标记的说明）。
+                    src_frames = count_decoded_video_frames(input_path, mode="decode")
                     dec_ok, dec_report = validate_decodable_video(
-                        output_path, expected_frames=src_frames)
+                        output_path, expected_frames=src_frames,
+                        count_mode="decode")
                     if not dec_ok:
                         print("   ❌ 解码级验收失败: "
                               f"decoded={dec_report.get('decoded_frames')} "
@@ -831,6 +941,9 @@ class RealESRGANVideoProcessor:
             ns.use_hwaccel    = self.use_hwaccel
             ns.codec          = self.codec
             ns.crf            = self.crf
+            ns.cq             = self.cq
+            ns.crf_ref        = self.crf_ref
+            ns.cq_ref         = self.cq_ref
             ns.encode_preset  = self.encode_preset
             ns.rate_mode       = self.rate_mode
             ns.lookahead_depth = self.lookahead_depth
@@ -929,8 +1042,31 @@ class RealESRGANVideoProcessor:
             print(f"   ⚠️  清理失败: {e}")
 
     def close_enhancer(self):
-        """手动释放 enhancer 中的资源（GFPGAN 子进程、SR 模型、TRT 引擎、torch 缓存）"""
+        """手动释放 enhancer 中的资源（GFPGAN 子进程、SR 模型、TRT 引擎、
+        NVENC 编码器、torch 缓存），并做显存水位检查。
+
+        [FIX-STAGE2-VRAM] 背景：实测 R1（2026-09-05）在
+        `upscale_then_interpolate` 模式下，插帧阶段紧接 80 分钟超分在同进程内启动，
+        推理速率从 9.6 帧/s 掉到 2.2 帧/s（慢 4.4 倍），最终触发
+        「推理线程 1822s 未退出」→ 提前 EOF → 缺 16 帧 → exit=1。
+        拆成两个独立进程（超分从缓存跳过）后速率恢复 9.6~10.3 帧/s，
+        证实是**阶段间显存/pinned 资源压力**，与编解码逻辑无关。
+
+        原实现仅把 `self._enhancer` 置 None 再 `empty_cache()`，存在两个缺口：
+          1. 未显式关闭 NVENC 编码器 → 其 9 个 bitstream/input buffer
+             （1536x1152 级别）与专用 CUDA stream 依赖 `__del__` 归还，
+             时机不确定；
+          2. 没有任何水位检查 → 清理是否有效完全不可见，出问题无法定位。
+        """
         if self._enhancer:
+            # [FIX-STAGE2-VRAM] 1) 显式关闭 NVENC 编码器，不依赖 __del__
+            _enc = self._enhancer.get('_sdk_nvenc_encoder')
+            if _enc is not None:
+                try:
+                    _enc.close()
+                    print("[优化] NVENC 编码器已显式关闭（归还 bitstream/input buffer 与 CUDA stream）")
+                except Exception as e:
+                    print(f"[优化] 关闭 NVENC 编码器异常: {e}")
             sub = self._enhancer.get('gfpgan_subprocess')
             if sub is not None:
                 try:
@@ -942,12 +1078,38 @@ class RealESRGANVideoProcessor:
             self._enhancer_initialized = False
             # [VRAM-CLEANUP] enhancer 释放后归还 torch reserved 缓存，
             # 使后续阶段（如 IFRNet TRT 构建）看到真实空闲显存。
+            # [FIX-STAGE2-VRAM] 2) 补显存水位检查 + 二次回收：
+            #    · 先 synchronize() 让未完成的异步工作落地，否则 empty_cache()
+            #      无法回收仍在被 kernel 引用的 block；
+            #    · 打印 reserved 前后差值，使清理效果可观测；
+            #    · 若一次回收不足（残留 > 256MiB 且仍有 reserved），再 collect+empty 一次。
             try:
                 import gc as _gc
                 import torch as _torch
+                if _torch.cuda.is_available():
+                    _torch.cuda.synchronize()
+                    _before = _torch.cuda.memory_reserved()
+                else:
+                    _before = 0
                 _gc.collect()
                 if _torch.cuda.is_available():
                     _torch.cuda.empty_cache()
+                    _torch.cuda.synchronize()
+                    _after = _torch.cuda.memory_reserved()
+                    if _after > 256 * 1024 ** 2:
+                        _gc.collect()
+                        _torch.cuda.empty_cache()
+                        _torch.cuda.synchronize()
+                        _after = _torch.cuda.memory_reserved()
+                    print(f"[显存水位] 阶段间清理: reserved "
+                          f"{_before / 2**30:.2f} GiB → {_after / 2**30:.2f} GiB "
+                          f"（回收 {(_before - _after) / 2**30:.2f} GiB）")
+                    try:
+                        _free, _total = _torch.cuda.mem_get_info()
+                        print(f"[显存水位] 当前可用 {_free / 2**30:.2f} GiB / "
+                              f"总量 {_total / 2**30:.2f} GiB")
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -985,6 +1147,14 @@ def main():
       python realesrgan_processor_video_optimized.py -i input.mp4 -o output.mp4 \\
              --no-compile --no-cuda-graph --no-fp16
     """
+    # [FIX-STDIN-TTOU] 后台进程组 + tty stdin 时子 ffmpeg 会被 SIGTTOU 停住
+    # （"秒卡、0% CPU、无输出"）；入口处把 fd0 换成 /dev/null。
+    # 详见 src/utils/stdin_hardening.py。
+    try:
+        from stdin_hardening import detach_background_stdin
+        detach_background_stdin()
+    except Exception:
+        pass
 
     # 自动定位默认配置文件（假设脚本在 src/processors/，config 在项目根/config/）
     _script_dir  = Path(os.path.abspath(__file__)).parent          # src/processors

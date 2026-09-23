@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+import functools
 import os
 import queue
 import subprocess
 import sys
 import threading
+import time
 from fractions import Fraction
 from typing import Dict, List, Optional, Tuple
 
@@ -19,8 +21,36 @@ _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
 if _PKG_DIR not in sys.path:
     sys.path.insert(0, _PKG_DIR)
 
+# 质量参数换算的唯一真源（src/utils/quality_map.py → convert_crf.py）。
+# 依赖 main.py 在包入口处把 src/utils 挂进 sys.path —— 本包只经 main.py 进入，
+# 单独 import 本模块不成立。
+from quality_map import to_constqp_qp
+
+# [P2-2] 读帧器 hwaccel 自适应决策：与 quality_map 同样取自 src/utils 的唯一
+# 真源（避免 ifrnet_video / realesrgan_video 两侧各存一份阈值而漂移）。
+from reader_hwaccel import (decide_reader_hwaccel,   # noqa: F401
+                            cpu_core_count as _reader_cpu_cores)
+
+# [FIX-STDIN-TTOU] 本模块是「拉起 ffmpeg 子进程」的归属地，在此做一次幂等的
+# fd0 加固，一次覆盖本模块内全部 ffmpeg 调用（能力探测 _probe_nvdec/_probe_nvenc、
+# 读帧器、写帧器…），避免逐个调用点补 `stdin=subprocess.DEVNULL` 时漏改。
+# 仅在「stdin 是 tty 且本进程不在其前台进程组」时动手，前台交互运行是纯 no-op；
+# 原因与现象见 src/utils/stdin_hardening.py。导入失败不影响本包可用性。
+try:
+    from stdin_hardening import (FFMPEG_SAFE_KW,
+                                 detach_background_stdin as _detach_bg_stdin)
+    _detach_bg_stdin()
+except Exception:
+    # src/utils 不可用（包被单独拷出等）→ 本地兜底一份等价 kwargs，
+    # 保证长驻子进程仍显式拿到 /dev/null。
+    FFMPEG_SAFE_KW = {'stdin': subprocess.DEVNULL}
+
 from ifrnet_video.ifrnet_utils import _clamp_decode_threads
 from ifrnet_video.nvenc_sdk import _PRESET_P_INDEX
+
+# [FIX-RANGE-VALIDATE] 非零 frame_start 的「整段解码再丢弃」告警只打印一次
+# （批量处理时同一路径会反复构造 reader，逐次刷屏会淹没日志）。
+_RANGE_SLOWPATH_WARNED = False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -52,7 +82,8 @@ class HardwareCapability:
                 '-i', 'testsrc=size=64x64:duration=0.04:rate=25',
                 '-vcodec', 'libx264', '-f', 'h264', 'pipe:1', '-loglevel', 'error',
             ]
-            enc = subprocess.run(enc_cmd, capture_output=True, timeout=10)
+            enc = subprocess.run(enc_cmd, capture_output=True, timeout=10,
+                                  **FFMPEG_SAFE_KW)
             if enc.returncode != 0 or not enc.stdout:
                 return False
             dec_cmd = [
@@ -81,7 +112,8 @@ class HardwareCapability:
             '-f', 'null', '-',
         ]
         try:
-            result = subprocess.run(cmd, capture_output=True, timeout=10)
+            result = subprocess.run(cmd, capture_output=True, timeout=10,
+                                    **FFMPEG_SAFE_KW)
             if result.returncode != 0:
                 _err = result.stderr.decode('utf-8', errors='replace').strip()
                 print(
@@ -201,7 +233,8 @@ class HardwareCapability:
                     '-pix_fmt', 'yuv420p', '-bf', '0',
                     '-frames:v', '1', '-f', 'null', '-',
                 ]
-                if subprocess.run(cmd, capture_output=True, timeout=10).returncode == 0:
+                if subprocess.run(cmd, capture_output=True, timeout=10,
+                                  **FFMPEG_SAFE_KW).returncode == 0:
                     return 'h264_nvenc', ['-rc', 'constqp', '-qp', '0']
             except Exception:
                 pass
@@ -344,7 +377,74 @@ _NVENC_SURFACES_PIPE: int = 32
 #   典型 PSNR 改善 0.2-0.5 dB（1080p VBR）。
 #   注意：lookahead 需要 N 帧前瞻缓冲（内部 FIFO），因此输出有 N 帧延迟，
 #   与 -delay 0（零输出延迟）互斥，故仅在 VBR 路径启用，QP=0 路径改用 -delay 0。
-_NVENC_LOOKAHEAD_VBR: int = 16
+# [QUALITY-UNIFY] 8 与 realesrgan 侧同名常量对齐，也与新的统一默认
+# lookahead_depth=8 对齐。此常量现仅作 FFmpegWriter 未显式传入时的兜底：
+# 正常调用链由 main.py 透传 processor 的 lookahead_depth（config/CLI）。
+_NVENC_LOOKAHEAD_VBR: int = 8
+
+
+@functools.lru_cache(maxsize=8)
+def _ffmpeg_has_fps_mode(ffmpeg_bin: str = 'ffmpeg') -> bool:
+    """[FIX-VFR-READ] fps_mode 是 FFmpeg 5.0 引入的 vsync 替代品。
+
+    旧版 FFmpeg 传入 -fps_mode 会因"未知选项"直接退出，读帧器拿不到首帧，
+    因此这里按版本号决定用哪个参数。
+    """
+    try:
+        out = subprocess.run([ffmpeg_bin, '-hide_banner', '-version'],
+                             capture_output=True, text=True, timeout=10,
+                             **FFMPEG_SAFE_KW).stdout
+        for line in (out or '').splitlines():
+            line = line.strip()
+            if line.startswith('ffmpeg version'):
+                parts = line.split()
+                token = parts[2] if len(parts) > 2 else ''
+                major = ''.join(ch for ch in token.split('-')[0].split('.')[0]
+                                if ch.isdigit())
+                return int(major) >= 5 if major else False
+    except Exception:
+        pass
+    return False
+
+
+# ── [FIX-READER-UNBOUND] 读帧器看门狗 ──────────────────────────────────────
+# 历史缺陷：`FFmpegFrameReader.read()` 是裸 `self._queue.get()`（无 timeout，
+# 无存活判定）。只要 `_read_loop` 不再投递任何东西 —— 例如子 ffmpeg 被 SIGTTOU
+# 停住（见 src/utils/stdin_hardening.py）、或死锁而不退出 —— 调用方就**永久静默
+# 挂起**：无超时、无日志、无法从现象区分「还在解码」与「已经死了」。
+# 实测代价：2026-09-14 给门禁写 H3 读帧器冒烟时把 verify_plan_implementation.py
+# 挂了 10 分钟，最终只能靠人工中断。
+#
+# 设计约束（不得违反）：
+#   · **反压语义必须保住**：T1(读帧) 比 T2(推理) 快 25~30×，`queue.get()` 的阻塞
+#     *就是* 背压机制。因此超时只允许把「无界挂起」变成「有界失败」，
+#     绝不能把「暂时无帧」误判成失败。
+#   · 死亡判据必须保守：**只有** 线程已停 或 子进程已退出 才立刻判死；
+#     「线程活着 + 子进程在跑」时再多给一个观察窗（慢 ≠ 错），两个窗口都空
+#     才抛 —— 此时现象已与死锁不可区分，继续等只会无限期挂死。
+#   · ESRGAN 侧 `get_frame()` 的 FRAME_TIMEOUT 哨兵契约**不动**（两种 API 语义
+#     不同：那边返回哨兵 + 消费端看门狗，这边抛异常）。
+_READER_TIMEOUT_ENV = 'IFRNET_READER_TIMEOUT'
+# 默认 120s：远大于单帧正常间隔（毫秒级），远小于人工发现挂死的时间。
+_READER_DEFAULT_TIMEOUT = 120.0
+
+
+def _reader_timeout_from_env() -> float:
+    """解析 IFRNET_READER_TIMEOUT。
+
+    缺省/非法 → `_READER_DEFAULT_TIMEOUT`；显式 0 或负数 → 0 表示**关闭看门狗**
+    （退回原来的无界阻塞），供现场对照与回滚使用。
+    """
+    raw = os.environ.get(_READER_TIMEOUT_ENV)
+    if raw is None or not str(raw).strip():
+        return _READER_DEFAULT_TIMEOUT
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return _READER_DEFAULT_TIMEOUT
+    if val <= 0:
+        return 0.0
+    return val
 
 
 class FFmpegFrameReader:
@@ -370,7 +470,38 @@ class FFmpegFrameReader:
         self.nb_frames = meta['nb_frames']
         self.has_audio = meta['has_audio']
 
+        # ── [FIX-RANGE-VALIDATE] 区间参数校验 + 昂贵路径显式告警 ──────────────
+        # 非零 frame_start 走的 `select='between(n,start,end)'` 是**帧号精确**的，
+        # 代价是必须从第 0 帧解码到 end 再丢弃前面部分（整文件解码）。
+        # 为什么不换成输入侧 `-ss` 快速 seek（省掉这段解码）：
+        #   本仓库已有实测反证 —— tests/verify_segment_bitstream_v5.py 的
+        #   `[FIX-BOUNDARY-LEAK]` 记录输入 `-ss` 会在分块边界泄漏/顶替帧，
+        #   且「泄漏帧在输出中的位置不稳定（实测有时是第 N+1 帧、有时顶替第 N 帧）」，
+        #   分块路径是靠 Python 侧按显示 pts 窗口精确过滤才得以正确。
+        #   而本读帧器输出的是 rawvideo（无逐帧 pts 可供过滤），一旦 seek 边界
+        #   偏一帧就会被静默当成真实帧喂给插帧/超分，属最难归因的一类缺陷。
+        #   故此处**保留帧号精确的慢路径**，把代价显式化，不做不精确的加速。
+        # 生产侧（_process_segment）恒传 frame_start=0, frame_end=-1，不触发。
+        if frame_start < 0:
+            raise ValueError(f'frame_start 不可为负: {frame_start}')
+        if frame_end >= 0 and frame_end < frame_start:
+            raise ValueError(
+                f'帧区间非法: frame_start={frame_start} > frame_end={frame_end}')
+        if frame_start > 0 and self.nb_frames > 0 and frame_start >= self.nb_frames:
+            raise ValueError(
+                f'frame_start={frame_start} 超出可解码帧数 {self.nb_frames}')
+
         actual_end = frame_end if frame_end >= 0 else self.nb_frames - 1
+        if frame_start > 0:
+            global _RANGE_SLOWPATH_WARNED
+            if not _RANGE_SLOWPATH_WARNED:
+                _RANGE_SLOWPATH_WARNED = True
+                print(f'[读帧器] ⚠️  请求帧区间 [{frame_start}, {actual_end}] '
+                      f'(non-zero frame_start)：为保证帧号精确，将从头解码整段再丢弃前 '
+                      f'{frame_start} 帧（整文件解码，代价 ≈ 全片）。'
+                      f'如只需整段可传 frame_start=0, frame_end=-1；'
+                      f'如需高效切片请改用关键帧对齐分片（见 verify_segment_bitstream '
+                      f'的 _build_chunk_plan + pts 窗口过滤）。', flush=True)
         self._segment_frames = actual_end - frame_start + 1
         self._frame_bytes    = self.width * self.height * 3
 
@@ -385,37 +516,79 @@ class FFmpegFrameReader:
         self._pad_w  = pw
         self.need_pad = ph > 0 or pw > 0
 
+        # [P2-2] 由 use_hwaccel 的静态请求改为「自适应决策」：调用方传 True
+        # 仅表示「允许硬解」，最终用不用由码率/核数决定（实测标定见
+        # src/utils/reader_hwaccel.py 的模块 docstring）。
+        # use_hwaccel=False 仍为强制软解。
+        self.use_hwaccel = bool(
+            use_hwaccel and decide_reader_hwaccel(
+                self.width, self.height, self.fps, meta.get('bit_rate', 0),
+                nvdec_available=HardwareCapability.has_nvdec(),
+                label='(%s)' % os.path.basename(str(video_path))))
+
         hw_args: List[str] = []
-        if use_hwaccel and HardwareCapability.has_nvdec():
-            # hw_args = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'nv12']
-            # ✅ 正确：nv12 是 NVDEC 合法的 hwaccel_output_format
+        if self.use_hwaccel:
+            # nv12 是 NVDEC 合法的 hwaccel_output_format：
             # FFmpeg 会先将 CUDA NV12 surface download 到 CPU，
             # 再由 swscale 自动转换为 -pix_fmt rgb24 输出到管道
             hw_args = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'nv12']
 
         if frame_start == 0 and frame_end < 0:
-            vf_args: List[str] = []
+            vf_args: List[str] = ['-vf', 'scale=in_color_matrix=bt601:in_range=tv']
         else:
             vf_args = [
                 '-vf',
-                f"select='between(n\\,{frame_start}\\,{actual_end})',setpts=N/FR/TB",
-                '-vsync', '0',
+                f"select='between(n\\,{frame_start}\\,{actual_end})',setpts=N/FR/TB,scale=in_color_matrix=bt601:in_range=tv",
             ]
+
+        # [FIX-VFR-READ] 必须显式 passthrough（输出侧选项，须在 -f rawvideo 之前）：
+        # rawvideo 输出默认走 CFR，遇到 VFR 源（时间戳空洞，例如源视频尾部丢帧留下的
+        # Δ=2 帧间隔）会复制帧补洞，使读入帧数 > 真实解码帧数。段级验收用
+        # ffprobe -count_frames（真实解码帧数）推算期望值，二者口径不一致就会误判
+        # decoded_frame_mismatch（表现为"最后一个分段总是失败"）。
+        # 与 Real-ESRGAN 读帧器的 fps_mode=passthrough 保持一致。
+        if _ffmpeg_has_fps_mode(ffmpeg_bin):
+            sync_args = ['-fps_mode', 'passthrough']
+        else:
+            sync_args = ['-vsync', '0']          # ffmpeg < 5.0 回退
 
         # [FIX-NVDEC-THREAD-CAP] 解码线程钳位到 ≤8，避免多核机上
         # NVDEC 解码 surface 超过驱动 32 上限（-threads 9 → 33 surfaces 被拒）。
+        # [P2-2] 该上限只对 NVDEC 成立：8 是驱动 surface 预算的映射，不是
+        # CPU 软解的核数上限。软解路径按物理核数给线程，避免在 8 核以上的
+        # 机器上把软解人为限制在 8 线程、白白浪费算力。
+        if self.use_hwaccel:
+            _dec_threads = _clamp_decode_threads()
+        else:
+            _dec_threads = max(1, _reader_cpu_cores())
         cmd = (
             [ffmpeg_bin]
+            # [META-KEEP] 输入侧选项，须在 -i 之前：禁止 ffmpeg 把 display matrix
+            # 烘焙成像素旋转。烘焙后 rawvideo 帧宽高被交换，而流水线按 ffprobe 的
+            # 存储坐标系尺寸 reshape，旋转视频会静默错乱；不烘焙则由合并阶段统一
+            # 把旋转标签写回产物。
+            + ['-noautorotate']
             + hw_args
-            + ['-threads', str(_clamp_decode_threads())]
+            + ['-threads', str(_dec_threads)]
             + ['-i', video_path]
             + vf_args
+            + sync_args
             + ['-f', 'rawvideo', '-pix_fmt', 'rgb24', '-loglevel', 'error', 'pipe:1']
         )
         self._proc   = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            # [FIX-STDIN-TTOU] 显式给子进程 stdin=/dev/null（经 FFMPEG_SAFE_KW，
+            # 与 Real-ESRGAN 侧读帧器共用同一份定义）：
+            # 若父进程 stdin 是非前台 tty，ffmpeg 启动时会对 fd0 调
+            # ioctl(TCSETS) 触发 SIGTTOU 被停住（"秒卡、0% CPU、无输出"，
+            # 极易误判为码流/GPU 故障）。详见 src/utils/stdin_hardening.py。
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            **FFMPEG_SAFE_KW
         )
         self._queue  = queue.Queue(maxsize=max(prefetch, 4))
+        # [FIX-READER-UNBOUND] 看门狗参数与遥测。`_frames_read` 让超时异常能回答
+        # 「卡在第几帧、队列积压多少」，否则现场只剩一句"没反应"。
+        self._read_timeout = _reader_timeout_from_env()
+        self._frames_read  = 0
         self._thread = threading.Thread(target=self._read_loop, daemon=True)
         self._thread.start()
         self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
@@ -453,13 +626,71 @@ class FFmpegFrameReader:
                     self._queue.put((arr, padded))
                 else:
                     self._queue.put((arr, arr))
+                self._frames_read += 1
         except Exception as e:
             self._queue.put(e)
             return
         self._queue.put(self._SENTINEL)
 
-    def read(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-        item = self._queue.get()
+    # ── [FIX-READER-UNBOUND] 存活判定 + 有界 read() ────────────────────────
+    def _producer_state(self) -> Tuple[bool, str]:
+        """返回 (是否已死, 依据字符串)。
+
+        判据刻意保守：只有「读线程已停」或「子 ffmpeg 已退出但没送哨兵」才算死。
+        「线程活着 + 子进程在跑」一律算活 —— 那可能只是 T1 慢于 T2 的反压，
+        误判会制造假失败。
+        """
+        if not self._thread.is_alive():
+            return True, 'reader_thread_dead'
+        rc = self._proc.poll()
+        if rc is not None:
+            return True, 'child_exited(rc=%s,no_sentinel)' % rc
+        return False, 'thread_alive,child_running'
+
+    def _stall_message(self, waited: float, state: str) -> str:
+        return ('[FIX-READER-UNBOUND] 读帧器无产出（已等 %.1fs，阈值 %.0fs）: %s, '
+                'thread_alive=%s, child_poll=%s, queue=%d/%d, frame=%d '
+                '(设 %s=0 可退回无界阻塞)'
+                % (waited, self._read_timeout, state, self._thread.is_alive(),
+                   self._proc.poll(), self._queue.qsize(), self._queue.maxsize,
+                   self._frames_read, _READER_TIMEOUT_ENV))
+
+    def read(self, timeout: Optional[float] = None
+             ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """取下一位帧；返回 `None` 表示正常读到 EOF。
+
+        [FIX-READER-UNBOUND] `timeout` 语义（默认取 IFRNET_READER_TIMEOUT）：
+          · `timeout <= 0` → **关闭看门狗**，退回原来的无界阻塞（现场对照/回滚用）；
+          · `timeout  > 0` → 有界等待：先等 `timeout`，队列仍空时查存活；
+            已死 → 立即抛 `RuntimeError`（含 thread/child/queue/frame 现场）；
+            仍活 → 再给一个 `timeout` 观察窗（慢 ≠ 错，保住反压），
+            第二个窗口也空才抛 —— 此时现象与死锁已不可区分。
+
+        异常路径抛 `RuntimeError`（不是返回哨兵）：本读帧器的消费方是
+        `main.py` 的 `while True: pair = reader.read()`，返回 None 会被当成
+        "正常 EOF" 而静默少帧，故必须抛。ESRGAN 侧 `get_frame()` 的
+        FRAME_TIMEOUT 哨兵契约与此不同，**不要**互相照搬。
+        """
+        t = self._read_timeout if timeout is None else float(timeout)
+        if t <= 0:
+            item = self._queue.get()
+        else:
+            try:
+                item = self._queue.get(timeout=t)
+            except queue.Empty:
+                dead, state = self._producer_state()
+                if not dead:
+                    # 生产者仍在推进 → 反压中，不是错误；再给一个观察窗。
+                    try:
+                        item = self._queue.get(timeout=t)
+                    except queue.Empty:
+                        dead, state = self._producer_state()
+                        if not dead:
+                            state = ('producer_alive_but_silent_2xT'
+                                     '(thread_alive,child_running)')
+                        raise RuntimeError(self._stall_message(2.0 * t, state))
+                else:
+                    raise RuntimeError(self._stall_message(t, state))
         if item is self._SENTINEL:
             return None
         if isinstance(item, Exception):
@@ -482,8 +713,8 @@ def _probe_video(video_path: str) -> dict:
     cmd = [
         'ffprobe', '-v', 'error',
         '-select_streams', 'v:0',
-        '-show_entries', 'stream=width,height,r_frame_rate,nb_frames,duration',
-        '-show_entries', 'format=nb_streams',
+        '-show_entries', 'stream=width,height,r_frame_rate,nb_frames,duration,bit_rate',
+        '-show_entries', 'format=nb_streams,bit_rate',
         '-of', 'json', video_path,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -516,9 +747,23 @@ def _probe_video(video_path: str) -> dict:
     ]
     a = subprocess.run(cmd_audio, capture_output=True, text=True, timeout=15)
     has_audio = (a.returncode == 0 and '"codec_type": "audio"' in a.stdout)
+
+    # [P2-2] 码率用于读帧器 hwaccel 自适应决策（见 decide_reader_hwaccel）。
+    # 视频流 bit_rate 优先，缺失时退到容器 overall bit_rate（含音频，作上界）。
+    bit_rate = 0
+    for _src in (vs.get('bit_rate'), data.get('format', {}).get('bit_rate')):
+        try:
+            _v = int(_src)
+        except (TypeError, ValueError):
+            continue
+        if _v > 0:
+            bit_rate = _v
+            break
+
     return {
         'width': int(vs['width']), 'height': int(vs['height']),
         'fps': fps, 'nb_frames': nb, 'has_audio': has_audio,
+        'bit_rate': bit_rate,
     }
 
 
@@ -557,7 +802,10 @@ class FFmpegWriter:
         ffmpeg_bin: str = 'ffmpeg',
         quiet: bool = True,
         n_threads: Optional[int] = None,   # [FIX-SLICE-THREAD] None=自动探测
-        rc_mode: str = "constqp",           # NVENC rate control mode for Level 2 fallback
+        # NVENC rate control mode for Level 2 fallback。默认与 realesrgan 侧同名
+        # 参数一致；正常调用链由 main.py 透传生效的 rate_mode。
+        rc_mode: str = "vbr_hq",
+        lookahead_depth: Optional[int] = None,  # None → _NVENC_LOOKAHEAD_VBR（仅 VBR 生效）
     ):
         # [FIX-T3-V643] 去除内部 _queue 和 _write_loop 线程，直接管道写入
         self._error: Optional[Exception] = None
@@ -589,6 +837,8 @@ class FFmpegWriter:
         _x265_ft = max(2, min(4, _par['cpu_logical'] // 2))
         # x265 pool：线程池总大小（所有 frame-threads 共享），= encode_threads
         _x265_pool = _et
+        # CONSTQP 分支算出的 QP（None = 非 CONSTQP 模式）；在参数摘要中复用
+        _nvenc_qp: Optional[int] = None
 
         if crf == 0:
             if 'nvenc' in codec:
@@ -641,15 +891,32 @@ class FFmpegWriter:
             #   · -surfaces N        扩大 NVENC 内部帧缓冲（同 crf=0 路径）。
             # [FIX-FFMPEGWRITER-RC] 根据 Level 1 的 RC 模式选择对应的 FFmpeg -rc:v 值
             # 注意：qvbr 在旧版 FFmpeg h264_nvenc 中不可用，回退到 vbr_hq
-            _rc_v_map = {'vbr_hq': 'vbr_hq', 'qvbr': 'vbr_hq', 'constqp': 'vbr'}
-            _rc_v = _rc_v_map.get(rc_mode, 'vbr')
-            quality_args = [
-                '-preset', preset,
-                '-rc:v', _rc_v, '-cq:v', str(crf), '-b:v', '0',
-                '-bf', '0',
-                '-rc-lookahead', str(_NVENC_LOOKAHEAD_VBR),
-                '-surfaces', str(_NVENC_SURFACES_PIPE),
-            ]
+            _rc_v_map = {'vbr_hq': 'vbr_hq', 'qvbr': 'vbr_hq', 'constqp': 'constqp'}
+            _rc_v = _rc_v_map.get(rc_mode, 'vbr_hq')
+            if _rc_v == 'constqp':
+                # [QUALITY-UNIFY] CONSTQP 专用参数是 -qp，不是 -cq:v：
+                #   ffmpeg: -cq "…for constant quality mode in VBR rate control"（仅 VBR 有效）
+                #           -qp "Constant quantization parameter rate control method"
+                # 旧实现把 constqp 映射成 'vbr' + -cq:v，用户拿到的其实是普通 VBR+CQ，
+                # 与 Level 1 SDK 直通路径（真 CONSTQP）不一致。此处对齐 Level 1，并按
+                # constqp 轴把已算好的 CQ 值换算成 QP。CONSTQP 下 LA 被硬件静默禁用，
+                # 故不发 -rc-lookahead；-b:v 0 对 CONSTQP 无意义，一并省略。
+                _nvenc_qp = to_constqp_qp(codec, crf)
+                quality_args = [
+                    '-preset', preset,
+                    '-rc:v', 'constqp', '-qp', str(_nvenc_qp),
+                    '-bf', '0',
+                    '-surfaces', str(_NVENC_SURFACES_PIPE),
+                ]
+            else:
+                _la = _NVENC_LOOKAHEAD_VBR if lookahead_depth is None else int(lookahead_depth)
+                quality_args = [
+                    '-preset', preset,
+                    '-rc:v', _rc_v, '-cq:v', str(crf), '-b:v', '0',
+                    '-bf', '0',
+                    '-rc-lookahead', str(_la),
+                    '-surfaces', str(_NVENC_SURFACES_PIPE),
+                ]
         elif codec == 'libx265':
             # [FIX-SLICE-THREAD] 替换旧 pools=none（完全禁用线程池）为正确多线程参数
             quality_args = [
@@ -710,11 +977,18 @@ class FFmpegWriter:
                     f'surfaces={_NVENC_SURFACES_PIPE}  delay=0  '
                     f'ffmpeg_threads={_ft}(全局demux，不影响NVENC硬件单元)'
                 )
+            elif _nvenc_qp is not None:
+                _nvenc_info = (
+                    f'[FIX-NVENC-PIPE] NVENC CONSTQP(-qp {_nvenc_qp}): '
+                    f'preset={preset}  bf=0  la=off(constqp 硬件禁用)  '
+                    f'surfaces={_NVENC_SURFACES_PIPE}  '
+                    f'ffmpeg_threads={_ft}(全局demux，不影响NVENC硬件单元)'
+                )
             else:
                 _nvenc_info = (
                     f'[FIX-NVENC-PIPE] NVENC VBR(cq={crf}): '
                     f'preset={preset}  bf=0  '
-                    f'rc-lookahead={_NVENC_LOOKAHEAD_VBR}  '
+                    f'rc-lookahead={_NVENC_LOOKAHEAD_VBR if lookahead_depth is None else int(lookahead_depth)}  '
                     f'surfaces={_NVENC_SURFACES_PIPE}  '
                     f'ffmpeg_threads={_ft}(全局demux，不影响NVENC硬件单元)'
                 )
