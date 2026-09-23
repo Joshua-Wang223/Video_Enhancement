@@ -1,0 +1,492 @@
+[
+  {
+    "id": "R1",
+    "phase": "A-前置条件",
+    "name": "Python 版本 ≥ 3.9",
+    "status": "PASS",
+    "method": "sys.version_info",
+    "criteria": "主版本 3 且次版本 ≥ 9",
+    "detail": "Python 3.11.1",
+    "suggestion": ""
+  },
+  {
+    "id": "R2",
+    "phase": "A-前置条件",
+    "name": "FFmpeg 可用（≥4.3）",
+    "status": "PASS",
+    "method": "which + 版本查询",
+    "criteria": "可执行存在且版本达标",
+    "detail": "ffmpeg 7.1 @ /usr/local/bin/ffmpeg",
+    "suggestion": ""
+  },
+  {
+    "id": "R3",
+    "phase": "A-前置条件",
+    "name": "FFprobe 可用",
+    "status": "PASS",
+    "method": "shutil.which",
+    "criteria": "可执行存在",
+    "detail": "ffprobe @ /usr/local/bin/ffprobe",
+    "suggestion": ""
+  },
+  {
+    "id": "R4",
+    "phase": "A-前置条件",
+    "name": "关键源文件存在",
+    "status": "PASS",
+    "method": "FILES 核心映射",
+    "criteria": "核心文件齐全",
+    "detail": "12 个核心文件均存在",
+    "suggestion": ""
+  },
+  {
+    "id": "R5",
+    "phase": "A-前置条件",
+    "name": "CUDA / GPU 可用",
+    "status": "PASS",
+    "method": "import torch 查询",
+    "criteria": "可用 PASS；否则 WARN 并跳过 GPU 相关组",
+    "detail": "CUDA 可用: Tesla T4, 14.6 GiB, SM75",
+    "suggestion": ""
+  },
+  {
+    "id": "R6",
+    "phase": "A-前置条件",
+    "name": "模型权重存在",
+    "status": "PASS",
+    "method": "glob models_*/*.pth",
+    "criteria": "各至少 1 个权重",
+    "detail": "IFRNet: 6, ESRGAN: 12, GFPGAN: 2",
+    "suggestion": ""
+  },
+  {
+    "id": "R7",
+    "phase": "A-前置条件",
+    "name": "NVENC 环境探测（不依赖 torch）",
+    "status": "PASS",
+    "method": "ffmpeg lavfi h264_nvenc 单帧编码探测（吸收自 verify_post_run）",
+    "criteria": "探测通过 PASS；失败 WARN（可能无 N 卡/驱动，不影响 CPU 侧结论）",
+    "detail": "h264_nvenc ffmpeg 探测通过",
+    "suggestion": ""
+  },
+  {
+    "id": "R8",
+    "phase": "A-前置条件",
+    "name": "NVML 环境变量提示",
+    "status": "SKIP",
+    "method": "检查 PYTORCH_NVML_BASED_CUDA_CHECK（吸收自 verify_post_run）",
+    "criteria": "=0 为 PASS；未设置 SKIP（入口运行时自动 setdefault；仅外部直调子系统需手动）",
+    "detail": "当前值=''：主入口运行时会自动 setdefault 为 0",
+    "suggestion": "仅当绕过主入口直调子系统时，手动 export PYTORCH_NVML_BASED_CUDA_CHECK=0 规避 NVML/RM 不匹配"
+  },
+  {
+    "id": "P0-1",
+    "phase": "B-静态·阶段0",
+    "name": "model_name 透传 + 动态架构加载 (A1)",
+    "status": "PASS",
+    "method": "processor 构造透传 model_name；后端按 self.model_name 动态解析",
+    "criteria": "两处修复模式均存在",
+    "detail": "processor 透传 ✓；后端按实例名动态解析 ✓",
+    "suggestion": ""
+  },
+  {
+    "id": "P0-2",
+    "phase": "B-静态·阶段0",
+    "name": "NVENC 返回码分级处置 (H1/H2/H17)",
+    "status": "PASS",
+    "method": "drain 路径：非 SUCCESS 记诊断计数并安全退出（容忍 T4 首排空期常态 code=8，帧由 EOS 全量排空回收）；EOS×2 与 flush 排空保持 fail-fast；DestroyEncoder rc 校验",
+    "criteria": "tolerant 标记+计数器存在且 drain 不 raise；EOS/flush raise 仍在",
+    "detail": "[P0-FIX-RC]×8；drain 容忍+遥测 ✓（段级守恒审计兜底）；EOS/flush fail-fast ✓；DestroyEncoder rc ✓",
+    "suggestion": ""
+  },
+  {
+    "id": "P0-3",
+    "phase": "B-静态·阶段0",
+    "name": "HEVC/AV1 blocking Lock 挂起修复 (H3)",
+    "status": "PASS",
+    "method": "_lock_bitstream_blocking 按 codec 分流：HEVC/AV1 非阻塞轮询+deadline",
+    "criteria": "存在 _poll_mode 分支且 hevc/av1 判定",
+    "detail": "codec 分流轮询已落地（H.264 保持已验证阻塞语义）",
+    "suggestion": ""
+  },
+  {
+    "id": "P0-4",
+    "phase": "B-静态·阶段0",
+    "name": "Muxer 写超时线程 + 收尾 rc 判败 (H4)",
+    "status": "PASS",
+    "method": "FFmpegMuxer 常驻写线程+_write_stdin 超时+_mux_failed；flush_and_join 超时 raise；ifrnet FFmpegWriter close rc 上抛",
+    "criteria": "四类证据齐备",
+    "detail": "写超时线程 ✓ / flush 超时 raise ✓ / Writer close rc 上抛 ✓ / 段级判败 ✓",
+    "suggestion": ""
+  },
+  {
+    "id": "P0-5",
+    "phase": "B-静态·阶段0",
+    "name": "AV1 GUID 回退一致性 (H5)",
+    "status": "PASS",
+    "method": "GUID 未命中显式 raise（拒绝静默 H264 回退污染容器）",
+    "criteria": "raise 语义存在",
+    "detail": "GUID 未命中即 raise，交由四级编码回退接管",
+    "suggestion": ""
+  },
+  {
+    "id": "P0-6",
+    "phase": "B-静态·阶段0",
+    "name": "批量隔离 + keep_audio try/finally (H6)",
+    "status": "PASS",
+    "method": "批量循环逐文件 try/except(KeyboardInterrupt 重抛)；keep_audio 以 finally 恢复",
+    "criteria": "结构与标签双确认",
+    "detail": "批量逐文件隔离 ✓ / Kbd 重抛 ✓ / finally 恢复 ✓",
+    "suggestion": ""
+  },
+  {
+    "id": "P0-7",
+    "phase": "B-静态·阶段0",
+    "name": "merge 扩展名改动向上传播 (H7)",
+    "status": "PASS",
+    "method": "merge_videos_by_codec 提供 actual_output 出参并在改写时 append；主调用方采用实际路径",
+    "criteria": "两侧契约均存在",
+    "detail": "出参契约 ✓ / 主流程采纳实际路径 ✓",
+    "suggestion": ""
+  },
+  {
+    "id": "P0-8",
+    "phase": "B-静态·阶段0",
+    "name": "ESRGAN 异常判败 + audio_src 传递链 (H8/H10)",
+    "status": "PASS",
+    "method": "run_pipeline_for_video 异常记录并 return False；audio_src 传源视频路径",
+    "criteria": "两类证据齐备",
+    "detail": "异常判败 ✓ / 成功横幅门控 ✓ / 音轨传递链 ✓",
+    "suggestion": ""
+  },
+  {
+    "id": "P0-9",
+    "phase": "B-静态·阶段0",
+    "name": "eval→Fraction + 全活跃树零裸 except (H12)",
+    "status": "PASS",
+    "method": "video_utils 无 eval(r_frame_rate)；src+external 活跃树扫描裸 except:=0",
+    "criteria": "两项均为否",
+    "detail": "eval 已移除；活跃树裸 except=0（扫描 3 个目录）",
+    "suggestion": ""
+  },
+  {
+    "id": "P1-1",
+    "phase": "B-静态·阶段1",
+    "name": "checkpoint 内容指纹 + 原子写 (H13)",
+    "status": "PASS",
+    "method": "两 processor direct 入口指纹含 size+mtime_ns；写盘 tmp+os.replace",
+    "criteria": "双 processor 四项齐备",
+    "detail": "上游内容指纹(size+mtime_ns) ✓ / 原子写 ✓（双侧）",
+    "suggestion": ""
+  },
+  {
+    "id": "P1-2",
+    "phase": "B-静态·阶段1",
+    "name": "OOM bs=1 活锁熔断 (H11)",
+    "status": "PASS",
+    "method": "_safe_infer 内 _BS1_OOM_LIMIT 计数且超限 raise",
+    "criteria": "计数器与上抛同时存在",
+    "detail": "bs=1 连续 OOM 熔断已落地",
+    "suggestion": ""
+  },
+  {
+    "id": "P1-3",
+    "phase": "B-静态·阶段1",
+    "name": "缓存回滚 + _ring_buf 跨 Level 复位",
+    "status": "PASS",
+    "method": "get_or_create 先失效再构造；每段编码决策前复位 ring 别名",
+    "criteria": "三类标签齐备",
+    "detail": "缓存回滚 ✓（pool/ring）/ ring 复位 ✓",
+    "suggestion": ""
+  },
+  {
+    "id": "P1-4",
+    "phase": "B-静态·阶段1",
+    "name": "关闭语义收紧（段收尾 muxer rc 判败）",
+    "status": "PASS",
+    "method": "main 段收尾检查 _mux_failed → return False",
+    "criteria": "段级检查存在",
+    "detail": "muxer 收尾失败已纳入段成败",
+    "suggestion": ""
+  },
+  {
+    "id": "P1-5",
+    "phase": "B-静态·阶段1",
+    "name": "watchdog 与 OOM 恢复协调",
+    "status": "PASS",
+    "method": "T2 设置 _oom_pause_until 生产者；writer 空转计时消费宽限",
+    "criteria": "生产/消费两侧齐备",
+    "detail": "宽限时间戳生产者 ✓ / watchdog 消费者 ✓",
+    "suggestion": ""
+  },
+  {
+    "id": "P1-6",
+    "phase": "B-静态·阶段1",
+    "name": "Windows select 替换 (H9)",
+    "status": "PASS",
+    "method": "平台门控 _SELECT_SUPPORTS_PIPES + 线程化写 _write_with_timeout_threaded",
+    "criteria": "POSIX select 快路径保留为设计，Windows 走线程",
+    "detail": "平台分流 ✓ / Windows 线程化带超时写 ✓",
+    "suggestion": ""
+  },
+  {
+    "id": "P1-7",
+    "phase": "B-静态·阶段1",
+    "name": "数据卫生四项守卫",
+    "status": "PASS",
+    "method": "input==output 守卫 / 音频新鲜度侧车 / split 指纹复用 / LA 补偿查实际编码器",
+    "criteria": "四项齐备",
+    "detail": "就地覆盖守卫 / 音频新鲜度(.src.json) / split 指纹复用 / LA 补偿查实际编码器",
+    "suggestion": ""
+  },
+  {
+    "id": "P1-8",
+    "phase": "B-静态·阶段1",
+    "name": "数值参数校验前置",
+    "status": "PASS",
+    "method": "_validate_effective_config 定义且在 CLI 覆盖后调用；5 处 falsy 判断改 is not None",
+    "criteria": "定义+调用+falsy 修复齐备",
+    "detail": "校验器定义+调用 ✓；falsy 修复 5/5 处",
+    "suggestion": ""
+  },
+  {
+    "id": "P2-1",
+    "phase": "B-静态·阶段2",
+    "name": "tile 真实接入（批级平铺）",
+    "status": "PASS",
+    "method": "es_pipeline 定义并启用 _sr_tile_forward；es_main 启动明示（含 TRT 不适用提示）",
+    "criteria": "定义+调用+明示三证齐备",
+    "detail": "批级平铺前向 ✓ / tile>0 门控 ✓ / TRT 旁路明示 ✓",
+    "suggestion": ""
+  },
+  {
+    "id": "P2-2a",
+    "phase": "B-静态·阶段2",
+    "name": "ESRGAN compile/CUDA Graph 实现",
+    "status": "PASS",
+    "method": "torch.compile 接线（default/dynamic 与 reduce-overhead 双模式）；死分支 cuda_graph_accel.available 已摘除",
+    "criteria": "接线存在且死分支移除",
+    "detail": "compile/cudagraphs 接线 ✓ / 死分支摘除 ✓",
+    "suggestion": ""
+  },
+  {
+    "id": "P2-2b",
+    "phase": "B-静态·阶段2",
+    "name": "IFRNet 互斥裁定前移参数层",
+    "status": "PASS",
+    "method": "processor 库内构造与独立 CLI 两处先行裁定 TRT>compile>Graph",
+    "criteria": "≥2 处标签",
+    "detail": "参数层裁定 ×2 处（后端防御保留兜底）",
+    "suggestion": ""
+  },
+  {
+    "id": "P2-3",
+    "phase": "B-静态·阶段2",
+    "name": "热路径去拷贝",
+    "status": "PASS",
+    "method": "RING b''.join 单次拼接；LA D2H 形状键控旋转池",
+    "criteria": "两项落地（残余 .tobytes 属合法序列化，仅作信息记录）",
+    "detail": "RING join ✓ / LA pinned 旋转池 ✓（残余 copy/tobytes=6，均为合法必要拷贝）",
+    "suggestion": ""
+  },
+  {
+    "id": "P2-4a/b/d",
+    "phase": "B-静态·阶段2",
+    "name": "NVENC 样板收敛（原型/ctx/空帧口径）",
+    "status": "PASS",
+    "method": "CFUNCTYPE 原型模块级预构造；_ctx_push/_ctx_pop 单一实现；空字节帧 prev 占位保帧数",
+    "criteria": "三项齐备",
+    "detail": "模块级原型 ✓ / ctx 配对收敛 ✓ / 空帧占位统一 ✓",
+    "suggestion": ""
+  },
+  {
+    "id": "P2-4c",
+    "phase": "B-静态·阶段2",
+    "name": "SPS/PPS 全部阶梯统一走 _apply_sps_pps",
+    "status": "PASS",
+    "method": "原语 _cache_param_sets/_prepend_param_sets 存在且 apply 委托二者；Cached SPS+PPS 打印收敛至 helper 内单点；[P2.4c-LADDER-*] 站点标签齐备",
+    "criteria": "四类证据齐备",
+    "detail": "原语+委托 ✓ / 打印单点化 ✓ / 阶梯站点 ['A', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'] (E/H/I 语义翻转: 迟到IDR补挂、REDRAIN全帧统一)",
+    "suggestion": ""
+  },
+  {
+    "id": "P2-5",
+    "phase": "B-静态·阶段2",
+    "name": "logging 基础设施接入",
+    "status": "PASS",
+    "method": "src/utils/logger.py 存在；主入口 init_logging 且阶段横幅写日志",
+    "criteria": "基础设施+接入点齐备",
+    "detail": "logger 基础设施 ✓ / 主入口接入 ✓（external print 遥测分批迁移）",
+    "suggestion": ""
+  },
+  {
+    "id": "P3-1",
+    "phase": "B-静态·阶段3",
+    "name": "上帝函数拆解（已实施，含 ce_pipeline）",
+    "status": "PASS",
+    "method": "四个目标函数 <阈值（阈值随 FIX 增长复核调整）；各阶段子方法存在且带 [P3.1-SPLIT*] 标签",
+    "criteria": "阈值+结构锚双确认",
+    "detail": "__init__=29行(<100) / _process_segment=424行(<450) / _process_single=177行(<200) / encode_frames_batch_ce_pipeline=123行(<130) / ce_pipeline 已按 Phase 拆解(_ce_harvest/submit/inline/final) — 拆解已落地",
+    "suggestion": ""
+  },
+  {
+    "id": "P3-2",
+    "phase": "B-静态·阶段3",
+    "name": "镜像收敛（NAL 公共参考实现）",
+    "status": "PASS",
+    "method": "external/nvenc_common/nal_utils.py 存在且回归测试锁定等价性",
+    "criteria": "参考实现+等价测试齐备",
+    "detail": "共享参考实现 ✓ / 等价性测试锁定（BEH-D）✓（收敛方案 B）",
+    "suggestion": ""
+  },
+  {
+    "id": "P3-3",
+    "phase": "B-静态·阶段3",
+    "name": "死代码清除",
+    "status": "PASS",
+    "method": "nvenc_writer.py 已删除；ifrnet nvenc_sdk 无 _FUNC_TABLE_SIZE/_RotationBitReader",
+    "criteria": "全部移除",
+    "detail": "nvenc_writer.py 已删 ✓ / 死常量与死类已清 ✓",
+    "suggestion": ""
+  },
+  {
+    "id": "P3-4",
+    "phase": "B-静态·阶段3",
+    "name": "测试基建（合并后单一入口）",
+    "status": "PASS",
+    "method": "test_regression_min.py 为兼容别名（--behavior-only 转发本脚本）；本脚本含行为验证阶段",
+    "criteria": "别名转发成立",
+    "detail": "兼容别名 ✓ / 行为阶段内置 ✓",
+    "suggestion": ""
+  },
+  {
+    "id": "P3-5",
+    "phase": "B-静态·阶段3",
+    "name": "文档与 memory 同步",
+    "status": "PASS",
+    "method": "AGENTS.md 反映归档结构与测试入口；execution 记录存在于 memory/",
+    "criteria": "关键文档齐备",
+    "detail": "AGENTS.md 结构/入口已更新 ✓ / memory 执行记录 ✓",
+    "suggestion": ""
+  },
+  {
+    "id": "FIX-IFRNET-LA0",
+    "phase": "F-修复效果",
+    "name": "ifrnet 默认 LA=8/vbr_hq（原 LA=0/constqp 断言已过期）",
+    "status": "PASS",
+    "method": "读取配置",
+    "criteria": "rate_mode=vbr_hq 且 lookahead_depth=8",
+    "detail": "rate_mode=vbr_hq, lookahead_depth=8",
+    "suggestion": ""
+  },
+  {
+    "id": "FIX-REALESRGAN-LA0",
+    "phase": "F-修复效果",
+    "name": "realesrgan 默认 LA=8/vbr_hq（原 LA=0/constqp 断言已过期）",
+    "status": "PASS",
+    "method": "读取配置",
+    "criteria": "rate_mode=vbr_hq 且 lookahead_depth=8",
+    "detail": "rate_mode=vbr_hq, lookahead_depth=8",
+    "suggestion": ""
+  },
+  {
+    "id": "FIX-H2D-SYNC",
+    "phase": "F-修复效果",
+    "name": "H2D Event 同步",
+    "status": "PASS",
+    "method": "源码锚点+结构",
+    "criteria": "事件记录和slot复用等待存在",
+    "detail": "P1-FIX-H2D-EVENT-SYNC / pool.mark_issued",
+    "suggestion": ""
+  },
+  {
+    "id": "FIX-ROUTE",
+    "phase": "F-修复效果",
+    "name": "HEVC+LA 安全路由",
+    "status": "PASS",
+    "method": "源码锚点",
+    "criteria": "处理器启用 hevc_la_disable",
+    "detail": "hevc_la_disable 配置与路由逻辑",
+    "suggestion": ""
+  },
+  {
+    "id": "FIX-HEVC-LA-OPEN",
+    "phase": "F-修复效果",
+    "name": "HEVC LA>0 开放（软退役）",
+    "status": "PASS",
+    "method": "配置+源码锚点",
+    "criteria": "config hevc_la_disable==false 且处理器 WARN 不降级",
+    "detail": "cfg_ifr=False cfg_esr=False soft_ifr=True soft_esr=True no_downgrade_ifr=True",
+    "suggestion": ""
+  },
+  {
+    "id": "FIX-GATE",
+    "phase": "F-修复效果",
+    "name": "解码级验收门禁",
+    "status": "PASS",
+    "method": "源码锚点",
+    "criteria": "video_utils 与两阶段/最终合并接入",
+    "detail": "validate_decodable_video / count_decoded_video_frames",
+    "suggestion": ""
+  },
+  {
+    "id": "FIX-EOS-ORDER",
+    "phase": "F-修复效果",
+    "name": "EOS-ORDER",
+    "status": "PASS",
+    "method": "源码锚点",
+    "criteria": "P2/P3 硬化已接入",
+    "detail": "FIX-EOS-ORDER",
+    "suggestion": ""
+  },
+  {
+    "id": "FIX-STRICT-EOS",
+    "phase": "F-修复效果",
+    "name": "STRICT-EOS",
+    "status": "PASS",
+    "method": "源码锚点",
+    "criteria": "P2/P3 硬化已接入",
+    "detail": "FIX-STRICT-EOS",
+    "suggestion": ""
+  },
+  {
+    "id": "FIX-SIZE-CAP",
+    "phase": "F-修复效果",
+    "name": "SIZE-CAP",
+    "status": "PASS",
+    "method": "源码锚点",
+    "criteria": "P2/P3 硬化已接入",
+    "detail": "FIX-SIZE-CAP",
+    "suggestion": ""
+  },
+  {
+    "id": "FIX-NAL-COMMON",
+    "phase": "F-修复效果",
+    "name": "NAL-COMMON",
+    "status": "PASS",
+    "method": "源码锚点",
+    "criteria": "P2/P3 硬化已接入",
+    "detail": "FIX-NAL-COMMON",
+    "suggestion": ""
+  },
+  {
+    "id": "FIX-MODEL-ARCH-LAZY",
+    "phase": "F-修复效果",
+    "name": "IFRNet 架构解析不在模块导入期（无硬编码 S 依赖）",
+    "status": "PASS",
+    "method": "AST 结构分析",
+    "criteria": "存在 [FIX-MODEL-ARCH-LAZY] 且导入期无 _load_ifrnet_module( 调用",
+    "detail": "marker=True import_time_calls=0",
+    "suggestion": ""
+  },
+  {
+    "id": "RT-0",
+    "phase": "D-运行时",
+    "name": "输出视频存在",
+    "status": "SKIP",
+    "method": "检查输出文件",
+    "criteria": "输出文件存在为通过",
+    "detail": "未提供 --output 或文件不存在",
+    "suggestion": ""
+  }
+]

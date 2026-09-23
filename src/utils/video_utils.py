@@ -1538,6 +1538,67 @@ def _load_probe_cache() -> None:
         _PROBE_DETAIL_CACHE[k] = detail
 
 
+def _write_probe_cache_merged(frames: dict, detail: dict) -> None:
+    """在跨进程文件锁内「读旧 → 合并 → 原子写」，供 process 模式并发持久化。
+
+    [PROBE-CACHE-PERSIST-PROC] 为什么必须合并而不是直接覆盖：
+    ProcessPoolExecutor 用 fork 时子进程继承父进程的 `_PROBE_FRAME_CACHE`
+    **快照**，每个子进程各自把「自己算出的那一条」写回同一 sidecar —— 直接
+    覆盖 = 最后写者胜，N 个子进程的结果只剩 1 条（实测 8 段只留 1 条）。且并发
+    写同一个 `.tmp` 路径可能产出交错内容。此处用 flock 串行化「读-合并-写」，
+    并把临时文件名带上 pid，保证多进程安全且结果累积。
+
+    Returns: 无返回值；任何异常都不抛出（缓存落盘失败不影响主流程）。
+    """
+    lock_fp = None
+    try:
+        lock_fp = open(_PROBE_CACHE_FILE + ".lock", "a+")
+    except Exception:
+        lock_fp = None
+    try:
+        if lock_fp is not None:
+            try:
+                import fcntl
+                fcntl.flock(lock_fp.fileno(), fcntl.LOCK_EX)
+            except Exception:
+                pass                    # 非 POSIX 平台无 fcntl：退化为不加锁
+        # 读回已落盘内容（可能是同批另一个子进程刚写的），仅补充本地缺失项
+        try:
+            with open(_PROBE_CACHE_FILE, "r", encoding="utf-8") as f:
+                old = json.load(f)
+            if isinstance(old, dict) and \
+                    old.get("version") == _PROBE_CACHE_VERSION:
+                for k, v in (old.get("frames") or {}).items():
+                    if k not in frames and isinstance(v, dict) \
+                            and v.get("kind") == "decode" \
+                            and v.get("value") is not None:
+                        frames[k] = v
+                for k, v in (old.get("detail") or {}).items():
+                    if k not in detail and _probe_detail_persistable(v):
+                        detail[k] = v
+        except Exception:
+            pass
+        payload = {"version": _PROBE_CACHE_VERSION,
+                   "frames": frames, "detail": detail}
+        _tmp = "%s.tmp.%d" % (_PROBE_CACHE_FILE, os.getpid())
+        with open(_tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(_tmp, _PROBE_CACHE_FILE)
+    except Exception:
+        pass
+    finally:
+        if lock_fp is not None:
+            try:
+                import fcntl
+                fcntl.flock(lock_fp.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                lock_fp.close()
+            except Exception:
+                pass
+
+
 def _persist_probe_cache() -> None:
     """把成功项原子写回 sidecar（tmp + os.replace，沿用断点的 [P1-FIX-ATOMIC]）。"""
     if not _PROBE_CACHE_FILE:
@@ -1557,16 +1618,8 @@ def _persist_probe_cache() -> None:
     for k, d in list(_PROBE_DETAIL_CACHE.items()):
         if _probe_detail_persistable(d):
             detail[_probe_key_to_str(k)] = d
-    payload = {"version": _PROBE_CACHE_VERSION,
-               "frames": frames, "detail": detail}
-    try:
-        with _PROBE_CACHE_LOCK:
-            _tmp = _PROBE_CACHE_FILE + ".tmp"
-            with open(_tmp, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False)
-            os.replace(_tmp, _PROBE_CACHE_FILE)
-    except Exception:
-        pass
+    with _PROBE_CACHE_LOCK:                 # 进程内串行；跨进程由 flock 串行
+        _write_probe_cache_merged(frames, detail)
 
 
 def set_probe_cache_file(path) -> None:

@@ -6,9 +6,11 @@
   ② 失败结果（帧数 None / 扫描返回 None / 抛异常）**绝不落盘**；
   ③ 低可信来源（metadata）不落盘；
   ④ 解码证据（detail）只落「rc==0 且无错误行」的成功项；
-  ⑤ 切镜 key 携带阈值 —— 改阈值必须 miss。
+  ⑤ 切镜 key 携带阈值 —— 改阈值必须 miss；
+  ⑥ E2E（真实 ffmpeg + process 模式）：子进程各自持久化必须**累积**而非
+     「最后写者胜」，且重启后可全部命中（零解码）。
 
-全程用桩替换真实探测，不调 ffmpeg/GPU，可安全单独运行。
+①～⑤ 全程用桩替换真实探测，不调 ffmpeg/GPU；⑥ 需要 ffmpeg（缺失则跳过）。
 用法: python tests/test_prescan_cache_persistence.py
 """
 import json
@@ -225,12 +227,111 @@ def test_scene_cut_persist_roundtrip():
             pl._SCENE_CUT_CACHE_OK.clear()
 
 
+def test_process_mode_persist_e2e():
+    """⑥ E2E：process 模式下子进程各自持久化必须累积，重启后可全部命中。
+
+    这是 [PROBE-CACHE-PERSIST-PROC] 的回归：进程池用 fork 时子进程继承父进程
+    缓存的**快照**，若各自直接覆盖写同一 sidecar，则「最后写者胜」——实测 8 段
+    只留 1 条。修复（flock 串行「读-合并-写」+ 带 pid 的临时文件名）后应累积到 N 条。
+    """
+    print("\n■ [PROBE-CACHE-PERSIST] process 模式 E2E（真实 ffmpeg）")
+    import subprocess
+    import tempfile
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        print("  ⏭️  未找到 ffmpeg，跳过 process 模式 E2E")
+        _RESULTS.append(True)
+        return
+
+    n = 4
+    with tempfile.TemporaryDirectory() as tmp:
+        clips = []
+        for i in range(n):
+            p = os.path.join(tmp, f"c{i}.mp4")
+            subprocess.run(
+                [ffmpeg, "-hide_banner", "-v", "error", "-y",
+                 "-f", "lavfi",
+                 "-i", f"testsrc=size=160x120:rate=10:duration={1 + i * 0.5}",
+                 "-pix_fmt", "yuv420p", "-c:v", "libx264", "-g", "5", p],
+                check=True, stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            clips.append(p)
+
+        sidecar = os.path.join(tmp, "probe_cache.json")
+        vu.set_probe_cache_file(sidecar)
+        # 模拟「未预热」：清空父进程内存缓存 → 子进程必须各自解码并持久化
+        vu._PROBE_FRAME_CACHE.clear()
+        vu._PROBE_DETAIL_CACHE.clear()
+
+        results = vu.validate_decodable_video_batch(
+            clips, expected_frames_list=[None] * n,
+            workers=n, parallel_mode="process", gpu_workers=0)
+
+        ok_n = sum(1 for ok, _ in results if ok)
+        decoded = [r.get("decoded_frames") for _, r in results]
+        _check("process 模式验收全部通过",
+               ok_n == n and all(d for d in decoded),
+               f"ok={ok_n}/{n}, frames={decoded}")
+
+        # 关键：父进程内存缓存仍为空 ⇒ 工作确在独立子进程完成（未退化成 thread）
+        _check("确为独立子进程执行（父进程内存缓存未被填充）",
+               len(vu._PROBE_FRAME_CACHE) == 0,
+               f"parent_cache={len(vu._PROBE_FRAME_CACHE)}")
+
+        entries, valid = -1, False
+        try:
+            with open(sidecar, encoding="utf-8") as f:
+                data = json.load(f)
+            valid = True
+            entries = len(data.get("frames", {}))
+        except Exception as e:
+            _check("sidecar JSON 有效", False, str(e))
+        if valid:
+            _check("子进程结果全部累积落盘（非最后写者胜）",
+                   entries == n, f"entries={entries}/{n}")
+
+        # 重启：清内存后从 sidecar 重载，必须全部命中且零解码
+        vu.set_probe_cache_file(None)
+        vu._PROBE_FRAME_CACHE.clear()
+        vu._PROBE_DETAIL_CACHE.clear()
+        vu.set_probe_cache_file(sidecar)
+
+        calls = {"n": 0}
+        saved = (vu._count_frames_nvdec, vu._count_frames_ffprobe,
+                 vu._read_nb_frames_metadata)
+
+        def _boom(*_a, **_k):
+            calls["n"] += 1
+            raise AssertionError("命中缓存时不应触发任何解码")
+
+        vu._count_frames_nvdec = _boom
+        vu._count_frames_ffprobe = _boom
+        vu._read_nb_frames_metadata = _boom
+        try:
+            vals = [vu.count_decoded_video_frames(p, mode="decode",
+                                                  use_hwaccel=False)
+                    for p in clips]
+        finally:
+            (vu._count_frames_nvdec, vu._count_frames_ffprobe,
+             vu._read_nb_frames_metadata) = saved
+            vu.set_probe_cache_file(None)
+            vu._PROBE_FRAME_CACHE.clear()
+            vu._PROBE_DETAIL_CACHE.clear()
+
+        _check("重启后 process 模式落盘结果全部命中（零解码）",
+               vals == decoded and calls["n"] == 0,
+               f"hits={sum(1 for v in vals if v is not None)}/{n}, "
+               f"解码调用={calls['n']}")
+
+
 def main():
     print("=" * 68)
     print("预扫描缓存断点恢复（[PROBE-CACHE-PERSIST]/[SCENE-CUT-PERSIST]）")
     print("=" * 68)
     test_probe_persist_roundtrip()
     test_scene_cut_persist_roundtrip()
+    test_process_mode_persist_e2e()
     total = len(_RESULTS)
     passed = sum(_RESULTS)
     print(f"\n{'=' * 68}\n结果: {passed}/{total} "

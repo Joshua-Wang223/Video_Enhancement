@@ -68,6 +68,20 @@ type: project
   进程 B 重启后 `decode` 0.3ms + `cache_hits 0→1`、`prescan` 0.0ms 且 sidecar 载入 1 段。
 - 门禁静态子集 `verify_plan_implementation.py --skip-behavior`：49/47/0/2，与基线一致。
 
-**遗留边界（未改，非本次范围）**：`validate_decodable_video_batch` 若走
-`parallel_mode="process"`，子进程不继承 `_PROBE_CACHE_FILE`，其帧数/证据仍会重算
-（默认 `thread` 模式不受影响）。
+**process 模式（2026-09-23 补充 E2E 时发现并修复，`[PROBE-CACHE-PERSIST-PROC]`）**：
+- 先前判断「子进程不继承 `_PROBE_CACHE_FILE`、会重算」**是错的**。容器 Python 3.11 +
+  Linux 默认 `fork`，子进程**继承**模块全局（含 `_PROBE_CACHE_FILE` 与父进程预热好的
+  `_PROBE_FRAME_CACHE`），所以命中本来就有。
+- 真正的问题是**反向的**：若父进程未预热（缓存为空），每个子进程各自解码后
+  `_persist_probe_cache()` 用「自己那份快照」**覆盖写**同一 sidecar → **最后写者胜**，
+  实测 8 段只留 1 条（`validate` 结果仍 8/8 正确，但落盘等于白做）；并发写同一个
+  `.tmp` 路径还有交错损坏风险。
+- 修复：`_write_probe_cache_merged()` 用 `fcntl.flock` 串行化「读旧 → 合并 → 原子写」，
+  临时文件名带 `os.getpid()`；进程内仍由 `_PROBE_CACHE_LOCK` 串行。非 POSIX 无 `fcntl`
+  时退化为不加锁（Windows 走 spawn，子进程本就无 `_PROBE_CACHE_FILE`，无此竞态）。
+  切镜 sidecar 无多进程写入路径，仅把 tmp 名改成带 pid 作预防。
+- 修复后实测：8 段 process 模式 → `entries=8/8`，5 轮 sidecar 均有效。
+
+**验证（补充后）**：`tests/test_prescan_cache_persistence.py` **18/18**（新增 process 模式
+E2E：真 ffmpeg 4 段 → 验收 4/4、父进程内存缓存为 0（证明确在独立进程）、落盘 4/4 累积、
+重启后 4/4 零解码命中；并用「还原覆盖写」做负向校验确认该断言确实会失败）。

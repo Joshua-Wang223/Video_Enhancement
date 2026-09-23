@@ -1194,7 +1194,8 @@ def _persist_scene_cut_cache() -> None:
                'criteria': _SCENE_CUT_CRITERIA_VERSION,
                'entries': entries}
     try:
-        _tmp = _SCENE_CUT_CACHE_FILE + '.tmp'
+        # tmp 名带 pid：万一未来出现多进程写同一 sidecar，也不会互相踩到交错内容
+        _tmp = '%s.tmp.%d' % (_SCENE_CUT_CACHE_FILE, os.getpid())
         with open(_tmp, 'w', encoding='utf-8') as f:
             json.dump(payload, f, ensure_ascii=False)
         os.replace(_tmp, _SCENE_CUT_CACHE_FILE)
