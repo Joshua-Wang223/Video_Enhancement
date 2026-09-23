@@ -1,6 +1,6 @@
 ---
 name: GitHub 推送流程（SSH-over-443）与「密钥红线」
-description: force_push_github.sh 的正确调用方式、跑完必须复核 ls-remote 的原因（曾因 SIGPIPE 静默中止）、以及 config/cc-switch-*.md 含真实 API Key 已被 .gitignore 排除（GitHub 只认 OpenRouter，DeepSeek 无检测器）
+description: force_push_github.sh 的正确调用方式、推送后一律复核 ls-remote 的铁律与「怎么读推送日志」（0 报错≠推送成功、dry-run 行与真实行同格式）、models.del 类改名残留绕过 .gitignore 与哨兵的缺口、以及 config/cc-switch-*.md 含真实 API Key 已被 .gitignore 排除（GitHub 只认 OpenRouter，DeepSeek 无检测器）
 type: project
 ---
 
@@ -29,6 +29,28 @@ git ls-remote origin refs/heads/main   # 与本地 git rev-parse refs/heads/main
 ```
 
 **How to apply**：把这条当成推送动作的固定收尾步骤（省下的是"以为推上去了、其实没有"这类返工）。看到"脚本跑完了但远程没变"，先查是不是被 `set -e`+管道早闭静默中止，而不是怀疑网络或凭据。
+
+**Provenance**：2026-09-23 用户在本会话明确要求「补充一条以后省事的经验：推送后一律独立复核 `git ls-remote origin refs/heads/main`」—— 即这条是**用户指定的长期经验**，不要因为"脚本的 SIGPIPE 缺陷已修"就把它删掉或降级。
+
+### 怎么读推送日志（2026-09-23 用户要求「检查推送日志确认无报错」时实测出的两条反直觉）
+
+1. **日志里 0 条报错 ≠ 推送成功。** 第 1 次运行（`force_push.log`）用 `error|fatal|failed|denied|rejected|⚠️` 扫描是 **0 命中**，但它**根本没走到推送阶段**——被 SIGPIPE 静默中止，日志里连一行错都没有。所以"日志干净"不能当证据（这正是本文件开头那条铁律的存在理由）。
+2. **dry-run 的成功行与真实推送的成功行格式完全相同**：都是 `   <old>..<new>  <40位sha> -> main`。`force_push2.log` 里那 1 行 `-> main` 其实是 **dry-run**，真实那次紧跟其后被 `! [remote rejected]`。要区分必须看它是否出现在 `--- 预演通过，开始正式推送 ---` **之后**。
+
+**可信的成功签名**（三条同时满足，但仍以 `ls-remote` 为准）：① 有 `=== 6. 预演 + 推送 ===` 小节；② 出现 **2 行** `-> main`（dry-run + 真实）；③ `rejected|declined` 为 0 行。
+
+**How to apply**：复核历史推送日志时别只看"有没有 error"，按上面三条签名判定"到底推没推出去"；本会话 4 份日志（03:26/03:27/03:28/03:41）就是"0 报错但没推 / 走到推送但被拒 / 真成功"三种形态的现成样本。
+
+## ⚠️ 大目录哨兵与 .gitignore 有同一个双重缺口：`.del` / `.bak` 类改名残留
+
+2026-09-23 清理根目录 stray 权重目录时实测：把 `models/` 改名成 **`models.del/`**（"待删"的常见做法）后，**两道防线都拦不住它**——
+
+- `.gitignore` 里只有 `models/`、`models_*/`（匹配不到 `models.del/`；且 `.gitignore` 只作用于未跟踪路径）；
+- 脚本第 5 步哨兵正则 `^(models|models_[^/]*|temp|output|logs|gfpgan|\.trt_cache|\.t2_cache)/` 同样不匹配 `models.del/`。
+
+⇒ 该目录 **128 MB（含两个 67 MB 的 .pth 权重）会直接进提交树被推上去**，而哨兵会照常打印 `✅ 大目录未被纳入`，给出假的安心感。
+
+**How to apply**：清理大目录时**不要停留在改名**（`mv x x.del`），改名正是绕过防线的动作；要么真删、要么同时把新名字加进 `.gitignore` 与哨兵正则。推送前用 `git ls-tree -r --name-only <tree> | grep -E '^(models|temp|output|logs)'` 之类的**宽匹配**自查一遍，别只信脚本那句 ✅。
 
 ## 密钥红线（2026-09-23 推送被 GitHub Push Protection 拦下）
 

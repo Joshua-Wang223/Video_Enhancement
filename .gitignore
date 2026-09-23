@@ -12,8 +12,14 @@ _bak*
 *.bak*
 *_bak*
 logs/
-models/
-models_*/
+# [FIX-GITIGNORE-MODELS-ANCHOR] 原为未锚定的 `models/`、`models_*/` ——
+# 未锚定模式会匹配**任意层级**的同名目录，实测把 external/IFRNet/models/
+# （IFRNet 网络结构源码 IFRNet.py / IFRNet_S.py / IFRNet_L.py）一并忽略，
+# 致其从未进仓库：全新 clone 缺该目录 → 导入/加载 IFRNet 架构必然失败
+# （与 2026-09-23「No module named 'models'」生产事故同源）。
+# 锚定到仓库根，只忽略根级权重/缓存目录，不动 external/ 下的源代码。
+/models/
+/models_*/
 gfpgan/
 output/
 temp/
