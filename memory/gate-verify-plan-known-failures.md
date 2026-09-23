@@ -60,6 +60,30 @@ type: project
 - 新增 `[FIX-MODEL-ARCH-LAZY]`（F-修复效果）：AST 判定 `external/ifrnet_video/main.py` 在**导入期**是否还存在 `_load_ifrnet_module(` 调用 —— 只跳过 `def/async def` 体（调用时才执行），**`class` 体与模块顶层 `if` 仍算导入期**；注释与模块文档串天然不参与判定。事件背景见
   [IFRNet models 包缺失](ifrnet-models-package-missing.md)。
 
+## 2026-09-23：Linux + GPU 侧「完整测试套件」基线（三个入口 + 独立 harness）
+
+本机 = Linux 容器，Tesla T4，torch/ffmpeg-python 齐备 ⇒ 无 GPU 机器上那些
+WARN/SKIP（R5/R7/H1/H3）在这里全部真实执行并通过。
+
+| 入口 | 命令 | 结果 |
+|---|---|---|
+| 全量门禁 | `python tests/verify_plan_implementation.py` | **95 项 / 93 通过 / 0 失败 / 0 警告 / 2 跳过**（~24s） |
+| 行为别名 | `python tests/test_regression_min.py` | **46/46**（等价 `--behavior-only`） |
+| 逐文件隔离 | `bash tests/run_all_isolated.sh` | **6 PASS / 0 FAIL / 0 CRASH / 16 EMPTY** |
+
+- 全量门禁的 2 个 SKIP 都是**语义性**的、非缺陷：`R8`（NVML 环境变量提示，信息项）、
+  `RT-0`（未传 `--input/--output`，故无输出视频可查）。
+- ⚠️ **隔离跑出 16 个 `EMPTY` 是正常的、不是故障**：`EMPTY` = pytest rc=5「无测试被收集」，
+  这些文件是**独立脚本**（含 `__test__ = False` 的 NVENC harness / 诊断 / 复现器），
+  必须 `python tests/xxx.py` 直接跑，不属于 pytest 收集范围。判别：rc=5 而非 2/3/4
+  （后者才是 collection error）。**别把 EMPTY 读成 PASS，也别读成 FAIL。**
+- 已直接跑过的独立脚本（均通过）：`test_frame_count_probe.py`（需传视频路径，
+  不传时用仓库既有素材，缺失则仅跑纯 CPU 的严格缓存来源检查）、
+  `test_sps_pps_startup.py`（纯 CPU）、`test_nvenc_vbr_hq_offsets.py`（12/12）、
+  `test_nvenc_la_frame_conservation.py`（帧守恒 VERIFIED）。
+- 未能运行：`test_parallel_validate.py` —— 硬编码 fixture
+  `/workspace/output_videos/Dora_E/Season_02/…hevc.skip_upscale_noreuse.mp4` 不存在（一次性脚本）。
+
 ### ⚠️ 写新断言必须用结构性证据，不能匹配文本/注释（实证）
 
 本文件 docstring 早有约定「断言必须锚定结构性证据（函数体切片/跨文件契约），**禁止只匹配注释文案**」。2026-09-23 被实证一次：
