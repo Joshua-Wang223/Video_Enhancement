@@ -15,9 +15,11 @@
 #    .gitignore 挡住；脚本另加「提交树哨兵」二次拦截，绝不把 GB 级文件推上去。
 # 3. 推送用 --force-with-lease（远程若被人推过就**拒绝**而不是盲推）。
 # 4. 推送前自动打一个本地备份 tag（不会被推送），任何一步失败都可回滚。
-# 5. `.gitignore` / `.gitattributes` 属**全仓治理文件**：它们决定"什么能进树"，
+# 5. `.gitignore` / `.gitattributes` / `tar_excludes.txt` 属**全仓治理文件**：
+#    `.gitignore` 决定"什么能进树"、`tar_excludes.txt` 决定"快照里排掉什么"，
 #    一律以 origin 版本为准（本地差异只告警、不采纳），避免任一环境带着旧规则
-#    重建索引后覆盖远程。确有需要本地优先时用 IGNORE_LOCAL=1（见第 3 节）。
+#    重建索引/打包后覆盖远程。确有需要本地优先时用 IGNORE_LOCAL=1（见第 3 节）。
+#    ⚠️ 不要把本脚本自身加进该清单 —— 运行中被改写会让 bash 重读、行为未定义。
 #
 # 用法
 # ----
@@ -28,7 +30,7 @@
 #   GH_URL='https://<user>:<token>@github.com/...' bash force_push_github.sh
 #   REPO=/path/to/repo bash force_push_github.sh # 指定仓库根
 #   ALLOW_BIG=1 bash force_push_github.sh        # 放行大目录哨兵（确有需要时）
-#   IGNORE_LOCAL=1 bash force_push_github.sh     # 治理文件(.gitignore/.gitattributes)用本地版
+#   IGNORE_LOCAL=1 bash force_push_github.sh     # 治理文件(.gitignore/.gitattributes/tar_excludes.txt)用本地版
 #
 # 回滚（把远程恢复到推送前）
 # --------------------------
@@ -126,16 +128,19 @@ say "已打本地备份 tag      = $TAG（不会被推送，用于回滚）"
 export GIT_TERMINAL_PROMPT=0
 
 # -----------------------------------------------------------------------------
-head1 "3. 治理文件以 origin 为准（.gitignore / .gitattributes）"
+head1 "3. 治理文件以 origin 为准（.gitignore / .gitattributes / tar_excludes.txt）"
 # -----------------------------------------------------------------------------
-# [FIX-IGNORE-CANONICAL] 这两个文件决定「什么能进树」，必须全环境一致。
+# [FIX-IGNORE-CANONICAL] 这些文件决定「什么能进树 / 快照里排掉什么」，必须全环境一致。
 # 原实现只在本地缺失时才从远程恢复：任一环境带着旧版 .gitignore 跑本脚本，
 # 就会用旧规则重建索引并覆盖远程 —— 2026-09-23 实测事故即由此而来
 # （另一环境缺 .gitattributes + 未锚定的 models/ → 覆盖后 EOL 锁定丢失、
 #  external/IFRNet/models/ 等架构源码被剔除，全新 clone 起不来）。
 # 现改为：一律采用 origin/$BRANCH 的版本；本地有差异只告警不采纳。
 # 需要本地优先时设 IGNORE_LOCAL=1。
-for _f in .gitignore .gitattributes; do
+# 注：tar_excludes.txt 不影响本脚本建树，但它是「打快照交给其他环境」的排除清单；
+#     旧版（未锚定的 models）会把 external/IFRNet/models/ 等源码目录排掉，2026-09-23
+#     已实测复发过一次，故一并纳入治理清单。
+for _f in .gitignore .gitattributes tar_excludes.txt; do
   if ! git cat-file -e "$OLD:$_f" 2>/dev/null; then
     say "$_f 在 origin/$BRANCH 中不存在 → 跳过（保持本地现状）"
     continue
