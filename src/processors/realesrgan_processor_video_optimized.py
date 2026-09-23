@@ -1024,6 +1024,10 @@ class RealESRGANVideoProcessor:
 
         except ImportError as e:
             print(f"   ❌ 无法导入 realesrgan_video/main.py: {e}")
+            # [FIX-IMPORT-DIAG] 与 IFRNet processor 镜像修复：补 traceback，
+            # 避免把"后端源码/依赖缺失"笼统化成一句无法定位的消息。
+            import traceback
+            traceback.print_exc()
             return False
         except Exception as e:
             print(f"   ❌ 调用 Real-ESRGAN 失败: {e}")

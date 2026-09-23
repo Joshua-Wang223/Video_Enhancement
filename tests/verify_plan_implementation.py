@@ -2063,6 +2063,59 @@ def _run_fix_effect_phase() -> List[CheckResult]:
                                    Status.PASS if ok else Status.FAIL,
                                    "源码锚点", "P2/P3 硬化已接入",
                                    check_id))
+
+        # [FIX-MODEL-ARCH-LAZY] IFRNet 架构解析不得发生在模块导入期。
+        # 原实现（2026-09-23 之前）在 main.py 模块级硬编码执行
+        #   Model, _ifrnet_s_mod = _load_ifrnet_module('IFRNet_S_Vimeo90K')
+        # 使 external/IFRNet/models/IFRNet_S.py 成为 import ifrnet_video.main 的
+        # **硬依赖**：该文件缺失时整个后端导入失败（即使只跑 IFRNet_L），且被
+        # processor 的 `except ImportError` 笼统化成"无法导入 ifrnet_video.main:
+        # No module named 'models'"（2026-09-23 生产实例，排查成本极高）。
+        # 现改为 PEP 562 `__getattr__` 惰性解析；运行期架构由 _load_model() 按
+        # self.model_name 解析（[P0-FIX-MODEL-ARCH]，其正向断言见 [P0-1]）。
+        # 判据（**结构性证据**，遵守本文件"禁止只匹配注释文案"的约定）：
+        #   ① [FIX-MODEL-ARCH-LAZY] 锚点存在；
+        #   ② AST 中不存在**模块顶层执行**的 _load_ifrnet_module(...) 调用
+        #      （即不在 def/class 体内的调用；模块 docstring/注释与函数内调用不算）。
+        _if_main_txt = _as_text(FILES["if_main"])
+        _lazy_marked = "[FIX-MODEL-ARCH-LAZY]" in _if_main_txt
+
+        def _import_time_arch_calls(src_text: str) -> List[str]:
+            """返回模块导入期会执行的 _load_ifrnet_module(...) 调用的行号列表。"""
+            try:
+                _tree = ast.parse(src_text)
+            except SyntaxError as e:
+                return [f"<SyntaxError line {e.lineno}>"]
+            _hits: List[str] = []
+
+            def _walk(node):
+                # 函数体只在被调用时执行，不属导入期 → 不再下探；
+                # class 体则**是**导入期执行，需继续递归（其中的方法会被下一层拦住）。
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    return
+                if (isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Name)
+                        and node.func.id == "_load_ifrnet_module"):
+                    _hits.append(f"line {getattr(node, 'lineno', '?')}")
+                for _child in ast.iter_child_nodes(node):
+                    _walk(_child)
+
+            for _stmt in _tree.body:
+                _walk(_stmt)
+            return _hits
+
+        _module_level_calls = _import_time_arch_calls(_if_main_txt)
+        _lazy_ok = _lazy_marked and not _module_level_calls
+        out.append(CheckResult(
+            "FIX-MODEL-ARCH-LAZY", "F-修复效果",
+            "IFRNet 架构解析不在模块导入期（无硬编码 S 依赖）",
+            Status.PASS if _lazy_ok else Status.FAIL,
+            "AST 结构分析", "存在 [FIX-MODEL-ARCH-LAZY] 且导入期无 _load_ifrnet_module( 调用",
+            f"marker={_lazy_marked} import_time_calls={len(_module_level_calls)}"
+            + (f" {_module_level_calls[:2]}" if _module_level_calls else ""),
+            "" if _lazy_ok else
+            "导入期解析会让架构源码缺失直接炸掉整个 import（仅缺 IFRNet_S 也炸），"
+            "应改为函数内惰性解析"))
     return out
 
 

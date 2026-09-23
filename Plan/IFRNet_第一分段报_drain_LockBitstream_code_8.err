@@ -1,0 +1,125 @@
+────────────────────────────────────────────────────────────────
+  🎞️  阶段 2: Step 2/2 — IFRNet 插帧
+────────────────────────────────────────────────────────────────
+
+🎬 IFRNet 插帧处理（接收分段输入）—— v6.4.5.1
+📹 输入分段数: 3
+⚡ 插帧倍数: 2x
+   接收多分段输入 + NVENC LA=16 — 每段独立排空，帧数守恒
+🆕 未发现断点文件，将从头开始处理
+   📁 断点文件: /workspace/Video_Enhancement/temp/ifrnet/ifrnet_from_segments_112 Max Bed Time/checkpoint.json
+
+⚙️  开始处理片段...
+
+🎬 片段 1/3: upscaled_segment_000.mp4
+   🔧 首次初始化 IFRNetVideoProcessor（模型加载/编译仅此一次）
+  加载模型: /workspace/Video_Enhancement/models_IFRNet/checkpoints/IFRNet_S_Vimeo90K.pth → cuda
+  [FIX-CU] cudnn.benchmark = True 已启用
+  FP16 推理已启用
+   🎬 处理片段: upscaled_segment_000.mp4
+   📊 插帧倍数: 2x
+   🖥️  设备: cuda | FP16: True | compile: False | CUDA Graph: False | TRT: True
+[TensorRT] Engine 已激活，TRT 推理就绪。
+
+[GPU0] NVENC 编码已激活: h264_nvenc
+[NVENCEncoder] VBR_HQ + LA=16: 17 slots (HW pipeline buffers>=17)
+[NVENCEncoder] NVENC API: 0xd0 = v13.0
+[NVENCEncoder] 使用 primary CUDA context (0x556232c06cd0)
+[NVENCEncoder] OpenEncodeSessionEx OK: apiVersion=0xd0 (13.0)
+[NVENCEncoder] Driver codec GUID: 6bc82762-4e63-4ca4 (codec=H264)
+[NVENCEncoder] Driver preset GUID: 67082a44-4bad-48fa (index=6/16)
+[NVENCEncoder] GetEncodePresetConfig OK
+[NVENCEncoder] VBR_HQ: crf=23 targetQuality(CRF)=23 avgBitrate=50000kbps
+[NVENCEncoder] H.264 level requested: 51 (0=AUTO; 51=L5.1)
+[NVENCEncoder] 17 slots created (0x55624d6d0d10..0x55624d7154b0)
+[NVENCEncoder] [FIX-ASYNC-COPY] 专用编码拷贝 stream 已创建 (0x55624d08a630, non-blocking)
+[NVENCEncoder] Ready: 1440x960@59.9fps H.264 VBR_HQ QP=23 preset=veryslow slots=17 la=16 tq=23 (GPU direct SDK 13.0)
+[NVENCEncoder] Level 1: NVENC GPU 直通编码 (1440x960@59.9fps)
+[GPU0] 插帧:   0%|          | 0/5098 [00:00<?, ?帧/s][T2-CACHE] 加载缓存 T2=255.0ms (key=IFRNet_S_Vimeo90K_960x1440_bs6_trt_sm75_teslat4)
+
+[AUTO-TUNE] Tesla T4 tier=1.0 nvdec=True nvenc=True pcie=16GB/s cpu=8c  backend=trt(×1.0) model=IFRNet_S_Vimeo90K(×1.0)
+  T1=9.1ms  T2[estimated(×1.0, model×1.0)]=278.1ms  T3(NVENC)=4.0ms
+  ratio T2/T1=30.6x T3/T2=0.0x
+  pair_queue=24(~1792MB) result_queue=8 pool=10(~249MB pinned)
+
+[PinnedResultPool] 分配 14 × (6,960,1440,3) uint8 pinned，共 348 MB
+[IFRNet-Pipeline] 启动深度流水线 | pair_queue=24 result_queue=12 effective_bs=6 T=1× | D2H=pinned(stream_d2h)
+[GPU0] 插帧:   0%|          | 7/5098 [00:01<22:18,  3.80帧/s, P=24, R=0, eta=infs, fps=0.0, ms=380]
+[NVENC-Enc] LA=16 分块流式编码: chunk=128 帧/块 (mem≤241 safe≤192 flush≤128 qd=16)
+[GPU0] 插帧:   1%|          | 43/5098 [00:04<06:03, 13.90帧/s, P=24, R=0, eta=262s, fps=19.3, ms=245]
+[T2-CACHE] 已更新缓存 T2=223.1ms (key=IFRNet_S_Vimeo90K_960x1440_bs6_trt_sm75_teslat4)
+[GPU0] 插帧:   1%|          | 61/5098 [00:05<05:19, 15.74帧/s, P=24, R=0, eta=277s, fps=18.2, ms=238][NVENC-Enc] 前向帧预看缓冲中 (1/16)
+[NVENC-Enc] ⚠️ drain LockBitstream code=8 (slot=0, fi=1) #1 — 跳过本轮，帧由 EOS 全量排空回收
+[NVENC-Enc] 前向帧预看缓冲中 (2/16)
+[NVENC-Enc] ⚠️ drain LockBitstream code=8 (slot=0, fi=2) #2 — 跳过本轮，帧由 EOS 全量排空回收
+[NVENC-Enc] 前向帧预看缓冲中 (3/16)
+[NVENC-Enc] ⚠️ drain LockBitstream code=8 (slot=0, fi=3) #3 — 跳过本轮，帧由 EOS 全量排空回收
+[GPU0] 插帧:   1%|▏         | 67/5098 [00:05<05:09, 16.24帧/s, P=24, R=0, eta=277s, fps=18.1, ms=237][NVENC-Enc] ⚠️ drain LockBitstream code=8 (slot=0, fi=4) #4 — 跳过本轮，帧由 EOS 全量排空回收
+[NVENC-Enc] ⚠️ drain LockBitstream code=8 (slot=0, fi=5) #5 — 跳过本轮，帧由 EOS 全量排空回收
+[NVENC-Enc] 前向帧预看缓冲中 (16/16)
+[NVENCEncoder] Cached SPS+PPS: 33 bytes
+[GPU0] 插帧:   1%|▏         | 73/5098 [00:05<05:11, 16.11帧/s, P=24, R=0, eta=281s, fps=17.9, ms=236][NVENC-Enc] ℹ️ 辅助块 #1 (est=17 slot=0 33B) 仅缓存参数集，不占帧槽
+[GPU0] 插帧: 100%|█████████▉| 5095/5098 [07:49<00:00,  9.02帧/s, P=0, R=2, eta=0s, fps=10.0, ms=223][AUTO-TUNE-RETUNE] 实测 T2=224.2ms（全段 847 batches 中位数）| 静态估算=278.1ms | 偏差=19% | 当前 result_queue=12 | 校准建议 pair=24 result=8（下次生效）
+[GPU0] 插帧: 100%|█████████▉| 5095/5098 [07:50<00:00, 10.82帧/s, P=0, R=2, eta=0s, fps=10.0, ms=223]
+[GPU0] 完成 | 原始帧=5099 → 输出帧=10197 | 10.8 原始帧/s（含 warmup/初始化）
+[ADAPTIVE-QUEUE] 段1→段2: pair_queue=24→24 result_queue=12→20
+
+✅ 插帧完成！
+   原始帧: 5099 → 输出帧: 10197 (×2.0, LA=16)
+   输出: /workspace/Video_Enhancement/temp/ifrnet/ifrnet_from_segments_112 Max Bed Time/processed/interpolated_upscaled_segment_000.mp4 (182.5 MB)
+   ✅ 处理完成: 输出时长 2:50.120 | 耗时 7:53.083
+💾 断点已保存至: /workspace/Video_Enhancement/temp/ifrnet/ifrnet_from_segments_112 Max Bed Time/checkpoint.json
+   ⏱️  已用时: 7:54.081, 预计剩余: 15:48.163
+
+🎬 片段 2/3: upscaled_segment_001.mp4
+   🎬 处理片段: upscaled_segment_001.mp4
+   📊 插帧倍数: 2x
+   🖥️  设备: cuda | FP16: True | compile: False | CUDA Graph: False | TRT: True
+[GPU0] 插帧:   0%|          | 1/4912 [00:00<41:56,  1.95帧/s]
+[PinnedResultPool] 分配 27 × (6,960,1440,3) uint8 pinned，共 672 MB
+[GPU0] 插帧:   0%|          | 7/4912 [00:04<47:17,  1.73帧/s, P=23, R=0, eta=infs, fps=0.0, ms=227]
+[NVENC-Enc] LA=16 分块流式编码: chunk=128 帧/块 (mem≤241 safe≤192 flush≤128 qd=16)
+[GPU0] 插帧: 100%|█████████▉| 4909/4912 [07:31<00:00,  7.78帧/s, P=0, R=2, eta=0s, fps=9.4, ms=232][AUTO-TUNE-RETUNE] 实测 T2=224.2ms（全段 1666 batches 中位数）| 静态估算=278.1ms | 偏差=19% | 当前 result_queue=25 | 校准建议 pair=24 result=8（下次生效）
+[GPU0] 插帧: 100%|█████████▉| 4909/4912 [07:32<00:00, 10.86帧/s, P=0, R=2, eta=0s, fps=9.4, ms=232]
+[GPU0] 完成 | 原始帧=4913 → 输出帧=9825 | 10.9 原始帧/s（含 warmup/初始化）
+[ADAPTIVE-QUEUE] 段2→段3: pair_queue=24→24 result_queue=25→33
+
+✅ 插帧完成！
+   原始帧: 4913 → 输出帧: 9825 (×2.0, LA=16)
+   输出: /workspace/Video_Enhancement/temp/ifrnet/ifrnet_from_segments_112 Max Bed Time/processed/interpolated_upscaled_segment_001.mp4 (171.4 MB)
+   ✅ 处理完成: 输出时长 2:43.913 | 耗时 7:32.619
+   ⏱️  已用时: 15:27.141, 预计剩余: 7:43.570
+
+🎬 片段 3/3: upscaled_segment_002.mp4
+   🎬 处理片段: upscaled_segment_002.mp4
+   📊 插帧倍数: 2x
+   🖥️  设备: cuda | FP16: True | compile: False | CUDA Graph: False | TRT: True
+[GPU0] 插帧:   0%|          | 1/4786 [00:00<1:02:58,  1.27帧/s]
+[PinnedResultPool] 分配 43 × (6,960,1440,3) uint8 pinned，共 1070 MB
+[GPU0] 插帧:   0%|          | 7/4786 [00:03<42:16,  1.88帧/s, P=16, R=0, eta=infs, fps=0.0, ms=236]
+[NVENC-Enc] LA=16 分块流式编码: chunk=128 帧/块 (mem≤241 safe≤192 flush≤128 qd=16)
+[GPU0] 插帧: 100%|█████████▉| 4783/4786 [12:10<00:00,  8.60帧/s, P=0, R=2, eta=0s, fps=9.7, ms=221][AUTO-TUNE-RETUNE] 实测 T2=224.0ms（全段 2464 batches 中位数）| 静态估算=278.1ms | 偏差=19% | 当前 result_queue=41 | 校准建议 pair=24 result=8（下次生效）
+[GPU0] 插帧: 100%|█████████▉| 4783/4786 [12:10<00:00,  6.54帧/s, P=0, R=2, eta=0s, fps=9.7, ms=221]
+[GPU0] 完成 | 原始帧=4787 → 输出帧=9573 | 6.5 原始帧/s（含 warmup/初始化）
+
+[GPU-MONITOR] 采样 727 次  时长 731s  VRAM 总量: 14.6 GiB
+  利用率(全程)  均值=28.8%  P50=8.0%  P95=96.0%  峰值=100.0%  σ=33.7%  空闲占比=71.9%
+  利用率(稳定段) 均值=28.2%  P50=7.0%  P95=96.1%  σ=33.9%
+  利用率(最近段) 均值=29.1%  P95=77.8%
+  显存           均值=5.04 GiB  P95=5.27 GiB  峰值=5.27 GiB  (36% 使用  余量 9.3 GiB)
+[GPU-MONITOR] 💡 batch_size 建议增大: 6 → 16  （稳定利用率 28% 偏低，VRAM 余量 9.3 GiB）
+[GPU-MONITOR] 💡 pair_queue 建议增大: 24 → 24  （利用率波动大 σ=34%、GPU 空闲占比 72%，增大可平滑 H2D 供料气泡）
+[GPU-MONITOR] 💡 result_queue 建议增大: 41 → 49  （P95=96%，σ=34%，T3 可能拖累 T2）
+[GPU-MONITOR] ℹ️  PinnedPool 内存上限约束: result_queue 理想值 49 → 31  (slot=24.9 MB × 31 ≈ 771 MB  ≤ RAM预算 773 MB  [mem_avail=12.6 GB × 6%])
+[ADAPTIVE-QUEUE] PinnedPool 动态上限截断: result_queue 41 → 31  (slot=24.9 MB × 31 ≈ 771 MB  ≤ RAM预算 773 MB  [mem_avail=12.6 GB × 6%])
+[ADAPTIVE-QUEUE] 下次将使用 pair_queue=24 result_queue=31  (GPU-MONITOR=31 RETUNE=8 → 合并=31  [σ=34%>25%，取大（信任 GPU-MONITOR）；收缩建议第1段，迟滞保持])
+
+✅ 插帧完成！
+   原始帧: 4787 → 输出帧: 9573 (×2.0, LA=16)
+   输出: /workspace/Video_Enhancement/temp/ifrnet/ifrnet_from_segments_112 Max Bed Time/processed/interpolated_upscaled_segment_002.mp4 (138.1 MB)
+   ✅ 处理完成: 输出时长 2:39.709 | 耗时 12:11.438
+   ⏱️  已用时: 27:38.972, 预计剩余: 0.000秒
+
+✅ IFRNet 处理完成: 3/3 个分段
+[NVENCEncoder] Encoder closed
+2026-08-25 06:01:57 [INFO] main: 阶段 3: 后处理与验证

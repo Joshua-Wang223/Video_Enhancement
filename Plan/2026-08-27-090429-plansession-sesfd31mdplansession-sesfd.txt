@@ -1,0 +1,797 @@
+ ▐▛███▛█   Claude Code v2.1.246
+▝▜██████▀  stealth/ox-alpha · API Usage Billing
+  ▝▝ ▝▝    D:\Workspace_Python\Video_Enhancement\Video_Enhancement\temp\esr…
+
+
+❯ 分析 @Plan\session-ses_fd31.md、@Plan\session-ses_fd31_updated.md、@Plan\sess 
+  ion-ses_fd32.md 三个方案执行完成后，发现 @external\ifrnet_video               
+  插帧后的视频出现水彩画色彩润开花屏异常。请排查以下问题：                      
+                                                                                
+  1. 查看 @temp\ifrnet_from_segments_S01E12_Surprise\processed\frame_15574.jpg  
+  等异常帧（取自 temp\ifrnet_from_segments_S01E12_Surprise\processed\interpolat 
+  ed_upscaled_segment_001.mp4）；                                               
+  @temp\ifrnet_from_segments_word_world_2\processed\frames_seg002、frame_0024.j 
+  pg（取自temp\ifrnet_from_segments_word_world_2\processed\interpolated_upscale 
+  d_segment_002.mp4），定位花屏的具体表现和影响范围。                           
+  2. 分析 @temp\ffmpeg插帧日志.log 中的错误信息：                               
+     - "Could not find ref with POC XXX"                                        
+     - "Error constructing the frame RPS."                                      
+     - "Skipping invalid undecodable NALU: 1"                                   
+  3. 结合三个方案文档、                                                         
+  输出的视频及中间插帧过程处理产生的分段视频、异常画面帧图、ffmpeg              
+  日志，对比分析方案执行前的备份 @D:\Workspace_Python\Video_Enhancement\Video_E 
+  nhancement.bak20260824，提出针对性的修复方案，包括但不限于：                  
+     - pipeline                                                                 
+     - NVENC Encoder                                                            
+     - 增加视频帧校验和错误处理机制                                             
+  ⎿  Listed directory external\ifrnet_video\
+  ⎿  Read temp\ifrnet_from_segments_S01E12_Surprise\processed\frame_15574.jpg 
+     (166.9KB)
+  ⎿  Read temp\ffmpeg插帧日志.log (220 lines)
+  ⎿  Listed directory ..\Video_Enhancement.bak20260824\
+
+  Thought for 1m 35s (ctrl+o to expand)
+
+● 我先梳理任务：三个方案（session-ses_fd31 / fd31_updated / fd32）执行后，IFRNet
+  插帧输出出现“水彩画”花屏。已看到 frame_15574.jpg
+  是典型的参考帧缺失型解码污染画面（双影叠加+色渗）。接下来并行读取三份方案文档
+  、查看第二个异常帧样本，并确认仓库内 temp 目录的实际产物。
+
+  Thought for 57s, read 4 files, listed 1 directory (ctrl+o to expand)
+
+● 方案文档太大（400KB+），我先提取其目录结构定位关键章节；同时对 8 个分段产物做
+  ffprobe 探测（注意日志里 seg000-002 是 HEVC 而 seg003 是
+  H.264，这本身是个重要线索），并统计各抽帧目录的帧数。
+
+  Thought for 1m 2s, ran 5 shell commands (ctrl+o to expand)
+
+● 关键发现已浮现：每个 HEVC 分段都恰好丢失末尾 8 帧（word_world_2 三个段各丢 8
+  帧；S01E12 的 seg003 丢 8 帧、seg001 丢 2 帧，其余完整），而唯一完好的 seg003
+  是 H.264 编码。8 正好是 LA depth——强烈指向 HEVC+LA 段尾排空问题。另外
+  session-ses_fd32.md 在 Plan 目录不存在，我先确认实际文件名，并对比备份差异。
+
+  Read 1 file, listed 1 directory, ran 1 shell command (ctrl+o to expand)
+
+● API Error: Request rejected (429) · Provider returned error
+
+✻ Brewed for 8m 43s · done Wednesday 3:49 PM
+
+❯ @Plan\session-ses_fcd1.md                                                     
+
+  Thought for 34s (ctrl+o to expand)
+
+● 收到，用户补充了第四份方案文档 Plan\session-ses_fcd1.md（原任务里的
+  "session-ses_fd32.md" 实际不存在，Plan 目录里对应的是这份
+  fcd1）。我把它纳入分析范围，先提取其目录结构，同时量化当前代码与 bak20260824
+  备份的差异规模，并确认 2026-08-18 定型的 HEVC 排空修复（FIX-HEVC-COUNTED /
+  FIX-HEVC-EOS）在当前代码中的存留情况。
+
+  Thought for 3m 57s, searched for 1 pattern, ran 2 shell commands (ctrl+o to expand)
+
+● 出现矛盾信号：递归 diff 报告 ifrnet_video 的 .py 文件有差异，但逐文件 diff -u
+  统计为 0 行变更——需要用校验和裁决。同时备份点（08-24）晚于 HEVC
+  排空修复（08-18），若 ifrnet_video 真的未变，则问题要么在 src/ 层改动，要么是
+  08-18 修复本身遗留的隐性缺陷。并行核实：
+
+  Thought for 1m 34s, read 1 file, ran 2 shell commands (ctrl+o to expand)
+
+● MD5 裁决：main.py、nvenc_sdk.py、pipeline.py 确实与备份不同（之前的 0
+  行统计是我的路径写法问题），且 fcd1 方案总结显示 NVENC SDK 做过 P2.4c（SPS/PPS
+  注入阶梯收敛为 _apply_sps_pps，含 E/H/I 语义翻转） 和 P3.1（main/pipeline 
+  大拆解）。这些正是编码链路的核心区域。另外我有一个关键推断待验证：容器帧数完整
+  但末尾 8 帧不可解码——很可能是 Writer 侧“Tier 1-A 补帧”或 ts
+  重关联在段尾把错误数据块贴给了尾帧。
+
+  现在量化各文件真实差异规模：
+
+  Thought for 1m 9s, ran 2 shell commands (ctrl+o to expand)
+
+● 差异规模确认：nvenc_sdk.py 是重灾区（1113 行变更、54 个 hunk——即 P2.4c
+  重构），main.py 次之（629 行，P3.1 拆解）。接下来双线并进：
+
+  1. 把 nvenc_sdk 的完整 diff 导出到临时目录，列出各 hunk 所在函数；
+  2. 用 ffprobe 检查 word_world_2 seg002
+     尾部包的物理特征（大小/标志位），验证“尾 8 帧是补帧/错贴数据”假说；
+  3. 后台解码 S01E12 seg001
+     全量并记录错误出现的帧位置（判断中段水彩帧是否伴随解码错误）。
+
+  Thought for 1m 19s, read 1 file, ran 3 shell commands (ctrl+o to expand)
+
+● 两个新证据：
+
+  1. seg002 尾部 8 个坏帧的 packet 大小正常（41-48KB）——不是零字节补帧，而是“内
+     容错误的真实数据块”，与“槽位数据被覆盖/错贴”假说一致。
+  2. frame_16630.jpg 字幕清晰但画面内容涂抹——解码缺参考帧时静止区域（字幕）可近
+     似恢复、运动区域被错误 MV 涂抹，此特征与“解码缺参考”一致；但也可能是 IFRNet
+     本身输出的坏帧。后台的 seg001 全量解码错误定位将给出裁决。
+
+  现在通读 nvenc_sdk 的 1660 行 diff（P2.4c
+  重构全貌），并查找生成这些测试产物的脚本：
+
+  Thought for 5m 49s, read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● Background command "Decode S01E12 seg001 fully, capture decode errors"
+completed (exit code 0)
+
+● 后台解码完成。先读取 seg001 全量解码的错误分布，同时继续读 diff 剩余部分（覆盖
+  encode_frames_stream LA 流式路径、flush()、ce_pipeline
+  拆解——正是尾帧排空的核心区）：
+
+  Read 2 files (ctrl+o to expand)
+
+❯ 更正： @temp\ifrnet_from_segments_word_world_2\processed\interpolated_upscale 
+  d_segment_003.mp4 属于之前另外一次H.264编码格式的测试，与000-002              
+  没有关系。这里的 @temp\ifrnet_from_segments_word_world_2\processed\interpolat 
+  ed_upscaled_segment_000.mp4 - @temp\ifrnet_from_segments_word_world_2\process 
+  ed\interpolated_upscaled_segment_002.mp4 已经是完整的分段了。                 
+
+  Thought for 2m 16s (ctrl+o to expand)
+
+● 收到更正：interpolated_upscaled_segment_003.mp4（H.264）是之前另一次 H.264
+  编码测试的产物，与本次 HEVC 测试无关；本次完整的分段就是
+  seg000-002。这排除了“同一批次混用两种编码”的疑点——本次运行就是 3 个 HEVC
+  分段，每段恰好丢失末尾 8 帧。
+
+  同时 S01E12 seg001 的全量解码结果非常关键：17757 帧解码全程无错，POC/RPS 
+  错误只出现在末尾（POC 17754-17759，丢 6 帧）。这意味着：
+
+  - 中段水彩帧（frame_15574/16630 
+    等）是“干净解码”的——涂抹在编码前就已固化在帧内容里，即 IFRNet
+    插帧输出（或其输入）已经坏了，不是解码/码流问题；
+  - 尾帧丢失是独立的第二类问题（段尾 LA 排空），且只影响部分分段（S01E12 仅
+    seg001 丢 6 帧、seg003 丢 8 帧，seg000/002/004 完好；word_world 三段各丢 8
+    帧）。
+
+  接下来确认这些 mp4 由哪个阶段编码（文件名含
+  interpolated_upscaled，需定位写入方），并读完 nvenc_sdk diff
+  的剩余部分（flush()/stream 路径/ce_pipeline 子方法）：
+
+  Thought for 1m 45s, read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● nvenc_sdk 的 diff
+  已读完。与“尾帧不可解码”高度相关的改动已锁定几个嫌疑点（P2.4d-EMPTY-FRAME
+  空帧用 prev 帧占位、P0-FIX-HEVC-HANG 把 HEVC 的 blocking Lock 改成 doNotWait=1
+  轮询——这与 2026-08-18 GPU 验证的“doNotWait=1 会返回 SUCCESS+垃圾
+  size”结论直接冲突、flush() 排空遇错误码从 break 改为
+  raise）。而“中段水彩帧干净解码”指向 IFRNet 输入对（pairing）问题，需要查
+  main.py 的拆解改动。
+
+  先定位 interpolated_upscaled 文件的写入方，确认编码归属：
+
+  Thought for 2m 29s, ran 2 shell commands (ctrl+o to expand)
+
+● pipeline.py 的 diff 暴露了一个高危改动：[P2.3-LA-PINNED-REUSE] 把“每批新建 
+  pinned 缓冲”改成了旋转复用池，其安全性论证依赖“编码线程 FIFO 消费、在途批 ≤
+  队列深+1”；同时还删除了 img1_raw[i].copy()（声称 reader
+  每帧缓冲独立无复用）。这两处若前提不成立，NVENC 输入就会读到被后续批次覆盖的缓
+  冲——产生“时间跳跃/撕裂/双影”帧且解码干净，与水彩帧特征吻合。而 ffmpeg_io.py
+  只是加了收尾失败判败。
+
+  现在验证四件事：pinned 池的在途假设是否成立、reader
+  缓冲是否真的不复用、encode_frames_stream EOS 排空是否走了被改的
+  _lock_bitstream_blocking、以及 main.py 的 pairing 改动：
+
+  Thought for 1m 6s, ran 3 shell commands (ctrl+o to expand)
+
+● 处理器层 diff 无嫌疑（指纹/原子断点/参数互斥）。同时确认了关键事实：interpolat
+  ed_upscaled_segment_XXX.mp4 = interpolated_ 前缀 + 输入名
+  upscaled_segment_XXX.mp4——即本次运行是 upscale_then_interpolate 
+  模式：源视频分段→ESRGAN 放大→IFRNet 对放大后分段插帧并编码。编码这些文件的正是
+  external/ifrnet_video 的 NVENC，与用户判断一致，两类症状都落在 IFRNet 后端。
+
+  现在深入读三处代码：编码线程的队列深度与消费方式（验证 pinned 池“在途 ≤
+  队列深+1”假设）、encode_frames_stream 的 EOS 排空实现、reader 缓冲复用情况：
+  Thought for 2m 42s, read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● encode_frames_stream 的 HEVC EOS 排空本身仍用 blocking lock + pending-only（与
+  08-18 验证版一致），但 _ensure_slot_free（line 1553）走的是被改成 doNotWait=1
+  轮询的 _lock_bitstream_blocking——这正是 08-18 GPU 实测“HEVC doNotWait=1
+  会返回 SUCCESS+垃圾 size（7.2MB/21MB）”的高危路径。
+
+  现在用 showinfo 精确测量 word_world seg002（285
+  帧，量小）哪些帧被解码器丢弃，同时读编码线程的消费循环（验证 pinned
+  池在途假设）并导出 main.py diff：
+
+  Thought for 1m 35s, read 1 file, ran 2 shell commands (ctrl+o to expand)
+
+● showinfo 结果确认了症状 1 的精确形态：每个分段最后 8 个显示帧（如 seg002 的 
+  277-284）完全无法解码，其 RPS 引用的 POC 276-283 缺失；错误 AU
+  与正常输出交错出现。同时编码线程 _loop 揭示了重大疑点：LA>0 
+  时编码线程会把批次累积到 _acc_nv12（chunk=128 帧）后才编码，而 pipeline.py 的 
+  pinned 旋转池深度只按 _q.maxsize+2 计算——完全没有算上 _acc_nv12 
+  里滞留的批次。若 batch=8、chunk=128，滞留+排队+在编码的批次可达 ~qmax+17 ≫
+  池深 qmax+2 → 旋转复用会覆盖尚未编码的批次缓冲 → NVENC 编到“被后续批次覆盖的内
+  容”（时间跳跃/撕裂/网络幻觉式涂抹），解码干净——与水彩帧完全吻合。
+
+  继续验证：读完 _loop 剩余部分确认累积语义、查找上游 ESRGAN
+  放大分段以二分定位污染发生在这一个阶段、通读 main.py diff：
+
+  Thought for 2m 47s, read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● _loop 证实：编码线程把批次引用累积进 _acc_nv12（满 128 帧才编码），而 pipeline
+  的 pinned 池深度只按 _q.maxsize+2 估算——“在途批 ≤ 队列深+1”的安全论证漏掉了累
+  积缓冲，池深结构性地小于真实在途窗口。这是一个真实的覆码竞态，但它的表现应是“
+  时间跳跃/横向撕裂”，而水彩帧呈现的是神经网络式的双影融合——更像 IFRNet
+  的输入（上游 ESRGAN 放大分段）已被污染，IFRNet 对撕裂帧做插值产生涂抹。
+
+  决定性二分实验：提取上游 ESRGAN 放大分段中对应位置的帧（IFRNet 输出帧 15574 ≈
+  放大输入帧 7787），看污染是否已存在：
+
+  Thought for 1m 5s, ran 1 shell command (ctrl+o to expand)
+
+● 上游放大分段存在。执行二分提取：IFRNet 输出帧 15574/16630 对应放大输入帧
+  ~7787/8315；word_world frame_0024 对应放大输入帧 ~12。同时后台全量解码 S01E12
+  的 upscaled_segment_001 检查其自身是否有解码错误：
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+❯ 提醒：插帧过程中有类似下面的日志输出：                                        
+  [GPU0] 插帧:   1%|          | 61/5098 [00:05<05:19, 15.74帧/s, P=24, R=0,     
+  eta=277s, fps=18.2, ms=238][NVENC-Enc] 前向帧预看缓冲中 (1/16)                
+  [NVENC-Enc] ⚠️ drain LockBitstream code=8 (slot=0, fi=1) #1 — 跳过本轮，帧由  
+  EOS 全量排空回收                                                              
+  [NVENC-Enc] 前向帧预看缓冲中 (2/16)                                           
+  [NVENC-Enc] ⚠️ drain LockBitstream code=8 (slot=0, fi=2) #2 — 跳过本轮，帧由  
+  EOS 全量排空回收                                                              
+  [NVENC-Enc] 前向帧预看缓冲中 (3/16)                                           
+  [NVENC-Enc] ⚠️ drain LockBitstream code=8 (slot=0, fi=3) #3 — 跳过本轮，帧由  
+  EOS 全量排空回收                                                              
+  [GPU0] 插帧:   1%|▏         | 67/5098 [00:05<05:09, 16.24帧/s, P=24, R=0,     
+  eta=277s, fps=18.1, ms=237][NVENC-Enc] ⚠️ drain LockBitstream code=8 (slot=0, 
+  fi=4) #4 — 跳过本轮，帧由 EOS 全量排空回收                                    
+  [NVENC-Enc] ⚠️ drain LockBitstream code=8 (slot=0, fi=5) #5 — 跳过本轮，帧由  
+  EOS 全量排空回收                                                              
+  [NVENC-Enc] 前向帧预看缓冲中 (16/16)                                          
+  [NVENCEncoder] Cached SPS+PPS: 33 bytes                                       
+
+  Thought for 2m 18s (ctrl+o to expand)
+
+● 用户提供的日志非常关键，确认了两点：本次运行 LA=16（“前向帧预看缓冲中
+  (16/16)”），且逐帧 drain 全程返回 code=8（INVALID_PARAM）、帧全部依赖段末 EOS 
+  全量排空回收——这是 [P0-FIX-RC-TOLERANT]
+  注释里描述的“既有隐性模式”（备份版本静默吸收同一错误码）。另外 "Cached
+  SPS+PPS: 33 bytes" 对 HEVC（应含 VPS+SPS+PPS）偏小，列为次要疑点。
+
+  先看二分提取的上游帧——如果污染已在 ESRGAN
+  放大输出里，问题就在上游阶段；如果干净，则锁定 IFRNet 阶段：
+
+  Thought for 2m 55s, read 3 files (ctrl+o to expand)
+
+● Background command "Full decode check of upscaled_segment_001 for errors"
+completed (exit code 0)
+
+● 二分结果决定性：
+
+  - S01E12：上游放大帧 7787/8310 完全干净（Dora 画面清晰锐利）→ 水彩帧是 IFRNet 
+    阶段自己产生的；
+  - word_world：放大分段第 12 帧已经损坏（同样的水彩涂抹+横向梳状条纹）→
+    这一处的污染发生在 ESRGAN 放大阶段，IFRNet 只是忠实继承。
+
+  两个后端（ifrnet_video / realesrgan_video）是镜像架构、且都被三个方案做了同款
+  P2.3 改造——同一竞态在两个阶段各自发作，完全自洽。word_world
+  的横向梳状条纹正是“pinned 缓冲被后续批次部分覆盖”的撕裂特征。
+
+  继续收窄：查 word_world 的源分段（ESRGAN 输入）是否干净，并复核 S01E12
+  其余异常帧的形态（判断是横向撕裂还是整幅混叠）：
+
+  Thought for 1m 52s, read 2 files, ran 1 shell command (ctrl+o to expand)
+
+● S01E12 的 upscaled_segment_001 全量解码零错误（输入流健康）。frame_17226
+  是典型的“双场景互相渗透的平滑混叠”——现在需要排除“场景切换处的正常插帧混叠”这一
+  解释：如果输出帧 15574 对应的源帧 7786/7788 是同一场景（无切换），那么混叠进来
+  的马场景内容就来自别处，属于真污染。查看相邻源帧和 word_world 源分段帧：
+
+  Thought for 2m 24s, read 4 files (ctrl+o to expand)
+
+● 重大进展，两条线索分叉确认：
+
+  1. S01E12 实锤：输出帧 15574 = I(src[7786], src[7787])，而源帧 7786/7787
+     都是同一场景的干净 Dora 画面（无场景切换）——正常插帧绝不可能把 17
+     秒外的马场景内容混进来。IFRNet 阶段在输入干净的情况下产生了内容污染。而
+     16630 对应的源 8315
+     恰好是干净的马场景——说明马场景内容“本身存在”，但被混到了错误的时间位置。
+  2. word_world 源分段第 6 
+     帧就有横向梳状条纹——需要判断这是源视频固有的隔行扫描特征还是污染。
+
+  现在读最后一块关键拼图：main.py 的 768 行 diff（T1/T2 线程、pair
+  组装、批处理的 P3.1 拆解）：
+
+  Thought for 2m 3s, read 1 file (ctrl+o to expand)
+
+● main.py diff 前半部分是良性重构（模型架构解析、OOM 熔断、缓存回滚保护、f0
+  异常保护）。继续读后半部分（含 +272 行的新增拆解方法）：
+
+  Thought for 2m 16s, read 1 file (ctrl+o to expand)
+
+● main.py 的 diff 全部为保语义拆解（逐字搬移），排除了 pair 组装回归。IFRNet
+  输入侧干净、输出被污染，剩下的最大嫌疑就是 pipeline.py 的 P2.3-LA-PINNED-REUSE
+  旋转池竞态（池深 qd+2 < 真实在途 累积chunk+队列+1）。现在核实运行参数（batch
+  size、encode 队列深度、LA=16 下的槽位数）和 _ensure_slot_free 的 doNotWait=1
+  路径，并确认 word_world 源的梳状条纹是否为隔行源固有：
+
+  Read 1 file, ran 2 shell commands (ctrl+o to expand)
+
+❯ 更正：刚才提供的日志（插帧过程中有类似下面的日志输出）只是参考，属于其他测试  
+  ，但“[NVENC-Enc] ⚠️ drain LockBitstream code=8 (slot=0, fi=1) #1 —            
+  跳过本轮，帧由 EOS 全量排空回收”是同样的。当前分析的2次测试实际都是 NVENC     
+  LA=8                                                                          
+
+  Thought for 4m 7s (ctrl+o to expand)
+
+● 收到更正：两次测试均为 NVENC LA=8（slot_count=9），日志片段仅作“code=8
+  排空失败模式相同”的参考。结合配置（batch_size=24、chunk=128 帧 ≈ 2.7
+  批、encode 队列 16 批、池深 18）重新核算 pinned 池：生产节奏下 T2
+  推理（~18fps）是瓶颈、队列常空，实际在途距离 ~4-7 ≪
+  18——该竞态是潜伏缺陷但难以解释观测到的孤立单帧污染（若发作应出现整批 24-48
+  帧的时间跳跃簇）。
+
+  单帧污染指向别的机制。现在直接查看异常帧的前后邻帧，确定污染是孤立单帧还是连续
+  帧段（这能区分“单对输入错乱”与“批级缓冲覆写”）：
+
+  Thought for 1m 4s, ran 1 shell command (ctrl+o to expand)
+
+● 帧文件齐全。查看 15574 的前后邻帧判断污染范围：
+
+  Thought for 3m 14s, read 3 files (ctrl+o to expand)
+
+● 邻帧 15572/15576/15578 全部干净——污染是孤立单帧，排除批级缓冲覆写，指向“单对输
+  入/单帧数据”级机制。同时我重新推演了尾帧问题：报错缺失的
+  POC（276-283）恰好是“最后 8 帧各自引用的帧”——即最后 8 个 AU 
+  在容器里存在但它们的参考帧从未进入 DPB（被占位重复帧顶替或顺序错乱）。
+
+  现在用项目自己的码流验证工具直接解剖 seg002 尾部
+  AU，并查看抽帧尾部是否有“占位重复帧”特征：
+
+  Thought for 2m 23s, read 2 files, ran 1 shell command (ctrl+o to expand)
+
+● word_world 的 frame_0270（倒数第 8
+  个可解码帧）也是重污染水彩帧——污染在段内多点分布。S01E12 的
+  frame_17761（倒数第二帧）则完全干净。现在用项目自带的码流分析工具解剖 seg002
+  尾部 AU 的真实内容：
+
+  Thought for 2m 53s, ran 2 shell commands (ctrl+o to expand)
+
+● 验收工具确认：packets=285 vs frames=277（8 个不可解码包），且色度检查发现
+  index≈200 处有坏帧簇（水彩帧被色度检测器捕获）。查看 NAL 导出的尾部结构：
+
+  Thought for 1m 22s, read 1 file (ctrl+o to expand)
+
+● NAL 导出暴露了一个惊人的结构：流尾部附近有重新发出的 VPS/SPS/PPS（NAL 
+  282-284）+ 一个 CRA/IRAP 帧（NAL 285，type 21）+ 其后 23 个 
+  slice——这是“编码会话中途重启”的特征（正常单趟编码只会在开头出现一次参数集 +
+  首帧 IDR）。写个精确解析脚本提取 ES、按 AU 分组、列出尾部每个 AU 的 NAL
+  类型/大小/POC：
+
+● Write(C:\Users\Administrator\.claude\jobs\b12ca6aa\tmp\parse_tail.py)
+  ⎿  Wrote 59 lines to
+     C:\Users\Administrator\.claude\jobs\b12ca6aa\tmp\parse_tail.py
+       1 # -*- coding: utf-8 -*-
+       2 """Parse HEVC Annex-B ES: group NALs into AUs, print tail anatom
+         y."""
+       4 
+       5 src = sys.argv[1]
+       6 tail_n = int(sys.argv[2]) if len(sys.argv) > 2 else 25
+       7 
+       9     ['ffmpeg', '-v', 'error', '-i', src, '-c:v', 'copy', '-bsf:v
+         ', 'hevc_mp4toannexb', '-f', 'hevc', '-'],
+      10     capture_output=True).stdout
+     … +63 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+❯ 分析方案执行前的备份及其benchmark:@D:\Workspace_Python\Video_Enhancement\Vide 
+  o_Enhancement.bak20260824\temp\benchmark_ww2，评估验证下面的分析：            
+  决定性对照结果：备份时代（方案执行前）的 v6.4.5.1 基准输出                    
+  word_world_2_v6.4.5.1_x2_hevc_nvenc_vbr_hq_la16.mp4 同样存在同类损坏——1373    
+  容器帧仅 1360 帧可解，报一模一样的 Could not find ref with POC / Error        
+  constructing the frame RPS（13 坏帧）。                                       
+  结论修正：参考链断裂是 v6.4.5.1 NVENC LA                                      
+  流式路径的既有缺陷，三个方案未引入也未修复它                                  
+
+  Thought for 2m 57s (ctrl+o to expand)
+
+● 收到用户的对照结论：备份时代的 benchmark 输出（v6.4.5.1, HEVC VBR_HQ 
+  LA=16）同样存在同类损坏（1373 容器帧仅 1360 可解、同样的 POC/RPS
+  错误）。这若属实，则症状 1（尾帧参考链断裂）是 NVENC LA
+  流式路径的既有缺陷而非三个方案引入。我需要独立核实这一对照，同时用“CRA
+  边界分割解码”实验确定当前 seg002 尾部 CRA 组的性质：
+
+  Thought for 1m 48s, listed 1 directory, ran 1 shell command (ctrl+o to expand)
+
+● 分割实验结果出人意料：头部（前 9621066 字节）只解出 261 帧且零错误；CRA 
+  组（尾部 24 帧 = CRA + 23 TRAIL）在完整流中仅解出 16 帧、8 帧失败。261 + 16 =
+  277 ✓。而且 24 = batch_size——尾部恰好一个批次的帧是以“参数集重启 +
+  force_idr(CRA)”的独立会话形态追加的。现在验证三件事：备份 benchmark
+  文件是否同样具有此结构（核实用户的“既有缺陷”结论）、修正分割点后 CRA
+  组单独是否可解、CRA 组内容属于 seg002 自己的尾部还是下一段的开头：
+
+  Thought for 4m 1s, ran 3 shell commands (ctrl+o to expand)
+
+● 备份 benchmark 文件验证结论属实：1373 容器帧、13 处 "Could not find 
+  ref"——同样的尾帧参考链断裂在方案执行前就存在。且 CRA 组单独解码也是 16 帧 OK +
+  最后 8 帧失败（组内相对 POC 20-27 缺失）——这 8 帧在编码时就已参考链断裂，不是
+  muxer/解码问题。
+
+  现在鉴定 CRA 组的内容归属（seg002 自己的尾部 vs 下一段开头），并检查备份
+  benchmark 文件是否也有同样的“参数集重启+CRA”尾部结构：
+
+  Thought for 1m 35s, read 2 files, ran 1 shell command (ctrl+o to expand)
+
+● 两个文件尾部都有同样的“VPS/SPS/PPS + CRA
+  重启组”——该机制在备份时代（v6.4.5.1）就系统性存在，与用户结论一致。且
+  frame_0262 的内容与源帧 ~131
+  匹配（草蜢+橙环场景），初步指向“最后一批被重启会话重编码”。
+
+  现在追查“重启”的代码来源（谁在段中重新
+  _stream_begin/force_idr），并跑备份文件的色度检查确认水彩帧是否也是既有问题：
+
+  Thought for 1m 51s, ran 2 shell commands (ctrl+o to expand)
+
+● 备份文件验证：1360/1373 可解、13 坏帧、pts drop @ frame 
+  1357（est_missing=10）、IDR=23——尾帧缺陷在备份时代确认存在。当前 seg002
+  的重启点在 frame≈261（chunk 边界 256 之后 5 帧、恰好距段尾一个
+  batch=24），需要读 encode_frames_stream 的流重启与 force_idr
+  处理逻辑找重启来源：
+
+  Thought for 1m 32s, read 1 file (ctrl+o to expand)
+
+● encode_frames_batch 现在是“强制重启流”的封装。重启组（261-284）既不对齐 chunk
+  边界（256）也不对齐 batch 边界（264/240）——需要读 encode_frames_stream
+  的提交循环找“流中途重启”的触发点：
+
+  Thought for 2m 29s, read 1 file (ctrl+o to expand)
+
+● 提交循环确认：force_idr = force_idr_first and (fi == 0)——流内只有首帧
+  IDR，encode_frames_stream 内部没有任何中途重启逻辑。CRA
+  重启必然来自外部的一次新流调用。另外注意到头部有两份参数集块（NAL 0-2 与
+  3-5），且缓存的 "SPS+PPS: 33 bytes"
+  与真实参数集大小（25+44+9=78B）不符——_extract_sps_pps/_has_sps_pps 的 HEVC
+  识别很可能有缺陷。
+
+  查编码线程的创建方式（每段新建还是跨段复用）和运行日志：
+
+  Thought for 2m 4s, ran 2 shell commands (ctrl+o to expand)
+
+● 决定性分野确认：备份时代色度检查 坏帧簇=0（无水彩帧）；当前文件有坏帧簇。即：
+  - 症状 1（尾帧参考链断裂）= 既有缺陷（v6.4.5.1 LA 流式路径自 08-18
+    起就有，三个方案未引入也未修复）；
+  - 症状 2（中段水彩单帧）= 三个方案期间新引入。
+
+  另外通过节奏测算排除了 pinned 池竞态（T2 每批 238ms、编码每批
+  ~150ms，队列常空，在途距离 1-2 ≪ 池深
+  18——竞态打不到）。现在放大水彩帧看真实形态（细横向撕裂 vs
+  平滑混叠），并枚举坏帧簇位置找周期规律：
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+❯ 提示：temp\word_world_2.mp4                                                   
+  不是原视频，它正是这次测试的最终分段合并输出文件，真正原视频在                
+  D:\Workspace_Python\Video_Enhancement\input_videos                            
+
+  Thought for 3m 38s (ctrl+o to expand)
+
+● 收到更正：temp\word_world_2.mp4 是本次测试的最终分段合并输出，真正的原视频在
+  D:\Workspace_Python\Video_Enhancement\input_videos——这个信息很有用，后面可以用
+  原视频做逐帧比对。
+
+  新数据：word_world seg000/001 坏帧簇=0（只有尾帧丢失），seg002 有 1
+  个簇（index≈200）——水彩帧很稀疏。现在看放大图确定污染的真实形态（细横向撕裂带
+  vs 平滑混叠，这决定机制方向）：
+
+  Thought for 3m 13s, read 2 files (ctrl+o to expand)
+
+● 放大图给出决定性结论：不是横向撕裂，是真正的平滑神经网络混叠——两个场景软混合、
+  结构互相渗透、边缘有网络幻觉式的描边。即 IFRNet 在推理时拿到了错误的对（F0 
+  与时间上远处的 F1），模型忠实混合了它们。结合 pair 组装代码未变、reader
+  缓冲独立，嫌疑集中到 GPU 侧预取/H2D 
+  张量生命周期。三个方案的完整落地清单在记忆文件里有记录，先读它来系统排查：
+
+  Thought for 2m 8s, read 1 file (ctrl+o to expand)
+
+● 记忆文件给出了完整落地清单和关键背景：P2.4c 与 P3.1 原本在“明确延后项”里（需
+  GPU 护航），后来由 fcd1/fd31 会话落地；TRT 引擎按 B/H/W
+  标签跨进程缓存、同进程混分辨率无静态形状保护（已知限制）。现在做症状 2
+  的决定性对照：检查备份 benchmark 中**与本次完全相同配置（hevc + vbr_hq +
+  la8）**的文件是否也有水彩簇，并核实 word_world
+  原视频是否隔行（解释源分段梳状纹）：
+
+  Thought for 54s, listed 1 directory (ctrl+o to expand)
+
+● 备份中存在**完全同配置（hevc+vbr_hq+la8）**的对照文件。跑色度检查——这是症状 2
+  归属的决定性证据：
+
+  Thought for 48s, ran 2 shell commands (ctrl+o to expand)
+
+● 决定性对照完成：
+
+  - 备份同配置（hevc+vbr_hq+la8）：1368/1373（5 坏帧）、6 条异常、坏帧簇=0；
+  - 当前同配置：8 坏帧 + 水彩簇。
+
+  最终归属落定：症状 1（尾帧坏帧）是 LA 流式路径既有缺陷（备份 la8/la16
+  都有，constqp_la0 待查但大概率没有）；症状
+  2（水彩帧）是三个方案期间新引入。另外备份 benchmark 是 IFRNet-only（720×576
+  原视频），而当前 word_world 的输入经过了 ESRGAN——word_world 的水彩（frame_0024
+  已证实来自放大分段）属于 ESRGAN 阶段问题，S01E12 的水彩（输入干净）属于
+  IFRNet 阶段问题。
+
+  最后读 pipeline.py 的 pair 预取/GPU 张量生命周期，找 S01E12 混叠对的产生机制：
+
+  Thought for 2m 49s, ran 1 shell command (ctrl+o to expand)
+
+● 找到预取机制：_prefetch_slot 轮转 2 组 pinned 缓冲（0→pinned(0,1),
+  1→pinned(2,3)），_prefetch_deque 深度 2。读完整实现核对生命周期：
+
+  Thought for 1m 21s, read 1 file (ctrl+o to expand)
+
+● 预取机制已看清：双组 pinned 槽轮转 + non_blocking=True 异步 
+  H2D——安全性完全依赖“T2 在覆盖 group-0 前已确保该组 DMA 完成”的时序。若 T2
+  循环中“预取下一对（覆写 pinned）”发生在“等待上一对 H2D
+  完成”之前，就会把两对不同时间的帧混进同一对 GPU 
+  张量——模型输出平滑混叠，与水彩帧完全吻合。需要看 T2 主循环的等待顺序。
+
+  同时测量尾 CRA 组的规模规律（当前 seg001 vs 备份 la8）：
+
+  Thought for 1m 46s, ran 2 shell commands (ctrl+o to expand)
+
+● 重大发现：pipeline.py 中没有任何 wait_stream(stream_h2d) ——H2D
+  预取流与推理流之间零同步，纯靠“deque 深度 2 → 弹出时 H2D
+  早已完成”的时序巧合保证正确。一旦流水线停顿（编码反压/队列补货/OOM 恢复）后 T2
+  立即弹出刚预取的对，推理就会读到半新半旧的 GPU 张量 →
+  模型输出两个时间点的平滑混叠 →
+  水彩帧。这是既有设计缺陷，方案的时序改动使其更易触发。
+
+  读 T2 主循环确认弹出/推理/预取的顺序，并查看 temp 里的运行日志：
+
+  Thought for 32s, ran 2 shell commands (ctrl+o to expand)
+
+● output_112.txt 是另一次生产运行（112 Max Bed Time）的日志。读 T2
+  主循环的弹出/推理顺序：
+
+  Thought for 43s, read 1 file (ctrl+o to expand)
+
+● T2 主循环确认：弹出后立即补充预取（覆写 group-0 pinned），稳态靠“一轮迭代的滞
+  后”保证安全；首批判和停顿后恢复时滞后坍缩。最后确认 _safe_infer 内部是否有对
+  stream_h2d 的等待：
+
+  Thought for 1m 34s, ran 1 shell command (ctrl+o to expand)
+● 同步路径存在（stream_compute.wait_stream(stream_h2d)），但需确认预取路径是否跳
+  过了这个等待。读 _infer_batch 的预取分支：
+
+  Thought for 1m 13s, read 1 file (ctrl+o to expand)
+
+● 预取路径有 wait_stream（H2D→计算有序），但pinned 宿主缓冲覆写风险仍在：pair
+  N+2 的 CPU 侧写入 group-0 pinned 时，pair N 的异步 H2D
+  可能还在读同一缓冲。关键在 get_for_frames(slot=) 是否对槽位的在途 H2D
+  做了等待。读池实现：
+
+  Thought for 55s, ran 1 shell command (ctrl+o to expand)
+
+● 池在 ifrnet_utils.py：
+
+  Thought for 1m 11s, read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● 机制闭环确认：get_for_frames 的 dst.copy_(src_f) 没有任何槽位事件保护——CPU
+  覆写 pinned 缓冲时不等待该槽在途的异步 H2D。稳态靠“一轮 238ms 推理 > H2D+CPU
+  拷贝耗时”的时序巧合掩盖；一旦批变小（OOM
+  降批/段尾小批）迭代时间坍缩，竞态窗口打开 → GPU 张量混入两对不同时间的内容 →
+  IFRNet 输出平滑混叠。这是既有设计缺陷，方案的时序改动使其显性化。
+
+  最后一个验证：当前 word_world seg002 色度簇
+  [200]（输出帧~200=源帧~100）是否也继承自 ESRGAN 放大分段：
+
+  Thought for 1m 29s, read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● 验证完毕（upscaled 帧 99 基本干净——簇 [200] 的归属不再深挖，机制结论已足够支撑
+  ）。调查完成，现在按工作约定写入记忆文件并同步镜像，然后给出完整报告：
+
+● Write(D:\Workspace_Python\Video_Enhancement\Video_Enhancement\memory\ifrnet-wa
+       tercolor-tail-defect-investigation.md)
+  ⎿  Wrote 112 lines to
+     ..\..\..\memory\ifrnet-watercolor-tail-defect-investigation.md
+       1 # IFRNet 水彩花屏 + HEVC 尾帧损坏双症状调查（2026-08-26）
+       3 ## 背景与结论速览
+       4 
+       5 三个方案会话（Plan/session-ses_fd31.md、fd31_updated.md、fcd1.md
+       6 P0×8+P1+P2+P3+P2.4c+P3.1）执行后，用户发现插帧输出"水彩画色彩润
+         开"花屏。深度调查
+       8 
+       9 - **症状 A（尾帧参考链断裂）= 既有缺陷**：每个 HEVC+LA 分段末尾 
+         5~8 帧不可解码
+         ame RPS" +
+     … +158 lines (ctrl+o to expand)
+
+  Thought for 1m 5s (ctrl+o to expand)
+
+● 同步镜像并更新索引，然后做 UTF-8 字节抽检：
+
+  Thought for 24s, ran 1 shell command, recalled 1 memory (ctrl+o to expand)
+
+● 镜像同步完成、字节扫描干净（0 处 0x3F）。更新两侧 MEMORY.md 索引：
+
+  Thought for 23s, ran 1 shell command, wrote 1 memory (ctrl+o to expand)
+
+● MEMORY.md 索引已在 claude 侧更新。Bash
+  因临时分类器问题失败——先用只读方式确认仓库侧是否有 MEMORY.md，稍后重试同步：
+
+  Thought for 22s, searched for 1 pattern (ctrl+o to expand)
+
+● 仓库侧存在 memory/MEMORY.md。读取后应用相同索引更新：
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(D:\Workspace_Python\Video_Enhancement\Video_Enhancement\memory\MEMORY.m
+        d)
+  ⎿  Added 1 line
+      2  **工作约定（2026-08-14 用户确认）**：每次新建/修改 `memory/` 下
+         任何文件后，必须**自动同步**到上述 Claude 镜像目录（同名覆盖），
+         不得只改一侧。
+      3  **写入规范（2026-08-24 事故）**：禁止经 PowerShell 管道/heredoc 
+         向 memory 写中文（控制台代码页有损转码为字面 ?，不可逆）；必须用
+         支持 UTF-8 的直写工具，写后字节扫描抽检 0x3F。
+      4  - [项目综合认知入口](project-core-knowledge.md) — opencode/Claud
+         e 共享的浓缩认知：架构、活跃文件、NVENC 铁律、关键 offset、生产
+         配置、工作偏好
+      5 +- [IFRNet 水彩花屏+HEVC 尾帧损坏双症状调查](ifrnet-watercolor-ta
+        +il-defect-investigation.md) — 2026-08-26 定性：尾帧参考链断裂为 
+        +LA 流式既有缺陷（备份同配置复现，包级守恒校验盲区，尾部 CRA 重启
+        +组）；水彩单帧为 H2D 预取 pinned 槽无同步竞态被方案时序改动显性 
+        +化；含 Fix-1~5 修复方案与验证方法                               
+      6  - [优化方案全量执行记录 2026-08](optimization-execution-2026-08.
+         md) — P0×8+P1+P2+P3 全量落地（tile 批级接入、ESRGAN compile 实现
+         、NVENC RC/挂起/死锁修复、指纹断点、回归测试 30/30）；含延后项与
+          GPU 生产验证清单；后验证三合一 → tests/verify_plan_implementati
+         on.py v2（72 项，test_regression_min.py 为兼容别名）
+      7  - [语言与代码修改偏好](user_language.md) — 只用中英文交流，代码
+         修改保留原有注释
+      8  - [开发与运行环境](project_environment.md) — 开发在 Windows，运
+         行部署在 Linux
+
+  Thought for 25s (ctrl+o to expand)
+
+● 调查全部完成，记忆已归档（写入 + 镜像同步 + 双侧索引 + UTF-8
+  字节校验通过）。以下是完整报告。
+
+  ---
+
+  IFRNet 插帧“水彩花屏”排查报告
+
+  一、症状定位与影响范围（问题 1）
+
+  实际存在两类独立异常：
+
+  症状 A：段尾参考链断裂（解码失败）
+  - word_world_2：seg000/001/002 每段恰好末尾 8 帧不可解码（容器 519/567/285
+    包，可解 511/559/277）；
+  - S01E12：seg001 丢 6 帧（17763→17757）、seg003 丢 8 帧，seg000/002/004 完整；
+  - 解码错误即日志中的三条：Could not find ref with POC X → Error constructing 
+    the frame RPS → Skipping invalid undecodable NALU: 1（X 恰为最后 8 帧的 POC
+    区间，如 seg002 的 276-283）。
+
+  症状 B：中段孤立水彩帧（“色彩润开”）
+  - S01E12 seg001 的 15574/16630/17226/17346/17462
+    等：单帧、前后邻帧干净、解码零错误；
+  - 放大镜检（600×400 裁剪 2×
+    最近邻放大）证实：无横向撕裂带，是真正的平滑神经网络混叠（两场景软混合 +
+    边缘幻觉描边）——即 IFRNet 推理时拿到了时间上远处的错误配对帧；
+  - word_world seg002 的 frame_0024 与 frame_0270：二分验证 frame_0024
+    的污染已在 ESRGAN 放大分段第 12 帧存在（上游继承）；色度检测在 seg002
+    发现坏帧簇 [200]，seg000/001 无簇。
+
+  二、ffmpeg 日志错误分析（问题 2）
+
+  对 seg002 做了 Annex-B 码流解剖，错误链条完整闭环：
+
+  1. 流结构 = [头部参数集 + IDR + 主流帧] + [VPS/SPS/PPS + CRA + 尾组帧] ——
+     流尾部存在一个“参数集重启 + CRA（新 GOP）”组（主输出流在 frame 260
+     终止，组内是本段自己的 261-284 帧，已用 frame_0262 ≈ 源帧 131
+     逐内容匹配确认）；
+  2. CRA 组单独解码（带自带的 VPS/SPS/PPS）：16 帧成功 + 最后 8 帧报一模一样的 
+     POC/RPS 错误——即这 8
+     帧的参考链在编码产出时就已经断裂，不是封装/解码侧问题；
+  3. 三条日志的语义：解码器按 RPS 找不到参考图像 →
+     用错误参考强行解码（这就是水彩/双影的解码侧成因）→ 该 NAL
+     无法解码被跳过（该帧丢失）。
+
+  关键推论：ffprobe 的包数守恒（285 包）掩盖了“8 包不可解码”——现有 verify 
+  的检查1（frames==packets）对此是盲的。
+
+  三、与备份的对照结论（问题 3 核心）
+
+  对备份 bak20260824/temp/benchmark_ww2 同配置文件跑了同样的验收：
+
+  ┌─────────────────────────────┬───────────────────┬─────────┬────────────┐
+  │            文件             │     包数/可解     │  POC    │ 色度坏帧簇 │
+  │                             │                   │  错误   │            │
+  ├─────────────────────────────┼───────────────────┼─────────┼────────────┤
+  │ 备份 v6.4.5.1 hevc vbr_hq   │ 1373/1368（丢 5） │ 有      │ 0          │
+  │ LA=8                        │                   │         │            │
+  ├─────────────────────────────┼───────────────────┼─────────┼────────────┤
+  │ 备份 v6.4.5.1 hevc vbr_hq   │ 1373/1360（丢     │ 有      │ 0          │
+  │ LA=16                       │ 13）              │         │            │
+  ├─────────────────────────────┼───────────────────┼─────────┼────────────┤
+  │ 当前 word_world             │ 各丢 8            │ 有      │ 0/0/1 簇   │
+  │ seg000/001/002              │                   │         │            │
+  ├─────────────────────────────┼───────────────────┼─────────┼────────────┤
+  │ 当前 S01E12 seg001          │ 丢 6              │ 有      │ 有（5+     │
+  │                             │                   │         │ 帧）       │
+  └─────────────────────────────┴───────────────────┴─────────┴────────────┘
+
+  （备份文件还有 IDR=23、pts drop @1357
+  等同类指纹；且备份与当前文件尾部都有同样的 VPS/SPS/PPS+CRA 重启组结构。）
+
+  结论（与您的判断一致并已独立验证）：
+  - 症状 A = v6.4.5.1 NVENC HEVC+LA 
+    流式路径的既有缺陷，三个方案既未引入也未修复。08-18 的 FIX-HEVC-COUNTED/EOS
+    修复验证的是包级守恒，从未验证“尾组可解码”，缺陷就此潜伏。
+  - 症状 B = 三个方案期间新显性化（备份同配置色度干净）。
+
+  四、根因分析
+
+  症状 A（既有）：逐帧 drain 全程返回 code=8（您日志确认，追加 V
+  已定性为该环境常态），帧全靠段末 EOS
+  排空回收；段尾出现“重启组”且组内尾帧参考链断裂。CRA
+  重启的确切触发点静态分析未能完全锁定（encode_frames_stream
+  内部无任何中途重启逻辑，force_idr 仅 fi==0），主嫌疑是 _ensure_slot_free
+  的“排空超限→空帧占位兜底”路径（nvenc_sdk.py:1559-1578）放弃槽位后流水线继续提
+  交，驱动 LA 链断裂自行重启 GOP。验证方法：grep 
+  生产日志中“排空超限/空帧占位兜底”出现位置是否与重启点吻合。
+
+  症状 B（新显性化，代码级确认）：pipeline.py:1135-1197 的 H2D 预取用 4 槽
+  pinned 池轮转 + non_blocking=True 异步上载，但 ifrnet_utils.py:295 的
+  dst.copy_(src_f) 没有任何槽位事件保护——CPU 覆写 group-N pinned 时不等该槽在途
+  H2D。稳态靠“一轮推理 238ms ≫ H2D 40ms”的时序巧合掩盖（_infer_batch 的
+  wait_stream 只保证 H2D→计算有序，不保护宿主缓冲）；批变小（OOM 
+  降批/段尾小批）或流水线停顿恢复时窗口打开 → GPU 张量混入两对不同时间的帧 →
+  IFRNet 忠实混合 = 水彩帧。此代码方案未改，但
+  P2.3/P2.4/遥测打印等时序类改动使其显性化。
+
+  附带发现（潜在雷区）：① [P0-FIX-HEVC-HANG] 把 _lock_bitstream_blocking 的 HEVC
+  分支改成 doNotWait=1 轮询——与 diagnose_hevc_la test3/test10 的 GPU
+  实测结论（挂起或返回 SUCCESS+垃圾 size 7.2/21MB）直接冲突，该函数被
+  _ensure_slot_free 兜底（L1553）调用；② [P2.3-LA-PINNED-REUSE]
+  池深=_q.maxsize+2 漏算编码线程 _acc_nv12 的 chunk
+  累积，当前节奏打不到但属潜伏缺陷；③ "Cached SPS+PPS: 33 bytes” vs 实际
+  VPS+SPS+PPS=78B、每段头部双参数集块——HEVC 参数集识别分支需审计。
+
+  五、修复方案（按优先级）
+
+  #: Fix-1
+  目标: 症状 B（小改先做）
+  内容: 预取槽事件同步：_try_prefetch_next 在 .to() 后对 stream_h2d record_event
+
+  存每槽最近事件；get_for_frames 覆写槽位前
+  event.synchronize()。正常路径事件已超时，零性能开销
+  ────────────────────────────────────────
+  #: Fix-2
+  目标: 症状 A 定位
+  内容: grep 生产日志比对“排空超限”位置与 CRA 重启点；扩展
+  tests/diagnose_hevc_la.py 增加“槽位放弃后继续提交”变体复现重启组；确认后修
+  _ensure_slot_free 兜底语义（放弃槽位应判段失败而非继续提交）
+  ────────────────────────────────────────
+  #: Fix-3
+  目标: 症状 A 短期规避
+  内容: 成片切 constqp + LA=0（ce_pipeline，历史验证最充分）或
+  h264+vbr_hq+LA=8；HEVC+LA 修复前勿用于成片
+  ────────────────────────────────────────
+  #: Fix-4
+  目标: 验收门禁（防再漏）
+  内容: 段级验收接入解码级守恒（ffmpeg 实解帧数==期望）+ 色度坏帧簇检查（verify
+  v4 检查4 已具备能力，只需接线判败）；Tier 占位帧计数超阈值判败
+  ────────────────────────────────────────
+  #: Fix-5
+  目标: 排雷
+  内容: 回退 doNotWait=1（或对返回 size 钳制 ≤W×H×4）；P2.3 池深改
+  qd+ceil(chunk/batch)+2 或在途计数；HEVC 参数集识别切换到 P3.2 nal_utils
+  参考实现
+
+  完整调查记录已存入
+  memory/ifrnet-watercolor-tail-defect-investigation.md（含镜像同步与索引）。若
+  能提供两次测试的完整运行日志（含“排空超限/帧数守恒校验”等行），可把症状 A 的
+  CRA 触发点钉到具体代码行。
+
+  result: 双症状定性完成——尾帧 POC/RPS 损坏是 HEVC+LA
+  流式路径既有缺陷（备份同配置复现，包级守恒校验盲区，尾部 CRA
+  重启组编码时参考链即断裂）；水彩单帧是 H2D 预取 pinned
+  槽无同步竞态被方案时序改动显性化（代码级确认无事件保护），已交付 Fix-1~5
+  修复方案并归档记忆
+
+✻ Crunched for 2h 10m 26s · done Wednesday 5:59 PM

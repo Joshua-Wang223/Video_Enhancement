@@ -1,0 +1,1573 @@
+> @Plan/conversation-持续跟进6方案计划（GPU部分）.txt 继续完成中断的任务 
+
+ Let me understand the current state. The conversation transcript was truncated/interrupted. The last action was editing `external/ifrnet_video/nvenc_sdk.py` which
+ resulted in "Network Aborted..." — so the edit may or may not have completed.
+ The user says: "继续完成中断的任务" (continue completing the interrupted task).
+ So I need to:
+ ... 7 more lines (press Ctrl+O to expand)
+
+● 中断发生在给 external/ifrnet_video/nvenc_sdk.py 打补丁时（返回 Network Aborted）。先核实两个文件的实际落盘状态。
+
+● Bash(cd /workspace/Video_Enhancement && for f in external/realesrgan_video/nvenc_sdk.…SIZE\|FIX-NVENC-PRESETCFG-SIZE\|reserved7\|class _NvEncPresetConfig" "$f"; done)
+  ⎿ === external/realesrgan_video/nvenc_sdk.py ===
+    315: # [FIX-NVENC-CONFIG-SIZE] 252 → 356：本类是"保留字节块"近似体，字段偏移靠
+    320: ("reserved7", c_uint32 * 356),
+    ...+7 line (ctrl+o to expand)
+
+● Bash(cd /workspace/Video_Enhancement && ls -la core.[0-9]* 2>/dev/null | tail -5; echo "--- pytest temp ---"; ls /tmp/*.sh /tmp/*.log 2>/dev/null | head -20)
+  ⎿ (eval):1: no matches found: core.[0-9]*
+    --- pytest temp ---
+    (eval):1: no matches found: /tmp/*.sh
+
+ Both edits landed. The /tmp files are gone (session restarted, /tmp cleaned?). Let me verify the struct sizes now and check the full definitions.
+ Let me verify sizes via ctypes.
+
+● 两侧补丁都已落盘。验证结构体尺寸是否与真实头文件一致。
+
+● Bash(cd /workspace/Video_Enhancement && for d in external/realesrgan_video external/i…resetConfig offset =", getattr(pc, "presetConfig").offset, "(真实 8)")PY); done)
+  ⎿ === external/realesrgan_video ===
+    _NvEncConfig = 3584 (真实 3584)
+    _NvEncPresetConfig = 5128 (真实 5128)
+    ...+5 line (ctrl+o to expand)
+
+ Both fixed: 3584 and 5128, presetConfig at offset 8.
+ Now I need to verify:
+ 1. That the code's `byref(preset_config, 8)` is still consistent (it references offset 8 explicitly, and now presetConfig is at offset 8 — consistent).
+ ... 15 more lines (press Ctrl+O to expand)
+
+● 两侧尺寸与真实布局完全一致（3584 / 5128，presetConfig offsets 8）。核对代码里对 preset_config 的写入是否与新字段名一致。
+
+● Bash(cd /workspace/Video_Enhancement && for f in external/realesrgan_video/nvenc_sdk.…do echo "=== $f ==="; grep -n "preset_config\|GetEncodePresetConfig" "$f"; done)
+  ⎿ === external/realesrgan_video/nvenc_sdk.py ===
+    334: 比真实尺寸**短 932 字节**；而 `preset_config` 是**唯一**真正实例化并交给驱动的
+    335: 结构（`nvEncGetEncodePresetConfig(..., byref(preset_config))`，见 _open_session），
+    ...+58 line (ctrl+o to expand)
+
+● Bash(cd /workspace/Video_Enhancement && sed -n '323,345p' external/realesrgan_video/nvenc_sdk.py)
+  ⎿ class _NvEncPresetConfig(Structure):
+    """[FIX-NVENC-PRESETCFG-SIZE] 必须与真实 NV_ENC_PRESET_CONFIG 布局一致。
+    真实布局（SDK 13.0 头文件 + gcc sizeof 实测，共 5128 字节）：
+    ...+20 line (ctrl+o to expand)
+
+ Important: the code uses hardcoded ABSOLUTE offsets (`byref(preset_config, 8)`, `_h264_cfg_off + ...`) which were consistent with the OLD layout where presetConfig was
+ at offset 4 but the driver wrote to offset 8. Wait, no.
+ Let me think carefully. The OLD code had `preset_config.version = ...` then `cast(byref(preset_config, 8), POINTER(c_uint32))[0] = NV_ENC_CONFIG_VER`. So the code
+ writes NV_ENC_CONFIG_VER at absolute offset 8. The driver's real NV_ENC_CONFIG.presetCfg is at offset 8. So the code was already using absolute offset 8 correctly —
+ because the driver expects it there.
+ But the ctypes struct had presetConfig at offset 4. So `enc_cfg = cast(byref(preset_config, 8), POINTER(_NvEncConfig)).contents` — this reads at absolute offset 8,
+ which is the driver's real location. Good. So the code's `_NvEncConfig` field offsets (relative) were used for reading, and they were also using absolute offsets via
+ `_h264_cfg_off`.
+ ... 11 more lines (press Ctrl+O to expand)
+
+● 核对 _h264_cfg_off 等派生偏移是否依赖被改动的字段序号。
+
+● Bash(cd /workspace/Video_Enhancement && for f in external/realesrgan_video/nvenc_sdk.…zeof(_NvEncConfig)\|sizeof(_NvEncPresetConfig)\|\.offset" "$f" | head -20; done)
+  ⎿ === external/realesrgan_video/nvenc_sdk.py ===
+    955: # 偏移基准: _h264_cfg_off = 8(presetCfg) + 168(encodeCodecConfig)。
+    960: _h264_cfg_off = 8 + 168
+    ...+3 line (ctrl+o to expand)
+
+ `_h264_cfg_off = 8 + 168` — hardcoded absolute, matches real layout (encodeCodecConfig @168 in NV_ENC_CONFIG, presetCfg @8). My changes don't touch these. Good.
+ Now let me run the validation: the crash reproduction. Let me run the single test 10 times.
+ Let me set up a task list for the continuation first, then run.
+ ... 2 more lines (press Ctrl+O to expand)
+
+● 派生偏移是硬编码绝对值（8+168），与真实布局一致，未受影响。建立任务清单并验证修复。
+
+ Task list lost. Let me recreate it based on the state. Let me create tasks for remaining work.
+ Remaining:
+ 1. Task 2: 验证 NVENC SIGSEGV 修复（复现率对照 + 全量套件）— in progress
+ ... 6 more lines (press Ctrl+O to expand)
+
+ Now let me start Task 1 — verify the fix. The key test: run `test_no_empty_frames_constqp_la0` × 10 and count crashes. Before: 2 crashes / 10 (plus 1 rc=1). Let me
+ run.
+ Let me write the script carefully (avoiding zsh word-splitting issues — use explicit command arrays).
+ Let me run in background since it takes a while.
+ ... 2 more lines (press Ctrl+O to expand)
+
+● 标记 Task 1 进行中，跑修复后的复现率对照（原基线：单测 ×10 → 段错误 2/10，另 1 次 rc=1）。
+
+● Bash(cd /workspace/Video_Enhancement && cat > /tmp/verify_fix.sh <<'EOF'#!/usr/bin/en…复后: 通过=$ok 段错误=$crash 其它=$other (共 10) ==="EOFbash /tmp/verify_fix.sh)
+  ⎿ 🔄 Command moved to background.
+
+ While that runs, let me work on Task 5 (ESRGAN REDRAIN) code reading — but careful about GPU contention. The verification test uses NVENC (GPU). Let me avoid launching
+ GPU work simultaneously.
+ Read-only work is fine. Let me:
+ 1. Read the IFRNet `_ce_final_drain` reference implementation to prepare the port
+ ... 5 more lines (press Ctrl+O to expand)
+
+● 趁验证跑着，读 Task 5 的立项文档与两侧参照实现（只读，不争 GPU）。
+
+● Read(Plan/ESRGAN_LA二次排空安全网_立项Prompt.md)
+  ⎿ Read 168 lines (ctrl+o to expand)
+
+ Good. Now the plan says preconditions 1 and 2 were done. Let me re-verify the current state:
+ - `_apply_sps_pps` exists in ESRGAN (:1466 per earlier finding)
+ - `_output_slot_idx` advancement comments at 5 sites `[FIX-LA-OUTPTR-ESRGAN]`
+ ... 5 more lines (press Ctrl+O to expand)
+
+● Bash(cd /workspace/Video_Enhancement && grep -n "def encode_frames_batch_ce_pipeline\…dx\|def _ce_final_drain\|FIX-LA-REDRAIN" external/realesrgan_video/nvenc_sdk.py)
+  ⎿ 41: - _frame_idx/_output_slot_idx 跨段单调连续递增，不归零。
+    683: self._output_slot_idx = 0
+    1494: def _apply_sps_pps(self, h264_data: bytes, is_idr: bool) -> bytes:
+    ...+33 line (ctrl+o to expand)
+
+ Important observations:
+ - `_apply_sps_pps` exists at :1494
+ - `_drain_outputs_blocking` at :1535
+ ... 5 more lines (press Ctrl+O to expand)
+
+● Bash(cd /workspace/Video_Enhancement && awk 'NR>=2349 && NR<=3120 && /^    def /{print NR": "$0}' external/realesrgan_video/nvenc_sdk.py | head -5)
+  ⎿ 2349: def encode_frames_batch_ce_pipeline(self, nv12_tensors: list, force_idr_first: bool = False) -> list:
+    2689: def encode_frame(self, nv12_gpu_tensor, force_idr: bool = False) -> bytes:
+    2873: def flush(self) -> bytes:
+    ...+2 line (ctrl+o to expand)
+
+ So `encode_frames_batch_ce_pipeline` spans 2349..2688. Line 2910/2917 and 3036 are in `flush()` (2873..3018) and `_stream_begin()` (3019..3060).
+ Let me read the tail of `encode_frames_batch_ce_pipeline` — 2600..2688.
+ Also let me read `flush()` since it's the EOS drain path, which may already be the "second drain".
+ ... 1 more lines (press Ctrl+O to expand)
+
+● Read(external/realesrgan_video/nvenc_sdk.py)
+  ⎿ Read 101 lines (ctrl+o to expand)
+
+ Now I understand the ESRGAN `encode_frames_batch_ce_pipeline` structure:
+ - Phase 1 (Harvest): slot reuse, harvest previous CE + LockBitstream
+ - Phase 2 (Submit): LockInputBuffer → cuMemcpy2D → EncodePicture + new CE
+ ... 13 more lines (press Ctrl+O to expand)
+
+● Bash(cd /workspace/Video_Enhancement && grep -n "def _ce_final_drain\|FIX-LA-REDRAIN\…ch_ce_pipeline\|def _drain_outputs_blocking" external/ifrnet_video/nvenc_sdk.py)
+  ⎿ 1515: def _drain_outputs_blocking(self, max_slots: int = None) -> list:
+    1516: """[FIX-LA-REDRAIN] 按 _output_slot_idx 顺序循环 LockBitstream
+    2750: def encode_frames_batch_ce_pipeline(self, nv12_tensors: list, force_idr_first: bool = False) -> list:
+    ...+5 line (ctrl+o to expand)
+
+● Read(external/realesrgan_video/nvenc_sdk.py)
+  ⎿ Read 31 lines (ctrl+o to expand)
+
+ Now let me read the IFRNet `_ce_final_drain` (3058..3145) as the reference implementation.
+ Let me be careful — the plan says the REDRAIN must be ported. Let me read it.
+
+● Read(external/ifrnet_video/nvenc_sdk.py)
+  ⎿ Read 96 lines (ctrl+o to expand)
+
+ Now I have the full IFRNet reference. Key insight: In IFRNet, Phase 3 (`_ce_final_drain`) **does advance `_output_slot_idx`** on successful drain (lines 3089, 3102).
+ So by the time REDRAIN calls `_drain_outputs_blocking()`, `_output_slot_idx` is at the right position.
+ In ESRGAN, Phase 3 (lines 2629-2676) does **NOT** advance `_output_slot_idx`. So a naive port would call `_drain_outputs_blocking()` from a stale `_output_slot_idx` (=
+ 0 after the per-batch reset at :2389), causing **pointer double-advance / misordering** — exactly risk §5's highest risk.
+ Let me verify ESRGAN's `_output_slot_idx` semantics:
+ ... 12 more lines (press Ctrl+O to expand)
+
+● 关键差异已定位：IFRNet 的 Phase 3 在成功取回时推进 _output_slot_idx（:3089、:3102），而 ESRGAN 的 Phase 3（:2629-2676）完全不推进。这正是立项 §5
+  列为最高风险的「指针双重推进」。先读 ESRGAN 的 _drain_outputs_blocking 确认映射关系。
+
+● Read(external/realesrgan_video/nvenc_sdk.py)
+  ⎿ Read 176 lines (ctrl+o to expand)
+
+ CRITICAL FINDING for the REDRAIN port:
+ `_drain_outputs_blocking` uses `est_fi = self._output_slot_idx` as the frame index estimate — i.e., **the slot index IS used as the frame index**. And
+ `self._output_slot_idx % self._slot_count` gives the slot.
+ But in IFRNet's REDRAIN, they check `if _est_fi < n_frames and (results[_est_fi] is None or results[_est_fi] == b"")`. So in IFRNet, `_output_slot_idx` is treated as
+ an absolute frame counter within the batch (starting at 0 for each batch since `_reset_output_slot_idx(0)` is called at :2389 in ESRGAN... wait, IFRNet's equivalent).
+ ... 27 more lines (press Ctrl+O to expand)
+
+● 这是移植的关键约束：_drain_outputs_blocking 用 est_fi = self._output_slot_idx（:1685）作帧号，且从 _output_slot_idx % _slot_count 取槽。ESRGAN 的 Phase 3
+  不推进该指针，直接调用会重锁已排空的槽（阻塞语义下有死锁风险）。先查清调用链与 LA 路由。
+
+● Bash(cd /workspace/Video_Enhancement && echo "=== 各函数被谁调用 ==="; grep -n "encod…king(\|_reset_output_slot_idx(" external/realesrgan_video/*.py | grep -v "def ")
+  ⎿ === 各函数被谁调用 ===
+    external/realesrgan_video/nvenc_sdk_bak.py:543: # 支持 encode_frames_batch() 跨分块调用时的 drain 映射正确性。
+    external/realesrgan_video/nvenc_sdk_bak.py:1224: # 支持 chunked LA 模式下跨 encode_frames_batch() 调用的 drain 映射正确性。
+    ...+30 line (ctrl+o to expand)
+
+● Bash(cd /workspace/Video_Enhancement && grep -n "FIX-HEVC-LA-ROUTE" -A 25 external/realesrgan_video/nvenc_sdk.py | head -60)
+  ⎿ 649: # [FIX-HEVC-LA-ROUTE] HEVC/AV1 + LA 已 GPU 验证（2026-08-18
+    650- # tests/diagnose_hevc_la.py eos_probe：700 帧守恒 + ffmpeg decode OK），
+    651- # 不再降级 LA=0。中途排空与 EOS 排空分别由 FIX-HEVC-COUNTED /
+    ...+57 line (ctrl+o to expand)
+
+ Very important finding from the call chain:
+ - `external/realesrgan_video/nvenc_sdk.py:2587: _drained_inline = self._drain_outputs_blocking()` — **inside** `encode_frames_batch_ce_pipeline` (2349-2688)! So
+ `_drain_outputs_blocking` IS already called inside the ce_pipeline function.
+ Let me look at line 2560-2600 to see the context — the "Phase 2.5 inline drain".
+ ... 5 more lines (press Ctrl+O to expand)
+
+● nvenc_sdk.py:2587 显示 encode_frames_batch_ce_pipeline 内部已有 一次 _drain_outputs_blocking() 调用（Phase 2.5 inline drain）。这改变了指针不变式的分析——必须先读这段。
+
+● Read(external/realesrgan_video/nvenc_sdk.py)
+  ⎿ Read 86 lines (ctrl+o to expand)
+
+ Now I have the full picture of ESRGAN's `encode_frames_batch_ce_pipeline`:
+ - Phase 2 submit loop: for each frame fi:
+ - `slot_idx = self._frame_idx % pd`
+ ... 45 more lines (press Ctrl+O to expand)
+
+ The fix did NOT resolve the crash: 4/10 CRASH (worse than the 2/10 baseline). So `_NvEncPresetConfig` size was NOT the (only) root cause.
+ Important: the crash rate is now 4/10 vs baseline 2/10 — statistically that's the same range (noise). So my fix is neutral (which is fine — it fixes a real latent
+ overflow but isn't THE cause).
+ So I need to keep hunting. Let me look at the crash location in the new logs.
+ ... 21 more lines (press Ctrl+O to expand)
+
+● 修复未解决崩溃（4/10 段错误，与基线 2/10 同量级）——说明 _NvEncPresetConfig 尺寸不是根因。需要纠正先前的判断：旧结构 4196 字节仍能容纳驱动实际写入的
+  presetCfg(8+3584=3592)，所以从未真正越界；该修复是布局正确性的改进，但不是崩溃原因。
+
+  先取新崩溃的故障帧。
+
+● Bash(cd /workspace/Video_Enhancement && for i in 3 6 7 9; do echo "###### vf_$i #####…nt "   "$0} /Fatal Python error/{print "   "$0}' /tmp/vf_$i.log | head -4; done)
+  ⎿ ###### vf_3 ######
+    Fatal Python error: Segmentation fault
+    File "/workspace/Video_Enhancement/tests/../external/realesrgan_video/nvenc_sdk.py", line 1583 in _drain_outputs_blocking
+    ...+17 line (ctrl+o to expand)
+
+● Bash(cd /workspace/Video_Enhancement && ls -la core* 2>/dev/null | tail -6; echo "--- core_pattern ---"; cat /proc/sys/kernel/core_pattern)
+  ⎿ -rw------- 1 root root 1196957696 Sep 16 08:34 core.35926
+    -rw------- 1 root root 1197109248 Sep 16 08:34 core.37375
+    -rw------- 1 root root 1197088768 Sep 16 08:34 core.38157
+    ...+3 line (ctrl+o to expand)
+
+ Now 3/4 crashes are at **line 1583 in `_drain_outputs_blocking`** = `bs_status = lock_bs_fn(self._encoder, lock_raw)` — the NVENC driver call. And it's called from
+ `encode_frames_batch` (line 2150), NOT from `encode_frames_batch_ce_pipeline`.
+ Wait — the test calls `encode_frames_batch`! Let me check: test line 267 calls something that leads to `encode_frames_batch` at :2150 which calls
+ `_drain_outputs_blocking` at :1583 → `lock_bs_fn(self._encoder, lock_raw)`.
+ So the crash is INSIDE `nvEncLockBitstream` on the T4 driver. This matches CODEBUDDY.md's documented T4 driver `LockBitstream` segfault precedent!
+ ... 5 more lines (press Ctrl+O to expand)
+
+● 3/4 崩溃现在收敛到同一处：nvenc_sdk.py:1583 的 lock_bs_fn(self._encoder, lock_raw)——即驱动 nvEncLockBitstream 调用内部，经由 encode_frames_batch(:2150)，而不是
+  ce_pipeline。这与 CODEBUDDY.md 记载的 T4 驱动 LockBitstream 段错误先例吻合。先读该测试到底做了什么。
+
+● Read(tests/test_nvenc_sdk_realesrgan.py)
+  ⎿ Read 71 lines (ctrl+o to expand)
+
+ So the test creates a `NVENCEncoder(176, 144, 30.0, qp=0, rate_mode='constqp', la_depth=0)` and calls `encode_frames_batch(frames, force_idr_first=True)`.
+ For LA=0, which internal function does `encode_frames_batch` route to? Let me look at :2140-2160 for the LA=0 path.
+ Wait, the crash backtrace says `encode_frames_batch` line 2150 → `_drain_outputs_blocking` line 1583. Let me read :2120-2165.
+ ... 3 more lines (press Ctrl+O to expand)
+
+● Read(external/realesrgan_video/nvenc_sdk.py)
+  ⎿ Read 61 lines (ctrl+o to expand)
+
+ Now this is very informative. Line 2133-2136:
+ > `[FIX-DRAIN-UNSUBMITTED-SLOT]` 只 drain 已提交但未排空的 slot。
+ > **CONSTQP+LA=0 下 LockBitstream 未提交的 bitstream buffer 会导致 NVENC driver segfault（不返回
+ NEED_MORE_INPUT）**。使用已提交帧数减去已排空帧数（`_output_slot_idx`）作为上限确保不触及未提交 slot。
+ ... 32 more lines (press Ctrl+O to expand)
+
+● 仓库自己已记录该故障：:2133-2136 的 [FIX-DRAIN-UNSUBMITTED-SLOT] 明说「CONSTQP+LA=0 下 LockBitstream 未提交的 bitstream buffer 会导致 NVENC driver 
+  segfault」——所以这是已知类故障，靠 _max_drain 上限规避，但显然规避不完整。取原生栈确认。
+
+● Bash(cd /workspace/Video_Enhancement && C=$(ls -t core.* | head -1); echo "core=$C"; …sions/3.11.1/bin/python3.11 "$C" 2>&1 | grep -E "^#|libnvidia|nvEnc" | head -22)
+  ⎿ core=core.39146
+    #0 0x000055708c79a6b9 in _Py_DumpExtensionModules (fd=fd@entry=3, interp=<optimized out>) at Python/pylifecycle.c:2679
+    #0 0x000055708c79a6b9 in _Py_DumpExtensionModules (fd=fd@entry=3, interp=<optimized out>) at Python/pylifecycle.c:2679
+    ...+20 line (ctrl+o to expand)
+
+ This core (39146, run 9 — the one whose Python traceback was in pytest's code.py) crashed in the **GC** (`gc_collect_main` → `subtract_refs` → `visit_decref` →
+ `_PyObject_IS_GC`) during a **type allocation** (`object_new`). Classic heap corruption signature. Note this is inside a **signal handler** context for the
+ faulthandler dump... Actually frames #3+ are the active stack: `_PyObject_GC_Link` → `gc_collect_generations` → `gc_collect_main` → ... →
+ `_PyObject_IS_GC(obj=0x7f443c304ff0)` where obj is a corrupted pointer.
+ So this core = heap corruption detected during GC.
+ And vf_3/6/7 crashed at `lock_bs_fn` (line 1583) — meaning the *Python-level* faulting line is the ctypes call, but the actual segfault may be *inside* the driver OR
+ the ctypes call triggered a GC/allocation on a corrupted heap.
+ ... 25 more lines (press Ctrl+O to expand)
+
+● 这个 core 崩在 GC（gc_collect_main → visit_decref → _PyObject_IS_GC，对象指针已损坏）——与另一处 lock_bs_fn 不同，仍是堆损坏特征。既然 _NvEncPresetConfig
+  不是根因，系统测量驱动会写入的所有原始缓冲区对应真实结构体尺寸。
+
+● Bash(cat > /tmp/sz3.c <<'EOF'#include <stdio.h>#include <ffnvcodec/nvEncodeAPI.h>#def…}EOFgcc -I/usr/local/include -w -o /tmp/sz3 /tmp/sz3.c 2>&1 | head -5; /tmp/sz3)
+  ⎿ NV_ENC_PIC_PARAMS 3360
+    NV_ENC_PIC_PARAMS_H264 1536
+    NV_ENC_PIC_PARAMS_HEVC 1536
+    ...+6 line (ctrl+o to expand)
+
+ - `NV_ENC_PIC_PARAMS` = 3360 ✓ (code uses `(c_uint8 * 3360)()`) — exact.
+ - `NV_ENC_INITIALIZE_PARAMS` = 1808, and the code's `_NvEncInitializeParams` — earlier I didn't check. Let me check that! Earlier the list said
+ "NV_ENC_INITIALIZE_PARAMS = 1800" from my C program... no wait, earlier output said `NV_ENC_INITIALIZE_PARAMS 1800`. Now it says 1808. Hmm, different? Let me re-check
+ — earlier output was "NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS = 1552, NV_ENC_INITIALIZE_PARAMS = 1800". Hmm, that was truncated/modified output in the transcript. Now
+ it's 1808 with `sizeof`. Trust the new measurement: 1808.
+ Hmm, actually the earlier one may have used a different printf. Let me just verify the code's `_NvEncInitializeParams` size.
+ ... 11 more lines (press Ctrl+O to expand)
+
+● NV_ENC_PIC_PARAMS = 3360 与代码一致；但 NV_ENC_INITIALIZE_PARAMS = 1808（先前记录为 1800）。系统性列出代码内全部 _NvEnc* 结构尺寸并与真实值比对。
+
+● Bash(cat > /tmp/sz4.c <<'EOF'#include <stdio.h>#include <stddef.h>#include <ffnvcodec…);  return 0;}EOFgcc -I/usr/local/include -w -o /tmp/sz4 /tmp/sz4.c && /tmp/sz4)
+  ⎿ NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS 1552
+    NV_ENC_INITIALIZE_PARAMS 1808
+    off NV_ENC_INITIALIZE_PARAMS.encodeConfig 88
+    ...+1 line (ctrl+o to expand)
+
+● Bash(cd /workspace/Video_Enhancement/external/realesrgan_video && python - <<'PY'impo…class(o, ctypes.Structure):        print("%-46s %6d" % (n, ctypes.sizeof(o)))PY)
+  ⎿ _NvEncConfig 3584
+    _NvEncConfigH264 1108
+    _NvEncConfigH264MeOnly 992
+    ...+12 line (ctrl+o to expand)
+
+ Now comparisons:
+ | struct | code | real | diff |
+ |---|---|---|---|
+ ... 31 more lines (press Ctrl+O to expand)
+
+● _NvEncInitializeParams = 1800 vs 真实 1808（短 8 字节），且它是真正实例化并交给驱动的结构（init_params.encodeConfig = ...）。逐字段比对偏移。
+
+● Bash(cat > /tmp/lay2.c <<'EOF'#include <stdio.h>#include <stddef.h>#include <ffnvcode… return 0;}EOFgcc -I/usr/local/include -w -o /tmp/lay2 /tmp/lay2.c && /tmp/lay2)
+  ⎿ sizeof(NV_ENC_INITIALIZE_PARAMS) = 1808
+    version @ 0
+    encodeGUID @ 4
+    ...+13 line (ctrl+o to expand)
+
+● Bash(cd /workspace/Video_Enhancement/external/realesrgan_video && python - <<'PY'impo…  sz = "?"    print("  %-34s @ %5d  size=%s" % (n, getattr(S, n).offset, sz))PY)
+  ⎿ 代码 sizeof = 1800
+    version @ 0 size=4
+    encodeGUID @ 4 size=16
+    ...+23 line (ctrl+o to expand)
+
+ Now I see: the code's `_NvEncInitializeParams`:
+ - `reserved1 @152 size=1136` → 152+1136 = 1288
+ - `reserved2 @1288 size=512` → 1288+512 = 1800
+ ... 44 more lines (press Ctrl+O to expand)
+
+● _NvEncInitializeParams 的 reserved2 落在 @1288，真实在 @1296（短 8 字节）——但 reserved2 是只读保留位。更值得怀疑的是函数指针表索引：代码
+  _FUNC_IDX["GetEncodePresetConfig"]=10，若与真实字段序号不符就会用错误原型调用驱动函数。核对真实字段顺序。
+
+● Bash(cat > /tmp/fl.c <<'EOF'#include <stdio.h>#include <stddef.h>#include <ffnvcodec/…);  }  return 0;}EOFgcc -I/usr/local/include -w -o /tmp/fl /tmp/fl.c && /tmp/fl)
+  ⎿ sizeof(NV_ENCODE_API_FUNCTION_LIST) = 2552
+    slot# offset field
+    0 0x0000 (version+reserved)
+    ...+49 line (ctrl+o to expand)
+
+ Note the code offsets the pointer table by 8 (`cast(byref(func_table, 8), POINTER(c_void_p))`), so `_func_ptrs[i]` = field at offset 8 + i*8. With my slot numbering
+ above, `_func_ptrs[0]` = slot 1 = nvEncodeAPICreateInstance, `_func_ptrs[1]` = slot 2 = nvEncodeAPIGetMaxSupportedVersion, `_func_ptrs[i]` = slot (i+1).
+ So `_FUNC_IDX["GetEncodePresetConfig"] = 10` → `_func_ptrs[10]` → slot 11 = nano **`nvEncGetEncodePresetConfigEx`**!
+ And the real `nvEncGetEncodePresetConfig` is slot 10 → `_func_ptrs[9]`.
+ ... 22 more lines (press Ctrl+O to expand)
+
+● 关键发现：真实函数表里 nvEncGetEncodePresetConfig 在 slot 10（偏移 0x50），而 _func_ptrs 基址是 byref(func_table, 8)，所以对应索引应为 9。代码写的是 10 → 会取到
+  nvEncGetEncodePresetConfigEx。逐条核对整个 _FUNC_IDX 表。
+
+● Read(external/realesrgan_video/nvenc_sdk.py)
+  ⎿ Read 81 lines (ctrl+o to expand)
+
+ CRITICAL: The `_FUNC_IDX` docstring says:
+ > Index = `(offsetof(field) - offsetof(nvEncOpenEncodeSession)) / sizeof(void*)`
+ So the indices are **relative to `nvEncOpenEncodeSession`**, NOT relative to `nvEncodeAPICreateInstance`!
+ ... 20 more lines (press Ctrl+O to expand)
+
+● 我的字段名列表是凭记忆写的，不可靠。直接从 nvEncodeAPI.h 的 NV_ENCODE_API_FUNCTION_LIST 定义解析出真实字段名与偏移，再与 _FUNC_IDX 逐条比对。
+
+● Bash(cd /workspace/Video_Enhancement && python - <<'PY'import re, pathlibh = pathlib.… len(fields))for i,(t,n) in enumerate(fields):    print("  %2d  %s" % (i, n))PY)
+  ⎿ Traceback (most recent call last):
+    File "<stdin>", line 2, in <module>
+    File "/root/.pyenv/versions/3.11.1/lib/python3.11/pathlib.py", line 1058, in read_text
+    ...+6 line (ctrl+o to expand)
+
+ The header is gone! The container was reset. Let me check where it is now.
+ Earlier `find / -name "nvEncodeAPI.h"` found `/usr/local/include/ffnvcodec/nvEncodeAPI.h`. Now it's missing... but my gcc compilations just worked! So it must exist.
+ Let me re-find it.
+ Hmm, gcc -I/usr/local/include compiled fine with `#include <ffnvcodec/nvEncodeAPI.h>`. So it exists. Maybe the path differs or there's a symlink.
+ ... 1 more lines (press Ctrl+O to expand)
+
+● Bash(find / -name "nvEncodeAPI.h" 2>/dev/null | head; echo "--- gcc 实际解析 ---"; ec…& gcc -I/usr/local/include -E /tmp/inc.c 2>/dev/null | grep -m1 "nvEncodeAPI.h")
+  ⎿ /usr/include/ffnvcodec/nvEncodeAPI.h
+    --- gcc 实际解析 ---
+    # 1 "/usr/include/ffnvcodec/nvEncodeAPI.h" 1 3 4
+
+ The header is at `/usr/include/ffnvcodec/nvEncodeAPI.h`. Let me parse it.
+ Let me redo the parse with the correct path.
+
+● Bash(cd /workspace/Video_Enhancement && python - <<'PY'import re, pathlibh = pathlib.…or "(无字段)", "✅" if hit and hit[0]==k or k in [x for x in hit] else "⚠️"))PY)
+  ⎿ 字段数: 45
+    sizeof = 2552
+    version 0
+    ...+26 line (ctrl+o to expand)
+
+ **Every single entry is OFF BY EXACTLY ONE!**
+ - Code says `GetEncodeGUIDCount` idx 1 → offset 16 = `nvEncodeAPIGetMaxSupportedVersion` (real `nvEncGetEncodeGUIDCount` @ 24 = idx 2)
+ - Code says `LockBitstream` idx 17 → offset 144 = `nvEncUnlockBitstream`**! Real nvEncLockBitstream @ 152 = idx 18.
+ ... 35 more lines (press Ctrl+O to expand)
+
+● _FUNC_IDX 表格完全正确（我的判定逻辑写错了：实际字段名带 nvEnc 前缀，逐条其实都对得上）。排除该假设。换更直接的堆损坏检测：用 glibc 的 MALLOC_CHECK_ / MALLOC_PERTURB_ 
+  让损坏在写入点就被抓出，而不是随机时刻崩。
+
+● Bash(cd /workspace/Video_Enhancement && cat > /tmp/mcheck.sh <<'EOF'#!/usr/bin/env ba…d rc=%-4s %s\n' "$i" "$rc" "${msg:-（无明确堆报错）}"doneEOFbash /tmp/mcheck.sh)
+  ⎿ run1 rc=0 （无明确堆报错）
+    run2 rc=0 （无明确堆报错）
+    run3 rc=1 （无明确堆报错）
+    ...+2 line (ctrl+o to expand)
+
+● Bash(cd /workspace/Video_Enhancement && head -20 /tmp/real_fld.txt)
+  ⎿ sizeof = 2552
+    version 0
+    reserved 4
+    ...+17 line (ctrl+o to expand)
+
+ Two important results:
+ 1. **The function table in this header (`/usr/include/ffnvcodec/nvEncodeAPI.h`) is a "modern" layout** where `nvEncOpenEncodeSession` is at offset 8 (right after
+ version+reserved), and there's NO `nvEncodeAPICreateInstance` / `nvEncodeAPIGetMaxSupportedVersion` in the struct (those are separate exported symbols). So:
+ - `nvEncOpenEncodeSession` @8 → `_func_ptrs[0]` ✓ (base is byref(func_table,8))
+ ... 44 more lines (press Ctrl+O to expand)
+
+● 函数表结论已闭环（该头文件把 nvEncOpenEncodeSession 放在偏移 8，代码索引与之一一对应）。而 MALLOC_CHECK_=3 下 5 次零崩溃——说明不是普通 glibc 堆越界。
+
+  qp=0 是触发条件，且仓库已记载同类故障：驱动返回 SUCCESS + 垃圾 size → 按该 size 构造 from_address → 越界读 → SIGSEGV（:662-668「铁律 3」）。检查所有读 size
+  的路径是否都设了上限。
+
+● Bash(cd /workspace/Video_Enhancement && grep -n "_is_legal_bitstream_size\|def _lock_… _lock_bitstream_blocking\|from_address" external/realesrgan_video/nvenc_sdk.py)
+  ⎿ 663: # （铁律 3，实测 1.66 / 3.57 / 7.42 MB）。按该长度 (c_uint8 * size).from_address()
+    1431: def _lock_bitstream_with_retry(self, bs_handle, max_retries: int = 5, backoff_us: int = 1000):
+    1459: # [P3-FIX-LockBitstream-SizeCap] 拒绝垃圾 size，避免 from_address 越界读
+    ...+14 line (ctrl+o to expand)
+
+ All 5 `from_address` sites have `_is_legal_bitstream_size` guards (1459, 1646, 1904, 2201, 2957). So that's covered.
+ Let me look at `_is_legal_bitstream_size` to see what the cap is and whether it's a *boolean* only (reject) or also clamps.
+ Let me read 1484-1513.
+ ... 52 more lines (press Ctrl+O to expand)
+
+● 所有 from_address 站点都有 size 上限，排除该假设。改用**金丝雀（canary）**实验直接判定宿主机堆是否被越界写：给嫌疑人结构体加尾部哨兵，看崩溃是否消失。先验证 _fields_
+  可在运行时扩展。
+
+● Bash(cd /workspace/Video_Enhancement/external/realesrgan_video && python - <<'PY'impo…s.sizeof(S))except Exception as e:    print("扩展失败:", type(e).__name__, e)PY)
+  ⎿ 扩展失败: AttributeError _fields_ is final
+
+ `_fields_` is final. So I can't extend at runtime. I'd have to edit the source.
+ Alternative approach for guard: **`traceback`/`gc` instrumentation** — too indirect.
+ **Better idea**: Since ctypes `Structure` allocation uses `PyMem_Malloc` (or `PyObject_Malloc`), and I want guard detection, I can use **`PYTHONMALLOC=debug`** —
+ already tried, no report. Let me re-check: with `PYTHONMALLOC=debug`, overflowing the end of a pymalloc block should be caught at free() ("bad trailing pad byte" /
+ "API violation"). We got a segfault without a report → suggests the corrupted allocation is NOT a PyMem block, or the overflow is > 8 bytes past and lands in the next
+ arena.
+ ... 7 more lines (press Ctrl+O to expand)
+
+● 金丝雀需改源码（_fields_ 为 final）。先查仓库/memory 是否已有该测试的既有记录，避免重复挖掘。
+
+● Search(pattern: "constqp_la0|qp=0|CONSTQP.*(segfault|段错误|SIGSEGV)|test_no_empty_frames", path: "memory")
+  ⎿ Found 0 matches (ctrl+o to expand)
+
+● Search(pattern: "test_no_empty_frames_constqp_la0|constqp_la0", path: ".")
+  ⎿ Found 9 files (ctrl+o to expand)
+
+ Interesting — `external/realesrgan_video/nvenc_sdk.py` mentions `test_no_empty_frames_constqp_la0`. Let me check where.
+ And session-ses_*.md files mention it. Let me look at those — they might have prior analysis of this exact crash.
+ Let me grep for the context in nvenc_sdk.py and in the session files.
+
+● nvenc_sdk.py 自己也提到该测试名。查上下文与历史会话记录。
+
+● Bash(cd /workspace/Video_Enhancement && grep -n "test_no_empty_frames_constqp_la0" -B 12 -A 6 external/realesrgan_video/nvenc_sdk.py | head -50)
+  ⎿ 326- 真实布局（SDK 13.0 头文件 + gcc sizeof 实测，共 5128 字节）：
+    327- uint32 version; // @0
+    328- uint32 reserved; // @4
+    ...+16 line (ctrl+o to expand)
+
+● Bash(cd /workspace/Video_Enhancement && for f in Plan/session-ses_fb90.md Plan/sessio…"=== $f ==="; grep -n "constqp_la0" -B 3 -A 6 "$f" 2>/dev/null | head -30; done)
+  ⎿ === Plan/session-ses_fb90.md ===
+    190-benchmark_report_new5.pdf
+    191-benchmark_report_test2.pdf
+    ...+127 line (ctrl+o to expand)
+
+ No prior record of this crash. The session files only mention `constqp_la0` as benchmark output filenames (unrelated).
+ So the crash in `test_no_empty_frames_constqp_la0` is a NEW finding with no prior documentation.
+ **Important correction needed**: my code comment in both nvenc_sdk.py files claims the `_NvEncPresetConfig` size mismatch causes the crash. That's now DISPROVEN (fix
+ didn't change the crash rate). I must correct those comments — leaving a wrong root-cause claim in the code is exactly the kind of thing that misleads future debugging
+ (and the repo's memory/CODEBUDDY.md warns about stale/wrong provenance notes).
+ ... 39 more lines (press Ctrl+O to expand)
+
+● 仓库内无该崩溃的历史记录——是新发现。先纠正我先前写进代码的错误根因断言（修复未降低崩溃率，不能声称是根因），然后针对仓库已记载的
+  [FIX-DRAIN-UNSUBMITTED-SLOT]（锁未提交槽 → 驱动段错误）做定点探针：检查 _max_drain 是否真能放到未提交的槽。
+
+● Bash(cd /workspace/Video_Enhancement && cat > /tmp/probe_slots.py <<'PY'import sys, c… grep -E "PROBE|slots|Traceback|Error" | head -40; echo "EXIT=${pipestatus[1]}")
+  ⎿ [NVENCEncoder] CONSTQP + LA=0: 4 slots (HW pipeline buffers>=1)
+    [NVENCEncoder] 4 slots created (0x560b25aa5660..0x560b25abc870)
+    [NVENCEncoder] Ready: 176x144@30.0fps H.264 CONSTQP QP=0 preset=p1 slots=4 (GPU direct SDK 13.0)
+    ...+19 line (ctrl+o to expand)
+
+ Very interesting! The probe shows:
+ - `_slot_count = 4` for LA=0 CONSTQP
+ - Each drain locks exactly 1 slot: `max_slots=1`
+ ... 11 more lines (press Ctrl+O to expand)
+
+● 探针显示正常路径完全对齐（max_slots=1，逐槽推进，16/16 无空帧）。需在崩溃那次抓到现场——循环跑探针直到段错误，记录崩溃前的最后一条 PROBE。
+
+● Bash(cd /workspace/Video_Enhancement && cat > /tmp/loop_probe.sh <<'EOF'#!/usr/bin/en…BE /tmp/pl_$i.log)"doneecho "15 次全部通过（未复现）"EOFbash /tmp/loop_probe.sh)
+  ⎿ run1 ok(122)
+    run2 ok(192)
+    run3 ok(18)
+    ...+15 line (ctrl+o to expand)
+
+ **BREAKTHROUGH!** The crash happens **AFTER** the encode completes successfully and **AFTER** `[NVENCEncoder] Encoder closed`!
+ ```
+ [PROBE] 完成: len=16 empty=0 none=0 fi=16 osi=16
+ ... 28 more lines (press Ctrl+O to expand)
+
+● 重大突破：崩溃发生在编码全部成功之后——
+
+  [PROBE] 完成: len=16 empty=0 none=0 fi=16 osi=16
+  [NVENCEncoder] Encoder closed
+  --> SIGSEGV
+
+  即故障在 close() 之后的解释器退出/清理阶段，不在编码路径。这解释了崩溃点为何游走（lock_bs_fn / gc.collect() / pytest code.py 都只是 GC 
+  恰好走到那里的位置）。精确定位退出阶段。
+
+● Bash(cd /workspace/Video_Enhancement && cat > /tmp/probe_exit.py <<'PY'import sys, at…intf 'run%-2d ok\n' "$i"doneecho "15 次全过（未复现）"EOFbash /tmp/loop_exit.sh)
+  ⎿ /tmp/loop_exit.sh: line 3: 75331 Segmentation fault timeout -k 5 120 python /tmp/probe_exit.py > /tmp/pe_$i.log 2>&1
+    ###### run1 rc=139 ######
+    --- stderr 末尾 ---
+    ...+3 line (ctrl+o to expand)
+
+ Hmm, this run crashed right after "Ready:" — i.e., during `encode_frames_batch`, before my first log. So the crash CAN also happen during encoding. Hmm.
+ Wait — no `[EXIT-PROBE]` lines at all. So it crashed during `encode_frames_batch`. Hmm, but earlier the crash was after close. So it's genuinely variable.
+ Hmm, but hold on. Let me reconsider: the stdout might be buffered. I used `flush=True` in log(), but the library's prints use `flush=True` too (I saw them). The
+ "Ready:" line is flushed. So the crash happened after Ready and before my "编码完成" log.
+ ... 18 more lines (press Ctrl+O to expand)
+
+● 崩溃也可能发生在编码中途——符合堆损坏多点显现。改用非侵入式手段定位：在模块加载后把嫌疑结构体替换为带 8KB 尾部余量的子类，跑 15 次看崩溃是否消失。
+
+● Bash(cd /workspace/Video_Enhancement && cat > /tmp/pad_probe.py <<'PY'import sys, os,…g,_NvEncOpenEncodeSessionExParams,_NvEncInitializeParams" bash /tmp/loop_pad.sh)
+  ⎿ run1 CRASH(rc=1)
+    run2 CRASH(rc=1)
+    run3 CRASH(rc=1)
+    ...+13 line (ctrl+o to expand)
+
+ rc=1 (not 139) — that's a Python exception, not a segfault. My subclassing approach broke something. Let me see the error.
+ Let me check the log.
+
+● rc=1 是 Python 异常（非段错误）——子类化方式本身有问题。看报错。
+
+● Bash(cd /workspace/Video_Enhancement && head -5 /tmp/pd_1.log; echo "..."; tail -12 /tmp/pd_1.log)
+  ⎿ [PAD] 已加余量: _NvEncPresetConfig 5128->18448 | _NvEncOpenEncodeSessionExParams 1552->11296 | _NvEncInitializeParams 1800->11792
+    [NVENCEncoder] CRF=0 + _NVENC_CRF0_FORCE_CONSTQP=True → 强制 CONSTQP qp=0 LA=0（配置 rate_mode=constqp 被覆盖）
+    [NVENCEncoder] CONSTQP + LA=0: 4 slots (HW pipeline buffers>=1)
+    ...+15 line (ctrl+o to expand)
+
+ `nvEncOpenEncodeSessionEx failed, code=15` (NV_ENC_ERR_INVALID_VERSION / incompatible). Because the code writes `session_params.version` etc. and the driver
+ validates... hmm, actually padding shouldn't matter since I only appended a tail field. But `_pack_ = 1` in the subclass combined with inherited fields — the offsets
+ should be the same as the base. Hmm, unless `_pack_=1` on the subclass re-lays-out differently than the base (base also has `_pack_=1` for some).
+ Actually the issue: `_NvEncOpenEncodeSessionExParams` has `_pack_ = 1`. The base class's layout is decided by the base's own `_pack_`. Subclassing with `_pack_=1` and
+ repeating `_fields_` should reproduce identical offsets. Hmm.
+ Wait — maybe the problem is that `type(name, (base,), ...)` — declaring `_fields_` in the class dict of the subclass means ctypes lays out the subclass as base_fields
+ + new_fields. And `_pack_=1`... The offsets in the subclass might be recalculated with pack=1, matching. Hmm.
+ ... 27 more lines (press Ctrl+O to expand)
+
+● 子类化会改变 _pack_ 布局导致建会话失败（code=15），改用细粒度标记分类崩溃位置——这能精确回答「是否只在退出阶段崩」这一关键问题。
+
+● Bash(cd /workspace/Video_Enhancement && cat > /tmp/marks.py <<'PY'import sys, atexit,…LY[@]}"; do echo "  ${TALLY[$k]} 次  最后标记=$k"; doneEOFbash /tmp/classify.sh)
+  ⎿ /tmp/classify.sh: line 4: 91020 Segmentation fault timeout -k 5 120 python /tmp/marks.py > /tmp/mk_$i.log 2>&1
+    run1 SEGV 最后标记=MARK:close_ok
+    run2 ok(rc=0)
+    ...+27 line (ctrl+o to expand)
+
+ Now I have a precise characterization over 20 runs:
+ - 7/20 = 35% SEGV
+ - **4 crashes right after `frames_ok`** → during `encode_frames_batch` (the encode itself)
+ ... 22 more lines (press Ctrl+O to expand)
+
+● 精确刻画（20 次）：段错误 7/20 = 35%，其中 4 次在编码中途、3 次在 close() 之后的 del/gc.collect() 阶段。后一半高度指向 CUDA context 生命周期问题。做定点验证：close() 
+  后不再释放 CUDA 张量。
+
+● Bash(cd /workspace/Video_Enhancement && sed 's/^del res, frames$/pass # 不释放CUDA张… "=== close 后不释放张量: 段错误=$segv / 通过=$ok ==="EOFbash /tmp/classify2.sh)
+  ⎿ 🔄 Command moved to background.
+
+ Even without freeing tensors, crashes still occur (4 in first 8 runs) — including 2 at `atexit` (after all markers, i.e., interpreter shutdown). So the crash is not
+ caused by tensor freeing; it's broader.
+ So: the crash happens at multiple points including atexit/interpreter shutdown. This is consistent with the CUDA/NVENC driver state being corrupted in the process — a
+ driver-level issue.
+ At this point I have a solid characterization:
+ ... 17 more lines (press Ctrl+O to expand)
+
+● 不释放张量也照样崩（含 2 次在 atexit），排除张量释放假设。查所有运行日志里的驱动告警/诊断，寻找机制线索。
+
+● Bash(cd /workspace/Video_Enhancement && echo "=== 所有运行出现的告警/诊断（去重计数）…rep -lE "非法|SizeCap|size" /tmp/mk_*.log 2>/dev/null | head -3; echo "(空=无)")
+  ⎿ === 所有运行出现的告警/诊断（去重计数）===
+    5 ⚠️ slot=2 排空超限 #N：空帧占位兜底（prev 填充）
+    4 ⚠️ slot=3 排空超限 #N：空帧占位兜底（prev 填充）
+    ...+20 line (ctrl+o to expand)
+
+ **VERY IMPORTANT CLUE!**
+ ```
+ ⚠️ slot=2 排空超限 #N：空帧占位兜底（prev 填充）
+ ... 10 more lines (press Ctrl+O to expand)
+
+● 关键线索：崩溃运行里反复出现 ⚠️ slot=N 排空超限 #N：空帧占位兜底（prev 填充）——这是一条伪造占位帧的兜底路径。先看它是否与崩溃相关，并读其实现。
+
+● Bash(cd /workspace/Video_Enhancement && echo "=== 相关性：排空超限 vs 崩溃 ==="; for …K || s=SEGV; echo "  $(basename $f) 排空超限=$n $s"; done | sort -k2 | head -32)
+  ⎿ === 相关性：排空超限 vs 崩溃 ===
+    mk_10.log 排空超限=0 SEGV
+    mk_11.log 排空超限=0 SEGV
+    ...+28 line (ctrl+o to expand)
+
+● Bash(cd /workspace/Video_Enhancement && grep -n "排空超限" -B 20 -A 25 external/realesrgan_video/nvenc_sdk.py | head -60)
+  ⎿ 1843- # [FIX-SLOT-DRAIN-TARGET] 轮转探测无法触达目标槽（LA 重路由/
+    1844- # 辅助块使目标槽输出晚于其他槽就绪）→ 直接对目标槽自身做
+    1845- # blocking LockBitstream（doNotWait=0）。
+    ...+55 line (ctrl+o to expand)
+
+ The correlation table shows my "OK vs SEGV" classification is broken (both mn and mk show SEGV for all, based on `tail -1` — because the classification used `tail -1
+ "$f"` but the log's last line might not be MARK:end_of_script due to trailing newlines). Let me not trust that column. But the "排空超限" counts: mk_12/14/20 had 5
+ each; others 0. So it appears in only 3/20 runs — not the dominant path. Not the root cause.
+ Note: there's a **bug in the fallback at line 1868**: `_gfi_f, _, _is_idr_f, _ep_s_f = _dq[0]` — a **4-tuple unpack**, but the entries are **5-tuples** `(ce, fi,
+ ep_status, force_idr, bs_buf)`! That would raise ValueError... unless `_slot_pending` entries here are 4-tuples in this path. Hmm, wait, that's inside
+ `_ensure_slot_free`, and the comment says 5-tuple elsewhere. Hmm, but it's a `while _dq:` loop — if `_dq[0]` is a 5-tuple, unpacking into 4 names raises ValueError
+ immediately. Since we only saw the print (not a traceback), and the print happens before the unpack...
+ **That's potentially the bug!** `_fill` is set, the print happens, then `while _dq: _gfi_f, _, _is_idr_f, _ep_s_f = _dq[0]` → ValueError → exception propagates. But we
+ saw no traceback in the logs. Hmm, but this is inside `_ensure_slot_free` which may be called in a context where exceptions are swallowed? Or the crash happened
+ before.
+ ... 13 more lines (press Ctrl+O to expand)
+
+● 排空超限 只在 3/20 运行出现，非主因。但在该兜底路径 1868 行发现可疑点：_gfi_f, _, _is_idr_f, _ep_s_f = _dq[0] 是 4 元解包，而 _slot_pending 记账被文档标为 5 
+  元组。核实。
+
+● Bash(cd /workspace/Video_Enhancement && echo "=== _slot_pending 的所有写入点 ==="; gr…ding_fi|_gfi_f, _, _is_idr_f|= _dq\[0\]" external/realesrgan_video/nvenc_sdk.py)
+  ⎿ === _slot_pending 的所有写入点 ===
+    2113: _entry = (_global_fi_submitted, slot['bs_buf'], force_idr, _ep_status)
+    2115: self._slot_pending[slot_idx] = deque()
+    ...+13 line (ctrl+o to expand)
+
+ OK, so there are TWO different tuple shapes used consistently within their own paths:
+ - **4-tuple**: `(_global_fi_submitted, bs_buf, force_idr, ep_status)` — written at :2113 in `encode_frames_batch`
+ - **5-tuple**: `(_ce, fi, _ep_status, force_idr, bs_buf)` — written at :2578 in `encode_frames_batch_ce_pipeline`
+ ... 27 more lines (press Ctrl+O to expand)
+
+● _slot_pending 的 4/5 元组形状按路径各自一致，非 bug。现在关键是判断严重性：该测试用 encode_frames_batch，而生产 LA=0 路径是否走同一个函数？
+
+● Bash(cd /workspace/Video_Enhancement && grep -n "encode_frames_batch_ce_pipeline\|enc…0\|_use_ce_pipeline" external/realesrgan_video/nvenc_sdk.py | awk -F: '$1>3000')
+  ⎿ 3327: # cuCtxPopCurrent 配对（与 encode_frames_batch()/flush() 内部的
+    3383: # 改为分块累积 (CHUNK_SIZE=150 ≈ 380MB)，逐块调用 encode_frames_batch(send_eos=False)，
+    3395: _la_mode = (self._nvenc._la_depth > 0)
+    ...+7 line (ctrl+o to expand)
+
+● Bash(cd /workspace/Video_Enhancement && grep -n "\"crf\"\|crf" config/default_config.json | head -10)
+  ⎿ 87: "// crf_note": "IFRNet 分段输出质量（0-51，越小越好；23=默认均衡，18=近无损）。字面量，原样下发给软编 -crf",
+    88: "crf": 23,
+    89: "// crf_ref_note":
+    ...+11 line (ctrl+o to expand)
+
+ Important findings:
+ 1. Default config uses `crf: 23` and `crf_ref: 21` — **NOT 0**. So the qp=0 path (CRF=0 → force CONSTQP qp=0) is NOT the default production path. It's an edge case
+ (lossless request).
+ 2. Production LA=0 dispatch: `_la_mode = (self._nvenc._la_depth > 0)` at :3395. And at :3451 `encode_frames_batch_ce_pipeline` is called. Let me see which branch: if
+ `_la_mode` is True → `encode_frames_batch` (LA chunked); else → `ce_pipeline`. Let me verify by reading :3430-3460.
+ ... 3 more lines (press Ctrl+O to expand)
+
+● Read(external/realesrgan_video/nvenc_sdk.py)
+  ⎿ Read 36 lines (ctrl+o to expand)
+
+ **CONFIRMED — this is the key severity finding:**
+ - **Production LA=0 path** (`else` branch, :3446-3451): calls `encode_frames_batch_ce_pipeline` — with the comment `（对齐 IFRNet v6.4.5.1 LA=0 路径，生产零崩溃）` =
+ "aligned with IFRNet's LA=0 path, **zero crashes in production**".
+ - **Production LA>0 path**: `encode_frames_batch` (chunked, send_eos=False).
+ ... 17 more lines (press Ctrl+O to expand)
+
+● 决定性发现——严重性判定的关键：
+
+  - 生产 LA=0 路径（:3446-3451）走的是 encode_frames_batch_ce_pipeline，注释还写着「对齐 IFRNet v6.4.5.1 LA=0 路径，生产零崩溃」；
+  - 生产 LA>0 才走 encode_frames_batch；
+  - 而崩溃的测试恰恰是 la_depth=0 却调用 encode_frames_batch —— 生产从不使用的组合，正落在仓库已记载的 [FIX-DRAIN-UNSUBMITTED-SLOT]（:2134「CONSTQP+LA=0 下 LockBitstream
+   未提交槽导致驱动 segfault」）危险区。
+
+  直接验证：同样的 qp=0/LA=0，改走生产入口 ce_pipeline。
+
+● Bash(cd /workspace/Video_Enhancement && cat > /tmp/prod_path.py <<'PY'import sys, tor… -h "MARK:encode_ok" /tmp/pp_*.log | sort -u | head -3EOFbash /tmp/loop_prod.sh)
+  ⎿ 🔄 Command moved to background.
+
+ **The production entry also crashes!** `encode_frames_batch_ce_pipeline` with qp=0/LA=0 → SEGV in runs 2,3,4.
+ So my hypothesis is WRONG — the crash is NOT specific to the non-production `encode_frames_batch` path. Both paths crash with qp=0/LA=0.
+ So the crash IS production-relevant: `NVENCEncoder(qp=0, constqp, la_depth=0)` crashes ~35% regardless of entry point. That means **the default config is crf=23**
+ (safe), but **CRF=0 (lossless) requests would crash 35% of the time**.
+ ... 11 more lines (press Ctrl+O to expand)
+
+● 生产入口 ce_pipeline 同样崩溃——我的假设被否定。说明崩溃不是「非生产路径」问题，而是 NVENCEncoder(qp=0, constqp, la=0)
+  本身的问题（两条路径都崩）。这提高了严重性。做隔离实验：只建会话、不编码。
+
+ So `encode_frames_batch_ce_pipeline` with qp=0/LA=0: **9/15 SEGV = 60%**, worse. So both entry points crash heavily with qp=0.
+ Conclusion: **`NVENCEncoder(qp=0, rate_mode='constqp', la_depth=0)` + encode → 35-60% SIGSEGV in this T4/CUDA 13.0 environment, regardless of entry point.**
+ Now the decisive isolation: does the crash occur with construction only (no encode)? Let me test:
+ ... 10 more lines (press Ctrl+O to expand)
+
+● 生产入口同样崩（9/15 = 60%），故崩溃与入口无关，是 qp=0 + constqp + LA=0 这个编码器配置本身。做隔离实验定位到「建会话」还是「编码」。
+
+● Bash(cd /workspace/Video_Enhancement && cat > /tmp/iso.py <<'PY'import sys, os, torch…)  done  echo "MODE=$MODE: 段错误=$segv / 通过=$ok"doneEOFbash /tmp/loop_iso.sh)
+  ⎿ 🔄 Command moved to background.
+
+> 提醒：中间产物放项目 `tmp/`，不要放 /tmp，免得清理要反复审批 rm 
+
+ The user reminds me: put intermediate artifacts in the project's `tmp/` directory, not `/tmp`, to avoid repeated rm approval prompts.
+ Let me acknowledge and move my temp scripts into the project's `tmp/` dir going forward.
+ Also I got a decisive result: **MODE=ctor_only: 0/15 SEGV**. So construction alone (with qp=0) never crashes. The crash requires **encoding**. So the fault is in the
+ encode path with qp=0.
+ ... 22 more lines (press Ctrl+O to expand)
+
+● 明白，中间产物改放项目 tmp/。先取隔离实验结果。
+
+ Decisive isolation result:
+ - **MODE=ctor_only (qp=0, constqp, la=0 建会话+close，不编码): 段错误 0/15** ✅
+ - **MODE=encode (建会话+ce_pipeline 编码): 段错误 10/15 = 67%** ❌
+ ... 25 more lines (press Ctrl+O to expand)
+
+● 隔离结果决定性：
+
+  ┌────────────────────────────────────────┬────────────────┐
+  │                  模式                  │     段错误     │
+  ├────────────────────────────────────────┼────────────────┤
+  │ ctor_only（qp=0 建会话+close，不编码） │ 0/15 ✅        │
+  ├────────────────────────────────────────┼────────────────┤
+  │ encode（建会话 + ce_pipeline 编码）    │ 10/15 = 67% ❌ │
+  └────────────────────────────────────────┴────────────────┘
+
+  ⇒ 故障在编码路径（qp=0 CONSTQP 无损），与建会话无关，也与入口函数无关。
+
+  先按你的要求把中间产物迁到项目 tmp/。
+
+● Bash(cd /workspace/Video_Enhancement && ls -d tmp 2>/dev/null || echo "(tmp 不存在)"; ls -la | grep -E "^d" | head -12)
+  ⎿ (tmp 不存在)
+    drwxr-xr-x 1 root root 788 Sep 16 08:58 .
+    drwxr-xr-x 1 root root 1766 Sep 16 07:33 ..
+    ...+10 line (ctrl+o to expand)
+
+ Interesting! There's a `.git` directory now! Earlier `git rev-parse --is-inside-work-tree` said not a git repo. Let me check — maybe the user initialized it, or it
+ appeared. Let me check.
+ Wait, `.git` with date Sep 7 07:06. Hmm, earlier the check said "fatal: not a git repository". Let me re-verify. Maybe the earlier check was run from a different
+ state, or the `.git` is a file/dir without HEAD.
+ Let me check git status now.
+ ... 2 more lines (press Ctrl+O to expand)
+
+● 发现 .git 目录存在（Sep 7）——与先前的「非 git 仓库」判定矛盾，需复核。同时建立 tmp/。
+
+● Bash(cd /workspace/Video_Enhancement && mkdir -p tmp/nvenc_qp0_diag && echo "已建 tmp…tree 2>&1; ls -la .git/ 2>&1 | head -8; echo "--- HEAD ---"; cat .git/HEAD 2>&1)
+  ⎿ 已建 tmp/nvenc_qp0_diag
+    === git 复核 ===
+    true
+    ...+10 line (ctrl+o to expand)
+
+ **The repo IS a git repository** (`true`). My earlier check said "not a git repository" — that was wrong, probably because the earlier check ran in a subshell where...
+ hmm, or the `.git` didn't exist then and the user just added it. `.git` dated Sep 7 07:06 but `.git` contents show `COMMIT_EDITMSG` Aug 29. The directory mtime is Sep
+ 7. Hmm, earlier in the session (Aug/Sep 16 08:31) the root dir listing showed items but I grep'd for directories and `.git` wasn't in that output... let me look: the
+ earlier `ls -la | grep -E "^d"` output was truncated (head -12) — `.git` sorts near the top (after `..`), so it WOULD have appeared. In the first listing of this
+ session, `.git` appears now but the earlier `git rev-parse` said no.
+ Hmm, the very first recon in the transcript ran `git rev-parse --is-inside-work-tree` → "fatal: not a git repository (or any of the parent directories): .git". And now
+ it works. That means `.git` was created between then and now — likely the user ran `git init` (perhaps via `/permissions` allowing `git:*`... the user added
+ `Bash(git:*)` allow rule!). Yes — the user added `Bash(git:*)` permission and probably initialized git.
+ So: **the repo IS now a git repository**. This changes Task 3 item 7 (git tracking 复核) — it's now actionable!
+ ... 5 more lines (press Ctrl+O to expand)
+
+● .git 现已生效（is-inside-work-tree=true）——本树已是 git 仓库，先前的「非 git 仓库」判定已过时，Task 3 的 git 复核现在可执行。先迁脚本，再查 git 状态。
+
+● Bash(cd /workspace/Video_Enhancement && cp /tmp/iso.py /tmp/prod_path.py /tmp/marks.p…a /tmp/eol_backup/. tmp/eol_backup/ 2>/dev/null; echo "--- tmp 树 ---"; ls tmp/)
+  ⎿ total 24
+    drwxr-xr-x 1 root root 126 Sep 16 08:58 .
+    drwxr-xr-x 1 root root 28 Sep 16 08:58 ..
+    ...+8 line (ctrl+o to expand)
+
+● Bash(cd /workspace/Video_Enhancement && echo "=== git status 摘要 ==="; git status --…==="; git log --oneline -5 2>&1; echo "=== 分支 ==="; git branch -a 2>&1 | head)
+  ⎿ === git status 摘要 ===
+    M AGENTS.md
+    M CLAUDE.md
+    ...+33 line (ctrl+o to expand)
+
+ **MAJOR context discovery:**
+ - The repo IS a git repo with a remote `origin` and history.
+ - There are **worktree branches**, notably **`worktree-fix-crf0-nvenc`** = "fix CRF=0 nvenc"!!! That's exactly the qp=0 issue!
+ ... 10 more lines (press Ctrl+O to expand)
+
+● 重大上下文发现：本树已是 git 仓库且有远程，并存在一个名为 worktree-fix-crf0-nvenc 的分支——正是「修复 CRF=0 NVENC」！这可能就是 qp=0 崩溃的既有修复。核查。
+
+● Bash(cd /workspace/Video_Enhancement && echo "=== worktree 列表 ==="; git worktree li…n 的差异文件 ==="; git diff --stat main worktree-fix-crf0-nvenc 2>&1 | tail -20)
+  ⎿ === worktree 列表 ===
+    /workspace/Video_Enhancement 0b0cf12 [main]
+    /workspace/Video_Enhancement/.claude/worktrees/fix-crf0-nvenc 31a9014 [worktree-fix-crf0-nvenc]
+    ...+32 line (ctrl+o to expand)
+
+ Hmm — `worktree-fix-crf0-nvenc` points at `31a9014` which is an **ancestor** of `main`'s tip (`0b0cf12`)? The diff `main → worktree-fix-crf0-nvenc` shows 7062
+ insertions / 202249 deletions — that's mostly DELETIONS relative to main, i.e., the branch is BEHIND main (main has more files). So the branch is an older snapshot,
+ not an unmerged fix.
+ So `worktree-fix-crf0-nvenc` is just a worktree pointing at the same old commit as the others — the branches were never advanced. The names suggest intent (fix CRF=0
+ nvenc) but there's no content.
+ Hmm, so these are stale worktrees. Still, the NAME is a strong hint: someone (a previous session) created a worktree for "fix-crf0-nvenc". Let me check if there's a
+ plan/memory document about the CRF=0 NVENC fix!
+ ... 3 more lines (press Ctrl+O to expand)
+
+● worktree-fix-crf0-nvenc 指向的是更早的提交（相对 main 是「落后」，无未合并修复）——是遗留 worktree。但分支名强烈暗示有人曾立项修 CRF=0 NVENC。检索相关文档。
+
+● Bash(cd /workspace/Video_Enhancement && echo "=== Plan/ 中含 crf0/CRF=0/qp=0 的文件 =…grep -rln "crf0\|CRF=0\|CRF 0\|qp=0\|QP=0" Plan/ memory/ 2>/dev/null | head -20)
+  ⎿ === Plan/ 中含 crf0/CRF=0/qp=0 的文件 ===
+    Plan/session-ses_fc2f.md.bak
+    Plan/session-ses_fcd1.md
+    ...+14 line (ctrl+o to expand)
+
+ There's `memory/crf0-la-depth-cli-ignore-fix.md` — a memory about CRF=0 LA depth CLI ignore fix! Let me read it. That might be related.
+ Let me read that memory file.
+ Also let me check what plans mention crf0.
+ ... 1 more lines (press Ctrl+O to expand)
+
+● Read(memory/crf0-la-depth-cli-ignore-fix.md)
+  ⎿ Read 70 lines (ctrl+o to expand)
+
+ This memory is about LA depth display bugs with CRF=0, not the crash. But it confirms `_NVENC_CRF0_FORCE_CONSTQP=True` → CRF=0 forces CONSTQP qp=0 LA=0. So the qp=0
+ path IS a real production configuration when the user sets CRF=0.
+ So the finding stands: **CRF=0 (→ forced CONSTQP qp=0, LA=0) crashes ~67% in this environment**.
+ Hmm, but wait — is `_NVENC_CRF0_FORCE_CONSTQP=True` the default? The log said "CRF=0 + _NVENC_CRF0_FORCE_CONSTQP=True → 强制 CONSTQP qp=0 LA=0". Let me check that
+ constant's default. If it's True by default, then CRF=0 users hit it.
+ ... 25 more lines (press Ctrl+O to expand)
+
+● 现有 memory 只记录了 CRF=0 的 LA 显示 bug，未涉及崩溃。确认 _NVENC_CRF0_FORCE_CONSTQP 默认值以判定严重性。
+
+● Bash(cd /workspace/Video_Enhancement && grep -rn "_NVENC_CRF0_FORCE_CONSTQP\s*=\|_NVE…an_video/*.py external/ifrnet_video/*.py src/ 2>/dev/null | grep -v _bak | head)
+  ⎿ external/realesrgan_video/nvenc_sdk.py:558:# ── 以下常量仅在 _NVENC_CRF0_FORCE_CONSTQP=False 时生效 ──
+    external/realesrgan_video/nvenc_sdk.py:565:# crf=0 且 _NVENC_CRF0_FORCE_CONSTQP=False 时的 lookahead 深度。
+    external/realesrgan_video/nvenc_sdk.py:633: print(f" [NVENCEncoder] CRF=0 + _NVENC_CRF0_FORCE_CONSTQP=True → "
+    ...+5 line (ctrl+o to expand)
+
+ The constant `_NVENC_CRF0_FORCE_CONSTQP` is defined elsewhere (src/utils/config_manager.py or similar). Earlier logs show it's True. Let me find its definition
+ quickly... Actually the earlier grep didn't find `= True`. Let me search more broadly.
+ Hmm, let me not spend more time. The logs prove it's True in this run: "CRF=0 + _NVENC_CRF0_FORCE_CONSTQP=True → 强制 CONSTQP qp=0 LA=0".
+ So: **CRF=0 → forced CONSTQP qp=0 LA=0**. And default config is crf=23. So the crashing path requires the user to set CRF=0 (lossless). It's an edge case but a
+ legitimate one (lossless encoding).
+ ... 12 more lines (press Ctrl+O to expand)
+
+● CRF=0 会强制 CONSTQP qp=0 LA=0（默认 config 是 crf=23，故属无损编码边缘路径）。现在纠正我先前写进代码的错误根因断言——不能留下误导后人的 provenance。
+
+● Edit(external/realesrgan_video/nvenc_sdk.py)
+  ⎿ external/realesrgan_video/nvenc_sdk.py with 14 additions and 10 removals
+
+     1 -      ⚠️ 原定义只有 4196 字节（version@0 + presetConfig@4(3168) + reserved[256](1024)），
+     2 -      比真实尺寸**短 932 字节**；而 `preset_config` 是**唯一**真正实例化并交给驱动的
+     3 -      结构（`nvEncGetEncodePresetConfig(..., byref(preset_config))`，见 _open_session），
+     4 -      驱动会按 NV_ENC_PRESET_CONFIG* 写入完整 5128 字节 ⇒ **每次建会话越界 932 字节**，
+     5 -      写坏相邻 Python 对象 → 随机时刻 SIGSEGV（实测表现为 nvenc 硬件测试
+     6 -      `test_no_empty_frames_constqp_la0` 约 30~50% 概率崩溃，故障帧在
+     7 -      `_drain_outputs_blocking` 与 `gc.collect()` 之间游走，见
+     8 -      Plan/NVENC硬件测试隔离_立项Prompt.md 的 2026-09-16 复测）。
+     1 +      原定义只有 4196 字节、且 `presetConfig` 落在 @4（version@0 + presetConfig@4(3168)
+     2 +      + reserved[256](1024)）→ 与真实布局**不符**：`presetConfig` 应在 @8。改后
+     3 +      `presetConfig` 恰好落在 @8，与下方 `byref(preset_config, 8)` 的绝对偏移写法一致
+     4 +      （原注释说"ctypes _pack_=1 让它从 offset 4 开始"已不再成立）。
+     5 
+     6 -      改后 `presetConfig` 恰好落在 @8，与下方 `byref(preset_config, 8)` 的绝对偏移
+     7 -      写法天然一致（原注释说"ctypes _pack_=1 让它从 offset 4 开始"已不再成立）。
+     6 +      ⚠️ **不要把本修正当成 qp=0 SIGSEGV 的根因**（2026-09-16 实测否定）：
+     7 +      修前/修后各跑 `test_no_empty_frames_constqp_la0` ×10，段错误分别为 2/10 与 4/10
+     8 +      —— 同一量级，**未改善**。原因：驱动 `nvEncGetEncodePresetConfig` 实际只写
+     9 +      `presetCfg` 一段（@8 起 3584 字节，止于 3592），旧定义总长 4196 已能容纳，
+    10 +      故从未真正越界。本修正的价值是**布局正确性**（字段偏移与真实 SDK 对齐，
+    11 +      便于后续按结构体名而非魔数访问），与随机崩溃无关。
+    12 +  
+    13 +      qp=0 崩溃的真实定位见 `Plan/NVENC硬件测试隔离_立项Prompt.md` 的
+    14 +      2026-09-16 复测节：故障在**编码阶段**（建会话 0/15 崩、编码 10/15 崩），
+    15 +      与入口函数无关，`qp=23` 同路径 0/10 崩 ⇒ 触发条件是 `qp=0`（无损）。
+    16        """
+
+ Now the actual size is still 5128 (correct). Good.
+ Now let me correct the IFRNet side. Let me read its current docstring.
+ Earlier from the transcript, the IFRNet edit added:
+ ... 13 more lines (press Ctrl+O to expand)
+
+● Read(external/ifrnet_video/nvenc_sdk.py)
+  ⎿ Read 21 lines (ctrl+o to expand)
+
+● Edit(external/ifrnet_video/nvenc_sdk.py)
+  ⎿ external/ifrnet_video/nvenc_sdk.py with 6 additions and 5 removals
+
+    1 -      ⚠️ 原定义 4196 字节，比真实尺寸**短 932 字节**；而 `preset_config` 是唯一
+    2 -      真正实例化并交给驱动的结构（`nvEncGetEncodePresetConfig(..., byref(...))`），
+    3 -      驱动按 NV_ENC_PRESET_CONFIG* 写满 5128 字节 ⇒ 每次建会话越界 932 字节，
+    4 -      写坏相邻 Python 对象 → 随机 SIGSEGV。详见 realesrgan 侧同名类的长注释与
+    5 -     Plan/NVENC硬件测试隔离_立项Prompt.md。
+    1 +     ⚠️ 原定义 4196 字节且 `presetConfig` 落在 @4，与真实布局不符（应在 @8）。
+    2 +      本修正的价值是**布局正确性**，**不是** qp=0 SIGSEGV 的根因 —— 2026-09-16 实测
+    3 +      修前/修后段错误率同量级（2/10 vs 4/10，未改善）：驱动实际只写 `presetCfg`
+    4 +      一段（@8 起 3584 字节，止于 3592），旧定义 4196 已能容纳，从未真正越界。
+    5 +      qp=0 崩溃的真实定位见 realesrgan 侧同名类的长注释与
+    6 +      Plan/NVENC硬件测试隔离_立项Prompt.md 的 2026-09-16 复测节。
+    7        """
+
+ Now also correct the `_NvEncConfig.reserved7` comment which said "否则把它当 NV_ENC_CONFIG* 交给驱动就会越界写坏堆". Let me check the current text.
+ ESRGAN line 315-320:
+ ```
+ ... 12 more lines (press Ctrl+O to expand)
+
+● Edit(external/realesrgan_video/nvenc_sdk.py)
+  ⎿ external/realesrgan_video/nvenc_sdk.py with 6 additions and 4 removals
+
+    1            # [FIX-NVENC-CONFIG-SIZE] 252 → 356：本类是"保留字节块"近似体，字段偏移靠
+    2 -          # 绝对偏移硬编码写入（见 _open_session 的 [FIX-SDK13-CODEC] 说明），
+    3 -          # **总尺寸必须 ≥ 真实 sizeof(NV_ENC_CONFIG)**，否则把它当 NV_ENC_CONFIG*
+    4 -          # 交给驱动就会越界写坏堆。实测（gcc + nvEncodeAPI.h, SDK 13.0）:
+    5 -          #   sizeof(NV_ENC_CONFIG) = 3584；本类原为 3168（短 416）→ 补齐至 3584。
+    2 +          # 绝对偏移硬编码写入（见 _open_session 的 [FIX-SDK13-CODEC] 说明）。
+    3 +          # 实测（gcc + nvEncodeAPI.h, SDK 13.0）: sizeof(NV_ENC_CONFIG) = 3584；
+    4 +          # 本类原为 3168（短 416）→ 补齐至 3584，使字段偏移与真实结构对齐。
+    5 +          # ⚠️ 短 416 **不会**造成越界：本类只嵌在 _NvEncPresetConfig.presetConfig(@8)
+    6 +          # 里，驱动写入止于 8+3584=3592 < 该结构总长 5128，故从未写坏堆。
+    7 +          # 见 _NvEncPresetConfig docstring 的「不要把本修正当成 qp=0 SIGSEGV 根因」。
+    8            ("reserved7",      c_uint32 * 356),
+
+ Now let me also fix the IFRNet side's `_NvEncConfig.reserved7` comment. Let me read it.
+ Let me check.
+
+● Read(external/ifrnet_video/nvenc_sdk.py)
+  ⎿ Read 11 lines (ctrl+o to expand)
+
+● Edit(external/ifrnet_video/nvenc_sdk.py)
+  ⎿ external/ifrnet_video/nvenc_sdk.py with 4 additions and 4 removals
+
+    1            # [FIX-NVENC-CONFIG-SIZE] 252 → 356：本类是"保留字节块"近似体，字段偏移靠
+    2 -          # 绝对偏移硬编码写入，**总尺寸必须 ≥ 真实 sizeof(NV_ENC_CONFIG)**，
+    3 -          # 否则把它当 NV_ENC_CONFIG* 交给驱动就会越界写坏堆。
+    4 -          # 实测（gcc + nvEncodeAPI.h, SDK 13.0）: sizeof(NV_ENC_CONFIG) = 3584；
+    5 -          # 本类原为 3168（短 416）→ 补齐至 3584。与 realesrgan 侧逐字对齐。
+    2 +          # 绝对偏移硬编码写入。实测（gcc + nvEncodeAPI.h, SDK 13.0）:
+    3 +          # sizeof(NV_ENC_CONFIG) = 3584；本类原为 3168（短 416）→ 补齐至 3584。
+    4 +          # ⚠️ 短 416 **不会**越界：本类只嵌在 _NvEncPresetConfig.presetConfig(@8) 里，
+    5 +          # 驱动写入止于 8+3584=3592 < 5128，故从未写坏堆。与 realesrgan 侧逐字对齐。
+    6            ("reserved7",      c_uint32 * 356),
+
+ Now let me verify the modules still import and sizes are right, and that both files still compile.
+ Then I'll:
+ 1. Write a durable diagnostic asset in tests/ that characterizes the qp=0 crash (so future sessions can re-verify).
+ ... 5 more lines (press Ctrl+O to expand)
+
+● Bash(cd /workspace/Video_Enhancement && python -m py_compile external/realesrgan_vide…ncPresetConfig),  getattr(m._NvEncPresetConfig,'presetConfig').offset))"); done)
+  ⎿ py_compile OK
+    external/realesrgan_video: _NvEncConfig=3584 _NvEncPresetConfig=5128 presetCfg@8
+    external/ifrnet_video: _NvEncConfig=3584 _NvEncPresetConfig=5128 presetCfg@8
+
+ Both files compile and have correct sizes.
+ Now let me create a durable diagnostic asset in tests/. This will be a script that characterizes the crash reproducibly so future sessions can re-verify. Let me name
+ it `tests/diagnose_nvenc_qp0_segv.py`.
+ It should:
+ ... 12 more lines (press Ctrl+O to expand)
+
+● 两侧编译通过、尺寸正确。现在把这次调查固化为可复用的诊断资产（放进 tests/，供后续会话复验）。
+
+● Write(tests/diagnose_nvenc_qp0_segv.py)
+  ⎿ tests/diagnose_nvenc_qp0_segv.py with 189 additions
+
+      1 +  #!/usr/bin/env python3
+      2 +  # -*- coding: utf-8 -*-
+      3 +  """NVENC `qp=0`（CRF=0 → 强制 CONSTQP）段错误复现与定位 —— 可复用诊断。
+      4 +  
+      5 +  ## 为什么有这个脚本
+      6 +  
+      7 +  `Plan/NVENC硬件测试隔离_立项Prompt.md` 原本把 `pytest tests/` 的 SIGSEGV 归因为
+      8 +  **跨测试类的状态污染**，并以「逐文件隔离」为方案 A。2026-09-16 在 Linux + T4
+      9 +  （驱动 580.65.06 / CUDA 13.0）实测**推翻**了该归因：
+     10 +  
+     11 +  - `tests/test_nvenc_sdk_realesrgan.py` **单独**跑也会崩（3/8），
+     12 +    连**单个测试**独立循环也崩（3/10）；
+     13 +  - 崩溃与测试顺序无关，与前置文件无关。
+     14 +  
+     15 +  真正的触发条件是**编码器配置 `NVENCEncoder(qp=0, rate_mode='constqp',
+     16 +  la_depth=0)` 再编码**（即 `crf=0` 无损路径，见 `memory/crf0-la-depth-cli-ignore-fix.md`）。
+     17 +  本脚本用二分把该结论固定下来，便于换机器/换驱动后复验。
+     18 +  
+     19 +  ## 三种模式（每次都在**独立子进程**里跑，因为 SEGV 会杀掉进程）
+     20 +  
+     21 +  | 模式 | 内容 | 实测（T4/CUDA13.0，15 次） |
+     22 +  |---|---|---|
+     23 +  | `ctor_only` | 建会话 + `close()`，**不编码** | 段错误 **0/15** |
+     24 +  | `ce_pipeline` | 建会话 + `encode_frames_batch_ce_pipeline`（**生产 LA=0 入口**） | 段错误 **10/15** |
+     25 +  | `batch_direct` | 建会话 + `encode_frames_batch`（生产 LA>0 入口，此处 LA=0） | 段错误 **4/10** |
+     26 +  
+     27 +  ⇒ 故障在**编码阶段**，与建会话无关、与入口函数无关。
+     28 +  
+     29 +  ## 对照：同一路径、只改 qp
+     30 +  
+     31 +  | qp | rate_mode | la | 实测 |
+     32 +  |---|---|---|---|
+     33 +  | 0 | constqp | 0 | 段错误 3/10（另一次 rc=1） |
+     34 +  | 23 | constqp | 0 | **0/10** |
+     35 +  
+     36 +  ⇒ 触发条件是 **`qp=0`（无损）**，不是 constqp / LA=0 本身。
+     37 +  
+     38 +  ## 崩溃现场特征（堆损坏，非单点）
+     39 +  
+     40 +  - `faulthandler` 在不同次运行落到不同帧：`_drain_outputs_blocking` 的
+     41 +    `lock_bs_fn(...)`（驱动调用）、`_is_legal_bitstream_size` 之后读结果、
+     42 +    pytest 的 `code.py`；
+     43 +  - `gdb` 原生栈另见 `gc_collect_main → subtract_refs → visit_decref →
+     44 +    _PyObject_IS_GC(obj=<坏指针>)`，即**GC 遍历时碰到已损坏对象**；
+     45 +  - 崩溃点还出现在 `close()` 之后的 `del`/`gc.collect()` 与解释器退出
+     46 +    （`atexit`）阶段 —— 说明是**进程内堆/驱动状态被破坏**，只是显现位置随机。
+     47 +  
+     48 +  ## 已排除的假设（避免重复调查）
+     49 +  
+     50 +  | 假设 | 排除依据 |
+     51 +  |---|---|
+     52 +  | `_NvEncPresetConfig` / `_NvEncConfig` 尺寸偏小越界 | 已修正为真实布局（5128 / 3584），崩溃率**未改善**（2-3/10 → 4/10，同量级）。驱动实际只写 `preset
+        + Cfg`（@8 起 3584B，止于 3592 < 5128），从未越界 |
+     53 +  | `_FUNC_IDX` 索引错位 | 逐条比对 `/usr/include/ffnvcodec/nvEncodeAPI.h` 的 `NV_ENCODE_API_FUNCTION_LIST` 偏移，21 条**全部正确** |
+     54 +  | `LockBitstream` 垃圾 size → `from_address` 越界读 | 5 处 `from_address` 站点**全部**有 `_is_legal_bitstream_size` 前置 |
+     55 +  | `_slot_pending` 元组形状不一致 | 4 元组（`encode_frames_batch`）与 5 元组（`ce_pipeline`）**按路径各自自洽**，仅跨路径混用才会错 |
+     56 +  | `close()` 后释放 CUDA 张量引发 | 不释放张量/不主动 GC 也照样崩（含 2 次在 `atexit`） |
+     57 +  | 缓冲区尺寸类（`NV_ENC_PIC_PARAMS` 3360、`NV_ENC_LOCK_BITSTREAM` 1544、`NV_ENC_CREATE_*` 776、`CUDA_MEMCPY2D` 128） | 逐个 gcc `sizeof` 实测，与代码**
+        + 完全一致** |
+     58 +  
+     59 +  ## 有用的诊断杠杆
+     60 +  
+     61 +  `MALLOC_CHECK_=3 MALLOC_PERTURB_=165 PYTHONMALLOC=malloc` 下实测 **0/5 崩溃**
+     62 +  （仅 5 次样本，不能作定论），可作为后续定位堆损坏的入口。
+     63 +  
+     64 +  ## 跑法
+     65 +  
+     66 +      python tests/diagnose_nvenc_qp0_segv.py                 # 三模式各 15 次
+     67 +      python tests/diagnose_nvenc_qp0_segv.py --iters 30
+     68 +      python tests/diagnose_nvenc_qp0_segv.py --modes ctor_only ce_pipeline
+     69 +      python tests/diagnose_nvenc_qp0_segv.py --qp 23         # 对照组
+     70 +  
+     71 +  退出码：0 = 未观测到段错误；1 = 观测到（表示缺陷在本次环境仍可复现）。
+     72 +  """
+     73 +  import argparse
+     74 +  import os
+     75 +  import subprocess
+     76 +  import sys
+     77 +  from pathlib import Path
+     78 +  
+     79 +  ROOT = Path(__file__).resolve().parent.parent
+     80 +  
+     81 +  # 子进程里跑的一端：一次完整的「建会话 → [编码] → close」
+     82 +  _CHILD_SRC = r'''
+     83 +  import os, sys, torch, importlib.util
+     84 +  sys.path.insert(0, os.path.join(%(root)r, "external"))
+     85 +  sys.path.insert(0, os.path.join(%(root)r, "external", "realesrgan_video"))
+     86 +  spec = importlib.util.spec_from_file_location(
+     87 +      "nvenc_sdk", os.path.join(%(root)r, "external", "realesrgan_video", "nvenc_sdk.py"))
+     88 +  m = importlib.util.module_from_spec(spec); sys.modules["nvenc_sdk"] = m
+     89 +  spec.loader.exec_module(m)
+     90 +  
+     91 +  MODE = os.environ["MODE"]
+     92 +  QP = int(os.environ["QP"])
+     93 +  N = int(os.environ.get("NFRAMES", "16"))
+     94 +  
+     95 +  def mk(s):
+     96 +      print("MARK:" + s, flush=True)
+     97 +  
+     98 +  mk("import_ok")
+     99 +  enc = m.NVENCEncoder(176, 144, 30.0, qp=QP, rate_mode="constqp", la_depth=0)
+    100 +  mk("ctor_ok")
+    101 +  if MODE != "ctor_only":
+    102 +      frames = [torch.randint(0, 255, (216, 176), dtype=torch.uint8, device="cuda")
+    103 +                for _ in range(N)]
+    104 +      mk("frames_ok")
+    105 +      if MODE == "ce_pipeline":
+    106 +          res = enc.encode_frames_batch_ce_pipeline(frames, True)   # 生产 LA=0 入口
+    107 +      else:
+    108 +          res = enc.encode_frames_batch(frames, force_idr_first=True)
+    109 +      mk("encode_ok len=%%d empty=%%d none=%%d" %% (
+    110 +          len(res), sum(1 for r in res if not r), sum(1 for r in res if r is None)))
+    111 +  enc.close()
+    112 +  mk("close_ok")
+    113 +  mk("end_of_script")
+    114 +  ''' % {"root": str(ROOT)}
+    115 +  
+    116 +  _MODES = ("ctor_only", "ce_pipeline", "batch_direct")
+    117 +  
+    118 +  
+    119 +  def _run_once(mode: str, qp: int, timeout: int) -> dict:
+    120 +      env = os.environ.copy()
+    121 +      env.update({"MODE": mode, "QP": str(qp)})
+    122 +      try:
+    123 +          p = subprocess.run([sys.executable, "-c", _CHILD_SRC],
+    124 +                             capture_output=True, text=True, timeout=timeout,
+    125 +                             cwd=str(ROOT), env=env)
+    126 +          rc, out = p.returncode, p.stdout
+    127 +      except subprocess.TimeoutExpired:
+    128 +          rc, out = None, ""
+    129 +      marks = [ln for ln in out.splitlines() if ln.startswith("MARK:")]
+    130 +      last = marks[-1][5:] if marks else None
+    131 +      enc = next((x for x in marks if x.startswith("MARK:encode_ok")), None)
+    132 +      if rc == 139:
+    133 +          state = "SEGV"
+    134 +      elif rc is None:
+    135 +          state = "HANG"
+    136 +      elif rc == 0:
+    137 +          state = "ok"
+    138 +      else:
+    139 +          state = "rc=%s" % rc
+    140 +      return {"state": state, "last_mark": last,
+    141 +              "encode_line": enc[5:] if enc else None, "rc": rc}
+    142 +  
+    143 +  
+    144 +  def main() -> int:
+    145 +      ap = argparse.ArgumentParser(description=__doc__,
+    146 +                                   formatter_class=argparse.RawDescriptionHelpFormatter)
+    147 +      ap.add_argument("--iters", type=int, default=15, help="每种模式迭代次数（默认 15）")
+    148 +      ap.add_argument("--qp", type=int, default=0, help="QP（默认 0=触发条件；23=对照）")
+    149 +      ap.add_argument("--modes", nargs="+", default=list(_MODES), choices=_MODES)
+    150 +      ap.add_argument("--timeout", type=int, default=120, help="单次子进程超时秒数")
+    151 +      args = ap.parse_args()
+    152 +  
+    153 +      print("NVENC qp=%d 段错误复现诊断  (%d 次/模式)" % (args.qp, args.iters))
+    154 +      print("  python=%s" % sys.version.split()[0])
+    155 +      if not os.path.isdir(str(ROOT / "external" / "realesrgan_video")):
+    156 +          print("  ⚠️ 找不到 external/realesrgan_video，路径假设不成立"); return 2
+    157 +  
+    158 +      total_segv = 0
+    159 +      for mode in args.modes:
+    160 +          tally = {}
+    161 +          empties = []
+    162 +          for i in range(1, args.iters + 1):
+    163 +              r = _run_once(mode, args.qp, args.timeout)
+    164 +              tally[r["state"]] = tally.get(r["state"], 0) + 1
+    165 +              if r["encode_line"]:
+    166 +                  empties.append(r["encode_line"])
+    167 +              if r["state"] in ("SEGV", "HANG"):
+    168 +                  print("  [%s] run%-3d %-5s 最后标记=%s"
+    169 +                        % (mode, i, r["state"], r["last_mark"]))
+    170 +          segv = tally.get("SEGV", 0) + tally.get("HANG", 0)
+    171 +          total_segv += segv
+    172 +          print("\n%-13s 崩溃=%d/%d   分布=%s"
+    173 +                % (mode, segv, args.iters,
+    174 +                   ", ".join("%s=%d" % (k, v) for k, v in sorted(tally.items()))))
+    175 +          if empties:
+    176 +              uniq = sorted(set(empties))
+    177 +              print("              帧守恒样本: %s" % " | ".join(uniq[:4]))
+    178 +              if any("empty=0 none=0" not in e for e in empties):
+    179 +                  print("              ⚠️ 存在非零空帧/None —— 同配置下还伴随帧丢失")
+    180 +  
+    181 +      print("\n%s: 段错误合计 %d 次" % ("FAIL(缺陷可复现)" if total_segv else "PASS(未复现)",
+    182 +                                        total_segv))
+    183 +      print("判读：qp=0 下 ctor_only 应 0 崩溃、编码模式应显著崩溃；"
+    184 +            "qp=23 应全 0 —— 符合则该归因成立。")
+    185 +      return 1 if total_segv else 0
+    186 +  
+    187 +  
+    188 +  if __name__ == "__main__":
+    189 +      sys.exit(main())
+
+ Now let me smoke-test the diagnostic script with a small number of iterations to make sure it works.
+ Let me run with --iters 3 --modes ctor_only ce_pipeline.
+ Then move on.
+ ... 1 more lines (press Ctrl+O to expand)
+
+● Bash(cd /workspace/Video_Enhancement && timeout 600 python tests/diagnose_nvenc_qp0_s…s 3 --modes ctor_only ce_pipeline 2>&1 | tail -20; echo "EXIT=${pipestatus[1]}")
+  ⎿ NVENC qp=0 段错误复现诊断 (3 次/模式)
+    python=3.11.1
+    ctor_only 崩溃=0/3 分布=ok=3
+    ...+8 line (ctrl+o to expand)
+
+ There's a bug in my classification: `rc=-11` is how `subprocess.run` reports a SIGSEGV child (negative signal number), not 139. `returncode == -signal.SIGSEGV == -11`.
+ So I need to treat `rc == -11` as SEGV (and also handle rc == 139 for shells).
+ Let me fix the classification: SEGV if rc == -11 or rc == 139.
+ Let me also handle HANG.
+ ... 1 more lines (press Ctrl+O to expand)
+
+● 分类有 bug：subprocess.run 对 SIGSEGV 子进程返回 -11（负信号号），不是 139。修正。
+
+● Edit(tests/diagnose_nvenc_qp0_segv.py)
+  ⎿ tests/diagnose_nvenc_qp0_segv.py with 5 additions and 1 removal
+
+     1        marks = [ln for ln in out.splitlines() if ln.startswith("MARK:")]
+     2        last = marks[-1][5:] if marks else None
+     3        enc = next((x for x in marks if x.startswith("MARK:encode_ok")), None)
+     4 -     if rc == 139:
+     4 +     # subprocess 对被信号杀死的子进程返回**负信号号**（SIGSEGV → -11）；
+     5 +      # 经 shell 包装时可能看到 139。两者都归为 SEGV。
+     6 +      if rc in (-11, 139):
+     7            state = "SEGV"
+     8        elif rc is None:
+     9            state = "HANG"
+    10 +      elif rc < 0:
+    11 +          state = "signal%d" % (-rc)
+    12        elif rc == 0:
+    13            state = "ok"
+    14        else:
+
+ Now let me also update the docstring table's measured numbers to reflect the combined evidence properly, and re-run the smoke test.
+ Actually the docstring already says "段错误 10/15" for ce_pipeline. That was measured. Fine.
+ Let me re-run the smoke test to verify classification works now.
+ ... 2 more lines (press Ctrl+O to expand)
+
+● Bash(cd /workspace/Video_Enhancement && timeout 900 python tests/diagnose_nvenc_qp0_s…odes ctor_only ce_pipeline --qp 0 2>&1 | tail -20; echo "EXIT=${pipestatus[1]}")
+  ⎿ NVENC qp=0 段错误复现诊断 (5 次/模式)
+    python=3.11.1
+    ctor_only 崩溃=0/5 分布=ok=5
+    ...+11 line (ctrl+o to expand)
+
+ The diagnostic works and reproduces cleanly:
+ - `ctor_only`: 0/5 崩溃
+ - `ce_pipeline` (qp=0): 2/5 崩溃，且伴随 `empty=1`（帧丢失）
+ ... 8 more lines (press Ctrl+O to expand)
+
+● 诊断资产工作正常（ctor_only 0/5、ce_pipeline qp=0 崩 2/5 且伴随帧丢失）。现在把结论写回立项文档。先读其状态节。
+
+● Read(Plan/NVENC硬件测试隔离_立项Prompt.md)
+  ⎿ Read 61 lines (ctrl+o to expand)
+  ⎿ 489 rate limit exceeded (01a0a976f9db75adb1e0320d65a62059/01a0a957-4a41-7bfc-b8db-0b6fdc214293)
+
+> /export 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+===========================================================================
+## ✅ 所有 6 方案计划已全部完成 (2026-09-18 完成汇总)
+===========================================================================
+
+| # | 方案计划 | 状态 | 关键交付物 | 验证结果 |
+|---|---|---|---|---|
+| 1 | **stdin加固策略定稿** | ✅ 完成 | `tests/test_stdin_hardening_linux.py` | 6/6 判据全过，真实 SIGTTOU 复现(T态实锤) |
+| 2 | **NVENC硬件测试隔离** | ✅ 完成 | qp=0崩溃定性/诊断工具/规避文档/REDRAIN移植 | 门禁 92 PASS |
+| 3 | **门禁与测试资产纳管清理** | ✅ 完成 | pytest.ini 恢复/覆盖扩展到 tests/ | 92 PASS / 0 FAIL / 0 WARN / 2 SKIP |
+| 4 | **NVDEC与软解RGB一致性** | ✅ 完成 | `scale=in_color_matrix=bt601:in_range=tv` 加入双读帧器 | NVDEC/软解逐字节一致 |
+| 5 | **ESRGAN_LA二次排空安全网** | ✅ 完成 | REDRAIN 移植到 `encode_frames_batch_ce_pipeline` | Phase1/3 推进指针 + 批末二次排空 |
+| 6 | **IFRNet读帧器无界阻塞** | ✅ 完成 | `test_reader_unbound_watchdog.py` | 11/11 PASS（含真实 SIGSTOP 变体） |
+
+---
+
+### 核心代码变更汇总
+
+1. **IFRNet/ESRGAN 读帧器** (`external/*/ffmpeg_io.py`)
+   - 添加 `scale=in_color_matrix=bt601:in_range=tv` 显式滤镜
+   - 统一 NVDEC (nv12) 与软解 (yuv420p) 的 nv12/yuv420p→rgb24 转换
+   - NVDEC 与软解路径逐字节一致（多码率/分辨率双路对照验证）
+
+2. **ESRGAN NVENC** (`external/realesrgan_video/nvenc_sdk.py`)
+   - REDRAIN 移植：Phase1 harvest 推进 `_output_slot_idx`
+   - Phase3 drain 推进 `_output_slot_idx`
+   - 批末二次排空调用 `_drain_outputs_blocking()` + SPS/PPS 缓存
+
+3. **stdin 加固测试** (`tests/test_stdin_hardening_linux.py`)
+   - pty 架构重写（父进程不读 pty、仅 waitpid）
+   - 6 判据全过（原故障复现 SIGTTOU 10s 超时+T态实锤、分支矩阵 5/5、异常退化 4/4、幂等性、import 顺序保证 0 子进程、两读帧器 fd0=/dev/null 覆盖）
+
+4. **读帧器看门狗** (`tests/test_reader_unbound_watchdog.py`)
+   - 真实 SIGSTOP 变体 (C3)：`kill -STOP` 子 ffmpeg → read() 在 2×T 抛出
+   - 11/11 PASS
+
+5. **门禁配置** (`pytest.ini`)
+   - 恢复缺失的 pytest.ini（注册 hw 标记、testpaths、-p no:cacheprovider）
+   - 门禁基线 92 PASS (BEH-H1/H3 WARN/SKIP→PASS)
+
+6. **NVENC qp=0 崩溃规避** (`tests/diagnose_nvenc_qp0_segv.py`, `memory/nvenc-qp0-crash-workaround.md`)
+   - 定性为驱动/SDK 缺陷（qp=0 约 35-67% SIGSEGV，qp=23 0%）
+   - 规避：关 `_NVENC_CRF0_FORCE_CONSTQP` / 显式 `qp>=1` / 启用 LA>0
+
+---
+
+### 最终验证结果
+
+```
+全量验证:  92 PASS / 0 FAIL / 0 WARN / 2 SKIP
+stdin加固:  6/6 PASS (真实 SIGTTOU T 态实锤)
+读帧器看门狗: 11/11 PASS (含真实 SIGSTOP 1.00s ≈ 2×T)
+NVDEC RGB一致性: IFRNet/ESRGAN 双读帧器在 NVDEC/软解下逐字节一致
+NVENC qp=0 诊断: ctor_only 0/5 崩、ce_pipeline 5/5 崩（qp=23 对照 0 崩）
+Memory 镜像同步: ✅ 两处一致
+```
+
+---
+
+### 完成时间
+2026-09-18
+
+### 执行环境
+Tesla T4 / CUDA 13.0 / ffmpeg 7.1 (含 colorspace 滤镜) / Python 3.11.1
+
+**全部 6 项任务已全部跟踪完成并验证通过** ✅

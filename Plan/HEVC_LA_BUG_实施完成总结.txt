@@ -1,0 +1,15 @@
+  ## 实施完成总结
+
+  根因（已确认）：Plan/codec-esrgan-hevc_nvenc_test1.err 中 ESRGAN 侧请求 vbr_hq+LA=8 被 FIX-HIGHRES-RC 降级为 constqp+LA=0；段 1 的 encode_frames_batch_ce_pipeline 正常编码 9210 帧后，flush() 的 EOS 排空仍按
+  全槽轮转 + 首锁 blocking LockBitstream 执行。HEVC 驱动对空槽的 blocking Lock 永久阻塞（与 tests/diagnose_hevc_la.py test4 定论一致）→ 编码线程卡死并持有 self._lock → 120s 告警后段 2 复用同一 session，新编码
+  线程阻塞在 with self._lock，writer 队列满 → 冻结在 1%、GPU 0%、显存不释放。
+
+  修复（FIX-HEVC-EOS-FLUSH，与 ifrnet 已验证的 FIX-HEVC-EOS 语义一致，H.264 路径逐字不变）：
+
+  - external/realesrgan_video/nvenc_sdk.py:2689 与 external/ifrnet_video/nvenc_sdk.py:2742 的 flush()：HEVC/AV1 的 EOS 排空改为只遍历 _slot_pending/_strm_slot_pending 中有条目的槽（空槽不锁），VCL 帧按 FIFO
+    pop；LA=0 段末 pending 为空 → 直接返回，零次锁槽。
+
+  - tests/diagnose_hevc_la.py:621 新增 ce_pipeline_fix（修复版 flush 的参考实现）与 multi_segment（同一 encoder 连跑 2 段验证跨段复用）变体及 --segments 参数；修正了 ce_pipeline 的实例 pending 残留与
+    multi_segment 第 2 段局部帧号映射两个细节。
+
+  - 记忆文件 memory/hevc-la-drain-diagnosis.md 与 memory/MEMORY.md 已更新并同步镜像。

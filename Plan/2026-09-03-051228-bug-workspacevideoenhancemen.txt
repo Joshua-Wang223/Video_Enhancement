@@ -1,0 +1,670 @@
+ ▐▛███▛█   Claude Code v2.1.259
+▝▜██████▀  nvidia/nemotron-3-ultra-550b-a55b:free · API Usage Billing
+  ▝▝ ▝▝    /workspace/Video_Enhancement
+
+
+❯ 根据日志，找出超分/插帧代码中的BUG.                                           
+  @/workspace/Video_Enhancement/temp/output_S02E08_hevc.txt;                    
+  @/workspace/Video_Enhancement/temp/output_S02E08_hevc_skip_upscale.txt;       
+  @/workspace/Video_Enhancement/temp/output_S02E08_4test_hevc_skip_upscale_nore 
+  use.txt; @/workspace/Video_Enhancement/temp/output_S02E08_4test2_hevc_skip_up 
+  scale_noreuse.txt                                                             
+  ⎿  Read temp/output_S02E08_hevc_skip_upscale.txt (533 lines)
+  ⎿  Read temp/output_S02E08_4test_hevc_skip_upscale_noreuse.txt (354 lines)
+  ⎿  Read temp/output_S02E08_4test2_hevc_skip_upscale_noreuse.txt (177 lines)
+
+  Thought for 6m 27s, searched for 16 patterns, read 3 files (ctrl+o to expand)
+
+● API Error: API returned an empty or malformed response (HTTP 200) — 
+  check for a proxy or gateway intercepting the request. Response: 
+  content-type json, body is JSON but not a Message, size unknown, 
+  request-id present but not Anthropic-issued, server cloudflare, 
+  intermediary headers cf-cache-status cf-ray content-encoding 
+  transfer-encoding. This was the non-streaming retry of streaming 
+  request (no Anthropic request-id), which failed with: other; 0 stream 
+  events received.
+
+✻ Brewed for 6m 41s · done 2:44 AM
+
+❯ come on                                                                       
+
+  Thought for 2m 17s, searched for 5 patterns, read 3 files (ctrl+o to expand)
+
+● API Error: Request rejected (429) · Rate limit exceeded: 
+  free-models-per-day. Add 10 credits to unlock 1000 free model requests
+  per day
+
+✻ Sautéed for 5m 20s · done 2:51 AM
+
+❯ 继续                                                                          
+
+● API Error: Request rejected (429) · Rate limit exceeded: 
+  free-models-per-day. Add 10 credits to unlock 1000 free model requests
+  per day
+
+✻ Churned for 3m 8s · done 2:57 AM
+
+❯ 已充值，继续使用模型解决我提出的问题，修复代码BUG                             
+
+  Thought for 1m 48s, searched for 2 patterns, read 2 files (ctrl+o to expand)
+
+● API Error: API returned an empty or malformed response (HTTP 200) — 
+  check for a proxy or gateway intercepting the request. Response: 
+  content-type json, body is JSON but not a Message, size unknown, 
+  request-id present but not Anthropic-issued, server cloudflare, 
+  intermediary headers cf-cache-status cf-ray content-encoding 
+  transfer-encoding. This was the non-streaming retry of streaming 
+  request (no Anthropic request-id), which failed with: other; 0 stream 
+  events received.
+
+✻ Brewed for 1m 58s · done 3:07 AM
+
+❯ 继续                                                                          
+
+  Thought for 1m 43s, searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● API Error: API returned an empty or malformed response (HTTP 200) — 
+  check for a proxy or gateway intercepting the request. Response: 
+  content-type json, body is JSON but not a Message, size unknown, 
+  request-id present but not Anthropic-issued, server cloudflare, 
+  intermediary headers cf-cache-status cf-ray content-encoding 
+  transfer-encoding. This was the non-streaming retry of streaming 
+  request (no Anthropic request-id), which failed with: other; 0 stream 
+  events received.
+
+✻ Crunched for 1m 46s · done 3:09 AM
+
+❯ 继续，重试不要中断                                                            
+
+  Thought for 2m 10s, read 1 file (ctrl+o to expand)
+
+● Based on my analysis of the four log files and the codebase, I've identified
+  several critical bugs in the IFRNet NVENC HEVC encoding path. Let me summarize
+  the findings and create a plan.
+
+  Summary of Bugs Found
+
+  Bug 1: Wrong Default for Cross-Segment Reuse (Line 1101)
+
+  - File: /workspace/Video_Enhancement/external/ifrnet_video/main.py
+  - Issue: _reuse_env = os.environ.get('IFRNET_NVENC_CROSS_SEGMENT_REUSE', '1')
+    defaults to '1' (enabled), but the comment explicitly states "HEVC/AV1
+    默认禁止跨段复用编码器" (HEVC/AV1 defaults to DISABLE cross-segment encoder
+    reuse)
+  - Impact: Causes "PPS id out of range" and "Could not find ref with POC"
+    errors in logs 1 & 2 (segments 2 and 5 fail decoding validation)
+
+  Bug 2: Missing cuDevicePrimaryCtxRelease in close()
+
+  - File: /workspace/Video_Enhancement/external/ifrnet_video/nvenc_sdk.py
+  - Issue: _acquire_cuda_context() calls cuDevicePrimaryCtxRetain() but close()
+    never calls cuDevicePrimaryCtxRelease()
+  - Impact: Primary context retain count leaks across encoder recreations,
+    eventually causing resource exhaustion and segfaults
+
+  Bug 3: CUDA Context Stack Corruption in close()
+
+  - File: /workspace/Video_Enhancement/external/ifrnet_video/nvenc_sdk.py (line
+    ~3150-3157)
+  - Issue: close() directly calls cuCtxPushCurrent(self._saved_ctx) without
+    first popping the current context (which may be the primary context from the
+    last encode operation)
+  - Impact: Unbalanced context stack leads to segfault on next encoder creation
+    (logs 3 & 4 crash at segment 2)
+
+  Bug 4: SPS/PPS Cache Not Cleared on Encoder Reuse for New Segment
+
+  - File: /workspace/Video_Enhancement/external/ifrnet_video/nvenc_sdk.py (line
+    ~1905-1909)
+  - Issue: _stream_begin() resets _sps_pps_injected = False but _cached_sps_pps
+    persists across segments. When reusing encoder, old SPS/PPS may be prepended
+    to new segment's frames.
+  - Impact: "PPS id out of range" errors in logs 1 & 2
+
+  Bug 5: _frame_idx Not Reset on New Encoder Creation (Minor)
+
+  - File: /workspace/Video_Enhancement/external/ifrnet_video/nvenc_sdk.py (line
+    ~592)
+  - Issue: When new encoder is created (non-reuse path), _frame_idx = 0 is set
+    in __init__, but if somehow a stale encoder is used, frame indexing could be
+    wrong
+
+  ---
+
+  Proposed Fixes
+
+  1. Fix Line 1101: Change default from '1' to '0' to match documented behavior
+  2. Add cuDevicePrimaryCtxRelease in close() after destroying encoder
+  3. Fix context restoration in close(): Pop current context before pushing
+     saved context
+  4. Clear _cached_sps_pps in _stream_begin() when force=True (new segment)
+  5. Add defensive checks in _ctx_push to handle None primary context
+
+  Thought for 1m 17s (ctrl+o to expand)
+
+● Update(external/ifrnet_video/main.py)
+  ⎿  User rejected update to external/ifrnet_video/main.py
+
+✻ Baked for 3m 52s · done 3:17 AM
+
+❯ 提醒：IFRNET_NVENC_CROSS_SEGMENT_REUSE defaule 1,                             
+  这是我特意修改的（原本为0），目的就是默认测试 NVENC ENCODER 进程跨段复用,     
+  让测试命令简单，不是BUG                                                       
+
+  Thought for 56s (ctrl+o to expand)
+
+● Updated plan
+  ⎿  /plan to preview
+
+  Thought for 26s (ctrl+o to expand)
+
+● User approved Claude's plan
+  ⎿  Plan saved to: ~/.claude/plans/come-on-fluttering-candle.md · /plan to edit
+     Plan: Fix NVENC HEVC Cross-Segment Encoder Bugs
+
+     Context
+
+     Based on analysis of 4 log files from video processing runs:
+     - Log 1 (output_S02E08_hevc.txt): Full pipeline (IFRNet + ESRGAN), segment
+       5 fails decoding validation with "Could not find ref with POC" and "PPS
+       id out of range" errors
+     - Log 2 (output_S02E08_hevc_skip_upscale.txt): IFRNet only (skip upscale),
+       segment 2 fails with same PPS/POC errors
+     - Log 3 (output_S02E08_4test_hevc_skip_upscale_noreuse.txt): With
+       IFRNET_NVENC_CROSS_SEGMENT_REUSE=0, segfault at segment 2 during NVENC
+       encoder creation
+     - Log 4 (output_S02E08_4test2_hevc_skip_upscale_noreuse.txt): Retry with
+       checkpoint, segfault at segment 2 again
+
+     The user confirmed IFRNET_NVENC_CROSS_SEGMENT_REUSE=1 default was
+     intentional for testing.
+
+     Root Cause Analysis
+
+     Bug A: Missing cuDevicePrimaryCtxRelease in NVENCEncoder.close()
+
+     File: /workspace/Video_Enhancement/external/ifrnet_video/nvenc_sdk.py
+     (~line 3116)
+     - _acquire_cuda_context() calls cuDevicePrimaryCtxRetain() to get primary
+       context
+     - close() destroys encoder but never releases the retained primary context
+     - Each segment creates new encoder → retains primary context → leak
+       accumulates
+     - Eventually causes resource exhaustion / segfault
+
+     Bug B: CUDA Context Stack Corruption in close()
+
+     File: /workspace/Video_Enhancement/external/ifrnet_video/nvenc_sdk.py
+     (~lines 3150-3157)
+     # Current broken code:
+     if self._saved_ctx.value is not None:
+         self._libcuda.cuCtxPushCurrent(self._saved_ctx)  # WRONG: doesn't pop 
+     current context first!
+     - The current context at close() time is the NVENC encoder's primary
+       context (pushed during encoding)
+     - Directly pushing _saved_ctx without popping creates unbalanced context
+       stack
+     - Next segment's _acquire_cuda_context() fails with code=201 (context
+       mismatch) → segfault
+
+     Bug C: SPS/PPS Cache Not Cleared on Segment Boundary (when reusing encoder)
+
+     File: /workspace/Video_Enhancement/external/ifrnet_video/nvenc_sdk.py
+     (~line 1909)
+     - _stream_begin(force=True) resets _sps_pps_injected = False but keeps 
+       _cached_sps_pps
+     - When encoder is reused across segments, old segment's SPS/PPS gets
+       prepended to new segment's frames
+     - Causes "PPS id out of range" and "Could not find ref with POC" decode
+       errors (Logs 1&2)
+
+     Bug D: Context Push Failure Not Handled
+
+     File: /workspace/Video_Enhancement/external/ifrnet_video/nvenc_sdk.py
+     (~line 1380-1390)
+     - _ctx_push() returns False on failure but callers don't check return value
+     - If context push fails, subsequent CUDA operations use wrong context →
+       undefined behavior
+
+     Fixes Required
+
+     Fix 1: Add cuDevicePrimaryCtxRelease in close()
+
+     After destroying encoder, release the primary context that was retained.
+
+     Fix 2: Fix Context Restoration in close()
+
+     # Correct sequence:
+     if need_pop:  # pop current (encoder's) context first
+         cuCtxPopCurrent()
+     if self._saved_ctx.value is not None:
+         cuCtxPushCurrent(self._saved_ctx)  # then restore saved
+
+     Fix 3: Clear _cached_sps_pps in _stream_begin(force=True)
+
+     When starting new segment with reused encoder, clear the cached SPS/PPS so
+     new segment gets fresh parameter sets.
+
+     Fix 4: Add _ctx_push Return Value Checks
+
+     Ensure all callers handle context push failure gracefully.
+
+     Files to Modify
+
+     1. /workspace/Video_Enhancement/external/ifrnet_video/nvenc_sdk.py - Main
+        fixes (Bugs A, B, C, D)
+     2. No changes to main.py (default '1' is intentional per user)
+
+     Verification
+
+     Run the same test commands from the logs:
+     1. IFRNET_NVENC_CROSS_SEGMENT_REUSE=1 - Should pass all 5 segments without
+        PPS/POC errors
+     2. IFRNET_NVENC_CROSS_SEGMENT_REUSE=0 - Should pass all 5 segments without
+        segfault
+     3. Verify decoding validation passes for all segments
+
+● API Error: API returned an empty or malformed response (HTTP 200) — 
+  check for a proxy or gateway intercepting the request. Response: 
+  content-type json, body is JSON but not a Message, size unknown, 
+  request-id present but not Anthropic-issued, server cloudflare, 
+  intermediary headers cf-cache-status cf-ray content-encoding 
+  transfer-encoding. This was the non-streaming retry of streaming 
+  request (no Anthropic request-id), which failed with: other; 0 stream 
+  events received.
+
+✻ Crunched for 1m 38s · done 3:21 AM
+❯ 继续，重试不要中断                                                            
+
+  Thought for 22s, read 1 file (ctrl+o to expand)
+
+● API Error: API returned an empty or malformed response (HTTP 200) — 
+  check for a proxy or gateway intercepting the request. Response: 
+  content-type json, body is JSON but not a Message, size unknown, 
+  request-id present but not Anthropic-issued, server cloudflare, 
+  intermediary headers cf-cache-status cf-ray content-encoding 
+  transfer-encoding. This was the non-streaming retry of streaming 
+  request (no Anthropic request-id), which failed with: other; 0 stream 
+  events received.
+
+✻ Cooked for 40s · done 3:26 AM
+
+❯ 继续                                                                          
+
+  Thought for 48s (ctrl+o to expand)
+
+● Update(external/ifrnet_video/nvenc_sdk.py)
+  ⎿  Added 28 lines, removed 4 lines
+      3142                  print("[NVENCEncoder] ⚠️ DestroyEncoder funct
+            ion slot is None; "
+      3143                        "session not destroyed (resource leak)"
+            , flush=True)
+      3144              self._encoder = c_void_p(None)
+      3145 +                                                             
+      3146 +            # [BUGFIX] Release primary context retained by cu
+           +DevicePrimaryCtxRetain in _acquire_cuda_context()            
+      3147 +            # Each encoder creation retains the primary conte
+           +xt; must release on close to avoid leak.                     
+      3148 +            if hasattr(self, '_primary_ctx') and self._primar
+           +y_ctx.value is not None:                                     
+      3149 +                try:                                         
+      3150 +                    self._libcuda.cuDevicePrimaryCtxRelease.r
+           +estype = c_uint32                                            
+      3151 +                    self._libcuda.cuDevicePrimaryCtxRelease.a
+           +rgtypes = [c_int]                                            
+      3152 +                    _release_rc = self._libcuda.cuDevicePrima
+           +ryCtxRelease(c_int(0))                                       
+      3153 +                    if _release_rc != 0:                     
+      3154 +                        print(f"[NVENCEncoder] ⚠️ cuDevicePri
+           +maryCtxRelease failed, code={_release_rc}", flush=True)      
+      3155 +                except Exception as _e:                      
+      3156 +                    print(f"[NVENCEncoder] ⚠️ cuDevicePrimary
+           +CtxRelease exception: {_e}", flush=True)                     
+      3157 +                self._primary_ctx = c_void_p(None)           
+      3158 +                                                             
+      3159              # [FIX-SPS-PPS-V2] 关闭即弃：对象不再可用，重置仅
+            为语义一致。
+      3160              # 跨段复用时段的边界重置由 _stream_begin 的 [FIX-
+            SPS-PPS-SEGMENT-RESET] 负责。
+      3161              self._sps_pps_injected = False
+      3162              print("[NVENCEncoder] Encoder closed", flush=True
+            )
+      3163  
+      3150 -            # Restore saved context                          
+      3164 +            # Restore saved context - [BUGFIX] Must pop curre
+           +nt context first, then push saved                            
+      3165 +            # At this point, current context is the NVENC enc
+           +oder's primary context (pushed during encoding).             
+      3166 +            # Directly pushing _saved_ctx without popping cre
+           +ates unbalanced context stack.                               
+      3167              if self._saved_ctx.value is not None:
+      3168                  try:
+      3169 +                    self._libcuda.cuCtxPopCurrent.restype = c
+           +_uint32                                                      
+      3170 +                    self._libcuda.cuCtxPopCurrent.argtypes = 
+           +[ctypes.POINTER(c_void_p)]                                   
+      3171 +                    _ctx_out = c_void_p()                    
+      3172 +                    _pop_rc = self._libcuda.cuCtxPopCurrent(c
+           +types.byref(_ctx_out))                                       
+      3173 +                    if _pop_rc != 0:                         
+      3174 +                        print(f"[NVENCEncoder] ⚠️ cuCtxPopCur
+           +rent failed during close, code={_pop_rc}", flush=True)       
+      3175                      self._libcuda.cuCtxPushCurrent.restype = 
+            c_uint32
+      3176                      self._libcuda.cuCtxPushCurrent.argtypes =
+             [c_void_p]
+      3155 -                    self._libcuda.cuCtxPushCurrent(self._save
+           -d_ctx)                                                       
+      3156 -                except Exception:                            
+      3157 -                    pass                                     
+      3177 +                    _push_rc = self._libcuda.cuCtxPushCurrent
+           +(self._saved_ctx)                                            
+      3178 +                    if _push_rc != 0:                        
+      3179 +                        print(f"[NVENCEncoder] ⚠️ cuCtxPushCu
+           +rrent(saved_ctx) failed, code={_push_rc}", flush=True)       
+      3180 +                except Exception as _e:                      
+      3181 +                    print(f"[NVENCEncoder] ⚠️ Context restore
+           + exception: {_e}", flush=True)                               
+      3182  
+      3183      def __del__(self):
+      3184          try:
+
+  Thought for 12s, read 1 file (ctrl+o to expand)
+
+● Update(external/ifrnet_video/nvenc_sdk.py)
+  ⎿  Added 4 lines
+      1907              # `if not _sps_pps_injected` 门控跳过（仅靠 IDR 
+            自带 + _prepend_param_sets
+      1908              # 兜底）。此处每段重置，段首首个 chunk 即重新预注
+            入新段 muxer。
+      1909              self._sps_pps_injected = False
+      1910 +            # [BUGFIX] Clear cached SPS/PPS on segment bounda
+           +ry when reusing encoder.                                     
+      1911 +            # Old segment's SPS/PPS would be prepended to new
+           + segment's frames, causing                                   
+      1912 +            # "PPS id out of range" and "Could not find ref w
+           +ith POC" decode errors.                                      
+      1913 +            self._cached_sps_pps = None                      
+      1914              # [FIX-DRAIN-ORDER-DEFENSE] / [FIX-EMPTY-PREV-FIL
+            L] 每段重置：
+      1915              # gfi 单调基准、prev 填充缓存与错配诊断计数。
+      1916              self._last_drained_gfi = None
+
+  Thought for 22s, searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Update(external/ifrnet_video/nvenc_sdk.py)
+  ⎿  Added 4 lines
+      2007  
+      2008          # [FIX-GPU-STAY] 跨线程 CUDA context 保护
+      2009          _need_pop = self._ctx_push()  # [P2.4b]
+      2010 +        if not _need_pop:                                    
+      2011 +            # Context push failed - primary context not avail
+           +able or push failed                                          
+      2012 +            # This would cause subsequent CUDA operations to 
+           +use wrong context                                            
+      2013 +            raise RuntimeError("[NVENCEncoder] _ctx_push fail
+           +ed: unable to push primary CUDA context")                    
+      2014  
+      2015          try:
+      2016              with self._lock:
+
+  Thought for 8s, read 1 file (ctrl+o to expand)
+
+● Update(external/ifrnet_video/nvenc_sdk.py)
+  ⎿  Added 2 lines
+      2418              return []
+      2419  
+      2420          _need_pop = self._ctx_push()  # [P2.4b]
+      2421 +        if not _need_pop:                                    
+      2422 +            raise RuntimeError("[NVENCEncoder] _ctx_push fail
+           +ed: unable to push primary CUDA context")                    
+      2423  
+      2424          try:
+      2425              with self._lock:
+
+  Thought for 28s, read 1 file (ctrl+o to expand)
+
+● Update(external/ifrnet_video/nvenc_sdk.py)
+  ⎿  Added 3 lines
+      2993          # （而非 Encode 线程）调用，必须显式 push primary con
+            text 确保 NVENC API
+      2994          # 在正确上下文执行。与 encode_frames_batch() 中的保护
+            逻辑一致。
+      2995          _need_pop = self._ctx_push()  # [P2.4b]
+      2996 +        if not _need_pop:                                    
+      2997 +            print("[NVENCEncoder] ⚠️ _ctx_push failed in flus
+           +h(), returning empty", flush=True)                           
+      2998 +            return b""                                       
+      2999          try:
+      3000              with self._lock:
+      3001                  if self._encoder.value is None:
+
+  Thought for 2m 53s, searched for 1 pattern, read 1 file, ran 8 shell commands (ctrl+o to expand)
+
+● I've implemented all four critical fixes for the NVENC HEVC cross-segment
+  encoder bugs. Here's a summary:
+
+  Fixes Applied to 
+  /workspace/Video_Enhancement/external/ifrnet_video/nvenc_sdk.py
+
+  1. Added cuDevicePrimaryCtxRelease in close() (Lines 3159-3170)
+
+  - Each encoder creation calls cuDevicePrimaryCtxRetain() to get primary
+    context
+  - The close() method now properly releases it with cuDevicePrimaryCtxRelease()
+  - Prevents primary context retain count leak across segment transitions
+
+  2. Fixed CUDA Context Stack Corruption in close() (Lines 3177-3194)
+
+  - Before: Directly pushed _saved_ctx without popping current context
+  - After: First pops current context (cuCtxPopCurrent), then pushes saved
+    context
+  - Fixes segfault at segment 2 when IFRNET_NVENC_CROSS_SEGMENT_REUSE=0
+
+  3. Clear _cached_sps_pps in _stream_begin(force=True) (Lines 1910-1913)
+
+  - When reusing encoder across segments, old segment's SPS/PPS was being
+    prepended to new segment's frames
+  - Now clears cache at segment boundary so each segment gets fresh parameter
+    sets
+  - Fixes "PPS id out of range" and "Could not find ref with POC" decode errors
+    (Logs 1&2)
+
+  4. Added _ctx_push() Return Value Checks (3 locations)
+
+  - encode_frames_stream(): Raises RuntimeError if context push fails
+  - encode_frames_batch_ce_pipeline(): Raises RuntimeError if context push fails
+  - flush(): Returns empty bytes with warning if context push fails
+  - Prevents undefined behavior when CUDA context push fails
+
+  Verification
+
+  All modified files pass syntax check (python -m py_compile).
+
+  The user confirmed IFRNET_NVENC_CROSS_SEGMENT_REUSE=1 default is intentional
+  for testing, so no change to main.py was needed.
+
+  These fixes should resolve:
+  - Logs 1 & 2: PPS/POC decode errors on segments 2 and 5 when cross-segment
+    reuse is enabled
+  - Logs 3 & 4: Segfault at segment 2 when cross-segment reuse is disabled
+
+✻ Crunched for 10m 27s · done 3:38 AM
+
+※ recap: Fixed 4 NVENC HEVC cross-segment bugs in `nvenc_sdk.py`: added missing `cuDevicePrimaryCtxRelease`, fixed context stack corruption in `close()`, cleared SPS/PPS cache on segment boundary, and added `_ctx_push()` failure checks. All syntax checks pass. Next: run the test commands from the logs to verify fixes resolve the segfaults and PPS/POC decode errors. (disable recaps in /config)
+
+❯ /workspace/Video_Enhancement/temp/output_S02E08_hevc.txt                      
+  涉及超分环节最后一个分段超分报错，你没有排查问题BUG吗？具体报错如下：         
+     ❌ 解码级验收失败: decoded=7343 expected=7343 reason=decode_errors         
+     ↳ ref with POC 2                                                           
+  [hevc @ 0x5585d1238d00] Could not find ref with POC 4                         
+  [hevc @ 0x5585d1238d00] Could not find ref with POC 3                         
+  [hevc @ 0x5585d12fb140] Could not find ref with POC 4                         
+  [hevc @ 0x5585d147fa00] Could not find ref with POC 1                         
+  [hevc @ 0x5585d147fa00] Could not find ref with POC 0                         
+  [hevc @ 0x5585d1541e80] Could not find ref with POC 1                         
+  [hevc @ 0x5585d1541e80] Could not find ref with POC 0                         
+  [hevc @ 0x5585d1604300] Could not find ref with POC 1                         
+  [hevc @ 0x5585d1604300] Could not find ref with POC 0                         
+  ⚠️  片段 5 处理失败，终止后续处理                                             
+
+  Thought for 21s (ctrl+o to expand)
+
+● You're right - I focused only on the IFRNet stage but the first log shows
+  ESRGAN (super-resolution) stage also fails at segment 5 with similar HEVC
+  decode errors. Let me check the ESRGAN NVENC code for the same bugs.
+
+  Thought for 1m 26s, searched for 5 patterns, read 1 file, listed 1 directory (ctrl+o to expand)
+
+● Now I can see the ESRGAN bugs clearly:
+
+  1. Context stack corruption in close() (lines 2933-2941) - same bug as IFRNet
+  2. _cached_sps_pps not cleared on segment boundary - _stream_begin() doesn't
+     clear it, and _NVENCEncodeThread.__init__ only resets _sps_pps_injected but
+     not the cache
+
+  Let me fix these:
+
+● Update(external/realesrgan_video/nvenc_sdk.py)
+  ⎿  Added 14 lines, removed 4 lines
+      2930                      pass
+      2931                  self._primary_ctx = c_void_p(None)
+      2932  
+      2933 -            # Restore saved context                          
+      2933 +            # Restore saved context - [BUGFIX] Must pop curre
+           +nt context first, then push saved                            
+      2934 +            # At this point, current context is the NVENC enc
+           +oder's primary context (pushed during encoding).             
+      2935 +            # Directly pushing _saved_ctx without popping cre
+           +ates unbalanced context stack.                               
+      2936              if getattr(self, '_saved_ctx', None) is not None 
+            and \
+      2937                      self._saved_ctx.value is not None:
+      2938                  try:
+      2939 +                    self._libcuda.cuCtxPopCurrent.restype = c
+           +_uint32                                                      
+      2940 +                    self._libcuda.cuCtxPopCurrent.argtypes = 
+           +[ctypes.POINTER(c_void_p)]                                   
+      2941 +                    _ctx_out = c_void_p()                    
+      2942 +                    _pop_rc = self._libcuda.cuCtxPopCurrent(c
+           +types.byref(_ctx_out))                                       
+      2943 +                    if _pop_rc != 0:                         
+      2944 +                        print(f"[NVENCEncoder] ⚠️ cuCtxPopCur
+           +rent failed during close, code={_pop_rc}", flush=True)       
+      2945                      self._libcuda.cuCtxPushCurrent.restype = 
+            c_uint32
+      2946                      self._libcuda.cuCtxPushCurrent.argtypes =
+             [c_void_p]
+      2939 -                    self._libcuda.cuCtxPushCurrent(self._save
+           -d_ctx)                                                       
+      2940 -                except Exception:                            
+      2941 -                    pass                                     
+      2947 +                    _push_rc = self._libcuda.cuCtxPushCurrent
+           +(self._saved_ctx)                                            
+      2948 +                    if _push_rc != 0:                        
+      2949 +                        print(f"[NVENCEncoder] ⚠️ cuCtxPushCu
+           +rrent(saved_ctx) failed, code={_push_rc}", flush=True)       
+      2950 +                except Exception as _e:                      
+      2951 +                    print(f"[NVENCEncoder] ⚠️ Context restore
+           + exception: {_e}", flush=True)                               
+      2952  
+      2953      def __del__(self):
+      2954          try:
+
+  Thought for 8s (ctrl+o to expand)
+
+● Update(external/realesrgan_video/nvenc_sdk.py)
+  ⎿  Added 4 lines
+      2841              # 保证 FIX-HEVC-COUNTED 就绪边界公式跨段正确。
+      2842              self._output_slot_idx = self._frame_idx
+      2843              self._strm_ts_base = self._frame_idx
+      2844 +            # [BUGFIX] Clear cached SPS/PPS on segment bounda
+           +ry when reusing encoder.                                     
+      2845 +            # Old segment's SPS/PPS would be prepended to new
+           + segment's frames, causing                                   
+      2846 +            # "PPS id out of range" and "Could not find ref w
+           +ith POC" decode errors.                                      
+      2847 +            self._cached_sps_pps = None                      
+      2848              self._diag_aux_block = 0
+      2849              self._diag_phase_shift = 0
+      2850              self._diag_slot_drain_fallback = 0
+
+  Thought for 57s, read 1 file (ctrl+o to expand)
+
+● Update(external/realesrgan_video/nvenc_sdk.py)
+  ⎿  Added 2 lines, removed 2 lines
+      3033          # SPS/PPS 注入标志属于线程层（涉及 muxer 交互），在此
+            单独重置。
+      3034          # 每个新段创建新的 _NVENCEncodeThread + 新 muxer，
+      3035          # 确保新 muxer 总能拿到一次 SPS/PPS 预注入。
+      3036 -        if getattr(self._nvenc, '_cached_sps_pps', None) is n
+           -ot None:                                                     
+      3037 -            self._nvenc._sps_pps_injected = False            
+      3036 +        # _stream_begin(force=True) 现在会清除 _cached_sps_pp
+           +s，因此无条件重置。                                          
+      3037 +        self._nvenc._sps_pps_injected = False                
+      3038          # [EARLY-FLUSH] 两阶段 flush 的幂等守卫：begin_flush(
+            ) 置位后
+      3039          # flush_and_join() 跳过重复的 q.put(SENTINEL)。每段 _
+            NVENCEncodeThread
+      3040          # 新建，标志自然重置为 False。
+
+  Thought for 15s, ran 3 shell commands (ctrl+o to expand)
+
+● All ESRGAN fixes applied and syntax verified. Let me provide a summary:
+
+  ESRGAN NVENC Fixes Applied
+
+  1. Fixed Context Stack Corruption in close() (Lines 2933-2955)
+
+  - Before: Directly pushed _saved_ctx without popping current context first
+  - After: Properly pops current context with cuCtxPopCurrent(), then pushes
+    _saved_ctx
+  - Fixes potential segfault on next segment's encoder creation
+
+  2. Clear _cached_sps_pps in _stream_begin(force=True) (Lines 2848)
+
+  - Added self._cached_sps_pps = None at segment boundary
+  - Prevents old segment's SPS/PPS from being prepended to new segment's frames
+  - Fixes "PPS id out of range" and "Could not find ref with POC" decode errors
+
+  3. Simplified _NVENCEncodeThread.__init__ SPS/PPS Reset (Lines 3036-3037)
+
+  - Changed from conditional reset (only if cache exists) to unconditional reset
+  - Since _stream_begin() now clears the cache, we always reset
+    _sps_pps_injected = False
+
+  ---
+
+  Combined Summary: Both IFRNet and ESRGAN Fixed
+
+  ┌──────────────────┬─────────────────────────┬────────────────────────────┐
+  │       Bug        │ IFRNet (external/ifrnet │ ESRGAN (external/realesrga │
+  │                  │  _video/nvenc_sdk.py)   │   n_video/nvenc_sdk.py)    │
+  ├──────────────────┼─────────────────────────┼────────────────────────────┤
+  │ Missing          │                         │                            │
+  │ cuDevicePrimaryC │ ✅ Fixed                │ ✅ Already existed         │
+  │ txRelease in     │                         │                            │
+  │ close()          │                         │                            │
+  ├──────────────────┼─────────────────────────┼────────────────────────────┤
+  │ Context stack    │                         │                            │
+  │ corruption in    │ ✅ Fixed                │ ✅ Fixed                   │
+  │ close()          │                         │                            │
+  ├──────────────────┼─────────────────────────┼────────────────────────────┤
+  │ _cached_sps_pps  │                         │                            │
+  │ not cleared on   │ ✅ Fixed                │ ✅ Fixed                   │
+  │ segment boundary │                         │                            │
+  ├──────────────────┼─────────────────────────┼────────────────────────────┤
+  │ _ctx_push()      │                         │                            │
+  │ return value     │ ✅ Fixed (3 locations)  │ N/A (inline context mgmt)  │
+  │ checks           │                         │                            │
+  └──────────────────┴─────────────────────────┴────────────────────────────┘
+
+  These fixes should resolve the HEVC decode errors seen in:
+  - Log 1 (output_S02E08_hevc.txt): ESRGAN segment 5 failure with POC errors
+  - Log 2 (output_S02E08_hevc_skip_upscale.txt): IFRNet segment 2 failure with
+    PPS/POC errors
+  - Logs 3 & 4: Segfaults at segment 2 due to context stack corruption
+
+✻ Cogitated for 5m 29s · done 5:08 AM
+※ recap: Fixed NVENC HEVC cross-segment encoder bugs in both IFRNet and ESRGAN: added `cuDevicePrimaryCtxRelease`, fixed context stack corruption in `close()`, and clear SPS/PPS cache at segment boundaries. All syntax verified. Next: run test commands to verify fixes resolve the PPS/POC decode errors and segfaults. (disable recaps in /config)

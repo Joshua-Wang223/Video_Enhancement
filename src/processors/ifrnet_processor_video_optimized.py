@@ -867,6 +867,12 @@ class IFRNetProcessor:
 
         except ImportError as e:
             print(f"   ❌ 无法导入 ifrnet_video.main: {e}")
+            # [FIX-IMPORT-DIAG] 原实现只打印这一句笼统消息、丢掉 traceback，
+            # 会把"IFRNet 网络结构源码缺失"误判成"第三方包缺失"。典型案例
+            # （2026-09-23）：external/IFRNet/models/ 丢失 → 报 No module named
+            # 'models'，与 models 包本身无关。补 traceback 便于直接定位。
+            import traceback
+            traceback.print_exc()
             return False
         except Exception as e:
             print(f"   ❌ 处理失败: {e}")

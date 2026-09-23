@@ -494,7 +494,27 @@ from ifrnet_video.pipeline import (
 from ifrnet_video.tensorrt_accel import TensorRTAccelMixin
 
 
-Model, _ifrnet_s_mod = _load_ifrnet_module('IFRNet_S_Vimeo90K')
+# [FIX-MODEL-ARCH-LAZY] 原实现在模块导入期硬编码执行
+#   Model, _ifrnet_s_mod = _load_ifrnet_module('IFRNet_S_Vimeo90K')
+# 有两个副作用：
+#   1. 模块级无法得知运行期 model_name（由 processor / CLI 传入），只能钉死 S 架构；
+#   2. 使 models.IFRNet_S 成为**导入期**硬依赖 —— 即使只跑 IFRNet_L，只要 S 架构
+#      源码不可用，import ifrnet_video.main 就整体失败，而 processor 层的
+#      `except ImportError` 会把异常笼统化成"无法导入 ifrnet_video.main"
+#      （2026-09-23 实例：external/IFRNet/models/ 缺失 → 报 No module named
+#      'models'，与 models 包本身毫无关系，排查耗时极长）。
+# 运行期架构解析已由 _load_model() 按 self.model_name 完成（见 [P0-FIX-MODEL-ARCH]）；
+# 模块级 Model / _ifrnet_s_mod 无任何读取方，仅作向后兼容别名保留，改为首次访问时惰性解析。
+_MODEL_ARCH_FALLBACK = 'IFRNet_S_Vimeo90K'
+
+
+def __getattr__(name: str):
+    """[FIX-MODEL-ARCH-LAZY] PEP 562 惰性模块属性：Model / _ifrnet_s_mod 首次访问才解析。"""
+    if name in ('Model', '_ifrnet_s_mod'):
+        _cls, _mod = _load_ifrnet_module(_MODEL_ARCH_FALLBACK)
+        globals().update({'Model': _cls, '_ifrnet_s_mod': _mod})
+        return globals()[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 

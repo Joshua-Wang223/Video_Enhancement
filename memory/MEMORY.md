@@ -126,3 +126,5 @@
 - [门禁与测试资产纳管清理 完成](门禁与测试资产纳管清理_立项Prompt.md) — 2026-09-17：门禁基线 92 PASS（BEH-H1/H3 WARN/SKIP→PASS），覆盖扩展到 tests/（54→112 文件），`BEH-H2` 抓到 `diagnose_nvenc_rc_mode.py` 互斥参数被吞掉的多年隐蔽 bug
 
 - [REDRAIN 后续测试立项 Prompt 2026-09-18](Plan/REDRAIN_后续测试立项Prompt_2026-09-18.md) —— P1 帧数守恒（h264 harness ✅；hevc 走生产路由 ✅ 双重校验；harness hevc 已 fail-fast）、P2 镜像同步 ✅（A/B 逐字节一致、B 可写）、P3 端到端冒烟 ✅（1149 帧解码级）、P4 扩展断言 ✅（6 passed）
+- [IFRNet 报 "No module named 'models'" = external/IFRNet/models/ 缺失](ifrnet-models-package-missing.md) — 2026-09-23：上游架构源码目录 external/IFRNet/models/（IFRNet.py/S/L.py）为普通源码目录，工作区恢复时易整体丢失 → import ifrnet_video.main 直接失败；报 `'models'` vs `'models.IFRNet_S'` 可反推是否项目根在 sys.path；恢复源于本地快照 tar 或上游 clone；含 `[FIX-MODEL-ARCH-LAZY]`（导入期硬编码改惰性 `__getattr__`）与 `[FIX-IMPORT-DIAG]`（processor 补 traceback）；并区分易混淆的根级 ./models 权重目录（IFRNet pth 为 9 字节 "Not Found" 残骸，2026-09-23 已删除 128M）；门禁新增 AST 断言 `[FIX-MODEL-ARCH-LAZY]`（静态 49 项/47 通过/0 失败）
+- [失败路径必须暴露真实根因（勿笼统化异常 / 勿导入期硬编码）](feedback_diagnostic_context_not_hidden.md) — 2026-09-23 用户判定为 bug 的两类写法：`except` 只 print(str(e)) 丢 traceback；模块级硬编码运行期才确定的配置。Why=IFRNet models 缺失被误诊成缺第三方包；改/审 try/except 与模块级顶语句时套用

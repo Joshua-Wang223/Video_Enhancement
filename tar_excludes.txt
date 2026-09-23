@@ -1,0 +1,37 @@
+temp
+tmp
+verification_report
+models
+models_GFPGAN
+models_IFRNet
+models_RealESRGAN
+benchmark_output
+logs
+output
+archive
+.trt_cache
+.t2_cache
+.claude
+.claude-flow
+.codebuddy
+.backups
+.research_tmp
+*.Bak*
+*_Bak*
+*.bak*
+*_bak*
+*- Copy.*
+*.Copy.*
+*_Copy.*
+*- copy.*
+*.copy.*
+*_copy.*
+core.*
+*.tar.gz
+__pycache__
+*.pyc
+*.pyo
+.git
+.cache
+.venv
+.vscode
