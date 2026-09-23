@@ -110,6 +110,7 @@
 - [P2-1「reader 输出 nv12 + 消费端转换」已否决](p2-1-nv12-consumer-conversion-rejected.md) — 2026-09-14：numpy 在 4K 做 nv12→rgb24 ≈833ms/帧（400s vs 27.6s，14x 回归）；读帧降本只能靠 GPU 侧 torch/NPP 转换，且 T1 比 T2 快 25–30x 故端到端收益≈0；教训：reader 优化必须带真实消费端测量，灌 /dev/null 只测出"生产者能力"
 - [本机是多会话共享的 GPU 主机](shared-gpu-host-concurrent-jobs.md) — 2026-09-14：其他会话在跑 4K `nvinterpolate` 任务导致同一命令稳定测出 ~16s（正常 0.95s），差点误判为回归；测量前先查 `nvidia-smi` 与并发进程，计时一律多轮取中位数，别 kill 他方任务
 - [立项文档状态表可能过时，动手前先跑基线实测](feedback_verify_baseline_first.md) — 承接 `Plan/*.md` 时不要照 §0 状态表直接开工，先跑基线/复现命令用实测反推真实待办（2026-09-09 实例：文档标 ❌ 的任务实测已 4/4 PASS）
+- [自己标注的「遗留边界」要补测试关掉；验证口径是完整套件](feedback_close_gaps_and_full_suite.md) — 2026-09-23：我把 process 模式列为「遗留边界」后用户立即要求补 E2E（当场挖出 fork 子进程覆盖写真 bug，并推翻边界描述本身）；收尾验证要跑完整套件并与基线对比
 - [内容依赖的测试假阳性：保严格判据 + 标注](feedback_keep_strict_criteria_annotate.md) — 出现内容相关假阳性时保留判据不变并标注"合成素材已知边界/真实素材已 PASS"，不为消警而放宽阈值或改产品参数
 - [verify_plan 门禁基线与断言写法](gate-verify-plan-known-failures.md) — 2026-09-15 全量基线 94/88/0（旧「93/84/7」作废）；2026-09-23 静态子集 49/47/0/2 + **Linux/GPU 全量套件基线：门禁 95/93/0/2、行为别名 46/46、隔离跑 6 PASS/0 FAIL/0 CRASH/16 EMPTY（EMPTY=独立脚本非故障）**；含覆盖自动化(BEH-E2)、H1/H3 环境降级、以及「新断言必须用 AST/结构切片，禁止匹配注释文案」的实证教训
 - [段级验收曾被「容器元数据捷径」静默降级](gate-segment-validation-metadata-shortcut.md) — FIX-GATE-STRICT-COUNT：count_mode 缺省=auto，NVDEC 不可用时退回容器 nb_frames；且帧数缓存 key 不带 mode，auto 预热( count_frames_parallel )会把低可信值喂给严格验收门 → 只加 count_mode 完全无效

@@ -142,6 +142,25 @@ DIRTY=allow bash make_snapshot.sh          # 工作区不干净时也继续
   **Why**：cc-switch 那几份本地文档要照常可用（脱敏会破坏正在使用的配置），目标是"密钥永不进仓"而不是"文件必须进仓"。
   **How to apply**：再遇到夹带凭据的本地配置/文档，默认按"**忽略而非改写**"处理，不要擅自修改用户文件里的密钥内容。
 
+## ⚠️ 别把 `git fetch` 管道给 `tail`/`head`（同 SIGPIPE 家族，2026-09-23 两次踩到）
+
+**现象**：`git fetch origin 2>&1 | tail -2` 之后紧接着 `git rev-parse --short HEAD origin/main`
+会偶发 `fatal: Needed a single revision`，看起来像「origin/main 不存在 / 被删」。
+
+**根因（推断，与本文开头那处已修缺陷同类）**：下游 `tail` 读满即退出并关闭管道，
+`git fetch` 可能在**更新 remote-tracking ref 的途中**被 SIGPIPE 杀掉 —— ref 未写成，
+于是 `origin/main` 短暂不可解析。这与 `force_push_github.sh` 里 `git diff | head -30`
+的静默中止是同一族问题，只是这次发生在 fetch 侧（本会话两次复现，重跑裸 fetch 即恢复）。
+
+**How to apply**：
+- 要过滤输出就**重定向到文件再读**（`git fetch origin > /tmp/f.log 2>&1`），别走 `| tail/head`。
+- 复核远程状态用**裸** `git fetch origin` 之后的 `git show-ref origin/main` 或
+  `git log -1 --oneline origin/main`；看到 `Needed a single revision` **先重跑一次**再判断，
+  不要据此认定远程出问题。
+- 日常路径确认可用：本地提交后 `git push origin main`（fast-forward）。若并行会话已推进
+  `origin/main`，应当 `git rebase origin/main` 后再推；rebase 冲突处理见
+  [远程/本地分叉](feedback_remote_authoritative_merge_back.md)。
+
 ## 2026-09-23 本次推送记录
 
 基线 `9518b40`；内容同步提交 **`274095d`**（118 条目变更 / 466 文件 / 30.7 MB / 无大目录泄漏）。该提交之后可能还有仅含 memory 追加的提交，**当前指针一律以 `git ls-remote origin refs/heads/main` 为准**。回滚 = `git push --force origin 9518b40:refs/heads/main`，或本地 tag `backup/pre-force-push-20260923-032845`。中途那个含密钥的本地提交 `19b5358` 从未推送，已 `reflog expire --all + gc --prune=now` 清除。
