@@ -33,3 +33,9 @@ type: feedback
 5. 合并后 `grep -E '^(<<<<<<<|=======|>>>>>>>)'` 复核**零残留**（本会话第一版就漏掉过空行/标题，
    是靠复核+读回发现的），再 `GIT_EDITOR=true git rebase --continue`。
 6. 收尾照旧：推送后独立复核 `git ls-remote origin refs/heads/main`。
+7. **零冲突 ≠ 无需复核**。2026-09-23 第二次同步（远程被推进 `b4c2543→5513dc6`，含
+   `make_snapshot.sh`/`tar_excludes.txt`/`force_push_github.sh` 与 2 处 memory）时，
+   `git rebase origin/main` 报成功且**零冲突** —— 两侧新增内容落在不同锚点，git 自动合并了。
+   仍要逐项确认**两侧独有内容都在**：用各自唯一的标记串 `grep`（远程新小节标题 + 本地新小节标题
+   + 双方各自新增的索引行），并 `grep -E '^(<<<<<<<|=======|>>>>>>>)'` 确认零残留。
+   ⇒ **分叉 ≠ 必然冲突**，但"rebase 报成功"也不足以证明合并正确；复核成本很低，别省。
