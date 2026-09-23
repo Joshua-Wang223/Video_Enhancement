@@ -1,6 +1,6 @@
 ---
 name: 开发与运行环境
-description: 开发环境 Windows，运行环境 Linux
+description: 开发环境 Windows，运行环境 Linux；含 2026-09-23 全仓 LF 换行符策略与 git 同步约定
 type: project
 originSessionId: 549bd23c-b680-4b5e-b833-3852c89608f0
 ---
@@ -22,3 +22,16 @@ originSessionId: 549bd23c-b680-4b5e-b833-3852c89608f0
 **实例（2026-09-01/02）：** `ifrnet-hevc-la-slot-headroom-deadlock` 的 `la_depth + 2`、`ifrnet-f0-nv12-async-copy-race` 的 `[FIX-F0-NV12-STREAM-SYNC]`/`wait_on_event`、`ifrnet-f0-la0-double-consume` 的取用下放，在 Windows 开发树（代码 mtime 8/27、8/31）中均不存在，而记忆写于 9/1 17:34。经用户确认按"生产侧已验证、开发树滞后"处理，三篇记忆**保持原样**。
 
 **注意反向情形：** 若某记忆描述的 bug 在开发树中已被**另一条代码路径**规避（如 `ifrnet-f0-la0-double-consume`：开发树 `main.py` 改为按 `_la_depth > 0` 分流，LA=0 直接 `encode_frame`，使该 bug 不再可达），这属于等价修复而非记忆失效，同样不应改写记忆——但值得在排查时留意"开发/生产路径不同"。
+
+## 换行符策略：全仓锁定 LF（2026-09-23 用户确认）
+
+仓库根新增 `.gitattributes`：`* text=auto eol=lf` + 30 余种二进制类型（png/jpg/mp4/pt/onnx/mdb…）显式声明 `binary`。仓库（index/HEAD）与工作区一律 LF，**Windows 开发机检出也是 LF**，并已用 `git add --renormalize .` 一次性收敛历史 CRLF blob。
+
+**Why:** 此前仓库 blob 为 CRLF（Windows 侧提交）、Linux 工作区为 LF，导致全仓每个文件都显示 modified，真实改动被行尾噪音淹没——`git diff` 曾虚高到 44k 行插入 / 39k 删除，无法审阅。
+
+**How to apply:**
+- 本目录**是 git 仓库**（origin `git@github.com:Joshua-Wang223/Video_Enhancement.git`），Linux 侧为主体，2026-09-23 起按普通 `commit + push` 同步（仓库根有旧脚本 `force_push_github.sh`，已加入 .gitignore，**未使用**）。
+- Windows 侧若看到"整仓被修改"，先 `git add --renormalize .` 再看 `git status`，不要盲目提交或回滚。
+- ⚠️ 陷阱：`git checkout-index -a -f` **不重写已存在文件**的行尾（实测无效）。要把工作区旧 CRLF 文件重写为 LF，用 `rm <file> && git checkout -- <file>`。
+- git 会把含**孤立 CR**（非 CRLF）的文件判为 `-text` 二进制并拒绝归一化（实例：`Plan/session-ses_fb90.md`、`session-ses_fb9a/fbdc/fcd1`、`tests/diag_output_fixed.log` 共 5 个），属预期保护行为，不强转。
+
