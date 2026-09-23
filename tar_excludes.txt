@@ -1,5 +1,15 @@
 # =============================================================================
-# tar_excludes.txt —— 大目录 / 权重 / 缓存 / 临时文件排除清单
+# ⛔ DEPRECATED（2026-09-23）—— 请改用 `bash make_snapshot.sh`
+# =============================================================================
+# 快照已切换为 `git archive`：只打包**已跟踪**文件，权重/缓存/日志/会话转储天然
+# 不会进来，无需排除清单，也就不存在下面这些坑（模式写窄 → 权重全进快照；
+# 写宽 → 把 external/**/models/ 源码排掉）。
+#
+#     cd /workspace/Video_Enhancement && bash make_snapshot.sh
+#
+# 本文件暂时保留，仅供尚未迁移的历史/外部打包脚本使用；不要在新流程里引用它。
+# -----------------------------------------------------------------------------
+# tar_excludes.txt —— 大目录 / 权重 / 缓存 / 临时文件排除清单（旧方案）
 #
 # 用于「把仓库打成快照交给其他环境」的场景。
 # 注：`force_push_github.sh` **不使用**本文件（它靠 .gitignore + `git add -A` 建树）。
@@ -22,9 +32,10 @@
 #   - `--anchored models`，或成员带外壳目录名（`Video_Enhancement/...`）
 #     → 同样匹配不到，权重全进快照                                  ❌ 危险
 #
-# 自检（每次打包后跑，**必须为 0**；非 0 说明调用约定不对）：
+# 自检（每次打包后跑，**必须为 0**；非 0 说明调用约定不对，或确有误入库）：
+# 注意用 `^\.?` 锚定根级：嵌套的 external/**/models/ 是**源码**，不该算问题。
 #     tar -tzf <snapshot>.tgz \
-#       | grep -cE '(^|/)(models|models_[^/]*|temp|tmp|logs|output|archive)/|\.(pth|trt|onnx|safetensors|ckpt)$'
+#       | grep -cE '^\./?(models|models_[^/]*|temp|tmp|logs|output|archive)/|\.(pth|trt|onnx|safetensors|ckpt)$'
 #
 # 更省事的替代（推荐）：`git archive` 只含已跟踪文件，天然无权重/缓存/转储：
 #     git archive --format=tar.gz -o ../snapshot.tgz HEAD
