@@ -1,14 +1,51 @@
-temp
-tmp
-verification_report
-models
-models_GFPGAN
-models_IFRNet
-models_RealESRGAN
-benchmark_output
-logs
-output
-archive
+# =============================================================================
+# tar_excludes.txt —— 大目录 / 权重 / 缓存 / 临时文件排除清单
+#
+# 用于「把仓库打成快照交给其他环境」的场景。
+# 注：`force_push_github.sh` **不使用**本文件（它靠 .gitignore + `git add -A` 建树）。
+#
+# ⚠️ 调用约定（必须满足，否则下文的 `./` 锚定条目会**全部失效、权重全打进快照**）
+# -----------------------------------------------------------------------------
+# 必须在「仓库根」打包，使归档成员名以 `./` 开头：
+#
+#     cd /workspace/Video_Enhancement
+#     tar -czf ../snapshot.tgz --exclude-from=tar_excludes.txt .
+#
+# 为什么：以 `./` 开头的条目是「只排根级、保留嵌套同名目录」的锚定模式。
+# 2026-09-23 GNU tar 实测：
+#   - 成员 `./models/...` + 模式 `./models` → 命中根级，且保留
+#     `./external/IFRNet/models/`（架构源码）                        ✅ 正确
+#   - 成员 `./models/...` + 模式 `/models`  → **什么都不匹配**，
+#     权重会全部进快照                                              ❌ 危险
+#   - 成员 `./models/...` + 模式 `models`   → 任意层级命中，把
+#     `external/IFRNet/models/` 等源码目录一并排掉（历史事故根因）   ❌ 错误
+#   - `--anchored models`，或成员带外壳目录名（`Video_Enhancement/...`）
+#     → 同样匹配不到，权重全进快照                                  ❌ 危险
+#
+# 自检（每次打包后跑，**必须为 0**；非 0 说明调用约定不对）：
+#     tar -tzf <snapshot>.tgz \
+#       | grep -cE '(^|/)(models|models_[^/]*|temp|tmp|logs|output|archive)/|\.(pth|trt|onnx|safetensors|ckpt)$'
+#
+# 更省事的替代（推荐）：`git archive` 只含已跟踪文件，天然无权重/缓存/转储：
+#     git archive --format=tar.gz -o ../snapshot.tgz HEAD
+# =============================================================================
+
+# ── 仅根级：运行 / 权重 / 输出目录（`./` 前缀 = 锚定，保留嵌套同名源码目录）──
+# 注意：不要写成 `/models`（匹配不到，等于不排除）或 `models`（会排掉源码）。
+./temp
+./tmp
+./models
+./models_*
+./benchmark_output
+./logs
+./output
+./archive
+# 2026-09-23：`./verification_report` **不再排除** —— 它是验收报告产出，
+# 快照里应保留；先前排除导致其他环境快照缺报告，被误当成"报告被删"。
+# 如需恢复旧行为，取消下一行注释：
+# ./verification_report
+
+# ── 任意层级：缓存 / 工具 / 编辑器 / VCS 目录（这些不可能是需入库的源码）──
 .trt_cache
 .t2_cache
 .claude
@@ -16,6 +53,13 @@ archive
 .codebuddy
 .backups
 .research_tmp
+.cache
+.venv
+.vscode
+__pycache__
+.git
+
+# ── 任意层级：备份 / 临时文件模式 ──
 *.Bak*
 *_Bak*
 *.bak*
@@ -28,10 +72,5 @@ archive
 *_copy.*
 core.*
 *.tar.gz
-__pycache__
 *.pyc
 *.pyo
-.git
-.cache
-.venv
-.vscode
