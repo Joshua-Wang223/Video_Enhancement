@@ -19,7 +19,7 @@
 - [IFRNet 水彩花屏+HEVC 尾帧损坏双症状调查](ifrnet-watercolor-tail-defect-investigation.md) — 2026-08-26 定性：尾帧参考链断裂为 LA 流式既有缺陷（备份同配置复现，包级守恒校验盲区，尾部 CRA 重启组）；水彩单帧为 H2D 预取 pinned 槽无同步竞态被方案时序改动显性化；含 Fix-1~5 修复方案与验证方法；2026-08-27/28 修复落地（P1-FIX-H2D-EVENT-SYNC + EOS 硬化 + 解码级门禁），生产验证全过
 - [优化方案全量执行记录 2026-08](optimization-execution-2026-08.md) — P0×8+P1+P2+P3 全量落地（tile 批级接入、ESRGAN compile 实现、NVENC RC/挂起/死锁修复、指纹断点、回归测试 30/30）；含延后项与 GPU 生产验证清单；后验证三合一 → tests/verify_plan_implementation.py v2（72 项，test_regression_min.py 为兼容别名；后扩展至 90 项：F-修复效果 phase + FIX-HEVC-LA-OPEN，见 hevc-la-open-production.md）
 - [语言与代码修改偏好](user_language.md) — 只用中英文交流，代码修改保留原有注释
-- [开发与运行环境](project_environment.md) — 开发在 Windows，运行部署在 Linux；含 2026-09-02 约定：memory 结论以 Linux 生产侧为准，Windows 开发树搜不到 FIX 标记属正常滞后，不得据此推翻 `status: fixed`（附 mtime 判定法与实例）
+- [开发与运行环境](project_environment.md) — 开发在 Windows，运行部署在 Linux；memory 结论以 Linux 生产侧为准（Windows 搜不到 FIX 标记属正常滞后，附 mtime 判定法）；含 2026-09-23 全仓 LF 锁定（.gitattributes）与「并行会话会用 force_push_github.sh 覆盖远程」的警告及复核铁律
 - [Level 1 NVENC 编码数据流](level1-nvenc-encoding-flow.md) — 四级降级架构、GPU 直通 CONSTQP 编码、FFmpegMuxer 注意事项
 - [NVENC ctypes 集成参考](nvenc-ctypes-integration.md) — SDK 13.0 struct 布局、函数索引、版本常量、码率控制、已验证的 bug 模式
 - [NVENC SPS/PPS 跨段修复](nvenc-sps-pps-debugging.md) — ctypes bitfield 布局不匹配导致 repeatSPSPPS 无效，手动缓存方案已 GPU 验证
