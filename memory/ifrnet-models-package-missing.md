@@ -24,5 +24,8 @@ type: project
 - 门禁新增静态断言 `[FIX-MODEL-ARCH-LAZY]`（`tests/verify_plan_implementation.py` 的 F-修复效果）：用 **AST** 判定"导入期是否存在 `_load_ifrnet_module(` 调用"——只跳过 `def/async def` 体，`class` 体与顶层 `if` 仍算导入期；注释/文档串不参与判定（符合本文件"禁止只匹配注释文案"的约定）。2026-09-23 实测 `--skip-behavior` **49 项 / 47 通过 / 0 失败 / 2 跳过**（此前静态 48 项）。
 
 **易混淆的相邻物（勿混为一谈）**：
-- `<repo>/models/`（2026-09-23 02:25 新出现的**权重**目录）：`models/IFRNet/IFRNet_{S,L}.pth` 是 **9 字节、内容为字面量 `Not Found`** 的下载失败残骸；`models/RealESRGAN/*.pth` 是真实权重。配置实际用的是 `models_IFRNet/checkpoints/`，与架构包无关。但它带 `IFRNet`/`RealESRGAN` 子目录，若项目根进入 `sys.path` 会变成 `models` 的 namespace portion，改变报错形态（见上）。
+- `<repo>/models/`（2026-09-23 02:25 新出现的**权重**目录，**当日已整目录删除、释放 128 MB**）：删除前内容 = `models/IFRNet/IFRNet_{S,L}.pth`（**9 字节、内容为字面量 `Not Found`**，下载失败残骸）＋ `models/RealESRGAN/{RealESRGAN_x2plus,RealESRGAN_x4plus}.pth`（与 `models_RealESRGAN/` 下同名文件 **md5 逐字节一致**，属纯重复，删了不丢数据）。配置实际用的是 `models_IFRNet/checkpoints/`，与架构包无关。若项目根进入 `sys.path`，它会变成 `models` 的 namespace portion 从而改变报错形态（见上）。
+- ⚠️ **把残骸改名成 `*.del` 并不能躲开推送**：`.gitignore` 只有 `models/`、`models_*/`，`force_push_github.sh` 的大目录哨兵 `^(models|models_[^/]*|temp|output|logs|gfpgan|\.trt_cache|\.t2_cache)/` 也都**不匹配** `models.del/` —— 若先推送再清理，这 128 MB（含两个 67 MB 权重）会被直接 commit 并推上去。**处置这类残骸要真删（或先补 .gitignore）再跑推送**。
 - 历史单文件 `external/IFRNet/process_video_v*.py`（25 个）含同名硬编码行，均**非生产代码**，未随本次修复改动。
+
+**相关**：本文记的是「事件与环境」（目录为何会丢、怎么恢复、报错形态怎么读）；至于"用一句笼统消息吞掉根因"和"导入期硬编码运行期配置"这两类写法本身，已被用户直接判定为缺陷并单独立规，见 [失败路径必须暴露真实根因](feedback_diagnostic_context_not_hidden.md)。推送相关（远程/凭据/密钥红线）见 [GitHub 推送流程与密钥红线](github-push-workflow-and-secrets.md)。
