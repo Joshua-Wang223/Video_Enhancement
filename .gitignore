@@ -11,7 +11,11 @@ __pycache__/
 _bak*
 *.bak*
 *_bak*
-logs/
+# [FIX-GITIGNORE-ANCHOR] 根级运行目录一律锚定（`/xxx/`）：未锚定模式会匹配任意层级
+# 的同名目录，误藏 external/ 下的源码（同类事故见下方 models 注释）。
+# 实测锚定前后：全仓非根层的 logs/output/temp/gfpgan 仅 models_GFPGAN/gfpgan 与
+# .claude/worktrees/**（各由 /models_*/ 与 .git/info/exclude 覆盖），无新增暴露。
+/logs/
 # [FIX-GITIGNORE-MODELS-ANCHOR] 原为未锚定的 `models/`、`models_*/` ——
 # 未锚定模式会匹配**任意层级**的同名目录，实测把 external/IFRNet/models/
 # （IFRNet 网络结构源码 IFRNet.py / IFRNet_S.py / IFRNet_L.py）一并忽略，
@@ -20,9 +24,10 @@ logs/
 # 锚定到仓库根，只忽略根级权重/缓存目录，不动 external/ 下的源代码。
 /models/
 /models_*/
-gfpgan/
-output/
-temp/
+# [FIX-GITIGNORE-ANCHOR] 仅忽略仓库根的 gfpgan 权重 / 输出 / 临时目录
+/gfpgan/
+/output/
+/temp/
 output*.txt
 Video_Enhancement_github_token.txt
 
