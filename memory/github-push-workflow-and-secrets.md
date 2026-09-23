@@ -1,6 +1,6 @@
 ---
 name: GitHub 推送流程（SSH-over-443）与「密钥红线」
-description: force_push_github.sh 的正确调用方式、治理文件(.gitignore/.gitattributes)以 origin 为准的 [FIX-IGNORE-CANONICAL] 约定、tar_excludes.txt 的 `./` 锚定语法（`/models` 与裸 `models` 都错）、推送后一律复核 ls-remote 的铁律与「怎么读推送日志」（0 报错≠推送成功、dry-run 行与真实行同格式）、models.del 类改名残留绕过 .gitignore 与哨兵的缺口、以及 config/cc-switch-*.md 含真实 API Key 已被 .gitignore 排除（GitHub 只认 OpenRouter，DeepSeek 无检测器）
+description: force_push_github.sh 的正确调用方式、治理文件(.gitignore/.gitattributes/tar_excludes.txt)以 origin 为准的 [FIX-IGNORE-CANONICAL] 约定、快照已改用 make_snapshot.sh(git archive) 及 tar_excludes.txt 的废弃原因与 `./` 锚定历史、推送后一律复核 ls-remote 的铁律与「怎么读推送日志」（0 报错≠推送成功、dry-run 行与真实行同格式）、models.del 类改名残留绕过 .gitignore 与哨兵的缺口、以及 config/cc-switch-*.md 含真实 API Key 已被 .gitignore 排除（GitHub 只认 OpenRouter，DeepSeek 无检测器）
 type: project
 ---
 
@@ -99,11 +99,25 @@ clone 成功本身即证明**对象完整、推送未被截断**（`ls-remote` �
 - 想保留 untracked 安全性，对比工作区时优先用 `git diff --no-index` 或 `git stash create`，**避免**用 `git add -A` 把文件"升格"为已暂存。
 - 事后想找回：`git show <old-sha>:<path>` 只能救**曾经被提交过**的；纯工作区内容只能靠预先前置的快照。
 
-### `tar_excludes.txt` 的锚定语法（2026-09-23 实测纠正）
+### 快照入口：`bash make_snapshot.sh`（2026-09-23 起，替代 tar 方案）
 
-该文件**不被 `force_push_github.sh` 使用**（脚本靠 `.gitignore` + `git add -A` 建树），只用于「把仓库打成 tar 快照交给其他环境」。它原先的模式**全未锚定**，`models` 匹配任意层级 → 把 `external/IFRNet/models/`、`external/*/realesrgan/models/` 等**架构源码**一起排掉（历史事故根因：用快照恢复的环境缺这些目录，IFRNet/ESRGAN 起不来）。
+```bash
+cd /workspace/Video_Enhancement
+bash make_snapshot.sh                      # → ../Video_Enhancement_snapshot_<ts>.tar.gz
+OUT=/tmp/snap.tgz REF=origin/main bash make_snapshot.sh
+DIRTY=allow bash make_snapshot.sh          # 工作区不干净时也继续
+```
 
-**正确写法是 `./` 前缀**（GNU tar 实测，成员名以 `./` 开头时）：
+- 只含**已提交**内容：工作区不干净时脚本默认**中止**（防"以为带上了未提交改动、其实没带"）；`DIRTY=allow` 显式接受。
+- 内置哨兵：快照里出现 `models_*` / `trt_cache` / 权重扩展名即**失败退出**（含根级裸 `models/`，但放行 `external/**/models/` 源码）。
+- 实测基线：522 条目 / 9.09 MB / 权重 0 / 根级运行目录 0。
+- **为什么换**：tar + 排除清单有两类事故，2026-09-23 实测都发生过——模式写窄（`/models` 匹配不到）→ 权重**全量进快照**；写宽（裸 `models`）→ 把 `external/**/models/` **源码**排掉、clone 起不来。`git archive` 只打包已跟踪文件，权重/缓存/日志/转储天然进不来，无需排除清单。
+
+### 历史（tar 方案，仅供理解）——`tar_excludes.txt` 的锚定语法
+
+该文件**不被 `force_push_github.sh` 使用**（脚本靠 `.gitignore` + `git add -A` 建树），曾用于「把仓库打成 tar 快照交给其他环境」。现标记 DEPRECATED，内容保留供尚未迁移的外部打包脚本。
+
+正确锚定写法是 `./` 前缀（GNU tar 实测，成员名以 `./` 开头时）：
 
 | 模式 | 效果 |
 |---|---|
@@ -112,11 +126,9 @@ clone 成功本身即证明**对象完整、推送未被截断**（`ls-remote` �
 | `models`（裸） | 任意层级命中，排掉源码 ❌ |
 | `--anchored models` | 同样匹配不到 ❌ |
 
-前置条件：必须 `cd <仓库根> && tar ... --exclude-from=tar_excludes.txt .`（成员 `./X`）。用裸目录名或 `-C 上级 <目录名>`（成员 `Video_Enhancement/...`）时 `./` 锚定条目**全部失效、权重会全进快照**——文件头已写明约定与打包后自检命令。
+前置条件：必须 `cd <仓库根> && tar ... --exclude-from=tar_excludes.txt .`（成员 `./X`）。用裸目录名或 `-C 上级 <目录名>`（成员 `Video_Enhancement/...`）时 `./` 锚定条目**全部失效、权重会全进快照**。
 
-⇒ 更稳的替代：`git archive --format=tar.gz -o snap.tgz HEAD`（只含已跟踪文件，天然无权重/缓存/转储）。
-
-**✅ 已根治（2026-09-23）**：当初该保护只覆盖 `.gitignore`/`.gitattributes`，实测并行会话的 force_push **连续两轮把 `tar_excludes.txt` 退回旧版**（未锚定的 `models` → 会把 `external/IFRNet/models/` 等架构源码从快照里排掉）。现已把 `tar_excludes.txt` 加入脚本第 3 节治理文件清单，三者一并归一（提交 `979db44`，克隆实测篡改后能被纠正）。
+**✅ 已根治（2026-09-23）**：当初治理文件保护只覆盖 `.gitignore`/`.gitattributes`，实测并行会话的 force_push **连续两轮把 `tar_excludes.txt` 退回旧版**（未锚定的 `models` → 会把 `external/IFRNet/models/` 等架构源码从快照里排掉）。现已把 `tar_excludes.txt` 加入脚本第 3 节治理文件清单，三者一并归一（提交 `979db44`，克隆实测篡改后能被纠正）。
 **注意不要把 `force_push_github.sh` 自身加进去**——脚本运行中被改写会让 bash 重读、行为未定义。
 
 ## 密钥红线（2026-09-23 推送被 GitHub Push Protection 拦下）
