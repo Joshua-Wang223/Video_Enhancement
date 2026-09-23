@@ -1,12 +1,12 @@
 ---
 name: GitHub 推送流程（SSH-over-443）与「密钥红线」
-description: force_push_github.sh 的正确调用方式、推送后一律复核 ls-remote 的铁律与「怎么读推送日志」（0 报错≠推送成功、dry-run 行与真实行同格式）、models.del 类改名残留绕过 .gitignore 与哨兵的缺口、以及 config/cc-switch-*.md 含真实 API Key 已被 .gitignore 排除（GitHub 只认 OpenRouter，DeepSeek 无检测器）
+description: force_push_github.sh 的正确调用方式、治理文件(.gitignore/.gitattributes)以 origin 为准的 [FIX-IGNORE-CANONICAL] 约定、推送后一律复核 ls-remote 的铁律与「怎么读推送日志」（0 报错≠推送成功、dry-run 行与真实行同格式）、models.del 类改名残留绕过 .gitignore 与哨兵的缺口、以及 config/cc-switch-*.md 含真实 API Key 已被 .gitignore 排除（GitHub 只认 OpenRouter，DeepSeek 无检测器）
 type: project
 ---
 
 ## 推送入口
 
-工作区 `/workspace/Video_Enhancement` 平时**不是** git 仓库（每次推送由脚本现建 `.git`）。官方入口是仓库根自带的 `force_push_github.sh`：
+工作区 `/workspace/Video_Enhancement` **本身就是一个普通 git 仓库**（origin 已配好 SSH），日常直接 `git commit` + `git push origin main` 即可（2026-09-23 实测可用）。仓库根另有 `force_push_github.sh`，用于「拿某个环境的**完整工作区内容**全量覆盖远程」这条路（会 `read-tree --empty` 重建索引，见下方治理文件一节）：
 
 ```bash
 cd /workspace/Video_Enhancement
@@ -45,7 +45,7 @@ git ls-remote origin refs/heads/main   # 与本地 git rev-parse refs/heads/main
 
 2026-09-23 清理根目录 stray 权重目录时实测：把 `models/` 改名成 **`models.del/`**（"待删"的常见做法）后，**两道防线都拦不住它**——
 
-- `.gitignore` 里只有 `models/`、`models_*/`（匹配不到 `models.del/`；且 `.gitignore` 只作用于未跟踪路径）；
+- `.gitignore` 里是 `/models/`、`/models_*/`（2026-09-23 已**锚定到仓库根**；仍匹配不到 `models.del/`；且 `.gitignore` 只作用于未跟踪路径）；
 - 脚本第 5 步哨兵正则 `^(models|models_[^/]*|temp|output|logs|gfpgan|\.trt_cache|\.t2_cache)/` 同样不匹配 `models.del/`。
 
 ⇒ 该目录 **128 MB（含两个 67 MB 的 .pth 权重）会直接进提交树被推上去**，而哨兵会照常打印 `✅ 大目录未被纳入`，给出假的安心感。
@@ -64,6 +64,18 @@ git ls-remote origin refs/heads/main   # 与本地 git rev-parse refs/heads/main
   不想删的，就从规则里排除，或加 `!` 负向规则。
 - 脚本第 4 步自带 `IGN_TRACKED` 守卫会**列出清单并要求 `ALLOW_BIG=1`** 才继续（原文 `如确认要移除它们，请加 ALLOW_BIG=1 重跑`）。**看到这条守卫不是故障**，是"你正在删以前跟踪的文件"的确认请求 —— 确认再放行。
 - ⚠️ `ALLOW_BIG=1` 会**同时**放行大目录哨兵，不只 `IGN_TRACKED`；用它之前先独立确认树里确实没有大目录（见上一节）。
+
+## 治理文件（.gitignore / .gitattributes）一律以 origin 为准 —— [FIX-IGNORE-CANONICAL]，2026-09-23
+
+`force_push_github.sh` 第 4 步用 `git read-tree --empty && git add -A` 重建索引，**完全以本地 `.gitignore` 为准**；而原第 3 节只在 `.gitignore` 缺失时才从远程取。⇒ **任一环境带着旧规则跑脚本，就会用旧规则覆盖远程**——这正是 2026-09-23「另一环境缺 `.gitattributes` + 未锚定的 `models/` → 覆盖后 EOL 锁定丢失、`external/IFRNet/models/` 等架构源码被剔除、全新 clone 起不来」的机制。
+
+现已改为：第 3 节对 `.gitignore` 与 `.gitattributes` **一律采用 `origin/$BRANCH` 版本**，本地有差异只告警、不采纳；需要本地优先时设 `IGNORE_LOCAL=1`。
+
+**How to apply**：
+- 要改这两个文件，**必须先 `git push` 到 origin** 再由各环境取用。只改本地不推 = 白改（下次跑脚本会被 origin 版本覆盖）。
+- 在别的环境看到 `⚠️ .gitignore 与 origin 不一致 → 覆盖为 origin 版本` 是**预期行为**，不是故障。
+- 验证手段：`bash -n force_push_github.sh` + 在**一次性克隆**里 `PUSH=0` 实跑。⚠️ 该脚本会 `update-ref refs/heads/main` 改写本地 main，**切勿**在主仓库直接实跑验证。
+- 配套的仓库侧锚定（同一类隐患，2026-09-23 完成）：`.gitignore` 中所有「运行/权重目录」模式已锚定为 `/logs/ /models/ /models_*/ /gfpgan/ /output/ /temp/ /tmp/`；缓存/工具目录（`__pycache__/`、`.trt_cache/`、`.vscode/`、`.codebuddy/` 等）**有意保持未锚定**，勿再"修正"。
 
 ## 密钥红线（2026-09-23 推送被 GitHub Push Protection 拦下）
 
