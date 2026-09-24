@@ -1,6 +1,6 @@
 ---
 name: verify_plan_implementation 门禁的基线与 7 项过期断言已修（含覆盖自动化）
-description: 门禁基线演进（2026-09-15 全量 94/88/0；2026-09-23 静态子集 49/47/0）；7 项过期断言已修；含覆盖清单自动化(BEH-E2)、H1/H3 环境降级规则、"是否新引入"判定手法，以及新断言"必须结构性证据、禁止匹配注释文案"的实证教训
+description: 门禁基线演进（2026-09-15 全量 94/88/0；2026-09-24 静态子集 50/48/0）；7 项过期断言已修；含覆盖清单自动化(BEH-E2)、H1/H3 环境降级规则、"是否新引入"判定手法，以及新断言"必须结构性证据、禁止匹配注释文案"+"必须做负向校验"的实证教训
 type: project
 ---
 
@@ -57,8 +57,23 @@ type: project
 - `python tests/verify_plan_implementation.py --skip-behavior --no-report-file`
   → **49 项 / 47 通过 / 0 失败 / 2 跳过**（此前静态 48 项）。
   ⚠️ 这与上面"全量 94 项 / 88 通过"是**不同口径**（`--skip-behavior` 不跑行为阶段），不要互相套用。
+  🔄 **2026-09-24 更新：50 项 / 48 通过 / 0 失败 / 2 跳过** —— 新增
+  `[FIX-PRESCAN-RECEIVE]`（见下）。引用"静态基线"时请用新数字。
 - 新增 `[FIX-MODEL-ARCH-LAZY]`（F-修复效果）：AST 判定 `external/ifrnet_video/main.py` 在**导入期**是否还存在 `_load_ifrnet_module(` 调用 —— 只跳过 `def/async def` 体（调用时才执行），**`class` 体与模块顶层 `if` 仍算导入期**；注释与模块文档串天然不参与判定。事件背景见
   [IFRNet models 包缺失](ifrnet-models-package-missing.md)。
+
+## 2026-09-24：新增 `[FIX-PRESCAN-RECEIVE]`（两条入口都要接预扫描/预热）
+
+- 新增 `[FIX-PRESCAN-RECEIVE]`（F-修复效果）：AST 取 `process_video_segments` /
+  `process_segments_directly` 的**函数体切片**收集 Call 名，判定 IFRNet/ESRGAN 四条
+  入口组合都接好了预扫描/预热（背景与负向结果详见
+  [P3-2/PROBE-OPT 预扫描缓存断点恢复](probe-scene-cut-cache-persistence.md)）。
+  同时要求两 processor 带 `[FIX-PRESCAN-RECEIVE]` 锚点（标签=代码↔脚本契约）。
+- **负向校验已做**（本文件反复强调"断言必须真的会失败"）：抹掉收段入口的
+  `prescan_scene_cuts(input_segments)` → FAIL；再抹掉 ESRGAN 收段的
+  `count_frames_parallel` → 仍 FAIL。**别只跑正向就说断言有效。**
+- 断言写法继续遵守本节教训：**用 AST/结构切片，禁止只匹配注释文案** —— 本例若改成
+  `"prescan_scene_cuts" in 文本`，则被注释掉的调用也会算通过。
 
 ## 2026-09-23：Linux + GPU 侧「完整测试套件」基线（三个入口 + 独立 harness）
 

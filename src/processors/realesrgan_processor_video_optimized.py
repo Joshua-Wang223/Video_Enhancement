@@ -424,7 +424,7 @@ class RealESRGANVideoProcessor:
         # [PROBE-CACHE-PERSIST] 启用帧数缓存落盘（断点恢复免重算）
         self._configure_probe_cache()
 
-        # [PROBE-OPT-RECEIVE] 与 process_video_segments 同款并行预热。本入口原先
+        # [FIX-PRESCAN-RECEIVE][PROBE-OPT-RECEIVE] 与 process_video_segments 同款并行预热。本入口原先
         # 缺席：验收门对每个分段 count_decoded_video_frames() 只能逐段串行全解码
         # （大分段实测每段数秒至 ~1.6 分钟）。收段路径（interpolate_then_upscale
         # 的 Step 2）同样吃得到并行 + 落盘的收益。异常不影响主流程，可用

@@ -161,6 +161,17 @@ DIRTY=allow bash make_snapshot.sh          # 工作区不干净时也继续
   `origin/main`，应当 `git rebase origin/main` 后再推；rebase 冲突处理见
   [远程/本地分叉](feedback_remote_authoritative_merge_back.md)。
 
+## Windows 开发机的推送路径（2026-09-24 建立）
+
+本机 `D:\Workspace_Python\Video_Enhancement` 与容器是**两条独立的凭据链**，别混：容器走 `ssh.github.com:443` + `~/.ssh/config`，本机走 22 端口原生 `github.com`。
+
+- 2026-09-24 之前本克隆的 `origin` 是 `https://Joshua-Wang223:ghp_…@github.com/...` —— **URL 里内嵌的 token 已失效**（`git push origin main` → `Invalid username or token`），而匿名 `ls-remote` 仍能读是因为仓库 public。该 token 已随改 URL **一并从 `.git/config` 清除**，但它**已泄露过 → 应去 GitHub 撤销/轮换**。
+- 现 remote = `git@github.com:Joshua-Wang223/Video_Enhancement.git`（SSH）。本机原先**没有任何 SSH 私钥**（`~/.ssh` 只有 `known_hosts`），2026-09-24 新生成 `~/.ssh/id_ed25519`（**无 passphrase**，`ssh-keygen -p -f ~/.ssh/id_ed25519` 可后加）并注册到 GitHub；指纹 `SHA256:4QQo43WGynDfmioB9ILHRpjwUU1QlCDRnlw1Obvw0xY`。
+- **排查顺序**：`ssh -T git@github.com`（期望 `Hi Joshua-Wang223!`）→ 报 `Permission denied (publickey)` 即"无 key 或未注册"，**不是网络问题**；通过后 `git push origin main`。注意换 SSH 后本机 `git fetch origin` 也依赖 key（此前匿名 HTTPS 可拉）。
+- **备用路径**（本机无 key 时实测可用，未用 URL 内嵌 token）：`git push https://github.com/Joshua-Wang223/Video_Enhancement.git main`，走 Windows Git Credential Manager 的浏览器授权（提示 `info: please complete authentication in your browser...`）。⇒ 凭据交给 helper/key，**别在 URL 里塞 token**。
+
+**本机能力边界（影响"验证做到哪一步"）**：Windows 开发机**无 torch、无 pytest、无 GPU**。因此凡是 `import ifrnet_video.pipeline`（其顶部 `import torch`）的测试都跑不起来 —— `tests/test_prescan_cache_persistence.py` 属此类，**只能在 Linux+GPU 侧执行**。本机可跑的是：`py_compile`、AST 静态门禁 `python tests/verify_plan_implementation.py --skip-behavior`（2026-09-24 实测 **50 项 / 0 失败**）、以及需要 ffmpeg 的场景（本机在 `/d/ffmpeg-master-latest-win64-gpl-shared/bin`）。
+
 ## 2026-09-23 本次推送记录
 
 基线 `9518b40`；内容同步提交 **`274095d`**（118 条目变更 / 466 文件 / 30.7 MB / 无大目录泄漏）。该提交之后可能还有仅含 memory 追加的提交，**当前指针一律以 `git ls-remote origin refs/heads/main` 为准**。回滚 = `git push --force origin 9518b40:refs/heads/main`，或本地 tag `backup/pre-force-push-20260923-032845`。中途那个含密钥的本地提交 `19b5358` 从未推送，已 `reflog expire --all + gc --prune=now` 清除。

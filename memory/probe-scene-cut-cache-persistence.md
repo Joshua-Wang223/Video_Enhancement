@@ -118,7 +118,16 @@ E2E：真 ffmpeg 4 段 → 验收 4/4、父进程内存缓存为 0（证明确�
 `upscale_then_interpolate` 只有 Step1 享受并行加速、Step2 退回串行的不对称。排查"优化没生效"
 类问题时，**先确认日志到底出自哪个阶段**（同文案不同来源是常态），再谈缓存命中。
 
-**验证**：本机为 Windows 开发机（无 torch/ffmpeg/python-pytest），只做了
-`py_compile` + AST 断言（`process_segments_directly` 同时含 `prescan_scene_cuts` /
-`count_frames_parallel`，ESRGAN 侧含 `count_frames_parallel`）。**完整回归需在 Linux+GPU
-侧跑** `tests/test_prescan_cache_persistence.py` + 门禁 `verify_plan_implementation.py`。
+**验证**：本机为 Windows 开发机（无 torch/pytest/GPU），只做了 `py_compile` +
+AST 断言。**完整回归需在 Linux+GPU 侧跑** `tests/test_prescan_cache_persistence.py`。
+
+**门禁新增静态断言 `[FIX-PRESCAN-RECEIVE]`（2026-09-24）**：`tests/verify_plan_implementation.py`
+的 `F-修复效果` 段新增一项，用 **AST 取方法函数体切片**（非注释匹配，遵守本文件
+"禁止只匹配注释文案"的约定）判定四条组合都接好了线：
+IFRNet 两条入口须同时含 `prescan_scene_cuts` + `count_frames_parallel`；Real-ESRGAN
+两条入口须含 `count_frames_parallel`（无切镜逻辑，不要求 `prescan_scene_cuts`）；
+另要求两个 processor 文件都带 `[FIX-PRESCAN-RECEIVE]` 锚点（标签=代码↔脚本契约）。
+- **负向校验已做**（防止"断言恒真"）：把收段入口的 `prescan_scene_cuts(input_segments)`
+  调用抹掉 → 该断言转 FAIL；再抹掉 ESRGAN 收段的 `count_frames_parallel` → 仍 FAIL。
+  负向脚本一次性执行后即删（在 gitignore 的 `tmp/` 下），未入库。
+- 基线：`--skip-behavior` 由 **49/47/0/2 → 50/48/0/2**（多的一项即本断言）。

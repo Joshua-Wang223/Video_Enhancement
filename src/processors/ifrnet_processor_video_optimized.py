@@ -366,7 +366,7 @@ class IFRNetProcessor:
         # [PROBE-CACHE-PERSIST]/[SCENE-CUT-PERSIST] 启用预扫描缓存落盘（断点恢复）
         self._configure_prescan_caches()
 
-        # [P3-2-RECEIVE] 与 process_video_segments 同款并行预扫描/预热。本入口原
+        # [FIX-PRESCAN-RECEIVE][P3-2-RECEIVE] 与 process_video_segments 同款并行预扫描/预热。本入口原
         # 先直接进 _process_segments：切镜检测只能在 _process_segment 内逐段惰性
         # 串行（每段多付一次完整软件解码），帧数预热也缺席（验收门逐段串行全解
         # 码）。收段路径（upscale_then_interpolate 的 Step 2）同样吃得到并行 +

@@ -2116,6 +2116,77 @@ def _run_fix_effect_phase() -> List[CheckResult]:
             "" if _lazy_ok else
             "导入期解析会让架构源码缺失直接炸掉整个 import（仅缺 IFRNet_S 也炸），"
             "应改为函数内惰性解析"))
+
+    # [FIX-PRESCAN-RECEIVE] 两条入口（源片 / 收段）都必须接预扫描 / 预热。
+    # 背景（2026-09-24）：process_segments_directly()（接收上游分段，如
+    # upscale_then_interpolate 的 Step 2）长期只调 _configure_*_cache() 把两个
+    # sidecar 配好却**没有任何预扫描/预热块** —— 切镜检测退回 _process_segment
+    # 内逐段惰性串行（每段多付一次完整软件解码），帧数验收退回逐段串行全解码；
+    # 两条入口不对称，且收段路径的 sidecar 白配。排查时还被"同文案不同阶段"的
+    # 日志误导过一次（IFRNet / Real-ESRGAN 的 `🔪 分割视频...` / `✅ 共 N 个片段`
+    # 一字不差，只看这两行无法判断阶段）。
+    # 判据（**结构性证据**，遵守本文件"禁止只匹配注释文案"的约定）：
+    #   ① AST 取方法**函数体切片**并收集其中的 Call 名：IFRNet 两条入口须同时含
+    #      prescan_scene_cuts 与 count_frames_parallel；Real-ESRGAN 两条入口须含
+    #      count_frames_parallel（该后端无切镜逻辑，不要求 prescan_scene_cuts）。
+    #   ② 两个 processor 文件均存在 [FIX-PRESCAN-RECEIVE] 锚点（标签是代码↔脚本
+    #      的契约，改名须两侧同步）。
+    def _method_call_names(path: Path, method_name: str):
+        """方法体内出现的被调用名集合；方法不存在 / 语法错误时返回 (None, 原因)。"""
+        try:
+            tree = ast.parse(read_text(path))
+        except SyntaxError as e:
+            return None, f"<SyntaxError line {e.lineno}>"
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                    and node.name == method_name:
+                names = set()
+                for sub in ast.walk(node):
+                    if isinstance(sub, ast.Call):
+                        fn = sub.func
+                        if isinstance(fn, ast.Name):
+                            names.add(fn.id)
+                        elif isinstance(fn, ast.Attribute):
+                            names.add(fn.attr)
+                return names, ""
+        return None, "方法不存在"
+
+    _prescan_expect = [
+        ("ifrnet_proc", "process_video_segments",
+         {"prescan_scene_cuts", "count_frames_parallel"}),
+        ("ifrnet_proc", "process_segments_directly",
+         {"prescan_scene_cuts", "count_frames_parallel"}),
+        ("esrgan_proc", "process_video_segments", {"count_frames_parallel"}),
+        ("esrgan_proc", "process_segments_directly", {"count_frames_parallel"}),
+    ]
+    _prescan_problems: List[str] = []
+    _prescan_evidence: List[str] = []
+    for _fk, _meth, _need in _prescan_expect:
+        _calls, _err = _method_call_names(FILES[_fk], _meth)
+        if _calls is None:
+            _prescan_problems.append(f"{_fk}.{_meth}: {_err}")
+            continue
+        _missing = sorted(_need - _calls)
+        _prescan_evidence.append(f"{_fk}.{_meth}={len(_need & _calls)}/{len(_need)}")
+        if _missing:
+            _prescan_problems.append(f"{_fk}.{_meth} 缺 {'/'.join(_missing)}")
+    _prescan_marker = all("[FIX-PRESCAN-RECEIVE]" in read_text(FILES[_fk])
+                          for _fk, _, _ in _prescan_expect)
+    if not _prescan_marker:
+        _prescan_problems.append("缺 [FIX-PRESCAN-RECEIVE] 锚点")
+    out.append(CheckResult(
+        "FIX-PRESCAN-RECEIVE", "F-修复效果",
+        "两条入口（源片/收段）都接预扫描/预热",
+        Status.PASS if not _prescan_problems else Status.FAIL,
+        "AST 函数体切片（非注释匹配）+ 锚点存在性",
+        "IFRNet 两条入口含 prescan_scene_cuts+count_frames_parallel；"
+        "ESRGAN 两条入口含 count_frames_parallel",
+        f"marker={_prescan_marker} " + " ".join(_prescan_evidence),
+        "" if not _prescan_problems else
+        "; ".join(_prescan_problems)
+        + " —— 收段入口 process_segments_directly 与源片入口 "
+          "process_video_segments 必须各自接预扫描/预热，"
+          "否则该链只有 Step1 享受并行收益"))
     return out
 
 
