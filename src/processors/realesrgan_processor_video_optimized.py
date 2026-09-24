@@ -423,6 +423,25 @@ class RealESRGANVideoProcessor:
         checkpoint = self._load_checkpoint()
         # [PROBE-CACHE-PERSIST] 启用帧数缓存落盘（断点恢复免重算）
         self._configure_probe_cache()
+
+        # [PROBE-OPT-RECEIVE] 与 process_video_segments 同款并行预热。本入口原先
+        # 缺席：验收门对每个分段 count_decoded_video_frames() 只能逐段串行全解码
+        # （大分段实测每段数秒至 ~1.6 分钟）。收段路径（interpolate_then_upscale
+        # 的 Step 2）同样吃得到并行 + 落盘的收益。异常不影响主流程，可用
+        # NVENC_PREWARM_PROBE=0 关闭。
+        if os.environ.get("NVENC_PREWARM_PROBE", "1") != "0" and len(input_segments) > 1:
+            try:
+                import time as _pw_t
+                _pw0 = _pw_t.perf_counter()
+                # [FIX-GATE-STRICT-COUNT] 预热与验收必须同口径（mode='decode'）。
+                _frames = count_frames_parallel(input_segments, max_workers=4,
+                                                mode="decode")
+                _ok = sum(1 for v in _frames.values() if v)
+                print(f"   ⏱️  [PROBE-OPT] 并行预热帧数缓存: {_ok}/{len(input_segments)} 段，"
+                      f"耗时 {_pw_t.perf_counter() - _pw0:.1f}s", flush=True)
+            except Exception as _pw_e:
+                print(f"   ⚠️  [PROBE-OPT] 帧数缓存预热失败（不影响主流程）: {_pw_e}", flush=True)
+
         return self._process_segments(input_segments, checkpoint)
 
     # -------------------------------------------------------------------------

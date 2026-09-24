@@ -365,6 +365,38 @@ class IFRNetProcessor:
         checkpoint = self._load_checkpoint()
         # [PROBE-CACHE-PERSIST]/[SCENE-CUT-PERSIST] 启用预扫描缓存落盘（断点恢复）
         self._configure_prescan_caches()
+
+        # [P3-2-RECEIVE] 与 process_video_segments 同款并行预扫描/预热。本入口原
+        # 先直接进 _process_segments：切镜检测只能在 _process_segment 内逐段惰性
+        # 串行（每段多付一次完整软件解码），帧数预热也缺席（验收门逐段串行全解
+        # 码）。收段路径（upscale_then_interpolate 的 Step 2）同样吃得到并行 +
+        # 落盘的收益。异常一律不影响主流程，可用 IFRNET_SCENE_CUT_PRESCAN=0 /
+        # NVENC_PREWARM_PROBE=0 单独关闭。全量论证见 process_video_segments。
+        if len(input_segments) > 1:
+            try:
+                import time as _sc_t
+                from ifrnet_video.pipeline import prescan_scene_cuts
+                _sc0 = _sc_t.perf_counter()
+                _sc_done = prescan_scene_cuts(input_segments)
+                print(f"   ✂️  [P3-2] 切镜预扫描完成: {_sc_done}/{len(input_segments)} 段，"
+                      f"耗时 {_sc_t.perf_counter() - _sc0:.1f}s", flush=True)
+            except Exception as _sc_e:
+                print(f"   ⚠️  [P3-2] 切镜预扫描失败（退回逐段惰性检测，不影响主流程）: "
+                      f"{_sc_e}", flush=True)
+
+        if os.environ.get("NVENC_PREWARM_PROBE", "1") != "0" and len(input_segments) > 1:
+            try:
+                import time as _pw_t
+                _pw0 = _pw_t.perf_counter()
+                # [FIX-GATE-STRICT-COUNT] 预热与验收必须同口径（mode='decode'）。
+                _frames = count_frames_parallel(input_segments, max_workers=4,
+                                                mode="decode")
+                _ok = sum(1 for v in _frames.values() if v)
+                print(f"   ⏱️  [PROBE-OPT] 并行预热帧数缓存: {_ok}/{len(input_segments)} 段，"
+                      f"耗时 {_pw_t.perf_counter() - _pw0:.1f}s", flush=True)
+            except Exception as _pw_e:
+                print(f"   ⚠️  [PROBE-OPT] 帧数缓存预热失败（不影响主流程）: {_pw_e}", flush=True)
+
         return self._process_segments(input_segments, checkpoint)
 
     def process_video(self, input_video: str, output_video: str) -> bool:

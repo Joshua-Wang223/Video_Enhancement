@@ -1,6 +1,6 @@
 ---
 name: P3-2 切镜预扫描 / PROBE-OPT 帧数预热的断点恢复分析
-description: 切镜预扫描与帧数预热都是进程内缓存、断点重启必重算；2026-09-23 已按路线 B 落盘 sidecar 实现，含三个落盘陷阱的规避
+description: 切镜预扫描与帧数预热都是进程内缓存、断点重启必重算；2026-09-23 已按路线 B 落盘 sidecar 实现，含三个落盘陷阱的规避；同日补齐收段入口 process_segments_directly（[P3-2-RECEIVE]/[PROBE-OPT-RECEIVE]）
 type: project
 ---
 
@@ -85,3 +85,40 @@ type: project
 **验证（补充后）**：`tests/test_prescan_cache_persistence.py` **18/18**（新增 process 模式
 E2E：真 ffmpeg 4 段 → 验收 4/4、父进程内存缓存为 0（证明确在独立进程）、落盘 4/4 累积、
 重启后 4/4 零解码命中；并用「还原覆盖写」做负向校验确认该断言确实会失败）。
+
+---
+
+**✅ 收段入口补齐（2026-09-23 晚，`[P3-2-RECEIVE]` / `[PROBE-OPT-RECEIVE]`）**
+
+**触发**：用户拿三份日志问「切镜预扫描那段信息为什么不见了」，前提是"同一命令的前后对比"。
+拆解后否掉了两个看似合理的解释（都不是根因）：
+- ❌「缓存命中所以跳过」——只能解释 `[P3-2] 切镜预扫描: N 段` + 逐段 `[切镜]` 行消失，
+  **解释不了** processor 那句**无条件**打印的 `✂️ [P3-2] 切镜预扫描完成: N/N 段` 一起消失；
+- ❌「预扫描块被优化删掉」——`git blame` 证明该块自 `0c3badc` 起未被改动。
+- ✅ 真根因：那两段日志**根本不是插帧阶段打的**。`🔪 分割视频...` / `✅ 共 N 个片段` 在
+  IFRNet（`ifrnet_processor_video_optimized.py:269/284`）与 Real-ESRGAN
+  （`realesrgan_processor_video_optimized.py:349/362`）两侧**文案一字不差**；用户跑的是
+  `--skip-interpolate`（只有 ESRGAN），所以看到的是超分阶段的分割日志 —— 后面直接接
+  `[probe]/[PROBE-OPT]`、没有 `[P3-2]` 就是判别特征。
+
+**顺带查出的真缺口**：IFRNet 的 `process_segments_directly()`（`upscale_then_interpolate`
+的 Step 2 = 收上游 ESRGAN 的分段）里**压根没有预扫描块** —— 只有 `_configure_prescan_caches()`
+把 `scene_cuts.json` / `probe_cache.json` 两个 sidecar 配好了却**无人消费**（帧数侧靠惰性
+`count_decoded_video_frames` 落了盘，慢；切镜侧连并行扫描都没有）。Real-ESRGAN 的
+`process_segments_directly()` 同样缺 `[PROBE-OPT]`。
+
+**修法**：两条入口补齐同款两块，位置都是 `_configure_*_cache()` 之后、`_process_segments()`
+之前（变量换成 `input_segments`，异常语义与开关完全沿用）：
+- IFRNet：`[P3-2]` 切镜预扫描 + `[PROBE-OPT]` 帧数预热；
+- Real-ESRGAN：仅 `[PROBE-OPT]` 帧数预热（无切镜逻辑）。
+
+**How to apply（非平凡教训）**：判断「某优化是否覆盖某入口」时**别只看 `process_video_segments`**。
+每个处理器有**两条入口**：源片（`process_video_segments`，自己切分段）与收段
+（`process_segments_directly`，对接上游产出）。两条各自独立接预扫描/预热，漏一条就会出现
+`upscale_then_interpolate` 只有 Step1 享受并行加速、Step2 退回串行的不对称。排查"优化没生效"
+类问题时，**先确认日志到底出自哪个阶段**（同文案不同来源是常态），再谈缓存命中。
+
+**验证**：本机为 Windows 开发机（无 torch/ffmpeg/python-pytest），只做了
+`py_compile` + AST 断言（`process_segments_directly` 同时含 `prescan_scene_cuts` /
+`count_frames_parallel`，ESRGAN 侧含 `count_frames_parallel`）。**完整回归需在 Linux+GPU
+侧跑** `tests/test_prescan_cache_persistence.py` + 门禁 `verify_plan_implementation.py`。

@@ -999,6 +999,35 @@ IFRNet v6.4.x NVENC SDK Level 1 GPU 直通 + CE-Pipeline 异步编码相比旧�
 
 ---
 
+## 分段预扫描与断点恢复（[P3-2] / [PROBE-OPT]）
+
+分段处理前有两项「预扫描」，都对**全部**分段跑一遍并把结果缓存，段循环 / 验收阶段直接命中、不再重复解码：
+
+| 标记 | 内容 | 落盘文件 | 关闭开关 |
+|------|------|----------|----------|
+| `[P3-2]` | 切镜预扫描（检测硬切镜，供切镜处鬼影修复使用） | `scene_cuts.json` | `IFRNET_SCENE_CUT_PRESCAN=0` |
+| `[PROBE-OPT]` | 帧数预热（段验收门要用的全解码帧数计数） | `probe_cache.json` | `NVENC_PREWARM_PROBE=0` |
+
+**两条入口都会执行**（早期只有第一条有，第二条缺失）：
+
+- `process_video_segments()` —— 处理器自己切分段（`interpolate_then_upscale` 的 Step 1）
+- `process_segments_directly()` —— 接收上游处理器的分段（`upscale_then_interpolate` 的 Step 2）
+
+**断点恢复**：缓存键为 `路径 + 大小 + mtime_ns`（切镜键另含阈值 + 判据版本）。resume 时分段走 `split_video_by_time()` 复用分支、字节与 mtime 不变 → 键稳定，因此缓存以 checkpoint 同目录的 sidecar 落盘（`temp/{stage}/{prefix}_{video}/`），下次运行零解码命中。只持久化「确实扫描成功」的项，失败结果不落盘（避免一次瞬时失败被永久固化成「无切镜」）。可用 `IFRNET_SCENE_CUT_CACHE_PERSIST=0` / `NVENC_PROBE_CACHE_PERSIST=0` 退回纯进程内缓存。
+
+预期日志（已缓存的段不再逐段打印，只保留完成行）：
+
+```
+[P3-2] 切镜预扫描: 5 段 (并行 4 路, 每路 threads=2)
+   [切镜] segment_000.mp4: 19 处硬切镜 -> 跳过插值
+   ✂️  [P3-2] 切镜预扫描完成: 5/5 段，耗时 40.9s
+   ⏱️  [PROBE-OPT] 并行预热帧数缓存: 5/5 段，耗时 10.4s
+```
+
+> ⚠️ **别把两阶段的日志看混**：`🔪 分割视频...` / `✅ 共 N 个片段` 在 IFRNet 与 Real-ESRGAN 两侧文案**一字不差**。看 `✅ 共 N 个片段` 的**下一行**才能区分——紧跟 `[P3-2]` 的是插帧阶段；直接接 `[probe]` / `[PROBE-OPT]` 的是 Real-ESRGAN 阶段（`--skip-interpolate`，或 `upscale_then_interpolate` 的 Step 1），它不做切镜检测。收段入口则打 `📹 输入分段数: N` 而不是分割日志。
+
+---
+
 ## 流水线报告（--report）
 
 优化版支持端到端流水线 JSON 报告，包含：
