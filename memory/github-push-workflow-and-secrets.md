@@ -175,3 +175,11 @@ DIRTY=allow bash make_snapshot.sh          # 工作区不干净时也继续
 ## 2026-09-23 本次推送记录
 
 基线 `9518b40`；内容同步提交 **`274095d`**（118 条目变更 / 466 文件 / 30.7 MB / 无大目录泄漏）。该提交之后可能还有仅含 memory 追加的提交，**当前指针一律以 `git ls-remote origin refs/heads/main` 为准**。回滚 = `git push --force origin 9518b40:refs/heads/main`，或本地 tag `backup/pre-force-push-20260923-032845`。中途那个含密钥的本地提交 `19b5358` 从未推送，已 `reflog expire --all + gc --prune=now` 清除。
+
+## 2026-09-26 WSL 侧 SSH 密钥持久化（三段路径中的 WSL 环节）
+
+WSL 侧（`/mnt/d/Workspace_Python/Video_Enhancement`，与 Windows `D:\...` 是同一份工作树）的 `~/.ssh` **原本只有 `known_hosts`、没有私钥**，因此 `git push` 直接 `Permission denied (publickey)`。
+
+处置：把 Windows 侧**同一把**已注册密钥复制进 WSL —— `cp /mnt/c/Users/Administrator/.ssh/id_ed25519 ~/.ssh/`（私钥 600 / 公钥 644 / `~/.ssh` 700）。两侧指纹一致：`SHA256:4QQo43WGynDfmioB9ILHRpjwUU1QlCDRnlw1Obvw0xY`。实测 `ssh -T git@github.com` → `Hi Joshua-Wang223!`，`git ls-remote origin refs/heads/main` 正常。
+
+**How to apply:** 之后在 WSL 里可直接 `git push`，不必再走 `GIT_SSH_COMMAND`。⚠️ 不能图省事直接 `ssh -i /mnt/c/Users/Administrator/.ssh/id_ed25519`：drvfs 挂载文件权限恒为 777，ssh 会因 "UNPROTECTED PRIVATE KEY FILE" 拒绝；必须先复制到 ext4 侧再 `chmod 600`。临时用法（不落盘）也走这条路：`cp` 到 `/tmp` → 用完 `rm`。
