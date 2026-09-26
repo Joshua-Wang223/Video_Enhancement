@@ -1,6 +1,6 @@
-# verify_segment_bitstream_v3.py mpeg4 VOP 深度分析实机验证结论
+# segment_bitstream_verify_v3.py mpeg4 VOP 深度分析实机验证结论
 
-2026-08-11 Windows 本地实机验证（`tests/verify_segment_bitstream_v3.py`，v5 多编码扩展）。
+2026-08-11 Windows 本地实机验证（`Accessory/verify/segment_bitstream_verify_v3.py`，v5 多编码扩展）。
 
 ## 核心修正：VOP header 真实位序（与 ISO 标准书面顺序不同）
 
@@ -67,7 +67,7 @@ memory 60656380 曾记录「fixed.avi 有 21231 个 I-VOP、21032 连 I-VOP、vo
 
 ## 修复文件
 
-`tests/verify_segment_bitstream_v3.py`（v5，基于 v2 的独立扩展）：
+`Accessory/verify/segment_bitstream_verify_v3.py`（v5，基于 v2 的独立扩展）：
 - `probe_video_codec()`: ffprobe 读 v:0 codec_name
 - `extract_annexb_es(path, codec)`: 按编码分支提取（h264→h264_mp4toannexb / mpeg4 家族→-f m4v / hevc→hevc_mp4toannexb）
 - `parse_mpeg4_es()`: VOL resolution + VOP header
@@ -76,7 +76,7 @@ memory 60656380 曾记录「fixed.avi 有 21231 个 I-VOP、21032 连 I-VOP、vo
 
 ## v2 多编码容错（2026-08-11 追加）
 
-`tests/verify_segment_bitstream_v2.py` 也获得多编码容错（与 v3 共用设计）：
+`Accessory/verify/segment_bitstream_verify_v2.py` 也获得多编码容错（与 v3 共用设计）：
 - **非 H.264/HEVC（mpeg4/DivX/Xvid/vp9/av1 等）→ 简单提示不判失败**：`[2] 提示: 非
   H.264/HEVC（codec=mpeg4），跳过 NAL 专项检查`，不再因 h264_mp4toannexb bsf 不支持
   而抛出误导性报错崩溃。frames/packets 与 pts 检查照常执行。

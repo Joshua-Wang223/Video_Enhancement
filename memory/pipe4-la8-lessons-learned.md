@@ -12,7 +12,7 @@ metadata:
 ## 背景
 
 v6.4.3.1/4.1/5.1 在移除 `pipeline_depth forced 4→1` guard 后，pipe=4+LA=8 输出严重花屏+缺帧。
-测试脚本 `test_nvenc_completion_event_v4.py` 在同一配置下一切正常。
+测试脚本 `nvenc_completion_event_matrix_v4.py` 在同一配置下一切正常。
 经过三轮分析→实施→失败→用户修正，最终确认正确方案。
 
 ---

@@ -39,7 +39,7 @@
 
 ## 验收与验证状态
 
-- verify_plan_implementation.py 新增 **[FIX-HEVC-LA-OPEN]** 门禁（config 双侧 false
+- plan_implementation_gate.py 新增 **[FIX-HEVC-LA-OPEN]** 门禁（config 双侧 false
   + 处理器含 SOFT-RETIRED 标记且无 LA 改写）→ 2026-08-29 复跑 90 项：88 PASS / 0 FAIL /
   0 WARN / 2 SKIP（`F-修复效果` 10 项全 PASS，含 FIX-H2D-SYNC / FIX-HEVC-LA-OPEN /
   FIX-GATE / FIX-EOS-ORDER / FIX-STRICT-EOS / FIX-SIZE-CAP / FIX-NAL-COMMON）。
@@ -59,7 +59,7 @@
 软退役补丁（两个 processor 的 [FIX-HEVC-LA-SOFT-RETIRED]）+ config 翻转
 （`hevc_la_disable: false`）+ `FIX-HEVC-LA-OPEN` 门禁已在两侧仓库落地一致：
 `src/processors/ifrnet_processor_video_optimized.py`、`realesrgan_processor_video_optimized.py`、
-`config/default_config.json:94,178`、`tests/verify_plan_implementation.py:1451`。
+`config/default_config.json:94,178`、`Accessory/verify/plan_implementation_gate.py:1451`。
 （2026-08-28 记录中的"Windows 仓库仍为规避版待同步"状态已于 2026-08-29 消除。）
 
 ## 相关记忆

@@ -58,7 +58,7 @@
 
 1. **`cuCtxSetCurrent(p)` 之后再 `cuCtxPushCurrent(p)` 必然返回 201**
    （同一 context 已是 current 时不可再入栈；只有当前线程无 current context 时 push 才返回 0）。
-   证据：`tests/probe_cuda_context.py` 的 `depth` / `seq` / `sim` 模式。
+   证据：`Accessory/probe/cuda_context_probe.py` 的 `depth` / `seq` / `sim` 模式。
 2. **HEVC 驱动对「未就绪 buffer」的 `LockBitstream`，`doNotWait=0/1` 都可能永久阻塞**；
    H.264 则是**空槽返回 SUCCESS + size=0**（不阻塞）。
    ⇒ 绝不能靠 Lock 返回值试探就绪状态。
@@ -76,13 +76,13 @@
 cd /workspace/Video_Enhancement
 
 # 失败用例（本缺陷）
-python tests/repro_ifrnet_lookahead.py --frames 900 --codec h264 --la 8 \
+python Accessory/probe/ifrnet_lookahead_repro.py --frames 900 --codec h264 --la 8 \
     --rc vbr_hq --qp 21 --chunk 128 --segments 3 --out temp/retest/issue_h264_la8.mp4
 
 # 对照：以下 3 组均通过
-python tests/repro_ifrnet_lookahead.py --frames 900 --codec h264 --la 0  --rc vbr_hq --qp 21 --chunk 128 --segments 3 --out temp/retest/ok_h264_la0.mp4
-python tests/repro_ifrnet_lookahead.py --frames 900 --codec hevc --la 8 --rc vbr_hq --qp 21 --chunk 128 --segments 3 --out temp/retest/ok_hevc_la8.mp4
-python tests/repro_ifrnet_lookahead.py --frames 900 --codec hevc --la 0 --rc vbr_hq --qp 21 --chunk 128 --segments 3 --out temp/retest/ok_hevc_la0.mp4
+python Accessory/probe/ifrnet_lookahead_repro.py --frames 900 --codec h264 --la 0  --rc vbr_hq --qp 21 --chunk 128 --segments 3 --out temp/retest/ok_h264_la0.mp4
+python Accessory/probe/ifrnet_lookahead_repro.py --frames 900 --codec hevc --la 8 --rc vbr_hq --qp 21 --chunk 128 --segments 3 --out temp/retest/ok_hevc_la8.mp4
+python Accessory/probe/ifrnet_lookahead_repro.py --frames 900 --codec hevc --la 0 --rc vbr_hq --qp 21 --chunk 128 --segments 3 --out temp/retest/ok_hevc_la0.mp4
 ```
 
 失败输出：
@@ -164,7 +164,7 @@ RuntimeError: [NVENCEncoder] strict drain abandoned target slot: slot=0, pending
 cd /workspace/Video_Enhancement
 for spec in "h264:8" "h264:0" "hevc:8" "hevc:0"; do
   c=${spec%%:*}; l=${spec##*:}
-  python tests/repro_ifrnet_lookahead.py --frames 900 --codec $c --la $l \
+  python Accessory/probe/ifrnet_lookahead_repro.py --frames 900 --codec $c --la $l \
       --rc vbr_hq --qp 21 --chunk 128 --segments 3 \
       --out temp/retest/A1/fin_${c}_la${l}.mp4 < /dev/null
 done
@@ -178,7 +178,7 @@ done
 | 4 | HEVC + LA=0 | ALL PASS（回归）| ✅ ALL PASS，exit=0 |
 | 5 | 帧数守恒 | 每组 3 段各 `pairs=900 expected=900`，`empty=0`、`重复fi=0`、`相邻逐字节重复=0`、`fi序列正确=True`、`decode_errors=0` | ✅ 12/12 段全项达标 |
 | 6 | 无挂死 | 全程无「编码线程未在 120s 内退出」，无 `NVENC_HEVC_DRAIN_POLL` 相关死锁 | ✅ 单段 5–7s；结束后无残留进程、显存回落 0 MiB |
-| 7 | 真实素材抽验 | `--codec h264 --lookahead-depth-ifrnet 8`，解码级验收通过、exit=0 | ✅ `tests/repro_real_frames.py -i benchmark_output/word_world_2_v6.4.5_x2.mp4 --codec h264 --la 8 --frames 300` → `pairs=300 expected=300`，钳制 0 次触发（HEVC 同档亦通过）|
+| 7 | 真实素材抽验 | `--codec h264 --lookahead-depth-ifrnet 8`，解码级验收通过、exit=0 | ✅ `Accessory/probe/real_frames_encode_repro.py -i benchmark_output/word_world_2_v6.4.5_x2.mp4 --codec h264 --la 8 --frames 300` → `pairs=300 expected=300`，钳制 0 次触发（HEVC 同档亦通过）|
 | 8 | ~~任务 B：ESRGAN 尺寸钳制~~ | 回归时确认 `grep -c _is_legal_bitstream_size external/realesrgan_video/nvenc_sdk.py` 仍 ≥ 6 | ✅ = 6（2026-09-09 复核）|
 | 9 | **任务 A′：IFRNet 侧强制消费** | 故障注入下**不挂死、无 SIGSEGV**，正常工况下钳制 0 次触发 | ✅ 见下方 A′ 实测 |
 | 10 | 13 处 HEVC 修复未丢 | §1 的 `grep -c` = 13 | ✅ = 13（2026-09-09 复核）|
@@ -244,7 +244,7 @@ done
 `SUCCESS + 垃圾 size`（实测 1.66 / 3.57 / 7.42 MB，远超合法上限），
 按该长度 `(c_uint8 * size).from_address(ptr)` 即**越界读 → SIGSEGV**。
 
-这不是理论风险：IFRNet 侧在补上该钳制前，`tests/../evidence/fault.txt` 的 faulthandler
+这不是理论风险：IFRNet 侧在补上该钳制前，`Accessory/../evidence/fault.txt` 的 faulthandler
 已把 SIGSEGV 精确定位到 `_drain_outputs_blocking` 的 `from_address`。
 **ESRGAN 侧目前处于 IFRNet 侧修复之前的同等裸奔状态。**
 
@@ -409,14 +409,14 @@ RESUME.md 第 106 行记录的「循环依赖」。
 - 本次全部改动备份：`temp/retest/patched_backup/`
   （`ifrnet_nvenc_sdk_patched.py` / `ifrnet_pipeline.py` / `realesrgan_nvenc_sdk.py` /
    `realesrgan_main.py` / `realesrgan_processor_video_optimized.py` / `src_video_utils.py`）
-- 编码层回归：`tests/repro_ifrnet_lookahead.py`（⚠️ 已修复其 `mux()` 硬编码 `-f hevc` 的 bug，
+- 编码层回归：`Accessory/probe/ifrnet_lookahead_repro.py`（⚠️ 已修复其 `mux()` 硬编码 `-f hevc` 的 bug，
   否则 H.264 用例会假失败）
-- CUDA context 语义探针：`tests/probe_cuda_context.py`（7 种模式）
-- 鬼影/切镜分析：`tests/analyze_interp_ghost.py`、`tests/diagnose_scene_cut_ghost.py`、
-  `tests/calibrate_scene_cut_threshold.py`、`tests/verify_scene_cut_fix.py`
-- libcuda 调用日志钩子：`tests/sitecustomize.py`
+- CUDA context 语义探针：`Accessory/probe/cuda_context_probe.py`（7 种模式）
+- 鬼影/切镜分析：`Accessory/analyze/interp_ghost_analyzer.py`、`Accessory/analyze/scene_cut_ghost_analyzer.py`、
+  `Accessory/analyze/scene_cut_threshold_calibrator.py`、`Accessory/verify/scene_cut_fix_verify.py`
+- libcuda 调用日志钩子：`Accessory/infra/sitecustomize.py`
   （`NVENC_CTXLOG=/abs/log PYTHONPATH=/workspace/Video_Enhancement/tests python ...`）
-- 帧数探测优化校验：`tests/test_frame_count_probe.py`（2026-09-05 新增，验证 P0–P4）
+- 帧数探测优化校验：`Accessory/test/test_frame_count_probe.py`（2026-09-05 新增，验证 P0–P4）
 - **R1 现场交接 / 断点续跑手册**：`temp/retest/HANDOFF_RESUME.md`
   （含本次会话全部 10 项修复清单、9 个文件 md5、续跑步骤、未决问题）
 
@@ -502,7 +502,7 @@ faulthandler 定位（修复前）：`encode_frames_stream` EOS `LockBitstream`�
 | 4 | 站点 2（`_lock_bitstream_blocking`）/ 3（`_lock_bitstream_with_retry`）：命中即强制消费 | 同 1 |
 | 5 | 站点 4（EOS 排空）/ 5（`flush`）：保留 deadline 重试，到期后转强制消费并 `continue`（原为 break/raise，留下悬空记账） | 同 1 |
 | 6 | **修 `close()` 销毁顺序**：改为 NVIDIA 官方顺序（先 `DestroyEncoder` 再 `_destroy_all_slots()`） | `[FIX-CLOSE-ORDER]` |
-| 7 | `tests/repro_ifrnet_lookahead.py` 加 try/finally 保证异常路径也 close | `[FIX-REPRO-CLOSE]` |
+| 7 | `Accessory/probe/ifrnet_lookahead_repro.py` 加 try/finally 保证异常路径也 close | `[FIX-REPRO-CLOSE]` |
 
 **第 6 项是故障注入下 exit=139 的直接根因**：原实现先 `_destroy_all_slots()` 后
 `DestroyEncoder`，段中途异常退出时驱动 LA 管线仍持有这些 buffer 的引用，
@@ -521,16 +521,16 @@ faulthandler 定位（修复前）：`encode_frames_stream` EOS `LockBitstream`�
 
 ### 14.4 配套工具（2026-09-09 新增）
 
-- `tests/_faultinj_wrap.py` —— 故障注入包装器：`faulthandler.enable()`（SIGSEGV 也 dump Python 栈）
+- `Accessory/infra/fault_injection_wrapper.py` —— 故障注入包装器：`faulthandler.enable()`（SIGSEGV 也 dump Python 栈）
   + `dump_traceback_later(N)` 定位挂死点。
   ```bash
-  env IFRNET_NVENC_MAX_BS_BYTES=1024 python tests/_faultinj_wrap.py 120 \
+  env IFRNET_NVENC_MAX_BS_BYTES=1024 python Accessory/infra/fault_injection_wrapper.py 120 \
       --frames 100 --codec hevc --la 8 --rc vbr_hq --qp 21 --chunk 32 --segments 1 \
       --out temp/retest/x.mp4
   ```
-- `tests/repro_real_frames.py` —— 真实素材编码回归（验证正常工况钳制 0 次触发）。
+- `Accessory/probe/real_frames_encode_repro.py` —— 真实素材编码回归（验证正常工况钳制 0 次触发）。
   ```bash
-  python tests/repro_real_frames.py -i benchmark_output/word_world_2_v6.4.5_x2.mp4 \
+  python Accessory/probe/real_frames_encode_repro.py -i benchmark_output/word_world_2_v6.4.5_x2.mp4 \
       --codec h264 --la 8 --frames 300
   ```
 

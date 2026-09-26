@@ -67,15 +67,15 @@
 
 ## 验收工具链修复（v2 与 v3 矛盾根因）
 
-- `tests/verify_segment_bitstream_v2.py`：`check_decode_integrity` 加 `-vsync 0 -vf showinfo`，解析逐帧 pts 计算 dup/drop/backward（对齐 v3 `_parse_showinfo_line` 算法），替换 250 行 `'pts_anomaly' in low` 空转（该串是 v3 自定义格式，ffmpeg 从不输出 → v2 [3] 恒空转 OK）。
+- `Accessory/verify/segment_bitstream_verify_v2.py`：`check_decode_integrity` 加 `-vsync 0 -vf showinfo`，解析逐帧 pts 计算 dup/drop/backward（对齐 v3 `_parse_showinfo_line` 算法），替换 250 行 `'pts_anomaly' in low` 空转（该串是 v3 自定义格式，ffmpeg 从不输出 → v2 [3] 恒空转 OK）。
 - 实测：损坏段1 检出 153 条 pts drop（与 v3 pts_drops=153 **精确一致**），健康段2 无异常 → v2 与 v3 不再矛盾。
-- `tests/analyze_video_pipeline_v3.py`：汇总层加 frames<<packets 硬失败标记（`[HARD-FAIL] 帧数守恒`）。
-- `tests/verify_segment_bitstream_v3.py`：同样移植 showinfo pts 真实解析（消除 268 行空转）。
+- `Accessory/analyze/video_pipeline_analyzer_v3.py`：汇总层加 frames<<packets 硬失败标记（`[HARD-FAIL] 帧数守恒`）。
+- `Accessory/verify/segment_bitstream_verify_v3.py`：同样移植 showinfo pts 真实解析（消除 268 行空转）。
 
 ## 验证
 
-- 合成回归（`tests/verify_rotation_backport.py` 重构）：20 组随机乱序重排缓冲输出严格递增 + 帧数守恒、正常流零误伤、BR 钳制、6 版本 AST 断言（rotation 已移除 + stream 版 drain 含 ts）全通过。
-- **需生产 GPU**：`python tests/diagnose_lockbitstream_timestamp.py --la 8` sweep 确认 outputTimeStamp@40 回显偏移；实跑 tt2 同参数命令复验段1 frames==packets、frame_num 无回退、v2/v3 全部 PASS、无花屏卡顿。
+- 合成回归（`Accessory/verify/stream_ts_reassoc_backport_verify.py` 重构）：20 组随机乱序重排缓冲输出严格递增 + 帧数守恒、正常流零误伤、BR 钳制、6 版本 AST 断言（rotation 已移除 + stream 版 drain 含 ts）全通过。
+- **需生产 GPU**：`python Accessory/probe/lockbitstream_timestamp_diagnose.py --la 8` sweep 确认 outputTimeStamp@40 回显偏移；实跑 tt2 同参数命令复验段1 frames==packets、frame_num 无回退、v2/v3 全部 PASS、无花屏卡顿。
 
 ## 2026-08-12 生产实跑 V1→V2 修正（temp/test5/output_tt5.txt）
 
@@ -95,11 +95,11 @@ V1 首次实跑暴露 3 个缺陷，已全部修复为 V2：
 
 ## 2026-08-12 生产 sweep 确认 V2 + 诊断脚本双射判定修复（temp/test6/output_tt6.txt）
 
-tt6 生产执行 `python tests/diagnose_lockbitstream_timestamp.py --la 8` 与 `--la 16`：
+tt6 生产执行 `python Accessory/probe/lockbitstream_timestamp_diagnose.py --la 8` 与 `--la 16`：
 
 1. **outputTimeStamp@40 回显完整、双射成立**：LA=8 提交 18 帧、drain 71 块，@40 命中 18/18；LA=16 提交 34 帧、drain 127 块，@40 命中 34/34。sweep 明细中 @40 的 u64/u32 唯一命中值集合完整覆盖提交 ts 集合。
 2. **「未找到双射偏移」结论是判定误报**：`analyze()` 完全双射三条件含 `n_drain == len(submitted_set)`（drain 块数==提交帧数）。LA 预热期硬件把 SPS/PPS/AUD 作为独立无 VCL 辅助块 drain（ts=0/重复），LA=8 时 71>18、LA=16 时 127>34 → 计数恒等式必然失败，即使 @40 已 100% 回显。
-3. **sweep 判定修复（tests/diagnose_lockbitstream_timestamp.py，仅此一文件）**：双射判定基于 VCL 帧子集——records 组装时已用 `_parse_frame_num` 解析 frame_num（辅助块=None），与生产 `_nal_first_vcl_type`「无 VCL 辅助块不占 fi、不进 seen」策略同源：
+3. **sweep 判定修复（Accessory/probe/lockbitstream_timestamp_diagnose.py，仅此一文件）**：双射判定基于 VCL 帧子集——records 组装时已用 `_parse_frame_num` 解析 frame_num（辅助块=None），与生产 `_nal_first_vcl_type`「无 VCL 辅助块不占 fi、不进 seen」策略同源：
    - `analyze()`：`vcl_records = [r for r in records if r['frame_num'] is not None]`；`bij = (len(uniq)==len(submitted_set) and uniq==submitted_set)`，移除 n_drain 计数恒等式；多 slice 同帧 ts 重复经 set 去重兼容；u64/u32 两处 sweep 同样处理。
    - `print_report()`：报告头 `(VCL=n 辅助块=m)`；验证明细辅助块行标注 `aux/(aux,skip)` 不参与一致性比对（辅助块 ts=0 是合法值）；顺序统计（est_fi/ts-fi 序列与乱序判定）仅基于 VCL 帧，避免 ts=0 干扰。
    - 退出码语义不变（命中 exit 0 / 未命中 exit 1）。
@@ -109,7 +109,7 @@ tt6 生产执行 `python tests/diagnose_lockbitstream_timestamp.py --la 8` 与 `
 
 ## 2026-08-12 生产实机确认：诊断判定修复生效（tt7 日志）
 
-重跑 `python tests/diagnose_lockbitstream_timestamp.py --la 8` 与 `--la 16`：
+重跑 `python Accessory/probe/lockbitstream_timestamp_diagnose.py --la 8` 与 `--la 16`：
 
 1. **@40 双射判定通过（exit 0）**：LA=8 → `[u64] 完全双射偏移: [40]`、`[u32] 完全双射偏移: [40]`，18/18 命中；LA=16 → 同上，34/34 命中。报告头 `(VCL=18 辅助块=53)` / `(VCL=34 辅助块=93)` 正确，辅助块行标注 `aux/(aux,skip)` 生效。
 2. **辅助块 ts 轮转细节（细化 tt5「实测 ts=0 重复回显」说法）**：辅助块（独立 SPS/PPS/AUD）的 outputTimeStamp 非恒 0，而是**按物理 slot 轮转回显上次占用该 slot 的帧 ts**——LA=8 时 1009..1017（共 6 轮）、LA=16 时 1017..1033（共 7 轮），全部落在已提交 ts 集合内、与 VCL 帧 ts 重叠。因 `_nal_first_vcl_type` 先判块内有无 VCL slice（无 VCL 即缓存参数集后跳过、不进 ts 解析/seen），两种 ts 表现（0 或轮转回显）均被安全处理——这是「先判 VCL 再读 ts」顺序的必要性佐证（若先读 ts，辅助块 ts 会与 VCL 帧 ts 冲突污染 seen）。

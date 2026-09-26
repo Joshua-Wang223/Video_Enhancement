@@ -62,7 +62,7 @@ IFRNET_NVENC_CROSS_SEGMENT_REUSE=1  → 放开 HEVC/AV1 跨段复用
 ### 硬指标（全部满足，10/10 组合 PASS）
 
 - 全部段完成无挂死（run exit=0，timeout 540s 无超时）
-- `verify_segment_bitstream_v4.py --skip-chroma` 段级全绿：frames==packets、连 IDR<3、frame_num 无回退、无 PTS/解码异常（new5: 521+521+549=1591；wws3e02: 392+790=1202）
+- `segment_bitstream_verify_v4.py --skip-chroma` 段级全绿：frames==packets、连 IDR<3、frame_num 无回退、无 PTS/解码异常（new5: 521+521+549=1591；wws3e02: 392+790=1202）
 - 全片 `ffmpeg -f null` 零解码错误；总帧数 == Σ(段帧数) == 段内 Σ(2n_i−1)
 - 段 2+ 首帧 IDR 与段 1 同量级（new5 constqp 42K/58K/38K B；vbr_hq 81K/93K/71K B），无 ~375KB 噪声花屏特征
 - 每段 SPS/PPS 充足（HEVC ≥10/段，h264 ≥10/段）
@@ -83,7 +83,7 @@ c2 与 c1、c4 与 c3 的每段首帧 IDR 大小、SPS/PPS 计数完全相同（
 
 ## 附带发现（2026-09-02，与本议题无关但需处理）
 
-`tests/verify_plan_implementation.py` 的 **BEH-B1/B3/B4 断言过期**：`[P2-FIX-FRAG]`（09-01 修复 A 的 `merge_trailing_fragment`，video_utils.py:1136，末段 <2s 并入前段）使 9s 测试源按 4s 切分产出 **2 段**而非 3 段，断言 `len==3` 必然失败。Windows 复现确认（设计内行为），08-31 报告 90 项 0 FAIL 为修复 A 之前的基线。需更新 BEH-B 断言（接受 2 段或改用不触发合并的素材时长）。
+`Accessory/verify/plan_implementation_gate.py` 的 **BEH-B1/B3/B4 断言过期**：`[P2-FIX-FRAG]`（09-01 修复 A 的 `merge_trailing_fragment`，video_utils.py:1136，末段 <2s 并入前段）使 9s 测试源按 4s 切分产出 **2 段**而非 3 段，断言 `len==3` 必然失败。Windows 复现确认（设计内行为），08-31 报告 90 项 0 FAIL 为修复 A 之前的基线。需更新 BEH-B 断言（接受 2 段或改用不触发合并的素材时长）。
 
 ## 关联
 

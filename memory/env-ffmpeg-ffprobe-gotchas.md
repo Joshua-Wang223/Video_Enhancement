@@ -28,7 +28,7 @@ ioctl(0, TCSETS, {..}) = ? ERESTARTSYS (To be restarted if SA_RESTART is set)
   - 两个后端的 `ffmpeg_io.py` **模块导入时**（该模块是"拉起 ffmpeg"的归属地，一次覆盖
     能力探测 `_probe_nvdec`/`_probe_nvenc`、读帧器、写帧器，避免漏改调用点）；
   - 两个后端 `main.py` 的 `__main__`、两个 processor 的 `main()`、
-    `tests/verify_segment_bitstream_v4.py::main()`。
+    `Accessory/verify/segment_bitstream_verify_v4.py::main()`。
 - 另在 IFRNet 读帧器 `Popen` 显式传 `**FFMPEG_SAFE_KW`（= `stdin=subprocess.DEVNULL`，
   单一真源在 `stdin_hardening.py`，库被直接 import 时同样安全）。
 
@@ -61,7 +61,7 @@ ioctl(0, TCSETS, {..}) = ? ERESTARTSYS (To be restarted if SA_RESTART is set)
 
 ### ⚠️ 2026-09-16 新缺口：门禁自身曾整组被 SIGTTOU 停住（`[FIX-STDIN-TTOU-GATE]`）
 
-**症状与上面同一类，但受害者是门禁进程本身**：`tests/verify_plan_implementation.py`
+**症状与上面同一类，但受害者是门禁进程本身**：`Accessory/verify/plan_implementation_gate.py`
 在「后台进程组 + tty stdin」下跑到 A 阶段 R7「NVENC 环境探测」时**永久挂死、零输出**；
 `ps` 显示**门禁主进程与其 ffmpeg 子进程双双为 `T`**（`wchan=do_signal_stop`），
 即 SIGTTOU 把**整个进程组**停了 —— 因为 ffmpeg 在后台组里对 tty fd0 调
@@ -84,11 +84,11 @@ ioctl(0, TCSETS, {..}) = ? ERESTARTSYS (To be restarted if SA_RESTART is set)
   再 `exec` 目标命令；见本次会话的 `/tmp/repro_gate_stop.py`
   （broken 模式 45s 超时且 `T 态=[python, ffmpeg]`；fixed 模式 22.4s rc=0）。
 
-**遗留（未修，属测试基建债）**：启发式扫描 `tests/` 下仍有 **28 个文件 / 102 处**
+**遗留（未修，属测试基建债）**：启发式扫描 `Accessory/` 下仍有 **28 个文件 / 102 处**
 拉 ffmpeg 的子进程调用未显式传 `stdin=`。多数被「入口/模块导入时的加固」兜住，
 但**凡在后台进程组被执行且入口未加固的脚本都可能整组被停住**。
 结构化解法是抽一个共享 helper（等价于 `FFMPEG_SAFE_KW`）而不是逐处手改；
-⚠️ 若改 `verify_segment_bitstream_v4.py`，必须**同步改 `_v5.py`**（两者须逐字节相同）。
+⚠️ 若改 `segment_bitstream_verify_v4.py`，必须**同步改 `_v5.py`**（两者须逐字节相同）。
 
 ## 2. `ffprobe` 不接受 `-hwaccel`
 
@@ -100,9 +100,9 @@ rc=1  Failed to set value 'cuda' for option 'hwaccel': Option not found
 ```
 
 **How to apply:** 用 ffprobe 分析时不要加 `-hwaccel`；单帧/元数据读取本来也不需要它。
-（这正是 `tests/verify_segment_bitstream_v4.py::_decode_single_gpu_dual` 长期静默返回 None 的原因之一，另一个是 `-of csv=p=0` 与 `p=0` 前缀解析不匹配。）
+（这正是 `Accessory/verify/segment_bitstream_verify_v4.py::_decode_single_gpu_dual` 长期静默返回 None 的原因之一，另一个是 `-of csv=p=0` 与 `p=0` 前缀解析不匹配。）
 
 ## 附：两个文件事实
 
-- `tests/verify_segment_bitstream_v4.py` **未被 git 跟踪**（`git ls-files` 无记录），所以无法用 `git show HEAD:<path>` 取原版做 A/B 对照 —— 需要基线时请先自行备份副本。
-- 仓库根目录的 `core.24882` / `core.60971` 与全量 `pytest tests/` 的 SIGSEGV 属**既有**现象：NVENC 硬件测试彼此状态隔离不足，单独跑各测试类可通过（实测 `TestLAAccumulation` 2 passed）。`nvenc_sdk.py` 只依赖 stdlib+numpy+torch+ctypes，与解码/读帧链路无耦合。
+- `Accessory/verify/segment_bitstream_verify_v4.py` **未被 git 跟踪**（`git ls-files` 无记录），所以无法用 `git show HEAD:<path>` 取原版做 A/B 对照 —— 需要基线时请先自行备份副本。
+- 仓库根目录的 `core.24882` / `core.60971` 与全量 `pytest Accessory/` 的 SIGSEGV 属**既有**现象：NVENC 硬件测试彼此状态隔离不足，单独跑各测试类可通过（实测 `TestLAAccumulation` 2 passed）。`nvenc_sdk.py` 只依赖 stdlib+numpy+torch+ctypes，与解码/读帧链路无耦合。

@@ -7,7 +7,7 @@ type: project
 # 硬件解码 vs 软解：`nv12→rgb24` 的 RGB 差异
 
 立项：`Plan/NVDEC与软解RGB一致性_立项Prompt.md`
-诊断脚本：`tests/diagnose_reader_rgb_path_consistency.py`（2026-09-15 新增）
+诊断脚本：`Accessory/probe/reader_rgb_path_diagnose.py`（2026-09-15 新增）
 
 ## 两条实测纠正（都会让立项文档给的复测命令得出错误结论）
 
@@ -71,7 +71,7 @@ zscale 写法会直接 `Option not found`。
 
 ## 仍需在 Linux + NVDEC 上做
 
-1. `python tests/diagnose_reader_rgb_path_consistency.py /tmp/clip_sd_25s.mp4 --sweep --json r.json --report r.md`
+1. `python Accessory/probe/reader_rgb_path_diagnose.py /tmp/clip_sd_25s.mp4 --sweep --json r.json --report r.md`
 2. 从穷举里找与 NVDEC **逐字节相等**的那组 ⇒ 钉住 NVDEC 实际用的 range/matrix；
 3. 判据 4（「对齐」/「声明不对齐」）二选一，写进验收说明并回填脚本生成的报告模板。
 

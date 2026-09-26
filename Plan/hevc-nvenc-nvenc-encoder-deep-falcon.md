@@ -59,7 +59,7 @@ A/B 实测矩阵（素材：干净 CFR `new5.mp4` + 缺陷 VFR `wws3e02_26s.mp4`
 | 4 | hevc_nvenc | vbr_hq | 8 | 1 | 重点：段间是否挂死 |
 | 5 | h264_nvenc | constqp | 0 | 1 | 对照（现网即复用），验 Phase 0/1 无回归 |
 
-硬指标（任一 FAIL 判该组合不可恢复）：全部段完成无挂死；`tests/verify_segment_bitstream_v4.py --skip-chroma` 段级全绿（帧守恒/单 IDR/frame_num 单调）；全片 `ffmpeg -f null` 零解码错误、总帧数 = Σ(2n_i−1)；段 2+ 首帧 IDR 正常量级（~71KB 正常，~375KB=噪声花屏）；每段 SPS/PPS 可读。
+硬指标（任一 FAIL 判该组合不可恢复）：全部段完成无挂死；`Accessory/verify/segment_bitstream_verify_v4.py --skip-chroma` 段级全绿（帧守恒/单 IDR/frame_num 单调）；全片 `ffmpeg -f null` 零解码错误、总帧数 = Σ(2n_i−1)；段 2+ 首帧 IDR 正常量级（~71KB 正常，~375KB=噪声花屏）；每段 SPS/PPS 可读。
 
 决策门：Δ<1% 或组合 2/4 任一 FAIL → 维持禁用并归档 memory；全 PASS 且 Δ≥1% → 灰度（`IFRNET_NVENC_CROSS_SEGMENT_REUSE=1` 跑 1~2 个生产任务，稳定后翻默认 '1' 并在 config 加注释化说明）；组合 2 PASS 但 4 FAIL → 只放开 LA=0 路径（`_force_new` 追加 `and self._la_depth <= 0`）。
 

@@ -150,13 +150,13 @@ ESRGAN `encode_frames_batch_ce_pipeline`（:2261）的段末收尾处，保留�
 
 | # | 判据 | 期望 |
 |---|---|---|
-| 1 | 单元（模板：`tests/test_nvenc_la_frame_conservation.py` 的 `_drain_outputs()` 模式） | LA=8 下 N 帧 `encode_frames_batch` 分块 + 末块 `send_eos=True`，断言 `valid == N / empty == 0 / none == 0` |
+| 1 | 单元（模板：`Accessory/probe/nvenc_la_frame_conservation_suite.py` 的 `_drain_outputs()` 模式） | LA=8 下 N 帧 `encode_frames_batch` 分块 + 末块 `send_eos=True`，断言 `valid == N / empty == 0 / none == 0` |
 | 2 | 触发确认 | 日志出现 `[FIX-LA-REDRAIN] 二次排空回收 N 帧`（≥1 次） |
 | 3 | 参数集完整 | 回收帧的 IDR 都带 SPS/PPS（`_has_sps_pps` 为真） |
 | 4 | 指针未错位 | LA=0 与 LA=8 各跑一遍，输出帧序正确（不是只看帧数守恒） |
 | 5 | 组合回归 | **LA=0 / LA=8 × h264 / hevc** 四组合：帧数守恒 + 全片高频梯度扫描无花屏 |
-| 6 | 端到端 | 超分真实素材：解码级验收通过（`verify_segment_bitstream_v4.py`）+ 帧守恒 |
-| 7 | 门禁 | `python tests/verify_plan_implementation.py --no-report-file` 无 FAIL |
+| 6 | 端到端 | 超分真实素材：解码级验收通过（`segment_bitstream_verify_v4.py`）+ 帧守恒 |
+| 7 | 门禁 | `python Accessory/verify/plan_implementation_gate.py --no-report-file` 无 FAIL |
 | 8 | 幂等性 | 未触发 REDRAIN 的批次行为与改动前逐字节一致（LA=0 路径必须完全不变） |
 
 ---

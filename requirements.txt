@@ -60,7 +60,7 @@ ffmpeg-python>=0.2.0
 numpy>=1.24.0
 tqdm>=4.65.0
 
-# psutil：跨平台内存/CPU 探测（tests/verify_segment_bitstream.py、IFRNet 内存自适应等）
+# psutil：跨平台内存/CPU 探测（Accessory/verify/segment_bitstream_verify.py、IFRNet 内存自适应等）
 # 未安装时相关代码会回退到 ctypes /proc/meminfo，但声明依赖以便类型检查与运行时一致
 psutil>=5.9.0
 

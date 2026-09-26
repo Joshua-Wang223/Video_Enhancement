@@ -66,18 +66,18 @@ python -c "import torch;print(torch.cuda.is_available())"
 cd /workspace/Video_Enhancement
 
 # 【主用例】900 帧 × 3 段，cap=1024（每帧都会被判非法）——420s 内跑不完
-timeout 420 env IFRNET_NVENC_MAX_BS_BYTES=1024 python tests/repro_ifrnet_lookahead.py \
+timeout 420 env IFRNET_NVENC_MAX_BS_BYTES=1024 python Accessory/probe/ifrnet_lookahead_repro.py \
   --frames 900 --codec hevc --la 8 --rc vbr_hq --qp 21 --chunk 128 --segments 3 \
   --out temp/retest/g3_faultinj2.mp4 > temp/retest/g3_faultinj2.txt 2>&1
 echo "exit=$?"   # 期望 124（超时）；若 139 = SIGSEGV，说明 typo 修复被回退
 
 # 【缩小用例】100 帧 × 1 段，同样 420s 跑不完
-timeout 420 env IFRNET_NVENC_MAX_BS_BYTES=1024 python tests/repro_ifrnet_lookahead.py \
+timeout 420 env IFRNET_NVENC_MAX_BS_BYTES=1024 python Accessory/probe/ifrnet_lookahead_repro.py \
   --frames 100 --codec hevc --la 8 --rc vbr_hq --qp 21 --chunk 32 --segments 1 \
   --out temp/retest/g3_faultinj_small.mp4 > temp/retest/g3_faultinj_small.txt 2>&1
 
 # 【对照】正常上界（不注入）——必须 ALL PASS
-python tests/repro_ifrnet_lookahead.py --frames 900 --codec hevc --la 8 \
+python Accessory/probe/ifrnet_lookahead_repro.py --frames 900 --codec hevc --la 8 \
   --rc vbr_hq --qp 21 --chunk 128 --segments 3 --out temp/retest/ok_hevc_la8.mp4
 ```
 
@@ -239,7 +239,7 @@ A′-1 只修了站点 1，**站点 2/3/4/5 仍是「放弃不推进」**。而�
 - 前序立项：`Plan/H264_LA排空放弃缺陷_立项Prompt.md`（任务 A / A′ 立项；§10.6 是 A′ 原始描述）
 - 现场交接：`temp/retest/HANDOFF_RESUME.md`（**§9.6.1 = 本次问题的实测记录**，§9.7 = typo 根因）
 - G3 基线日志：`temp/retest/g3_faultinj.txt` / `g3_faultinj2.txt` / `g3_faultinj_small.txt`
-- 编码层回归：`tests/repro_ifrnet_lookahead.py`
+- 编码层回归：`Accessory/probe/ifrnet_lookahead_repro.py`
 - 记忆文件（**在会话目录，不在项目内**）：
   `/root/.codebuddy/projects/workspace-Video_Enhancement/memory/project_gpu_container_flaky.md`
   （容器 GPU 时有时无的判据）、`feedback_no_gpu_work_mode.md`（无 GPU 时先做纯修复 + 列 GPU 待验清单）

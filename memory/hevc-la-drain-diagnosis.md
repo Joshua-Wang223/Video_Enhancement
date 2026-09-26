@@ -3,7 +3,7 @@
 ## 状态
 
 生产 VBR_HQ + LA=8 + HEVC（NVENC SDK 13.0 / T4）连续三次失败后，用户否决
-"HEVC 降级 LA=0"方案，要求参照 `tests/test_nvenc_la_frame_conservation.py`
+"HEVC 降级 LA=0"方案，要求参照 `Accessory/probe/nvenc_la_frame_conservation_suite.py`
 先写最小化 GPU 验证脚本、跑通后再应用到生产。
 
 ## 三次失败记录
@@ -50,7 +50,7 @@ HEVC 差异假说（待验证）：
 
 ## 最小化验证脚本
 
-`tests/diagnose_hevc_la.py`（参照 test_nvenc_la_frame_conservation.py 的
+`Accessory/probe/hevc_lookahead_diagnose.py`（参照 nvenc_la_frame_conservation_suite.py 的
 MinimalTestEncoder，复用其 SDK 常量/结构体/GUID）：
 
 - 逐 drain 记录 `(slot_idx, est_fi, outputTimeStamp@40, size, NAL 类型, VCL 有无)`
@@ -72,10 +72,10 @@ MinimalTestEncoder，复用其 SDK 常量/结构体/GUID）：
 
 生产执行：
 ```bash
-python tests/diagnose_hevc_la.py --self-test
-python tests/diagnose_hevc_la.py --run-all --frames 700 --la-depth 8 --timeout 75
+python Accessory/probe/hevc_lookahead_diagnose.py --self-test
+python Accessory/probe/hevc_lookahead_diagnose.py --run-all --frames 700 --la-depth 8 --timeout 75
 # baseline 单独复现生产（LA+1 槽）：
-timeout 60 python tests/diagnose_hevc_la.py --variant baseline \
+timeout 60 python Accessory/probe/hevc_lookahead_diagnose.py --variant baseline \
     --frames 700 --la-depth 8 --decode-check
 ```
 
@@ -292,7 +292,7 @@ ESRGAN 侧 CLI 请求 `--codec-esrgan hevc_nvenc --rate-mode-esrgan vbr_hq
 LA=0 段末 pending 为空 → HEVC/AV1 发送 EOS 后直接返回 b""，零次锁槽；
 EOS 每段一次 + `_needs_reopen` 簿记不变（FIX-SKIP-REOPEN 语义保持）。
 
-### 诊断脚本扩展（tests/diagnose_hevc_la.py）
+### 诊断脚本扩展（Accessory/probe/hevc_lookahead_diagnose.py）
 
 - `ce_pipeline_fix`：ce_pipeline 同构 + 修复版 flush（`_flush_eos_pending`，
   生产补丁的参考实现）——复现 test1 的 LA=0 段尾路径；
@@ -419,7 +419,7 @@ ce_pipeline 五个 `TIMEOUT(deadlock?)`。分析结论：**TIMEOUT 是真实死�
    慢速但仍在推进的运行有被误判为死锁的风险（test9 的 TIMEOUT 均提前停在
    drain#9/#10，故本轮确为真死锁，但判定机制不严谨）。
 
-### 脚本修复（tests/diagnose_hevc_la.py，2026-08-18）
+### 脚本修复（Accessory/probe/hevc_lookahead_diagnose.py，2026-08-18）
 
 - `VARIANT_CANONICAL`：run-all 按各变体规范配置运行（baseline→h264/la=8、
   ce_pipeline_fix/multi_segment→hevc/la=0、其余 hevc/la=8），取代全局
@@ -454,7 +454,7 @@ nonblocking 本轮细节：doNotWait=1 读到 **21MB 垃圾块**（SUCCESS+垃�
 有两种（segfault -11 / 垃圾误读后挂起），`VARIANT_EXPECTED` 改为
 `{"FAIL", "TIMEOUT"}`（集合 = 任一均可）。
 
-### 脚本二次修正（tests/diagnose_hevc_la.py，2026-08-18）
+### 脚本二次修正（Accessory/probe/hevc_lookahead_diagnose.py，2026-08-18）
 
 - `VARIANT_EXPECTED` 支持集合（`{exp}` 字符串兼容）；nonblocking 期望
   `{"FAIL", "TIMEOUT"}`。

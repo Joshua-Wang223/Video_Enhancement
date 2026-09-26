@@ -72,8 +72,8 @@ def _select_optimal_mode(config, input_video, mode, quiet=False):
 ```
 
 ### 验收结果
-- 静态验证 `verify_plan_implementation.py`：90项 0 FAIL
-- 码流验证 `verify_segment_bitstream_v4.py --skip-chroma`：4项硬指标全绿
+- 静态验证 `plan_implementation_gate.py`：90项 0 FAIL
+- 码流验证 `segment_bitstream_verify_v4.py --skip-chroma`：4项硬指标全绿
   - `frames=1591 packets=1591` ✅
   - `IDR=8 首个IDR@4 其后32NAL内IDR=0 frame_num回退=0` ✅
   - `无 pts_anomaly / 解码错误` ✅

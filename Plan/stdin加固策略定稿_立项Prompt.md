@@ -18,7 +18,7 @@
 > | 判据 1：原故障复现与修复 | ✅ **Linux 实测通过** — 无加固→SIGTTOU 停住(10s 超时，T 态实锤 python+ffmpeg 双进程)；有加固→ffmpeg rc=0（0.2s, fd0=/dev/null） |
 > | 判据 2：分支矩阵 5/5 | ✅ **Linux 实测通过** — 非tty×2 / 前台tty / 后台tty / 取不到前台组 |
 > | 判据 6/7：子进程 fd0 实测 / BEH-H3 | ✅ **Linux 实测通过** — IFRNet Popen fd0=/dev/null、ESRGAN run_async fd0=/dev/null |
-> | 完整测试脚本 | ✅ `tests/test_stdin_hardening_linux.py` (6/6 判据全过，含真实 SIGTTOU T 态实锤) |
+> | 完整测试脚本 | ✅ `Accessory/test/test_stdin_hardening_linux.py` (6/6 判据全过，含真实 SIGTTOU T 态实锤) |
 >
 > 说明：本机 `os.name == 'nt'`，`os.tcgetpgrp`/`os.getpgrp` **不存在** → 走
 > 通用 `except Exception → return False` 分支。这本身就是文档 §2.2 表格末行
@@ -68,7 +68,7 @@
 | `**FFMPEG_SAFE_KW` 站点 | ifrnet: `:85`(软编探测) `:115`(NVENC 探测) `:236`(constqp 探测) `:395`(`ffmpeg -version`) `:544`(读帧器 Popen)；esrgan: `:205` `:238` `:1489` `:1613` + 同族 |
 | `external/*/*/main.py`（`__main__`） | 各 1 处 import 时调用 |
 | 两个 processor 的 `main()` | 各 1 处 |
-| `tests/verify_segment_bitstream_v4.py::main()` | 1 处 |
+| `Accessory/verify/segment_bitstream_verify_v4.py::main()` | 1 处 |
 | `external/realesrgan_video/ffmpeg_io.py:482-491` | **唯二缺口**：`.run_async(pipe_stdout=True, pipe_stderr=True, quiet=False)`，注释已说明为何无法传 `stdin` |
 
 ---

@@ -23,6 +23,21 @@ originSessionId: 549bd23c-b680-4b5e-b833-3852c89608f0
 
 **注意反向情形：** 若某记忆描述的 bug 在开发树中已被**另一条代码路径**规避（如 `ifrnet-f0-la0-double-consume`：开发树 `main.py` 改为按 `_la_depth > 0` 分流，LA=0 直接 `encode_frame`，使该 bug 不再可达），这属于等价修复而非记忆失效，同样不应改写记忆——但值得在排查时留意"开发/生产路径不同"。
 
+## 三套路径别名（2026-09-26 用户明确）
+
+同一个项目 `Video_Enhancement` 在三处的绝对路径：
+
+| 角色 | 路径 |
+|---|---|
+| 开发环境 · Windows | `D:\Workspace_Python\Video_Enhancement` |
+| 开发环境 · WSL（挂载 D 盘） | `/mnt/d/Workspace_Python/Video_Enhancement` |
+| **生产环境** · Linux | `/workspace/Video_Enhancement` |
+
+**How to apply:**
+- 写脚本/文档时**不要硬编码**这三者的任何一个；用 `Path(__file__).resolve().parents[n]` 推导项目根（本仓脚本大多在 `Accessory/<分类>/` 下，需回退两层）。
+- 记忆里的路径一律以**生产侧 `/workspace/...`** 为准（与上文「以 Linux 生产侧为准」一致）；在 WSL 开发树看到的 `/mnt/d/...` 只是同一份代码的挂载别名。
+- 生产侧的改动要经 git（origin `git@github.com`）推送后再拉取；不能用路径拷贝代替版本同步。
+
 ## 换行符策略：全仓锁定 LF（2026-09-23 用户确认）
 
 仓库根有 `.gitattributes`：`* text=auto eol=lf` + 30 余种二进制类型（png/jpg/mp4/pt/onnx/mdb…）显式声明 `binary`。仓库（index/HEAD）与工作区一律 LF，**Windows 开发机检出也是 LF**，并已用 `git add --renormalize .` 收敛历史 CRLF blob。
@@ -37,5 +52,5 @@ originSessionId: 549bd23c-b680-4b5e-b833-3852c89608f0
   - **推送后必须 `git ls-remote origin refs/heads/main` 独立复核**：本地 push 输出成功 ≠ 远程已更新。
 - Windows 侧若看到"整仓被修改"，先 `git add --renormalize .` 再看 `git status`，不要盲目提交或回滚。
 - ⚠️ 陷阱：`git checkout-index -a -f` **不重写已存在文件**的行尾（实测无效）。要把工作区旧 CRLF 文件重写为 LF，用 `rm <file> && git checkout -- <file>`。
-- git 会把含**孤立 CR**（非 CRLF）的文件判为 `-text` 二进制并拒绝归一化（实例 5 个：`Plan/session-ses_fb90.md`、`fb9a`、`fbdc`、`fcd1`、`tests/diag_output_fixed.log`），属预期保护行为。
+- git 会把含**孤立 CR**（非 CRLF）的文件判为 `-text` 二进制并拒绝归一化（实例 5 个：`Plan/session-ses_fb90.md`、`fb9a`、`fbdc`、`fcd1`、`Accessory/docs/diag_output_fixed.log`），属预期保护行为。
 

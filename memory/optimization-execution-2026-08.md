@@ -1,7 +1,7 @@
 # 优化方案全量执行记录（2026-08-24）
 
 > 执行环境：Windows/CPU 开发机（无 GPU）。全部改动通过 `python -m py_compile` 与
-> `tests/test_regression_min.py`（30/30 通过，含真实 ffmpeg 切片/复用/换源重切/
+> `Accessory/verify/test_regression_min.py`（30/30 通过，含真实 ffmpeg 切片/复用/换源重切/
 > 重编码合并端到端）。**GPU 相关路径尚未在生产（Linux/GPU）验证**，验证清单见文末。
 
 ## Phase 0 止血修复（8 项）
@@ -56,7 +56,7 @@
 |---|---|
 | P3.2 | 新建共享包 `external/nvenc_common/nal_utils.py`（NAL 扫描参考实现：iter_nals/first_vcl_type/has_param_sets/extract_param_sets，h264/hevc/av1）；ifrnet 侧暂不改写（混合编码大文件高风险），由回归测试 D 组以未绑定方法调用锁定两侧行为等价（30 断言全过），后续可安全切换 |
 | P3.3 | 删除 `external/realesrgan_video/nvenc_writer.py` 整文件（grep 证实零代码导入，07-28 曾把修复误打其上的地雷）；删除 ifrnet nvenc_sdk 死代码 `_FUNC_TABLE_SIZE`、`_NVENC_VBR_QUALITY_OFFSET`(定义)、`_RotationBitReader` 类；src 历史版本 21 个文件/目录归档至 `archive/src_legacy/`（src 下现存唯一入口+两处理器+utils） |
-| P3.4 | 新增 `tests/test_regression_min.py`（无 pytest 依赖，直接运行）：A 指纹侧车 5 断言；B 真 ffmpeg e2e 7 断言（lavfi 合成 -g 40 强制关键帧→切片3段/侧车写入/同源复用/换源重切/mpeg4 重编码 actual_output=.mp4 传播）；C nvenc_sdk 导入契约 5 断言；D NAL 等价性 13 断言。**当前 30/30 通过**。测试过程实测确认了 segment muxer 关键帧对齐特性（单 keyint 源合法产单段，段数核对告警正确触发） |
+| P3.4 | 新增 `Accessory/verify/test_regression_min.py`（无 pytest 依赖，直接运行）：A 指纹侧车 5 断言；B 真 ffmpeg e2e 7 断言（lavfi 合成 -g 40 强制关键帧→切片3段/侧车写入/同源复用/换源重切/mpeg4 重编码 actual_output=.mp4 传播）；C nvenc_sdk 导入契约 5 断言；D NAL 等价性 13 断言。**当前 30/30 通过**。测试过程实测确认了 segment muxer 关键帧对齐特性（单 keyint 源合法产单段，段数核对告警正确触发） |
 
 ## 明确延后项（需生产 GPU 环境先行回归）
 
@@ -101,17 +101,17 @@
 - external/realesrgan_video/pipeline.py（P2-1/P2-2a 摘除死分支）
 - external/realesrgan_video/ffmpeg_io.py（P1-6）
 - external/nvenc_common/{__init__,nal_utils}.py（新增）
-- tests/test_regression_min.py（新增）
+- Accessory/verify/test_regression_min.py（新增）
 - 已删除：external/realesrgan_video/nvenc_writer.py；已归档 archive/src_legacy/（21 项）
 
 ## 后验证脚本三合一合并（2026-08-24 追加）
 
-对 `test_regression_min.py` / `verify_plan_implementation.py` / `verify_post_run.py`
-三个后验证脚本做覆盖对比后，整合为单一最终脚本 **`tests/verify_plan_implementation.py`（v2）**：
+对 `test_regression_min.py` / `plan_implementation_gate.py` / `verify_post_run.py`
+三个后验证脚本做覆盖对比后，整合为单一最终脚本 **`Accessory/verify/plan_implementation_gate.py`（v2）**：
 
 | 来源 | 处置 |
 |---|---|
-| verify_plan_implementation.py | 载体重写：修正 9 处按"假想实现"校准的失准断言（改锚定实际 `[P*-FIX-*]` 标签+结构特征），吸收 regression_min 全部行为断言为 C 阶段 |
+| plan_implementation_gate.py | 载体重写：修正 9 处按"假想实现"校准的失准断言（改锚定实际 `[P*-FIX-*]` 标签+结构特征），吸收 regression_min 全部行为断言为 C 阶段 |
 | test_regression_min.py | 全量并入 C-行为阶段（BEH-A~F 组）；原文件降级为兼容别名（--behavior-only 转发） |
 | verify_post_run.py | 仅吸收 3 个有效点（NVENC 无 torch 探测=R7、NVML 环境提示=R8、GPU 详情入报告）；其余因 ffprobe 参数非法（`-count_entries/nb_entries` 不存在）、配置键路径错位（读顶层而 schema 在 models.* 下）、tile/model 断言与修复后状态矛盾而废弃；文件归档至 `archive/tests_legacy/` |
 
@@ -121,7 +121,7 @@
 3. 合并脚本自身两处断言缺陷（同名 close 方法误匹配、方法行数统计漏缩进）→ 修正断言。
 
 **最终运行基线**：全量 72 项 = 通过 66 / 失败 0 / 警告 3（R5 无 torch、R7 无 NVIDIA 卡、R8 NVML 提示——开发机预期）/ 跳过 3（P2-4c 与 P3-1 计划内延后、RT-0 未提供 --output），EXIT=0。
-兼容入口 `python tests/test_regression_min.py`（--behavior-only）：34/34 通过。
+兼容入口 `python Accessory/verify/test_regression_min.py`（--behavior-only）：34/34 通过。
 
 ## 生产首轮验证反馈与修复（2026-08-24 追加 II）
 
@@ -130,7 +130,7 @@
 1. **P0-9 误报（裸 except ×13）**：根因是生产仓库尚未同步 `archive/src_legacy/`
    归档，历史版本 `src/main_v2.py` 等仍在 src/ 下被 rglob 命中。修复：扫描改为
    **活跃文件白名单**（BARE_EXCEPT_ACTIVE_SRC 8 文件 + external 三目录），
-   判定与归档同步进度解耦（verify_plan_implementation.py）。
+   判定与归档同步进度解耦（plan_implementation_gate.py）。
 
 2. **SMOKE rc=-11（SIGSEGV，重要）**：全流程冒烟在 IFRNet LA 流式排空早期
    （frame_idx=1）LockBitstream 返回瞬态 INVALID_PARAM(code=8)——旧代码静默
@@ -163,11 +163,11 @@
 | "为何每次分割3次" | **测试设计使然，非重复执行**：BEH-B 三次调用 = B1 首切(reuse=False)/B3 同源复用命中(♻️)/B4 换源指纹不符重切；中间一次并未重割 | split 调用全部 capture 式执行，动作摘要写入断言详情，控制台零泄漏 |
 | SMOKE-2 rc=-11 code=8 | 初判"漏同步"；带全现场复现推翻，最终定性见追加 V | dev 版加重试并增强 persistent 现场诊断 |
 | SMOKE-2 upscale_then_interpolate rc=-124 超时3600s | **证据不足待隔离复现**：无阶段日志可判定卡点 | 下轮先单独跑 --smoke-mode upscale_only 并保留完整 stdout/stderr 尾部 |
-| P0-9 裸 except×13 | 脚本问题已修复但生产仍跑旧版脚本 + src 归档未同步 | 同步最新 tests/verify_plan_implementation.py 即消；扫描已改活跃白名单 |
+| P0-9 裸 except×13 | 脚本问题已修复但生产仍跑旧版脚本 + src 归档未同步 | 同步最新 Accessory/verify/plan_implementation_gate.py 即消；扫描已改活跃白名单 |
 
 **本轮新增同步文件清单（生产必更新）**：
 1. external/ifrnet_video/nvenc_sdk.py
-2. tests/verify_plan_implementation.py
+2. Accessory/verify/plan_implementation_gate.py
 
 **本地门禁**：alias 34/34 EXIT=0、全量 EXIT=0、控制台 ❌/⚠️/split 动作打印=0。
 

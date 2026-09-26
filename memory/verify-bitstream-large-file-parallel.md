@@ -1,7 +1,7 @@
 # 大文件验收效率提升：分片并行可行性分析与 v4 落地方案
 
-> 主题：`tests/verify_segment_bitstream_v3.py` 单文件大视频串行验收耗时 400+ 秒的优化分析
-> 结论落地：新建 `tests/verify_segment_bitstream_v4.py`（v3 保持不变）
+> 主题：`Accessory/verify/segment_bitstream_verify_v3.py` 单文件大视频串行验收耗时 400+ 秒的优化分析
+> 结论落地：新建 `Accessory/verify/segment_bitstream_verify_v4.py`（v3 保持不变）
 > 日期：2026-08-19
 
 ---
@@ -167,7 +167,7 @@
 
 ## 7. 落地改造方案（v4 已实施）
 
-新建 `tests/verify_segment_bitstream_v4.py`（由 v3 逐字复制后定向修改，v3 保持不变），三处改动：
+新建 `Accessory/verify/segment_bitstream_verify_v4.py`（由 v3 逐字复制后定向修改，v3 保持不变），三处改动：
 
 ### 7.1 文件头 docstring 新增 v4 说明
 
@@ -214,7 +214,7 @@
 
 ---
 
-## 10. v5 落地（2026-08-19，原地升级 `tests/verify_segment_bitstream_v4.py`）
+## 10. v5 落地（2026-08-19，原地升级 `Accessory/verify/segment_bitstream_verify_v4.py`）
 
 v4「检查间并行」之后原地升级 v5，实现资源自适应最大化。要点：
 
@@ -273,7 +273,7 @@ v4「检查间并行」之后原地升级 v5，实现资源自适应最大化。
 
 ## 文件命名（2026-09-15 使用者确认，勿再推断为冗余/残留）
 
-`tests/verify_segment_bitstream_v5.py` 就是**生产侧最新版** `..._v4.py` 的内容：
+`Accessory/verify/segment_bitstream_verify_v5.py` 就是**生产侧最新版** `..._v4.py` 的内容：
 使用者保留了本地旧 v4，把最新版本另存为 v5，**Linux 生产侧亦已同步为 v5**。
 因此当前 v4 与 v5 **逐字节相同**（sha256 前 16 位均 `2566804141ee2c7a`，各 192131 字节）
 —— 这是「同一份内容两个名字」，**不是冗余副本，两个都不要删**。
@@ -283,7 +283,7 @@ v4「检查间并行」之后原地升级 v5，实现资源自适应最大化。
 （曾据此误判 v5 为同步残留 —— 原因是所依据的 `11:45` 快照早于改名动作。）
 
 改名遗留的两个真实待办：
-1. `tests/test_chroma_false_positive.py` 原以**运行期 import** 方式
+1. `Accessory/test/test_chroma_false_positive.py` 原以**运行期 import** 方式
    `from verify_segment_bitstream_v4 import check_chroma_corruption`（2 处）——
    已改为 `_load_chroma_check()` **双名兼容**（v5 优先，回退 v4）。
 2. 约 40 处文档/注释仍写 `..._v4.py`；其中 `external/ifrnet_video/ffmpeg_io.py:436`

@@ -32,7 +32,7 @@ curl -L -o /tmp/nvEncodeAPI.h \
 |------|------|
 | WebFetch 工具 | 多次因网络/代理问题失败 |
 | 克隆整个仓库 | 不必要，只需要一个头文件 |
-| 依赖自动解析脚本 | `verify_rcparams_offset.py` 有已知解析错误 |
+| 依赖自动解析脚本 | `nvenc_rcparams_offset_verify.py` 有已知解析错误 |
 
 **Why:** curl 是最直接、最可靠的单文件获取方式，不依赖工具链的代理配置或 GitHub API 速率限制。已验证在相同的 Windows 开发环境和 Linux GPU 服务器上都可正常工作。
 

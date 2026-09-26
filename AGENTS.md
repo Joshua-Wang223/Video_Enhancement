@@ -9,7 +9,7 @@ Video Enhancement 是 GPU 加速视频处理管线：IFRNet 帧插帧（2x–16x
 - `src/utils/` — `config_manager.py`（配置加载与 CLI 覆盖）、`video_utils.py`（切片/合并/音轨）、`logger.py`（统一日志，[P2.5]）。
 - `external/nvenc_common/nal_utils.py` — 两子系统共享的 NAL 扫描参考实现（[P3.2]，等价性由回归测试锁定）。
 - `config/default_config.json` — 全部默认配置，JSON 是单一事实来源。
-- `tests/verify_plan_implementation.py` — 最终后验证脚本（三合一：前置/静态核验/行为验证/运行时/冒烟 + F-修复效果 phase（2026-08-27 水彩综合修复 + 2026-08-28 FIX-HEVC-LA-OPEN）；`python tests/verify_plan_implementation.py` 全量 90 项，CPU 可跑；2026-08-29 Linux 生产基准：88 PASS / 0 FAIL / 0 WARN / 2 SKIP；Windows 开发机无 NVIDIA GPU 时为 86 PASS / 0 FAIL / 2 WARN（R5 CUDA / R7 NVENC 环境探测）/ 2 SKIP（R8 NVML 提示、RT-0 输出视频存在），均属环境差异而非功能失败）。`tests/test_regression_min.py` 为其兼容别名（--behavior-only 转发）。其余 tests/ 为临时诊断脚本（verify_post_run.py 已归档至 archive/tests_legacy/）。
+- `Accessory/verify/plan_implementation_gate.py` — 最终后验证脚本（三合一：前置/静态核验/行为验证/运行时/冒烟 + F-修复效果 phase（2026-08-27 水彩综合修复 + 2026-08-28 FIX-HEVC-LA-OPEN）；`python Accessory/verify/plan_implementation_gate.py` 全量 90 项，CPU 可跑；2026-08-29 Linux 生产基准：88 PASS / 0 FAIL / 0 WARN / 2 SKIP；Windows 开发机无 NVIDIA GPU 时为 86 PASS / 0 FAIL / 2 WARN（R5 CUDA / R7 NVENC 环境探测）/ 2 SKIP（R8 NVML 提示、RT-0 输出视频存在），均属环境差异而非功能失败）。`Accessory/verify/test_regression_min.py` 为其兼容别名（--behavior-only 转发）。其余 Accessory/ 为临时诊断脚本（verify_post_run.py 已归档至 archive/tests_legacy/）。
 
 ## Build, Test, and Development Commands
 
@@ -17,7 +17,7 @@ Video Enhancement 是 GPU 加速视频处理管线：IFRNet 帧插帧（2x–16x
 python src/main_video_optimized.py -c config/default_config.json -i input.mp4 -o output.mp4
 ```
 
-常用旗标（经 `src/main_video_optimized.py` 验证）：`--skip-interpolate`、`--skip-upscale`、`--use-tensorrt-ifrnet`、`--use-tensorrt-esrgan`、`--face-enhance`、`--batch-mode`、`--dry-run`、`--report`、`--skip-seg-normalize`、`--quiet-ifrnet`、`--quiet-esrgan`、`--denoise`、`--denoise-model`、`--denoise-strength-pre`。依赖安装：先手动安装与 CUDA 匹配的 PyTorch，再 `pip install -r requirements.txt`；TensorRT 组件可选。本仓库无构建步骤，`tests/` 脚本直接运行即可。
+常用旗标（经 `src/main_video_optimized.py` 验证）：`--skip-interpolate`、`--skip-upscale`、`--use-tensorrt-ifrnet`、`--use-tensorrt-esrgan`、`--face-enhance`、`--batch-mode`、`--dry-run`、`--report`、`--skip-seg-normalize`、`--quiet-ifrnet`、`--quiet-esrgan`、`--denoise`、`--denoise-model`、`--denoise-strength-pre`。依赖安装：先手动安装与 CUDA 匹配的 PyTorch，再 `pip install -r requirements.txt`；TensorRT 组件可选。本仓库无构建步骤，`Accessory/` 脚本直接运行即可。
 
 ## Coding Style & Naming Conventions
 
@@ -28,9 +28,9 @@ python src/main_video_optimized.py -c config/default_config.json -i input.mp4 -o
 
 ## Testing Guidelines
 
-- `tests/` 不是 pytest 套件，不要假设 pytest 可用。
+- `Accessory/` 不是 pytest 套件，不要假设 pytest 可用。
 - 以真实 GPU 运行验证：帧数完整性、bitstream 解析、空帧/码率统计。
-- 段级验收用 `tests/verify_segment_bitstream_v5.py`（帧守恒/单 IDR/frame_num 单调/pts/色度簇，含解码级检查与检查间并行）；NVENC 编码器层级行为回归用 `tests/diagnose_hevc_la.py`（11 变体矩阵，`--skip-reproducers` 跑 6 变体回归集）。
+- 段级验收用 `Accessory/verify/segment_bitstream_verify_v5.py`（帧守恒/单 IDR/frame_num 单调/pts/色度簇，含解码级检查与检查间并行）；NVENC 编码器层级行为回归用 `Accessory/probe/hevc_lookahead_diagnose.py`（11 变体矩阵，`--skip-reproducers` 跑 6 变体回归集）。
 - 命名沿用现有风格：`test_nvenc_*.py`、`verify_segment_bitstream*.py`。
 
 ## Commit & Pull Request Guidelines
@@ -53,7 +53,7 @@ python src/main_video_optimized.py -c config/default_config.json -i input.mp4 -o
 - `config/default_config.json` 中 `paths.base_dir` 留空时，`config_manager` 会从配置文件位置向上两级推算项目根目录。非标准部署需手动填写。
 - HEVC LA 安全性由 `FIX-HEVC-COUNTED/EOS/EOS-FLUSH`（nvenc_sdk 层）+ `P1-FIX-H2D-EVENT-SYNC`（水彩根治）+ EOS 排空硬化保障；`hevc_la_disable` 已软退役为应急开关（默认 `false`，命中仅 WARN 不降级，两侧仓库一致）。异常回滚：显式置 true 或 `NVENC_HEVC_ALLOW_LA=0`（详见 `memory/hevc-la-open-production.md` / `memory/hevc-la-soft-retired.md`）。
 - 段级验收含解码级门禁（`video_utils.validate_decodable_video` / `count_decoded_video_frames`，verify_plan RT-4/RT-5），包级 frames==packets 对"包在但解不出"是盲区。
-- `verify_segment_bitstream_v5.py` 的色度检查（检查 4）可靠性有限，验证硬指标（帧守恒/IDR/frame_num/pts）时建议加 `--skip-chroma`。
+- `segment_bitstream_verify_v5.py` 的色度检查（检查 4）可靠性有限，验证硬指标（帧守恒/IDR/frame_num/pts）时建议加 `--skip-chroma`。
 - `--mode upscale_then_interpolate` 会被引擎自动保护改写：超分后像素数超过 `processing.max_upscale_then_interpolate_pixels`（默认 3670016 ≈ 2560×1440，`0` 禁用自动切换）时自动切 `interpolate_then_upscale` 并打印警告（`main_video_optimized.py::_select_optimal_mode`，配置摘要 + `_process_single` 双重调用）。原因：高分辨率插帧在 T4 级 GPU 上会早期 EOF/丢帧（详见 `memory/mode-auto-protect-upscale-then-interpolate.md`）。
 - `--ifrnet-model` 生效依赖 `config_manager` 按 `model_name` 派生 `model_path`（CLI 覆盖后由 `config._derive_model_paths()` 重算）；`--ifrnet-model-path` 优先级更高。历史 bug 曾硬编码 S 模型导致所有模型输出相同（详见 `memory/ifrnet-model-selection-bug-fix.md`）。
 
@@ -107,6 +107,6 @@ diff -r "$A" "$B" && echo "✅ 两处一致"   # 同步后必须复核
   `D:\Workspace_Python\Video_Enhancement\Video_Enhancement\memory`、
   `C:\Users\Administrator\.claude\projects\D--Workspace-Python-Video-Enhancement-Video-Enhancement\memory`
 
-- `tests/` — 临时诊断脚本（test_nvenc_*.py、verify_segment_bitstream*.py 等），**非 pytest 套件**，不要假设 pytest 可用
+- `Accessory/` — 临时诊断脚本（test_nvenc_*.py、verify_segment_bitstream*.py 等），**非 pytest 套件**，不要假设 pytest 可用
 - `Video_Enhancement_github_token.txt` — 敏感凭据文件，除非用户明确要求，不读取、不回显其内容
 - 仓库当前**未初始化 git**（无 .git）

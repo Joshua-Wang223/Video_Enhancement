@@ -177,16 +177,16 @@ Benchmark 验证结果（687 帧, VBR_HQ+LA=8, 2x 插帧, crf=21）：
 
 ### 相关文件
 
-- `tests/NVENC Lookahead 帧守恒修复IFRNet生产脚本的方案要点.txt` — 需求文档
-- `tests/NVENC Lookahead 帧数守恒验证与实现问题的完整总结.txt` — 根因分析
+- `Accessory/docs/NVENC Lookahead 帧守恒修复IFRNet生产脚本的方案要点.txt` — 需求文档
+- `Accessory/docs/NVENC Lookahead 帧数守恒验证与实现问题的完整总结.txt` — 根因分析
 - `external/IFRNet/process_video_v6_4_5_1_single.py` — 修复完成 ✅
 - `external/IFRNet/process_video_v6_4_3_1_single.py` — 修复完成 ✅
 - `external/IFRNet/process_video_v6_4_4_1_single.py` — 修复完成 ✅
 
 ## 测试脚本
-- `tests/test_nvenc_la_frame_conservation.py` — 修复版测试脚本
-- `tests/deepseek_python_20260630_636184.py` — 独立修复样例
-- `tests/NVENC Lookahead 帧数守恒验证与实现问题的完整总结.txt` — 完整分析文档
+- `Accessory/probe/nvenc_la_frame_conservation_suite.py` — 修复版测试脚本
+- `Accessory/deepseek_python_20260630_636184.py` — 独立修复样例
+- `Accessory/docs/NVENC Lookahead 帧数守恒验证与实现问题的完整总结.txt` — 完整分析文档
 
 **Why:** 旧版排空逻辑的 3 个 SDK 违规导致开头丢帧+末尾重复，被误判为"NVENC LA 设计行为"。正确的 SDK 合规排空逻辑证明帧数守恒声明为真。
 **How to apply:** 1) pipeline_depth = max(1, LA+1); 2) 每帧 EncodePicture 后循环 LockBitstream 直到 NEED_MORE_INPUT; 3) 移除 NEED_MORE_INPUT 时的 Lock/Unlock; 4) EOS flush 按输出指针顺序排空; 5) 参见 [[la-flush-recovery-is-harmful]] 修正后的记忆。

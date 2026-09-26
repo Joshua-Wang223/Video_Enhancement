@@ -412,7 +412,7 @@ def _ffmpeg_has_fps_mode(ffmpeg_bin: str = 'ffmpeg') -> bool:
 # 无存活判定）。只要 `_read_loop` 不再投递任何东西 —— 例如子 ffmpeg 被 SIGTTOU
 # 停住（见 src/utils/stdin_hardening.py）、或死锁而不退出 —— 调用方就**永久静默
 # 挂起**：无超时、无日志、无法从现象区分「还在解码」与「已经死了」。
-# 实测代价：2026-09-14 给门禁写 H3 读帧器冒烟时把 verify_plan_implementation.py
+# 实测代价：2026-09-14 给门禁写 H3 读帧器冒烟时把 plan_implementation_gate.py
 # 挂了 10 分钟，最终只能靠人工中断。
 #
 # 设计约束（不得违反）：
@@ -474,7 +474,7 @@ class FFmpegFrameReader:
         # 非零 frame_start 走的 `select='between(n,start,end)'` 是**帧号精确**的，
         # 代价是必须从第 0 帧解码到 end 再丢弃前面部分（整文件解码）。
         # 为什么不换成输入侧 `-ss` 快速 seek（省掉这段解码）：
-        #   本仓库已有实测反证 —— tests/verify_segment_bitstream_v5.py 的
+        #   本仓库已有实测反证 —— Accessory/verify/segment_bitstream_verify_v5.py 的
         #   `[FIX-BOUNDARY-LEAK]` 记录输入 `-ss` 会在分块边界泄漏/顶替帧，
         #   且「泄漏帧在输出中的位置不稳定（实测有时是第 N+1 帧、有时顶替第 N 帧）」，
         #   分块路径是靠 Python 侧按显示 pts 窗口精确过滤才得以正确。

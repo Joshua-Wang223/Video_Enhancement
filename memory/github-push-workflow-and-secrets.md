@@ -170,7 +170,7 @@ DIRTY=allow bash make_snapshot.sh          # 工作区不干净时也继续
 - **排查顺序**：`ssh -T git@github.com`（期望 `Hi Joshua-Wang223!`）→ 报 `Permission denied (publickey)` 即"无 key 或未注册"，**不是网络问题**；通过后 `git push origin main`。注意换 SSH 后本机 `git fetch origin` 也依赖 key（此前匿名 HTTPS 可拉）。
 - **备用路径**（本机无 key 时实测可用，未用 URL 内嵌 token）：`git push https://github.com/Joshua-Wang223/Video_Enhancement.git main`，走 Windows Git Credential Manager 的浏览器授权（提示 `info: please complete authentication in your browser...`）。⇒ 凭据交给 helper/key，**别在 URL 里塞 token**。
 
-**本机能力边界（影响"验证做到哪一步"）**：Windows 开发机**无 torch、无 pytest、无 GPU**。因此凡是 `import ifrnet_video.pipeline`（其顶部 `import torch`）的测试都跑不起来 —— `tests/test_prescan_cache_persistence.py` 属此类，**只能在 Linux+GPU 侧执行**。本机可跑的是：`py_compile`、AST 静态门禁 `python tests/verify_plan_implementation.py --skip-behavior`（2026-09-24 实测 **50 项 / 0 失败**）、以及需要 ffmpeg 的场景（本机在 `/d/ffmpeg-master-latest-win64-gpl-shared/bin`）。
+**本机能力边界（影响"验证做到哪一步"）**：Windows 开发机**无 torch、无 pytest、无 GPU**。因此凡是 `import ifrnet_video.pipeline`（其顶部 `import torch`）的测试都跑不起来 —— `Accessory/test/test_prescan_cache_persistence.py` 属此类，**只能在 Linux+GPU 侧执行**。本机可跑的是：`py_compile`、AST 静态门禁 `python Accessory/verify/plan_implementation_gate.py --skip-behavior`（2026-09-24 实测 **50 项 / 0 失败**）、以及需要 ffmpeg 的场景（本机在 `/d/ffmpeg-master-latest-win64-gpl-shared/bin`）。
 
 ## 2026-09-23 本次推送记录
 

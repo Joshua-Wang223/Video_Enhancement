@@ -2,7 +2,7 @@
 
 > ## ✅ 执行状态（2026-09-17 Linux + GPU 完成）
 >
-> **诊断资产已就绪，结论已落地**：`tests/diagnose_reader_rgb_path_consistency.py`
+> **诊断资产已就绪，结论已落地**：`Accessory/probe/reader_rgb_path_diagnose.py`
 > （§3 步骤 1~4 的可执行版本，锁步流式比对不落盘，输出 JSON + Markdown 报告模板）。
 >
 > ### ⚠️ 两条实测纠正（本文档给的复测命令会因此得出错误结论）—— 已验证

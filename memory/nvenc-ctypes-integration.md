@@ -9,7 +9,7 @@ metadata:
 
 # NVENC SDK 13.0 ctypes 直接编码完整参考
 
-> 信息来源：nv-codec-headers n13.0.19.0，已在 Tesla T4 / driver 580 上通过 `test_nvenc_pre_torch.py` 和多段视频编码验证。
+> 信息来源：nv-codec-headers n13.0.19.0，已在 Tesla T4 / driver 580 上通过 `nvenc_session_pre_torch_probe.py` 和多段视频编码验证。
 
 ## 版本号公式
 
@@ -163,7 +163,7 @@ func_table 原始大小 2552 bytes，函数指针从 offset 8 开始排列：
 
 ### SDK 13.0 NV_ENC_CONFIG.rcParams offset = 40
 
-`NV_ENC_RC_PARAMS` 是**纯顺序 struct**（nvEncodeAPI.h master 验证，2026-06-09）。**NO union** — 之前的 union 假设是错误的，`verify_rcparams_offset.py` 误将 `NV_ENC_QP`（12B struct）当成 4B 枚举导致整体偏移计算错误。
+`NV_ENC_RC_PARAMS` 是**纯顺序 struct**（nvEncodeAPI.h master 验证，2026-06-09）。**NO union** — 之前的 union 假设是错误的，`nvenc_rcparams_offset_verify.py` 误将 `NV_ENC_QP`（12B struct）当成 4B 枚举导致整体偏移计算错误。
 
 ```
 NV_ENC_RC_PARAMS 完整布局 (128 bytes total):
@@ -256,7 +256,7 @@ v6.4.3.1+ 使用 VBR_HQ (mode=32) + targetQuality 替代 CONSTQP 做 CQ 编码�
 1. **优先用 curl 下载**：`curl -L -o /tmp/nvEncodeAPI.h "https://raw.githubusercontent.com/FFmpeg/nv-codec-headers/master/include/ffnvcodec/nvEncodeAPI.h"`（已验证可靠，`sdk/13.0` 分支不存在，master 分支是最新的）
 2. 手动解析 C struct 定义：注意嵌套 struct（如 NV_ENC_QP 是 12B 而非 4B）和 bitfield 位序
 3. 跨校验：`rc_ptr[2]/[3]/[4]` 对应 CONSTQP 的 qpInterP/qpInterB/qpIntra，已有 GPU 验证的正确代码可作锚点
-4. **不要信任自动解析脚本**：`verify_rcparams_offset.py` 将 NV_ENC_QP（12B struct）误当 4B enum，导致所有后续字段偏移错误 8 字节
+4. **不要信任自动解析脚本**：`nvenc_rcparams_offset_verify.py` 将 NV_ENC_QP（12B struct）误当 4B enum，导致所有后续字段偏移错误 8 字节
 
 ## 其他关键经验
 

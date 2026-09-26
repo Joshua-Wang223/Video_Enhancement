@@ -44,7 +44,7 @@ encode_frame `force_idr`）与 IFRNet 的 `_apply_sps_pps` 语义**逐字等价*
 同义：预挂 + 缓存 + IDR 时预注入 muxer）。**有意不带** IFRNet `_cache_param_sets`
 的 SPS/PPS 字节漂移检测 —— 那是 `[P3-FIX-NAL-COMMON]` 的独立改动，属行为变更。
 
-等价性用 `tests/test_esrgan_apply_sps_pps_equivalence.py` 钉住：以**改造前的内联
+等价性用 `Accessory/test/test_esrgan_apply_sps_pps_equivalence.py` 钉住：以**改造前的内联
 阶梯**为 oracle，在 120 组合真值表（h264/hevc × 缓存 3 态 × 数据 5 态 × is_idr 2 ×
 muxer 2）上比对 返回数据/缓存值/injected/muxer 调用次数/打印次数 —— 全等。
 
@@ -83,7 +83,7 @@ LA 下 CE 在**入队**时触发而非**完成**时，Phase1/3 会把稍后才�
 ---
 ## 2026-09-18 §4.2 回归测试执行记录
 
-执行命令：`python tests/test_regression_min.py --behavior-only`
+执行命令：`python Accessory/verify/test_regression_min.py --behavior-only`
 - 总计：40 项
 - 通过：38 项（含 C-行为·NAL等价 13 项、SDK契约 5 项、SPS原语 8 项、指纹 5 项、编译 2 项、配置校验 3 项、调用契约 2 项）
 - 失败：0 项
@@ -98,7 +98,7 @@ LA 下 CE 在**入队**时触发而非**完成**时，Phase1/3 会把稍后才�
 
 ### P1 帧数守恒
 
-**(a) harness** `tests/test_nvenc_la_frame_conservation.py`（自带 `MinimalTestEncoder`，**不导入生产 nvenc_sdk**）：
+**(a) harness** `Accessory/probe/nvenc_la_frame_conservation_suite.py`（自带 `MinimalTestEncoder`，**不导入生产 nvenc_sdk**）：
 
 | 组合 | 结果 | 证据 |
 |---|---|---|
@@ -124,7 +124,7 @@ A/B 各 103 文件，`diff -rq` 逐字节一致；B 可写。本次无删除/改
 结果：RC=0；IFRNet `575 → 1149`（×2，LA=8）**解码级验收 `decoded=1149 expected=1149`**；ESRGAN 2x → 1280x720；最终输出 `nb_read_frames=1149`、全解码 rc=0 无错误；时长 25.0s 守恒；`qa.json` fixes 含 `EOS_OUTPUT_ORDER`/`DECODABLE_GATE`。**无 `Bitstream parse error`。**（耗时 8m14s，纯冒烟用时长非性能指标）
 
 ### P4 回归断言扩展（已落地并通过）
-`tests/test_nvenc_sdk_realesrgan.py::TestFrameConservation` 新增 3 项（该文件**导入生产 nvenc_sdk**）：
+`Accessory/probe/nvenc_sdk_realesrgan_suite.py::TestFrameConservation` 新增 3 项（该文件**导入生产 nvenc_sdk**）：
 - `test_frame_conservation_vbr_hq_la8_send_eos_hevc`（帧守恒 + 零空占位）
 - `test_frame_conservation_constqp_la0_hevc`
 - `test_frame_conservation_ce_pipeline_la0_hevc`（LA=0 生产入口；LA>0 生产不走该入口）
@@ -156,7 +156,7 @@ A/B 各 103 文件，`diff -rq` 逐字节一致；B 可写。本次无删除/改
 全部 `encode 300==300` + `decode 300`；EOS-DEBUG 实测 `drain_slots=[4,5,6,7,8,9,10,0,1,2]`、
 `gfi_seq=[290..299]`、`顺序正确=True`；`pytest -k frame_conservation` → 6 passed。
 
-### B. Harness `tests/test_nvenc_la_frame_conservation.py`（`[FIX-HEVC-READY]`）
+### B. Harness `Accessory/probe/nvenc_la_frame_conservation_suite.py`（`[FIX-HEVC-READY]`）
 按同一套生产架构改造，**HEVC 现已可跑**（详见 [[nvenc-hevc-la-harness-wedge]]）：
 槽数 `max(la+3,6)`、per-slot FIFO + `_ensure_slot_free` 背压、就绪门控排空（margin 2/4）、
 轮转序非阻塞 EOS、size 钳制、close() 只锁有 pending 的槽、修 `total_need_more` 未初始化；
@@ -166,7 +166,7 @@ A/B 各 103 文件，`diff -rq` 逐字节一致；B 可写。本次无删除/改
 hevc LA=0、LA=8（各 300 帧）`300==300` + `ffprobe -count_frames=300` + `ffmpeg -v error` 零报错。
 
 ### 收口
-- `tests/verify_plan_implementation.py`：**94 项 / 92 PASS / 0 FAIL / 0 WARN / 2 SKIP**（基线一致）。
+- `Accessory/verify/plan_implementation_gate.py`：**94 项 / 92 PASS / 0 FAIL / 0 WARN / 2 SKIP**（基线一致）。
 - 回滚开关：`NVENC_HEVC_DRAIN_MARGIN=0`（去掉余量）；或整体 revert 本轮改动。
 - 未做（有意）：ESRGAN EOS 仍用 blocking+pending 门控（已验证），未移植 IFRNet 的
   non-blocking+deadline 变体，以控制影响面。

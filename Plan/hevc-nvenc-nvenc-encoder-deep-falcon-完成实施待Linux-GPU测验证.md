@@ -18,7 +18,7 @@
 
 Sanity check：
 - ✅ py_compile 两个文件通过（改后复检）
-- ✅ verify_plan_implementation.py 90 项：83 PASS / 3 FAIL / 2 WARN / 2 SKIP
+- ✅ plan_implementation_gate.py 90 项：83 PASS / 3 FAIL / 2 WARN / 2 SKIP
 - ✅ 3 个 FAIL（BEH-B1/B3/B4）已确证与本次改动零关系：BEH-B 只执行 video_utils.split_video_by_time（不碰 ifrnet_video 代码）；Windows 复现实验证明失败原因是 09-01 修复 A 的 merge_trailing_fragment（video_utils.py:1136，末段 <2s 并入前段）使 9s 测试源产出 2 段，而 BEH-B 断言仍是旧的 len==3——验收脚本断言过期，08-31 基线报告（90 项 0 FAIL）在修复 A 之前。建议另行更新 BEH-B 断言或改用不触发合并的素材
 - ✅ memory ifrnet-hevc-cross-segment-reuse-restore.md 新建 + MEMORY.md 索引更新，canonical/仓库双侧同步
 

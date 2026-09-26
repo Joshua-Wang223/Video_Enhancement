@@ -68,7 +68,7 @@ encode_frame() 单独调用
 
 ## 模拟验证方法论
 
-`tests/test_pipe4_la8_corruption.py` — 差分分析模拟:
+`Accessory/probe/pipe4_la8_corruption_diff.py` — 差分分析模拟:
 - 不模拟 NVENC 内部行为 (先前 4 个版本错误地尝试这样做)
 - 只追踪 **可观测的语义差异**: 调用者、slot、IDR、SPS、handle 共享
 - 6 个场景 (T0-T5) 的决策矩阵直接显示 T3=T5 REFERENCE → 确定修复方案

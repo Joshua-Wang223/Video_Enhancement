@@ -77,7 +77,7 @@ NVENCEncoder 内新增(带 `_rotation_` 前缀):
 
 ## 验证
 
-- `tests/verify_rotation_backport.py`(AST 提取 6 版本方法 → exec dummy 类):
+- `Accessory/verify/stream_ts_reassoc_backport_verify.py`(AST 提取 6 版本方法 → exec dummy 类):
   1. 合成旋转流 4960 帧修复(LA=8 窗口9 / LA=16 窗口17,双场景 12 项)翻转残留 0
   2. 集成点检查(_fix 调用 ≥2 处)
   3. 正常流不误伤 + CONSTQP 快速路径直通

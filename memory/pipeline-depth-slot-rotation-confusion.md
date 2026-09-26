@@ -23,7 +23,7 @@ related: [[nvenc-la-frame-conservation-fix]] [[nvenc-empty-frame-defense]]
 
 ## 证据
 
-1. **`NVENCEncoderMode6` 测试类明确承认此冲突**（`tests/test_nvenc_completion_event_v4.py` 行 2704-2713）：
+1. **`NVENCEncoderMode6` 测试类明确承认此冲突**（`Accessory/probe/nvenc_completion_event_matrix_v4.py` 行 2704-2713）：
    ```python
    """Solves the pipe=4 + LA>0 slot-rotation conflict by:
    1. Expanding slots: total_slots = pipeline_depth + la_depth

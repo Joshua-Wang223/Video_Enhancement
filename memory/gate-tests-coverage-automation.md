@@ -1,31 +1,31 @@
 ---
 name: gate-tests-coverage-automation
-description: 门禁把 tests/ 全量纳入 py_compile + H1 扫描（54→112 文件），并据此抓到一处被 except 掩盖多年的真实参数互斥缺陷
+description: 门禁把 Accessory/ 全量纳入 py_compile + H1 扫描（54→112 文件），并据此抓到一处被 except 掩盖多年的真实参数互斥缺陷
 type: project
 ---
 
-# 门禁覆盖扩到 `tests/`（2026-09-15）
+# 门禁覆盖扩到 `Accessory/`（2026-09-15）
 
 立项：`Plan/门禁与测试资产纳管清理_立项Prompt.md`
-清点表：`tests/TEST_ASSET_INVENTORY.md`（59 个 py 文件的逐个状态 + 引用矩阵 + 哈希）
+清点表：`Accessory/docs/TEST_ASSET_INVENTORY.md`（59 个 py 文件的逐个状态 + 引用矩阵 + 哈希）
 
 ## 落地内容
 
 | 项 | 变化 |
 |---|---|
-| `COVERAGE_ROOTS` | 新增 `"tests"`（此前 tests/ **完全不在扫描范围**，只有 `test_regression_min.py` 经 `COVERAGE_EXTRA` 单点纳入） |
+| `COVERAGE_ROOTS` | 新增 `"tests"`（此前 Accessory/ **完全不在扫描范围**，只有 `test_regression_min.py` 经 `COVERAGE_EXTRA` 单点纳入） |
 | `COMPILE_TARGETS` | 54 → **112** 个文件 |
 | `BEH-H1` 扫描调用点 | 65 → **245** |
-| `BEH-E2` | 新增「tests/ 未被覆盖」探测（防止排除规则写宽后整批静默剔掉）；`COVERAGE_MIN_FILES` 45 → 95 |
+| `BEH-E2` | 新增「Accessory/ 未被覆盖」探测（防止排除规则写宽后整批静默剔掉）；`COVERAGE_MIN_FILES` 45 → 95 |
 | 删除 | `COVERAGE_EXTRA`（tests 成为根目录后成死配置） |
 
-**为什么敢全量**：实测 59 个 `tests/**/*.py` **全部** `py_compile` 通过、
+**为什么敢全量**：实测 59 个 `Accessory/**/*.py` **全部** `py_compile` 通过、
 `BEH-H1` 调用契约也无违规 —— 立项文档担心的"历史脚本会立刻翻红"在本树不成立，
 所以不需要维护"活跃 tests 白名单"。
 
 ## 立刻抓到的真实缺陷（值得记住的一类）
 
-`tests/diagnose_nvenc_rc_mode.py:178`：
+`Accessory/probe/nvenc_rc_mode_diagnose.py:178`：
 
 ```python
 subprocess.run([...], capture_output=True, text=True, timeout=30,
@@ -41,7 +41,7 @@ subprocess.run([...], capture_output=True, text=True, timeout=30,
 
 ## 实测纠正：v4/v5 与 `_v4.py` 引用
 
-* `tests/verify_segment_bitstream_v4.py` 与 `_v5.py` **逐字节相同**
+* `Accessory/verify/segment_bitstream_verify_v4.py` 与 `_v5.py` **逐字节相同**
   （sha256 前 16 位均 `2566804141ee2c7a`，均 192131 字节），但**都是有意保留**的
   "同一份内容两个名字"，**两个都不能删**。
 * `test_chroma_false_positive.py` 的 `v5 → v4` 双名兼容（`[FIX-VERIFY-RENAME]`）
@@ -62,17 +62,17 @@ Linux 侧待办：确认 5 个文件在 git 索引里的形态 → 加 `* text=a
 ## 版本控制
 
 本开发树**不是 git 仓库**（`git status` → `fatal: not a git repository`），
-故立项里「复核 `verify_segment_bitstream_v4.py`/`_v5.py` 是否被跟踪」无法在本机做。
+故立项里「复核 `segment_bitstream_verify_v4.py`/`_v5.py` 是否被跟踪」无法在本机做。
 `memory/env-ffmpeg-ffprobe-gotchas.md` 记录 v4 **未被跟踪**，而它是被生产源码引用的
 门禁资产 ⇒ 必须在 Linux 侧纳入跟踪。
 
 ## How to apply
 
-* 新增 `tests/*.py` 会自动进 `COMPILE_TARGETS`，**无需**手工登记；
+* 新增 `Accessory/*.py` 会自动进 `COMPILE_TARGETS`，**无需**手工登记；
   但把**非 py 资产**（`.sh`/`.md`）加进去仍需显式处理。
 * `BEH-H2` 的"参数互斥"扫描是 `py_compile` 的盲区补充，遇到"某段兜底逻辑从未生效"
   类问题可以先怀疑它。
-* 新增 `tests/` 文件后，`tests/TEST_ASSET_INVENTORY.md` 的行需要手工补
+* 新增 `Accessory/` 文件后，`Accessory/docs/TEST_ASSET_INVENTORY.md` 的行需要手工补
   （或用文档 §2 的引用矩阵脚本重生成）。
 
 **Related**：[[gate-verify-plan-known-failures]]、[[feedback_verify_baseline_first]]、

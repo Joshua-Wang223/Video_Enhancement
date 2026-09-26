@@ -66,7 +66,7 @@ class _NvGuid(Structure):
 # NVENC 预定义 GUID 常量
 # ==============================================================================
 
-# [FIX-CODEC-GUID] 三 codec GUID（SDK 13.0 nvEncodeAPI.h，tests/test_nvenc_la_frame_conservation.py 已验证）。
+# [FIX-CODEC-GUID] 三 codec GUID（SDK 13.0 nvEncodeAPI.h，Accessory/probe/nvenc_la_frame_conservation_suite.py 已验证）。
 # 旧 NV_ENC_CODEC_H264_GUID = 0x6b9c211b 是错误死代码（驱动实际枚举的是 0x6bc82762），已更正。
 NV_ENC_CODEC_H264_GUID = _NvGuid(0x6bc82762, 0x4e63, 0x4ca4,
     (0xaa, 0x85, 0x1e, 0x50, 0xf3, 0x21, 0xf6, 0xbf))
@@ -530,7 +530,7 @@ class NVENCEncoder:
     Input: GPU tensor (NV12 format, uint8, H_total x W, contiguous)
     Output: H.264 Elementary Stream bytes
 
-    [FIX-NVENC-SDK13] Complete rewrite based on verified test_nvenc_pre_torch.py:
+    [FIX-NVENC-SDK13] Complete rewrite based on verified nvenc_session_pre_torch_probe.py:
       - CreateInputBuffer + LockInputBuffer + cuMemcpyDtoD_v2 (no RegisterResource)
       - CreateBitstreamBuffer for encoder output
       - All structs via byte array + manual offset writes (verified offsets)
@@ -606,7 +606,7 @@ class NVENCEncoder:
         # ── 概念分离（参见 pipeline-depth-slot-rotation-confusion.md）──
         # _required_buffers: SDK 硬件安全下限 — la_depth==0 时为 1，否则 >= LA+1
         # [FIX-HEVC-LA-ROUTE] HEVC/AV1 + LA 已 GPU 验证（2026-08-18
-        # tests/diagnose_hevc_la.py eos_probe：700 帧守恒 + ffmpeg decode OK），
+        # Accessory/probe/hevc_lookahead_diagnose.py eos_probe：700 帧守恒 + ffmpeg decode OK），
         # 不再降级 LA=0。中途排空与 EOS 排空分别由 FIX-HEVC-COUNTED /
         # FIX-HEVC-EOS 处理（见 encode_frames_stream）。
         # _slot_count: 实际分配的 slot 对数（buffer pool 大小 + 轮转模数）
@@ -642,7 +642,7 @@ class NVENCEncoder:
         self._encoder = c_void_p(None)
         self._frame_idx = 0
         # [FIX-LA-OUTPTR] 独立输出槽位指针：跟踪下一个预期输出的 slot，
-        # 确保 LA 延迟产出帧按正确顺序取回（参照 test_nvenc_la_frame_conservation.py）
+        # 确保 LA 延迟产出帧按正确顺序取回（参照 nvenc_la_frame_conservation_suite.py）
         self._output_slot_idx = 0
         # [FIX-LA-CHUNK-STREAM] LA 分块流式编码的跨调用持久状态。
         # 原 [FIX-LA-ACCUMULATE] 设计要求整段累积后单次 encode_frames_batch()，
@@ -939,7 +939,7 @@ class NVENCEncoder:
         # 偏移基准: _h264_cfg_off = 8(presetCfg) + 168(encodeCodecConfig)。
         # [FIX-CODEC-SUPPORT] 上述偏移为 NV_ENC_CONFIG_H264 专属，仅 h264 时写入；
         # HEVC/AV1 的 NV_ENC_CONFIG_HEVC/AV1 布局未验证，信任 preset 默认值
-        # （tests/test_nvenc_la_frame_conservation.py 已验证此策略 InitializeEncoder OK）。
+        # （Accessory/probe/nvenc_la_frame_conservation_suite.py 已验证此策略 InitializeEncoder OK）。
         if self._codec == "h264":
             _h264_cfg_off = 8 + 168
             # chromaFormatIDC@192 (VUI 112B 之后): 1=4:2:0，防止 SPS 声明 monochrome → 灰色输出 [FIX-CHROMA]
@@ -1522,7 +1522,7 @@ class NVENCEncoder:
         非阻塞方案已废弃。HEVC/AV1 + LA>0 的阻塞死锁由 __init__ 中的
         FIX-HEVC-LA-ROUTE（路由 LA=0 ce_pipeline）规避；H.264 本路径不变。
 
-        参照 tests/test_nvenc_la_frame_conservation.py 的 _drain_outputs() 验证模式：
+        参照 Accessory/probe/nvenc_la_frame_conservation_suite.py 的 _drain_outputs() 验证模式：
         - 从 _output_slot_idx 指向的 slot 开始，循环 Lock
         - 每成功取回一帧则推进 _output_slot_idx
         - 遇到 NEED_MORE_INPUT 时退出循环
@@ -2532,7 +2532,7 @@ class NVENCEncoder:
                     _pending_cnt = self._frame_idx - self._output_slot_idx
                     _max_drain = min(_pending_cnt, self._slot_count)
                     # [FIX-HEVC-COUNTED] HEVC/AV1：只排空已就绪帧——gfi k 在提交
-                    # sub(k+LA) 后就绪（diagnose_hevc_la.py 实测）；锁未就绪/空槽
+                    # sub(k+LA) 后就绪（hevc_lookahead_diagnose.py 实测）；锁未就绪/空槽
                     # 会触发驱动永久阻塞（test4 根因：空槽 Lock 不返回）。H.264
                     # 驱动对空槽返回 SUCCESS+size=0，保持原行为不变。
                     if self._codec in ("hevc", "av1"):
@@ -2551,7 +2551,7 @@ class NVENCEncoder:
                     # [FIX-LA-EOS-IN-BATCH] send_eos=True: 发送 EOS 后完整排空所有 slot。
                     # SDK 合规：EOS → 按 _output_slot_idx 顺序逐 slot blocking LockBitstream
                     # 直到 NEED_MORE_INPUT，回收全部 LA 滞留帧，保证帧数守恒。
-                    # 参照 tests/test_nvenc_la_frame_conservation.py flush_eos()。
+                    # 参照 Accessory/probe/nvenc_la_frame_conservation_suite.py flush_eos()。
                     eos_pic_buf = (c_uint8 * 3360)()
                     ctypes.memset(eos_pic_buf, 0, 3360)
                     cast(eos_pic_buf, ctypes.POINTER(c_uint32))[0] = NV_ENC_PIC_PARAMS_VER
@@ -2586,7 +2586,7 @@ class NVENCEncoder:
                                      if _s in _pending_slots]
                                     if _hevc_eos else _drain_order)
                     # [FIX-HEVC-EOS-NONBLOCKING] HEVC/AV1 的 EOS 排空**必须**非阻塞轮询。
-                    # 本项目实测铁律（tests/diagnose_hevc_la.py + hevc-la-drain-diagnosis）：
+                    # 本项目实测铁律（Accessory/probe/hevc_lookahead_diagnose.py + hevc-la-drain-diagnosis）：
                     #   HEVC 驱动对"未就绪 buffer"的 LockBitstream 在 doNotWait=0 下
                     #   **永不返回** —— 与 H.264"空槽返回 SUCCESS+size=0"完全不同。
                     # 原实现此处对 HEVC/AV1 仍传 doNotWait=0 阻塞锁，仅靠"只锁 pending
@@ -2881,7 +2881,7 @@ class NVENCEncoder:
                     # Handle LA buffering: encoder needs more frames before producing output.
                     # [FIX-LA-NEEDMORE-PENDING] NEED_MORE_INPUT frames are also recorded in
                     # _slot_pending so Phase 1/3 correctly harvest them (returning b"").
-                    # This aligns with test_nvenc_completion_event_v4.py NVENCEncoderMode5.
+                    # This aligns with nvenc_completion_event_matrix_v4.py NVENCEncoderMode5.
                     if _ep_status == NV_ENC_ERR_NEED_MORE_INPUT:
                         results[fi] = b""
                         self.__dict__.setdefault('_la_buffered', 0)
@@ -2898,7 +2898,7 @@ class NVENCEncoder:
                     # 已就绪的输出（LA>0 时帧产出可能早于 CE 轮转）。按
                     # _output_slot_idx 顺序循环 blocking LockBitstream，
                     # 收集 LA 管道中已完成但尚未被 Phase 1 harvest 的帧。
-                    # 参照 tests/test_nvenc_la_frame_conservation.py _drain_outputs()。
+                    # 参照 Accessory/probe/nvenc_la_frame_conservation_suite.py _drain_outputs()。
                     if self._la_depth > 0:
                         _inlined = self._drain_outputs_blocking()
                         # [P3.1-SPLIT-CE] 阶段方法化
@@ -3161,7 +3161,7 @@ class NVENCEncoder:
         # 在帧入队时即触发，但编码尚未完成）。按 _output_slot_idx
         # 顺序循环 blocking LockBitstream，收集所有实际已完成但
         # 被遗漏的帧，覆写 results 中的 b""/None 占位符。
-        # 参照 tests/test_nvenc_la_frame_conservation.py 的
+        # 参照 Accessory/probe/nvenc_la_frame_conservation_suite.py 的
         # _drain_outputs() 验证模式。
         if self._la_depth > 0:
             _redrained = self._drain_outputs_blocking()
@@ -3332,7 +3332,7 @@ class NVENCEncoder:
                 h264_data = b""
 
                 # [FIX-LA-DRAIN-SYNC] ★ 全局 drain: 循环 LockBitstream 排空所有已完成 slot ──
-                # 参照 test_nvenc_la_frame_conservation.py: 每送入一帧后立即排空所有输出。
+                # 参照 nvenc_la_frame_conservation_suite.py: 每送入一帧后立即排空所有输出。
                 # encode_frame() 返回单帧 bytes，取首个有效帧；若多次 drain 产出多帧
                 # 应优先使用 encode_frames_batch() 或 encode_frames_batch_ce_pipeline()。
                 _drained = self._drain_outputs_blocking()
@@ -3439,13 +3439,13 @@ class NVENCEncoder:
 
                 # [FIX-LA-FLUSH] 按 _output_slot_idx 起始顺序排空所有 slot，
                 # 保证 EOS flush 的输出顺序与编码器内部输出顺序严格一致。
-                # 参照 tests/test_nvenc_la_frame_conservation.py flush_eos()。
+                # 参照 Accessory/probe/nvenc_la_frame_conservation_suite.py flush_eos()。
                 _start_slot = self._output_slot_idx % self._slot_count
                 _drain_order = [(_start_slot + i) % self._slot_count
                                 for i in range(self._slot_count)]
                 # [FIX-HEVC-EOS-FLUSH] HEVC/AV1：只锁仍有 pending 帧的槽——
                 # 驱动对空槽的 blocking LockBitstream 永久阻塞
-                # （tests/diagnose_hevc_la.py test4 实测），EOS 后 pending 槽帧
+                # （Accessory/probe/hevc_lookahead_diagnose.py test4 实测），EOS 后 pending 槽帧
                 # 已就绪、按 pending 条数取回（test5 实测 vcl=700 守恒）。
                 # 与 encode_frames_stream() send_eos 的 FIX-HEVC-EOS 分支语义一致；
                 # H.264 保持原 while-True 轮转（空槽返回 SUCCESS+size=0，无死锁）。
@@ -4172,7 +4172,7 @@ class FFmpegMuxer:
         # （HEVC parser 会把"仅参数集 AU"当完整 packet 发出 → mp4 header 失败）。
         self._pending_sps_pps: Optional[bytes] = None
 
-        # [FIX-CODEC-SUPPORT] 封装格式映射（与 tests/test_nvenc_la_frame_conservation.py 一致）。
+        # [FIX-CODEC-SUPPORT] 封装格式映射（与 Accessory/probe/nvenc_la_frame_conservation_suite.py 一致）。
         _fmt = {"h264": "h264", "hevc": "hevc", "av1": "obu"}.get(codec, "h264")
         cmd = [
             ffmpeg_bin, "-y",

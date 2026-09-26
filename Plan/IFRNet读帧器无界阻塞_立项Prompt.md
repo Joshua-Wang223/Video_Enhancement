@@ -10,10 +10,10 @@
 > | `IFRNET_READER_TIMEOUT`（缺省 120s；`0`＝关闭看门狗，退回无界阻塞） | ✅ 已落地 |
 > | 遥测 `_frames_read` + 归因消息（thread/child/queue/frame） | ✅ 已落地 |
 > | 反压语义 | ✅ 未破坏（判据保守：线程活+子进程在跑 → 再给一个观察窗，≤2×T 才抛） |
-> | 验收判据 1/2/4 | ✅ **Linux 已跑通**（`tests/test_reader_unbound_watchdog.py` 11/11 PASS，含真实 ffmpeg 24 帧逐字节比对 + 慢消费反压帧守恒） |
+> | 验收判据 1/2/4 | ✅ **Linux 已跑通**（`Accessory/test/test_reader_unbound_watchdog.py` 11/11 PASS，含真实 ffmpeg 24 帧逐字节比对 + 慢消费反压帧守恒） |
 > | 验收判据 3（注入） | ✅ **Linux 真变体已跑通**（`SIGSTOP` 真子进程变体 `test_real_sigstop_child_ffmpeg_raises`，1.00s ≈ 2×T） |
 > | 验收判据 5/6（门禁 BEH-H3 / 生产回归） | ✅ **门禁 BEH-H3 PASS**，生产回归端到端已验证 |
-> | 完整测试脚本 | ✅ `tests/test_reader_unbound_watchdog.py` (11/11 PASS，含真实 SIGSTOP 变体 C3) |
+> | 完整测试脚本 | ✅ `Accessory/test/test_reader_unbound_watchdog.py` (11/11 PASS，含真实 SIGSTOP 变体 C3) |
 >
 > **落地形态与本文档 §3 的差异**：判别「已死」后**立即抛**，判别「仍活」时
 > **再给一个 `timeout` 观察窗**（本文档 §3 只写了"否则继续等"）——
@@ -30,7 +30,7 @@
 > 立项时间：2026-09-15　立项人：门禁强化会话
 > **完成时间：2026-09-17**　立项人：门禁强化会话
 > 关联记忆：`memory/ifrnet-reader-unbounded-queue-get.md`
-> 关联已落地项：`tests/verify_plan_implementation.py` 的 **BEH-H3**（读帧器冒烟）
+> 关联已落地项：`Accessory/verify/plan_implementation_gate.py` 的 **BEH-H3**（读帧器冒烟）
 > 之所以必须跑在「有界子进程 + 线程 join(60s)」里，就是被本缺陷逼出来的。
 
 ---
@@ -170,7 +170,7 @@ IFRNet 侧**没有任何对应物**。
 | 2 | 死亡路径（注入） | 人为让 `_read_loop` 直接 `return`（不投递哨兵）→ `read()` 在 ≤ 限额内抛 `RuntimeError`，消息含 `thread_alive/child_poll/queue` |
 | 3 | 子进程停住路径（注入） | `SIGSTOP` 子 ffmpeg（Linux）/ 等价手段 → `read()` 在 ≤ 限额内抛出而非挂死 |
 | 4 | 反压未被破坏 | 用小于 `prefetch` 的消费速率跑长片，内存不增长、无丢帧、帧守恒 |
-| 5 | 门禁 | `python tests/verify_plan_implementation.py --no-report-file` 无 FAIL；BEH-H3 仍 PASS（Linux，装有 torch/ffmpeg-python 时） |
+| 5 | 门禁 | `python Accessory/verify/plan_implementation_gate.py --no-report-file` 无 FAIL；BEH-H3 仍 PASS（Linux，装有 torch/ffmpeg-python 时） |
 | 6 | 生产回归 | `--dry-run` 正常；一段真实素材端到端帧守恒（解码级验收通过） |
 
 ---

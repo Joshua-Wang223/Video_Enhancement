@@ -29,7 +29,7 @@ type: project
 ## Why（2026-09-14 实测代价）
 
 给门禁写 H3「读帧器冒烟」时，循环里的 deadline 只在两次 `read()` **之间**判断，
-一旦卡进 `read()` 就再也出不来 —— **把 `verify_plan_implementation.py` 挂了 10 分钟**，
+一旦卡进 `read()` 就再也出不来 —— **把 `plan_implementation_gate.py` 挂了 10 分钟**，
 最终只能靠人工中断，并被迫改成「有界子进程 + 线程 join(60s)」双重设界才绕过。
 那个复杂度本应属于读帧器自身。
 
@@ -50,7 +50,7 @@ type: project
 ## 验证状态
 
 * **本机（Windows，无 GPU，无 torch/ffmpeg-python）**：
-  `python tests/test_reader_unbound_watchdog.py` → **10/10 PASS**，
+  `python Accessory/test/test_reader_unbound_watchdog.py` → **10/10 PASS**，
   含真实 ffmpeg 的 24 帧素材逐字节比对、反压慢消费帧守恒、以及两种注入
   （`_read_loop` 直接 return / 线程活着但永不产出）。
 * **待 Linux（GPU）补跑**：真 `SIGSTOP` 子 ffmpeg 的变体；门禁 `BEH-H3`；

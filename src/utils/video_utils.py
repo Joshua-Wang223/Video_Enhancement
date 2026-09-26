@@ -1450,7 +1450,7 @@ _PROBE_DETAIL_CACHE: Dict[tuple, Dict[str, object]] = {}
 
 # NVDEC 初始化失败特征：属运行时环境问题（driver/NVDEC SDK 不匹配、容器
 # GPU 未透传、surface 超限等），ffmpeg 会静默回退软解且帧数仍然有效，
-# 不得计入解码错误。与 tests/verify_segment_bitstream_v5.py 的
+# 不得计入解码错误。与 Accessory/verify/segment_bitstream_verify_v5.py 的
 # _HWACCEL_INIT_FAILURE_KW 保持同源。
 _HWACCEL_INIT_FAIL_KW = (
     "failed setup for format cuda",
@@ -3805,9 +3805,9 @@ def validate_decodable_video_batch(
     """[P4-FIX-BATCH] 批量解码级验收（并行版本，参考三个脚本并行引擎模式）。
 
     参考：
-      · verify_segment_bitstream_v5.py (run_verify_parallel + 结果顺序保留)
-      · benchmark_ifrnet_versions_v3.py (自动 workers + GPU 动态上限)
-      · analyze_video_pipeline_v3.py (两阶段流水线 + 任务级信号量)
+      · segment_bitstream_verify_v5.py (run_verify_parallel + 结果顺序保留)
+      · ifrnet_versions_benchmark_v3.py (自动 workers + GPU 动态上限)
+      · video_pipeline_analyzer_v3.py (两阶段流水线 + 任务级信号量)
     """
     if skip_validate:
         return [(True, {"skipped": True, "decoded_frames": None})

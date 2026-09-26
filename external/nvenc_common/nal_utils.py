@@ -5,7 +5,7 @@
 # 背景：两份 nvenc_sdk.py 互为镜像但已开始漂移，其中 Annex B NAL 扫描逻辑存在
 # 四份变体（_extract_sps_pps / _has_sps_pps / _nal_first_vcl_type /
 # FFmpegMuxer._es_has_param_sets）。本包收敛参考实现；两侧通过等价性测试
-# （tests/test_regression_min.py::test_nal_scanner_equivalence）锁定行为一致，
+# （Accessory/verify/test_regression_min.py::test_nal_scanner_equivalence）锁定行为一致，
 # 后续逐步切换为直接引用本模块。
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 ---
 name: verify-bitstream-idr-slice-fix
-description: verify_segment_bitstream_v2.py 同帧 IDR slice 误报修复：NVENC 多 slice/帧聚类统计，消除连IDR=3 假阳性
+description: segment_bitstream_verify_v2.py 同帧 IDR slice 误报修复：NVENC 多 slice/帧聚类统计，消除连IDR=3 假阳性
 metadata: 
   node_type: memory
   type: project

@@ -280,7 +280,7 @@ CONSTQP 模式下 Tier 1-B/A 可 100% 恢复空帧，验证见 [pipe4-la8-tier-d
 
 ### 关键经验总结
 
-1. **struct 布局必须从 SDK 头文件逐字节验证**，自动解析脚本不可靠（如 `verify_rcparams_offset.py` 误将 NV_ENC_QP 12B struct 当 4B enum）
+1. **struct 布局必须从 SDK 头文件逐字节验证**，自动解析脚本不可靠（如 `nvenc_rcparams_offset_verify.py` 误将 NV_ENC_QP 12B struct 当 4B enum）
 2. **所有 ctypes struct 用 byte array + 手动 offset 写**，不用 `ctypes.Structure`（field offset 不可靠，且可能缺字段）
 3. **GUID 必须从 driver 动态查询**，不能硬编码
 4. **RegisterResource 在 T4/driver 580 上 segfault**，用 CreateInputBuffer 替代
@@ -316,7 +316,7 @@ CONSTQP 模式下 Tier 1-B/A 可 100% 恢复空帧，验证见 [pipe4-la8-tier-d
 | FIX-HEVC-COUNTED / FIX-HEVC-EOS / FIX-HEVC-EOS-FLUSH | 双侧 `nvenc_sdk.py` | HEVC 空槽/未就绪槽 LockBitstream 永久阻塞（doNotWait 无效）→ 中途 counted 限界排空 + EOS pending-only + flush() 同语义 |
 | P1-FIX-H2D-EVENT-SYNC | `external/ifrnet_video/pipeline.py` + `ifrnet_utils.py` | 预取 pinned 槽 event 同步，根治"水彩单帧"竞态 |
 | EOS 排空硬化（EOS-OUTPUT-ORDER / STRICT-EOS / SIZE-CAP / NAL-COMMON） | 双侧 `nvenc_sdk.py` | 垃圾块 size 钳制、HEVC 参数集识别切 `nal_utils`（"Cached SPS+PPS" 33B→101B） |
-| 解码级验收门禁 | `src/utils/video_utils.py` + `tests/verify_plan_implementation.py` | `validate_decodable_video` / `count_decoded_video_frames`；RT-4 解码级帧数守恒 + RT-5 解码错误零容忍 + FIX-GATE（F-修复效果 phase，全量 90 项；Linux 生产基准 88 PASS / 0 FAIL / 0 WARN / 2 SKIP，Windows 无 GPU 环境为 86 PASS / 2 WARN / 2 SKIP） |
+| 解码级验收门禁 | `src/utils/video_utils.py` + `Accessory/verify/plan_implementation_gate.py` | `validate_decodable_video` / `count_decoded_video_frames`；RT-4 解码级帧数守恒 + RT-5 解码错误零容忍 + FIX-GATE（F-修复效果 phase，全量 90 项；Linux 生产基准 88 PASS / 0 FAIL / 0 WARN / 2 SKIP，Windows 无 GPU 环境为 86 PASS / 2 WARN / 2 SKIP） |
 | FIX-HEVC-LA-SOFT-RETIRED（2026-08-28，08-29 双侧同步完成） | 两个 processor + config | `hevc_la_disable` 软退役：默认 false，命中仅 WARN 不降级；`hevc_nvenc + VBR_HQ/QVBR + LA>0` 生产开放；回滚 = 显式置 true 或 `NVENC_HEVC_ALLOW_LA=0` |
 
 参考：[hevc-la-drain-diagnosis](memory/hevc-la-drain-diagnosis.md)、[ifrnet-watercolor-tail-defect-investigation](memory/ifrnet-watercolor-tail-defect-investigation.md)、[hevc-la-open-production](memory/hevc-la-open-production.md)。

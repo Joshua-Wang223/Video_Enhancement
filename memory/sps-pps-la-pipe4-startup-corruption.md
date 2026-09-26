@@ -97,7 +97,7 @@ per-slot IDR ×4 导致的 SPS 跨槽注入 (slot0 cache → slot1 prepend) 也�
 
 ### 方案B (ctypes 验证) — ✅ 已通过
 
-`tests/test_sps_pps_startup.py` 验证结果:
+`Accessory/probe/sps_pps_startup_repro.py` 验证结果:
 - `_NvEncConfigH264.repeatSPSPPS` @ offset=88 — 与 nvEncodeAPI.h SDK 13.0 **完全一致** ✅
 - 全部 11 个关键字段偏移量均匹配 ✅
 - `repeatSPSPPS=1` 可正常设置 ✅

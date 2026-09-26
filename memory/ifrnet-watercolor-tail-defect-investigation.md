@@ -81,7 +81,7 @@ pipeline.py `_try_prefetch_next`：`.to()` 后在 stream_h2d 上 `record_event` 
 
 ### Fix-2（症状 A 定位）：日志比对 + GPU 诊断脚本扩展
 先 grep 生产日志定位重启点与"排空超限"计数是否重合；再扩展
-tests/diagnose_hevc_la.py 增加"槽位放弃后继续提交"变体，复现 CRA 重启组，
+Accessory/probe/hevc_lookahead_diagnose.py 增加"槽位放弃后继续提交"变体，复现 CRA 重启组，
 确认后修复 `_ensure_slot_free` 兜底语义（放弃槽位必须连带终止本段而非继续提交）。
 
 ### Fix-3（症状 A 短期规避）：生产切 constqp+LA=0（ce_pipeline，历史验证最充分）
@@ -101,7 +101,7 @@ tests/diagnose_hevc_la.py 增加"槽位放弃后继续提交"变体，复现 CRA
 - nvenc_sdk.py L1530-1580（_ensure_slot_free 兜底）、L1582-1646（doNotWait=1）、
   L2040-2162（EOS 排空）、L2041-2060（EOS fail-fast）
 - main.py L3074-3160（编码线程 f0/分块）、pipeline.py L1370（编码线程创建）
-- 验证工具：tests/verify_segment_bitstream_v4.py（检查1 包级/检查4 色度簇）
+- 验证工具：Accessory/verify/segment_bitstream_verify_v4.py（检查1 包级/检查4 色度簇）
 - 解剖脚本：临时 parse_tail.py（Annex-B NAL 分组，可按需再生成）
 
 ## 证据索引

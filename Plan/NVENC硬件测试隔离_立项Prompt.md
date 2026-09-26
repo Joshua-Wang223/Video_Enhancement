@@ -1,4 +1,4 @@
-# 立项 Prompt：全量 `pytest tests/` SIGSEGV —— NVENC 硬件测试的状态隔离
+# 立项 Prompt：全量 `pytest Accessory/` SIGSEGV —— NVENC 硬件测试的状态隔离
 
 > ## ✅ 执行状态（2026-09-16 Linux + T4 实测完成，重大结论更新）
 >
@@ -6,14 +6,14 @@
 >
 > | 交付 | 说明 |
 > |---|---|
-> | `tests/diagnose_nvenc_qp0_segv.py` | **新增**：可复用的 qp=0 段错误复现与定位脚本，三模式（ctor_only / ce_pipeline / batch_direct）+ 对照组（qp=23），每次在独立子进程跑 |
-> | `tests/run_all_isolated.sh` | 方案 A：每文件独立 pytest 进程（仍有价值：防止其他测试互污染） |
+> | `Accessory/probe/nvenc_qp0_segv_repro.py` | **新增**：可复用的 qp=0 段错误复现与定位脚本，三模式（ctor_only / ce_pipeline / batch_direct）+ 对照组（qp=23），每次在独立子进程跑 |
+> | `Accessory/run_all_isolated.sh` | 方案 A：每文件独立 pytest 进程（仍有价值：防止其他测试互污染） |
 > | `pytest.ini` | 注册 `hw` 标记 + `testpaths = tests` + `-p no:cacheprovider` |
 >
 > ### ⚠️ 关键修正：SIGSEGV 非测试隔离问题
 >
 > 2026-09-16 实测（Tesla T4 / 驱动 580.65.06 / CUDA 13.0）证明：
-> - `test_nvenc_sdk_realesrgan.py::TestNVENCEncoder::test_no_empty_frames_constqp_la0` **单独跑也会崩**（3/8）
+> - `nvenc_sdk_realesrgan_suite.py::TestNVENCEncoder::test_no_empty_frames_constqp_la0` **单独跑也会崩**（3/8）
 > - **单测独立循环**也会崩（3/10）
 > - 崩溃与测试顺序、前置文件**无关**
 > - 真正触发条件：**`NVENCEncoder(qp=0, rate_mode='constqp', la_depth=0)` 编码**（即用户设 `crf=0` 触发的无损路径，见 `memory/crf0-la-depth-cli-ignore-fix.md`）
@@ -25,14 +25,14 @@
 > ### 已做的验证
 >
 > * ✅ 真实全量 SIGSEGV 复现、单测隔离复现、二分定位到 `qp=0` 编码阶段
-> * ✅ `tests/diagnose_nvenc_qp0_segv.py` 固化复现逻辑（可跨环境复验）
+> * ✅ `Accessory/probe/nvenc_qp0_segv_repro.py` 固化复现逻辑（可跨环境复验）
 > * ✅ 排除假设：结构体尺寸、函数表索引、LockBitstream size cap、_slot_pending 元组形状、CUDA 张量释放、缓冲区尺寸 —— 均非根因
 > * ⬜ 待办：qp=0 路径的深层根因（需驱动级调试或 NVENC SDK 升级）、生产规避策略（文档化 CRF=0 风险 / 回退到 qp>0）
 >
 > 用法：本文件可直接整段复制给新的 AI 会话作为任务书。
 > 立项时间：2026-09-15　立项人：门禁强化会话
 > **重大更新：2026-09-16 Linux + T4 实测** 立项人：NVENC 隔离会话
-> 数据来源：`tests/diagnose_nvenc_qp0_segv.py` 实测 + `Plan/Conversation-持续跟进6方案计划（GPU部分）-2026-09-17.txt` 调查记录
+> 数据来源：`Accessory/probe/nvenc_qp0_segv_repro.py` 实测 + `Plan/Conversation-持续跟进6方案计划（GPU部分）-2026-09-17.txt` 调查记录
 
 ---
 
@@ -40,7 +40,7 @@
 
 | 项 | 状态 | 说明 |
 |---|---|---|
-| 现象：全量 `pytest tests/` 硬崩 | ✅ **已定性** | EXIT=139（SIGSEGV），非测试污染，**真实缺陷**：`qp=0` 编码路径 |
+| 现象：全量 `pytest Accessory/` 硬崩 | ✅ **已定性** | EXIT=139（SIGSEGV），非测试污染，**真实缺陷**：`qp=0` 编码路径 |
 | 单独跑崩溃的类 | ✅ **确认崩** | `TestNVENCEncoder::test_no_empty_frames_constqp_la0` 单独跑 3/8 崩 |
 | 是否与解码/读帧链路耦合 | ✅ 已定性：**无耦合** | `nvenc_sdk.py` 只依赖 stdlib + numpy + torch + ctypes |
 | 非 NVENC 套件 | ✅ 通过 | `test_chroma_false_positive.py` → 2 passed |
@@ -51,7 +51,7 @@
 
 ## 0. 任务
 
-让 `pytest tests/` 能够**不崩**地跑完（或明确地按类隔离执行），
+让 `pytest Accessory/` 能够**不崩**地跑完（或明确地按类隔离执行），
 使"全量回归"重新成为一个可用的动作，而不是一个会产生 core dump 的雷区。
 
 产出物：**崩溃点定位** + **隔离方案**（三选一，见 §3）+ 可重复的执行入口。
@@ -60,21 +60,21 @@
 
 ## 1. 环境与代码基线
 
-- `tests/` 下与 NVENC 直接相关的测试 **14 个**：
+- `Accessory/` 下与 NVENC 直接相关的测试 **14 个**：
 
   | 文件 | 备注 |
   |---|---|
-  | `test_nvenc_completion_event.py` + `_v1` ~ `_v5` | 6 个版本并列（历史演进） |
-  | `test_nvenc_comprehensive.py` | |
-  | `test_nvenc_ipc_worker.py` | 注意 `_worker` 后缀，可能是被 spawn 的子进程脚本 |
-  | `test_nvenc_la_frame_conservation.py` | LA 帧守恒（**本立项最相关**，含 `_drain_outputs()` 模板） |
-  | `test_nvenc_pre_torch.py` | |
-  | `test_nvenc_sdk_realesrgan.py` | 会话中崩在它/同族类 |
-  | `test_nvenc_vbr_hq_offsets.py` | |
-  | `test_pipe4_la8_corruption.py` | |
-  | `test_sps_pps_startup.py` | |
+  | `nvenc_completion_event_matrix.py` + `_v1` ~ `_v5` | 6 个版本并列（历史演进） |
+  | `nvenc_comprehensive_matrix.py` | |
+  | `nvenc_ipc_worker_probe.py` | 注意 `_worker` 后缀，可能是被 spawn 的子进程脚本 |
+  | `nvenc_la_frame_conservation_suite.py` | LA 帧守恒（**本立项最相关**，含 `_drain_outputs()` 模板） |
+  | `nvenc_session_pre_torch_probe.py` | |
+  | `nvenc_sdk_realesrgan_suite.py` | 会话中崩在它/同族类 |
+  | `nvenc_vbr_hq_offsets_probe.py` | |
+  | `pipe4_la8_corruption_diff.py` | |
+  | `sps_pps_startup_repro.py` | |
 
-- `tests/conftest.py` 只有 `collect_ignore_glob`（忽略 `* - Copy*`），**没有任何 fixture/隔离机制**。
+- `Accessory/conftest.py` 只有 `collect_ignore_glob`（忽略 `* - Copy*`），**没有任何 fixture/隔离机制**。
 - `.gitignore` 已含 `*.core` / `core.*`。
 
 ---
@@ -136,7 +136,7 @@
 ### 2.7 生产规避策略文档已完成（2026-09-16）
 
 ✅ `memory/nvenc-qp0-crash-workaround.md` —— 记录 `crf=0` → 强制 `qp=0` 崩溃风险与建议回退策略（关 `_NVENC_CRF0_FORCE_CONSTQP`、显式 `qp>=1`、启用 LA>0、环境变量兜底）
-✅ `tests/diagnose_nvenc_qp0_segv.py` —— 可复用诊断脚本（退出码 1=复现，0=未复现）
+✅ `Accessory/probe/nvenc_qp0_segv_repro.py` —— 可复用诊断脚本（退出码 1=复现，0=未复现）
 
 ---
 
@@ -148,11 +148,11 @@
 
 | 方向 | 交付 | 说明 |
 |---|---|---|
-| **① 缺陷固化** | `tests/diagnose_nvenc_qp0_segv.py` | ✅ **已完成**：三模式复现 + 对照组，独立子进程，可跨环境复验 |
+| **① 缺陷固化** | `Accessory/probe/nvenc_qp0_segv_repro.py` | ✅ **已完成**：三模式复现 + 对照组，独立子进程，可跨环境复验 |
 | **② 生产规避文档** | `memory/nvenc-qp0-crash-workaround.md` | ✅ 已完成（2026-09-16）：记录 `crf=0` → 强制 `qp=0` 崩溃风险，建议生产避免 CRF=0 或回退 `qp>=1` / 启用 LA>0 / 环境变量兜底 |
 | **③ 根因深挖（可选）** | 驱动级调试 / NVENC SDK 升级评估 | ⬜ 待排期：需 `cuda-gdb`/`nsight` 或升级驱动/SDK 验证是否修复 |
 
-**方案 A（隔离跑）保留价值**：防止**其他**测试互污染，`tests/run_all_isolated.sh` 仍可提供。
+**方案 A（隔离跑）保留价值**：防止**其他**测试互污染，`Accessory/run_all_isolated.sh` 仍可提供。
 
 **方案 B（清理 fixture）** 降级：仅作通用卫生，不指望根治 qp=0 崩溃。
 
@@ -164,31 +164,31 @@
 
 | # | 判据 | 期望 |
 |---|---|---|
-| 1 | 复现 | `python tests/diagnose_nvenc_qp0_segv.py --iters 10` 在 T4/CUDA13 环境观测到 `ce_pipeline` 模式 qp=0 崩溃 ≥ 30% |
+| 1 | 复现 | `python Accessory/probe/nvenc_qp0_segv_repro.py --iters 10` 在 T4/CUDA13 环境观测到 `ce_pipeline` 模式 qp=0 崩溃 ≥ 30% |
 | 2 | 定位 | 已完成：故障在 **编码阶段**，触发条件 **`qp=0`**，与入口/建会话/测试顺序无关 |
-| 3 | 诊断工具可用 | `diagnose_nvenc_qp0_segv.py` 能在新环境复现/排除该缺陷（退出码 1=复现，0=未复现） |
+| 3 | 诊断工具可用 | `nvenc_qp0_segv_repro.py` 能在新环境复现/排除该缺陷（退出码 1=复现，0=未复现） |
 | 4 | 规避文档存在 | `memory/nvenc-qp0-crash-workaround.md` 记录 CRF=0 风险与建议回退策略 |
 | 5 | 无生产误导 | 不把"隔离跑"当根治方案；隔离措施**不得**掩盖 qp=0 真缺陷 |
-| 6 | 与门禁不冲突 | `python tests/verify_plan_implementation.py --no-report-file` 仍无 FAIL |
+| 6 | 与门禁不冲突 | `python Accessory/verify/plan_implementation_gate.py --no-report-file` 仍无 FAIL |
 
 **复验命令（标准化）：**
 ```bash
 # 完整复验（约 2-3 分钟）
-python tests/diagnose_nvenc_qp0_segv.py --iters 15
+python Accessory/probe/nvenc_qp0_segv_repro.py --iters 15
 
 # 快速冒烟（约 30 秒）
-python tests/diagnose_nvenc_qp0_segv.py --iters 5 --modes ctor_only ce_pipeline
+python Accessory/probe/nvenc_qp0_segv_repro.py --iters 5 --modes ctor_only ce_pipeline
 
 # 对照组验证 qp=23 无崩
-python tests/diagnose_nvenc_qp0_segv.py --iters 5 --qp 23
+python Accessory/probe/nvenc_qp0_segv_repro.py --iters 5 --qp 23
 ```
 
 ---
 
 ## 5. 风险与回滚（更新版）
 
-- **原立项不阻塞生产**仍成立：门禁 `verify_plan_implementation.py` 自带的行为阶段已覆盖关键回归。
+- **原立项不阻塞生产**仍成立：门禁 `plan_implementation_gate.py` 自带的行为阶段已覆盖关键回归。
 - **新增风险**：若不文档化 `crf=0` → `qp=0` 崩溃风险，用户在生产开启无损编码会遇到随机段错误（~35-67% 概率）。
-- **回滚**：纯 `tests/` 层改动（诊断脚本 + 隔离脚本），`git revert` 即可。
+- **回滚**：纯 `Accessory/` 层改动（诊断脚本 + 隔离脚本），`git revert` 即可。
 - **需要 Linux + GPU（NVENC）** 才能复现与验证；纯 CPU 环境只能跑诊断脚本的逻辑分支（会报环境缺失）。
 - **qp=0 根因深挖** 属驱动/SDK 层，可能需 NVIDIA 反馈或升级驱动/SDK 解决；短期以规避为主。

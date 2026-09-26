@@ -50,7 +50,7 @@ type: project
    "元数据期望 vs 全解码实测"，在无 NVDEC 机器上系统性不等 → **假失败并 unlink 正确产物**。
 3. 两个 processor 的预热改为 `count_frames_parallel(..., mode="decode")`，与验收同口径
    （既严格又不重复付费；否则缓存要么低可信、要么白预热）。
-4. 回归检查落在 `tests/test_frame_count_probe.py::check_strict_cache_provenance()`：
+4. 回归检查落在 `Accessory/test/test_frame_count_probe.py::check_strict_cache_provenance()`：
    用桩把元数据设为 100、真解码设为 98，断言
    「auto 首次=100/metadata → decode=98 → 缓存升级为 decode → 其后 auto=98」。
    **已做负向对照**：还原成无条件复用缓存时该断言失败（decode 拿到 100）。

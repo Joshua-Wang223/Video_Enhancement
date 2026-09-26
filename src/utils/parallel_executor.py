@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 统一并行执行引擎
-参考模式：tests/analyze_video_pipeline_v3.py (run_tasks_parallel + 任务级信号量) +
-         tests/verify_segment_bitstream_v5.py (run_verify_parallel + 结果顺序保留) +
-         tests/benchmark_ifrnet_versions_v3.py (自动 workers + GPU 动态上限)
+参考模式：Accessory/analyze/video_pipeline_analyzer_v3.py (run_tasks_parallel + 任务级信号量) +
+         Accessory/verify/segment_bitstream_verify_v5.py (run_verify_parallel + 结果顺序保留) +
+         Accessory/benchmark/ifrnet_versions_benchmark_v3.py (自动 workers + GPU 动态上限)
 功能：ThreadPoolExecutor/ProcessPoolExecutor 统一封装、GPU 信号量闸门、
      进度回调、异常聚合、两阶段流水线支持、顺序保留
 """

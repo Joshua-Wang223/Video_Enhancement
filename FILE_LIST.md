@@ -114,7 +114,7 @@ class RealESRGANVideoProcessor:
 | `video_utils.py` | ✅ 当前 | 视频分割、合并、音频提取、编解码工具集 |
 | `video_fixer.py` | ✅ 当前 | 损坏视频修复（remux、关键帧、时间戳） |
 | `output_filter.py` | ✅ 当前 | FFmpeg/Real-ESRGAN 分块输出过滤 |
-| `PyTorch_NVML_Test.py` | 🧪 辅助 | PyTorch / NVML 环境探测脚本（开发调试用） |
+| `pytorch_nvml_probe.py` | 🧪 辅助 | PyTorch / NVML 环境探测脚本（开发调试用） |
 | `__init__.py` | — | 包初始化 |
 
 #### `config_manager.py` 主要接口

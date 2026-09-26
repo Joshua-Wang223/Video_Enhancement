@@ -61,12 +61,12 @@ type: project
   （另保留原 `NVENC_PREWARM_PROBE` / `IFRNET_SCENE_CUT_PRESCAN`）。
 
 验证（全部通过）：
-- 新增 `tests/test_prescan_cache_persistence.py`（14/14，纯桩不调 ffmpeg）：成功落盘、
+- 新增 `Accessory/test/test_prescan_cache_persistence.py`（14/14，纯桩不调 ffmpeg）：成功落盘、
   重启命中不重算、失败（None/异常）不落盘、metadata 不落盘、detail 只落成功证据、
   阈值/判据版本入 key、真空集落盘且命中。
 - 真实文件双进程 E2E（`ffmpeg testsrc` 生成 3s clip）：进程 A 冷跑落盘，
   进程 B 重启后 `decode` 0.3ms + `cache_hits 0→1`、`prescan` 0.0ms 且 sidecar 载入 1 段。
-- 门禁静态子集 `verify_plan_implementation.py --skip-behavior`：49/47/0/2，与基线一致。
+- 门禁静态子集 `plan_implementation_gate.py --skip-behavior`：49/47/0/2，与基线一致。
 
 **process 模式（2026-09-23 补充 E2E 时发现并修复，`[PROBE-CACHE-PERSIST-PROC]`）**：
 - 先前判断「子进程不继承 `_PROBE_CACHE_FILE`、会重算」**是错的**。容器 Python 3.11 +
@@ -82,7 +82,7 @@ type: project
   切镜 sidecar 无多进程写入路径，仅把 tmp 名改成带 pid 作预防。
 - 修复后实测：8 段 process 模式 → `entries=8/8`，5 轮 sidecar 均有效。
 
-**验证（补充后）**：`tests/test_prescan_cache_persistence.py` **18/18**（新增 process 模式
+**验证（补充后）**：`Accessory/test/test_prescan_cache_persistence.py` **18/18**（新增 process 模式
 E2E：真 ffmpeg 4 段 → 验收 4/4、父进程内存缓存为 0（证明确在独立进程）、落盘 4/4 累积、
 重启后 4/4 零解码命中；并用「还原覆盖写」做负向校验确认该断言确实会失败）。
 
@@ -119,9 +119,9 @@ E2E：真 ffmpeg 4 段 → 验收 4/4、父进程内存缓存为 0（证明确�
 类问题时，**先确认日志到底出自哪个阶段**（同文案不同来源是常态），再谈缓存命中。
 
 **验证**：本机为 Windows 开发机（无 torch/pytest/GPU），只做了 `py_compile` +
-AST 断言。**完整回归需在 Linux+GPU 侧跑** `tests/test_prescan_cache_persistence.py`。
+AST 断言。**完整回归需在 Linux+GPU 侧跑** `Accessory/test/test_prescan_cache_persistence.py`。
 
-**门禁新增静态断言 `[FIX-PRESCAN-RECEIVE]`（2026-09-24）**：`tests/verify_plan_implementation.py`
+**门禁新增静态断言 `[FIX-PRESCAN-RECEIVE]`（2026-09-24）**：`Accessory/verify/plan_implementation_gate.py`
 的 `F-修复效果` 段新增一项，用 **AST 取方法函数体切片**（非注释匹配，遵守本文件
 "禁止只匹配注释文案"的约定）判定四条组合都接好了线：
 IFRNet 两条入口须同时含 `prescan_scene_cuts` + `count_frames_parallel`；Real-ESRGAN

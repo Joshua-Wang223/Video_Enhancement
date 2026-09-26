@@ -6,7 +6,7 @@ type: project
 
 ## 现状基线（2026-09-15，Windows 开发树 = Linux 11:45 快照）
 
-`python tests/verify_plan_implementation.py --no-report-file`
+`python Accessory/verify/plan_implementation_gate.py --no-report-file`
 → **94 项 / 88 通过 / 0 失败 / 3 警告 / 3 跳过**（约 15s）
 
 - 3 警告：`R5 CUDA/GPU`、`R7 NVENC 环境探测`（无 GPU，预期）、
@@ -54,7 +54,7 @@ type: project
 
 ## 2026-09-23：静态子集基线 + 新断言 + 断言写法实证
 
-- `python tests/verify_plan_implementation.py --skip-behavior --no-report-file`
+- `python Accessory/verify/plan_implementation_gate.py --skip-behavior --no-report-file`
   → **49 项 / 47 通过 / 0 失败 / 2 跳过**（此前静态 48 项）。
   ⚠️ 这与上面"全量 94 项 / 88 通过"是**不同口径**（`--skip-behavior` 不跑行为阶段），不要互相套用。
   🔄 **2026-09-24 更新：50 项 / 48 通过 / 0 失败 / 2 跳过** —— 新增
@@ -82,21 +82,21 @@ WARN/SKIP（R5/R7/H1/H3）在这里全部真实执行并通过。
 
 | 入口 | 命令 | 结果 |
 |---|---|---|
-| 全量门禁 | `python tests/verify_plan_implementation.py` | **95 项 / 93 通过 / 0 失败 / 0 警告 / 2 跳过**（~24s） |
-| 行为别名 | `python tests/test_regression_min.py` | **46/46**（等价 `--behavior-only`） |
-| 逐文件隔离 | `bash tests/run_all_isolated.sh` | **6 PASS / 0 FAIL / 0 CRASH / 16 EMPTY** |
+| 全量门禁 | `python Accessory/verify/plan_implementation_gate.py` | **95 项 / 93 通过 / 0 失败 / 0 警告 / 2 跳过**（~24s） |
+| 行为别名 | `python Accessory/verify/test_regression_min.py` | **46/46**（等价 `--behavior-only`） |
+| 逐文件隔离 | `bash Accessory/run_all_isolated.sh` | **6 PASS / 0 FAIL / 0 CRASH / 16 EMPTY** |
 
 - 全量门禁的 2 个 SKIP 都是**语义性**的、非缺陷：`R8`（NVML 环境变量提示，信息项）、
   `RT-0`（未传 `--input/--output`，故无输出视频可查）。
 - ⚠️ **隔离跑出 16 个 `EMPTY` 是正常的、不是故障**：`EMPTY` = pytest rc=5「无测试被收集」，
   这些文件是**独立脚本**（含 `__test__ = False` 的 NVENC harness / 诊断 / 复现器），
-  必须 `python tests/xxx.py` 直接跑，不属于 pytest 收集范围。判别：rc=5 而非 2/3/4
+  必须 `python Accessory/xxx.py` 直接跑，不属于 pytest 收集范围。判别：rc=5 而非 2/3/4
   （后者才是 collection error）。**别把 EMPTY 读成 PASS，也别读成 FAIL。**
 - 已直接跑过的独立脚本（均通过）：`test_frame_count_probe.py`（需传视频路径，
   不传时用仓库既有素材，缺失则仅跑纯 CPU 的严格缓存来源检查）、
-  `test_sps_pps_startup.py`（纯 CPU）、`test_nvenc_vbr_hq_offsets.py`（12/12）、
-  `test_nvenc_la_frame_conservation.py`（帧守恒 VERIFIED）。
-- 未能运行：`test_parallel_validate.py` —— 硬编码 fixture
+  `sps_pps_startup_repro.py`（纯 CPU）、`nvenc_vbr_hq_offsets_probe.py`（12/12）、
+  `nvenc_la_frame_conservation_suite.py`（帧守恒 VERIFIED）。
+- 未能运行：`parallel_validation.py` —— 硬编码 fixture
   `/workspace/output_videos/Dora_E/Season_02/…hevc.skip_upscale_noreuse.mp4` 不存在（一次性脚本）。
 
 ### ⚠️ 写新断言必须用结构性证据，不能匹配文本/注释（实证）

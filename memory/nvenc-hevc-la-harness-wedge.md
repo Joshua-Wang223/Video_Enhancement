@@ -1,10 +1,10 @@
 ---
 name: nvenc-hevc-la-harness-wedge
-description: test_nvenc_la_frame_conservation.py 的 harness HEVC 支持：曾因「无就绪门控 + 同步排空」在驱动内死锁；2026-09-18 已移植生产架构（FIFO+就绪门控+轮转序EOS）修复，h264 逐字节不变；并纠正「NVENC 引擎被卡死」实为 ffmpeg SIGTTOU 假象
+description: nvenc_la_frame_conservation_suite.py 的 harness HEVC 支持：曾因「无就绪门控 + 同步排空」在驱动内死锁；2026-09-18 已移植生产架构（FIFO+就绪门控+轮转序EOS）修复，h264 逐字节不变；并纠正「NVENC 引擎被卡死」实为 ffmpeg SIGTTOU 假象
 type: project
 ---
 
-# HEVC 测试 harness（`test_nvenc_la_frame_conservation.py`）：死锁 → 修复
+# HEVC 测试 harness（`nvenc_la_frame_conservation_suite.py`）：死锁 → 修复
 
 **结论（2026-09-18，T4 / 驱动 580.65.06 / CUDA 13.0）**：
 `MinimalTestEncoder` 现已支持 **HEVC LA=0 与 LA=8**，帧数守恒（编码级 + 解码级）；
@@ -53,7 +53,7 @@ harness 是「1 bs_buf/slot + 与提交同步排空 + 无就绪门控 + 无提�
 
 ## How to apply
 
-- harness 现在可直接跑 hevc：`python tests/test_nvenc_la_frame_conservation.py --codec hevc --la-depth 8`。
+- harness 现在可直接跑 hevc：`python Accessory/probe/nvenc_la_frame_conservation_suite.py --codec hevc --la-depth 8`。
 - 修改 harness 排空逻辑时，务必保持三条铁律：**不带 pending 复用物理槽**、
   **不 Lock 未就绪/空槽**、**EOS 按轮转序排空**。
 - 生产侧同名加固见 [[realesrgan-missing-la-redrain]]（`[FIX-HEVC-READY]` /

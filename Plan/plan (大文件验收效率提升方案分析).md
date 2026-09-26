@@ -1,6 +1,6 @@
 ## 用户需求
 
-分析 `tests/verify_segment_bitstream_v3.py` 单文件大视频验收的性能瓶颈，重点评估分片并行运算的可行性，并要求覆盖以下四个维度：
+分析 `Accessory/verify/segment_bitstream_verify_v3.py` 单文件大视频验收的性能瓶颈，重点评估分片并行运算的可行性，并要求覆盖以下四个维度：
 
 - 不同分片策略（按大小、按行、按记录）的适用场景与优缺点
 - 并行处理框架（多线程、多进程、分布式计算）的选择依据
@@ -15,7 +15,7 @@
 
 ## 技术栈
 
-- Python 3.9+，复用现有脚本 `tests/verify_segment_bitstream_v3.py`（2223 行）
+- Python 3.9+，复用现有脚本 `Accessory/verify/segment_bitstream_verify_v3.py`（2223 行）
 - ffmpeg / ffprobe（`shutil.which` 查找，`subprocess(shell=False)`）
 - 现有工具 `src/utils/video_utils.py` 的 `split_video_by_time()`（`-c copy` + segment muxer，不重编码）
 - `concurrent.futures`（ThreadPoolExecutor / ProcessPoolExecutor，脚本已引入）
@@ -57,4 +57,4 @@ graph LR
 
 - 遵守跨平台铁律（pathlib / shutil.which / shell=False / encoding='utf-8'）
 - 最小化改动、外科手术式编辑，保留原有注释，不改动无关逻辑
-- `tests/` 非 pytest 套件，脚本直接运行验证
+- `Accessory/` 非 pytest 套件，脚本直接运行验证

@@ -9,7 +9,7 @@ metadata:
 
 ## Verified NVENC SDK 13.0 struct layouts (nv-codec-headers n13.0.19.0)
 
-All offsets C-dump verified and confirmed working via `test_nvenc_pre_torch.py`.
+All offsets C-dump verified and confirmed working via `nvenc_session_pre_torch_probe.py`.
 
 ### NV_ENC_CREATE_INPUT_BUFFER (776 bytes)
 | Field | Offset | Type |
@@ -141,7 +141,7 @@ Offset  rc_ptr   Type      Field                    Notes
 
 ### NV_ENC_CONFIG 布局（SDK 13.0）— encodeCodecConfig@168（绝对 176）[FIX-DIAG-SDK13]
 
-2026-08-07 sweep 三重旁证（`tests/diagnose_profilelevel_offset.py --sweep`）。
+2026-08-07 sweep 三重旁证（`Accessory/probe/nvenc_profilelevel_offset_diagnose.py --sweep`）。
 
 `NV_ENC_PRESET_CONFIG`：version@0 + padding@4 + `presetCfg@8`（即 NV_ENC_CONFIG）。
 
@@ -222,5 +222,5 @@ Formula: `NVENCAPI_STRUCT_VERSION(ver, bit31=False)` = `0x0d | (ver << 16) | (0x
 8. **NV_ENC_QP is a 12-byte SEQUENTIAL struct** {qpInterP, qpInterB, qpIntra}, NOT a 4-byte union/enum. Auto-parsers that mis-identify it as 4B will cascade all subsequent RC_PARAMS offsets by 8 bytes.
 9. **targetQuality is at rcParams byte 88** (uint8, NOT uint32-aligned) — between temporalLayerQP[8] and targetQualityLSB. Writing to byte 116 (viewBitrateRatios) is a silent no-op.
 10. **multiPass is a SEPARATE field at offset 100**, NOT embedded in the bitfield at offset 36. Lookahead=bit5 (not bit4), TemporalAQ=bit8 (not bit7)
-11. **targetQuality@88 sweep-verified 2026-06-09**: `diagnose_targetquality_offset.py --sweep` 在 Tesla T4 上对所有候选偏移(76-124)逐一测试 tq=1 vs tq=51。只有 offset 88 产生真正的 CQ 效果(99.8% 大小差异)。其他"有效"偏移(104/120/124)均为假阳性 — 破坏其他字段的副作用。92-100/108/112 触发 NV_ENC_ERR_INVALID_PARAM(code=8)。
+11. **targetQuality@88 sweep-verified 2026-06-09**: `nvenc_targetquality_offset_diagnose.py --sweep` 在 Tesla T4 上对所有候选偏移(76-124)逐一测试 tq=1 vs tq=51。只有 offset 88 产生真正的 CQ 效果(99.8% 大小差异)。其他"有效"偏移(104/120/124)均为假阳性 — 破坏其他字段的副作用。92-100/108/112 触发 NV_ENC_ERR_INVALID_PARAM(code=8)。
 12. **CUDA context 建立顺序至关重要**: Driver API 先建立 primary context(cuDevicePrimaryCtxRetain + cuCtxPushCurrent 仅一次)，然后 PyTorch Runtime 重用同一 context。禁止在 encode_frame/close 中 push/pop — 二次 push 导致 CUDA_ERROR_LAUNCH_FAILURE(201) → context 栈损坏 → segfault。

@@ -21,7 +21,7 @@ type: feedback
 - 补测前先**证伪自己的假设**（本次实测推翻了"子进程不继承缓存"，反而暴露了反向缺陷）。
 - 新断言要有**负向校验**（把修复还原成旧写法，断言必须失败），见
   [verify_plan 门禁基线与断言写法](gate-verify-plan-known-failures.md)。
-- 收尾跑完整套件并**与已知基线对比**：`verify_plan_implementation.py` 全量 + 行为别名
-  `test_regression_min.py` + `tests/run_all_isolated.sh`，把新基线与"EMPTY 不等于 PASS/FAIL"的判别一并记入 memory。
+- 收尾跑完整套件并**与已知基线对比**：`plan_implementation_gate.py` 全量 + 行为别名
+  `test_regression_min.py` + `Accessory/run_all_isolated.sh`，把新基线与"EMPTY 不等于 PASS/FAIL"的判别一并记入 memory。
 - 若补测触及 GPU/编码路径，注意本机是**多会话共享 GPU**（见 [共享 GPU 主机](shared-gpu-host-concurrent-jobs.md)），
   别与他方任务并发测量；长跑命令放后台、按文件超时。

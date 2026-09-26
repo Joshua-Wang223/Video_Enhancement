@@ -19,7 +19,7 @@
 - 注释追加 `// deprecated 应急开关，默认关闭；HEVC LA>0 已由 FIX-HEVC-COUNTED/EOS 保障，异常时显式置 true 回退`
 
 ### 4. 验收门禁
-- `tests/verify_plan_implementation.py` 新增 `FIX-HEVC-LA-OPEN` 检查
+- `Accessory/verify/plan_implementation_gate.py` 新增 `FIX-HEVC-LA-OPEN` 检查
 - 验证：`config hevc_la_disable==false` 且 processor 未改写 LA 时 PASS
 - 2026-08-28 运行结果：90 项 0 FAIL（88 PASS / 0 FAIL / 0 WARN / 2 SKIP）
 

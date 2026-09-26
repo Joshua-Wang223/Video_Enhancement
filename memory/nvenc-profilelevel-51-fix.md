@@ -49,7 +49,7 @@ cast(byref(preset_config, _h264_cfg_off + 4), ctypes.POINTER(c_uint32))[0] = 51
 # repeatSPSPPS 不写（_apply_sps_pps 手动注入保持现状）
 ```
 
-## sweep 三重旁证（tests/diagnose_profilelevel_offset.py --sweep）
+## sweep 三重旁证（Accessory/probe/nvenc_profilelevel_offset_diagnose.py --sweep）
 
 | 写入偏移 | 结果 |
 |---------|------|
@@ -76,4 +76,4 @@ cast(byref(preset_config, _h264_cfg_off + 4), ctypes.POINTER(c_uint32))[0] = 51
 ## 关联
 
 - 布局参考：[[nvenc_ctypes_verified_layouts]]（NV_ENC_CONFIG_H264 完整偏移表）
-- 诊断脚本：`tests/diagnose_profilelevel_offset.py`
+- 诊断脚本：`Accessory/probe/nvenc_profilelevel_offset_diagnose.py`

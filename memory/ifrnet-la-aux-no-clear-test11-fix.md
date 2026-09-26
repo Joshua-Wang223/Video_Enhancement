@@ -31,7 +31,7 @@ seg1/seg2 干净：会话已热，无辅助块，顺序假设碰巧成立。
 
 - 三文件 `python -m py_compile` 通过。
 - 归一化一致性校验：`_nal_first_vcl_type` / `_apply_drained_entries` / `_ensure_slot_free` 三文件完全一致；`_drain_outputs_blocking` 去注释后完全一致。
-- 待生产 GPU 复验（Linux，VBR_HQ+LA=8, 2x，test11 同参数）：`verify_segment_bitstream_v3.py` 应 frames==packets、frame_num 回退=0、pts drop=0；日志允许出现少量 `辅助块` 信息行（预热期正常），不应出现 `相位漂移` / `slot 记账错配` / `gfi 回退` 告警。
+- 待生产 GPU 复验（Linux，VBR_HQ+LA=8, 2x，test11 同参数）：`segment_bitstream_verify_v3.py` 应 frames==packets、frame_num 回退=0、pts drop=0；日志允许出现少量 `辅助块` 信息行（预热期正常），不应出现 `相位漂移` / `slot 记账错配` / `gfi 回退` 告警。
 
 ## 镜像同步
 

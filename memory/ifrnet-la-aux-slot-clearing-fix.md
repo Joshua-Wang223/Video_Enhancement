@@ -30,7 +30,7 @@
 
 NVENC 在 LA 下把 SPS/PPS/AUD 作为**独立输出块**（无 VCL）drain 出来，其
 outputTimeStamp@40 回显的是该物理 slot「最后一次提交帧」的 ts（tt6 诊断脚本
-diagnose_lockbitstream_timestamp.py 实测：LA=16 时辅助块 ts 按 1017..1033 轮转回显
+lockbitstream_timestamp_diagnose.py 实测：LA=16 时辅助块 ts 按 1017..1033 轮转回显
 = 各 slot 最后提交帧的 ts）。
 
 旧代码对辅助块执行 `self._strm_slot_pending[_drain_slot] = None` —— 但该槽对应

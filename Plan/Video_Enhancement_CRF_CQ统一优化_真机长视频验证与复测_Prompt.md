@@ -2,7 +2,7 @@
 
 > 用途：把「**真机长视频基线验证 → 执行修复 → 生产补齐 libvmaf → 复测**」串成一条可复现链路。
 > 适用环境：Linux + NVIDIA GPU（NVENC 可用）+ ffmpeg/ffprobe（建议 `--enable-libvmaf`）。
-> 关联脚本：`tests/verify_crf_cq_unification.py`
+> 关联脚本：`Accessory/verify/crf_cq_unification_verify.py`
 
 ---
 
@@ -27,7 +27,7 @@
 ```text
 在 Linux + NVIDIA GPU 机器上，用真实长视频跑 CRF/CQ 统一优化的验证脚本，产出一份基线报告：
 
-python tests/verify_crf_cq_unification.py --gpu \
+python Accessory/verify/crf_cq_unification_verify.py --gpu \
     --source "/workspace/input_videos/WordWorld_S2/2-01. My Fuzzy Valentine - Love Bug.avi" \
     --bitrate-source "/workspace/input_videos/Prehistoric Planet S021080p/S02E03.mp4"
 
@@ -71,15 +71,15 @@ python tests/verify_crf_cq_unification.py --gpu \
 
 ```text
 # 3.1 合成素材（快速回归）
-python tests/verify_crf_cq_unification.py --gpu
+python Accessory/verify/crf_cq_unification_verify.py --gpu
 
 # 3.2 真实素材（生产片段）
-python tests/verify_crf_cq_unification.py --gpu \
+python Accessory/verify/crf_cq_unification_verify.py --gpu \
     --source /workspace/input_videos/word_world_2.mp4 \
     --bitrate-source /workspace/input_videos/new5_raw.mp4
 
 # 3.3 真实长视频（压力回归；注意 VMAF 长视频截断）
-python tests/verify_crf_cq_unification.py --gpu \
+python Accessory/verify/crf_cq_unification_verify.py --gpu \
     --source "/workspace/input_videos/WordWorld_S2/2-01. My Fuzzy Valentine - Love Bug.avi" \
     --bitrate-source "/workspace/input_videos/Operation_Ouch/Operation_Ouch_S09E02.mp4"
 ```

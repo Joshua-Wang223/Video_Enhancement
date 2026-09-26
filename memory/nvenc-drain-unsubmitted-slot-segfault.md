@@ -57,7 +57,7 @@ if _ep_ce.value is not None:
 
 ## 验证
 
-`python tests/test_nvenc_sdk_realesrgan.py -v -m gpu` → **28/28 PASSED, exit 0** ✅
+`python Accessory/probe/nvenc_sdk_realesrgan_suite.py -v -m gpu` → **28/28 PASSED, exit 0** ✅
 
 关键测试:
 - `test_no_empty_frames_constqp_la0` → PASSED（原 segfault）

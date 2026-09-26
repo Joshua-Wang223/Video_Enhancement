@@ -4,7 +4,7 @@
 
 ## 症状
 
-`verify_segment_bitstream_v4.py` v8 新增的色度检查 4 (`check_chroma_corruption`)
+`segment_bitstream_verify_v4.py` v8 新增的色度检查 4 (`check_chroma_corruption`)
 存在严重误报：正常视频（色度 std 稳定在 25-35 范围）因正常像素噪声波动
 被判定为花屏坏帧，导致 `bad_count >= 3` → FAIL。
 

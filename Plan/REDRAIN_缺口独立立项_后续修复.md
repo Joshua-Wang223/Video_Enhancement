@@ -33,7 +33,7 @@ ESRGAN 侧的 `encode_frames_batch_ce_pipeline`（`external/realesrgan_video/nve
 ## 3. 风险影响
 
 - **直接影响**：在 `LA=0` 或 `LA>0` 且批末 `BLKRETRY` 阻塞重试失败时，已提交到编码器的帧可能无法被取回，导致输出帧数少于输入帧数（帧数不守恒）。
-- **发现难度**：仅能通过段级帧数比对（`tests/verify_plan_implementation.py` 的行为验证阶段、`tests/verify_segment_bitstream_v5.py` 的解码级检查）在编码完成后发现，无法在编码阶段阻止或自动修复。
+- **发现难度**：仅能通过段级帧数比对（`Accessory/verify/plan_implementation_gate.py` 的行为验证阶段、`Accessory/verify/segment_bitstream_verify_v5.py` 的解码级检查）在编码完成后发现，无法在编码阶段阻止或自动修复。
 - **生产影响**：在长视频批量处理（`--batch-mode`）或分段处理（`segment_duration` 配置）场景中，若某一段发生静默丢帧，后续段的时间戳与帧号将出现不连续，影响下游合并与同步。
 
 ---
@@ -50,7 +50,7 @@ ESRGAN 侧的 `encode_frames_batch_ce_pipeline`（`external/realesrgan_video/nve
 - [ ] **指针一致性验证**：确保 Phase 1（Harvest）、Phase 3（Drain）、批末二次排空（`_ce_final_drain`）三处的 `_output_slot_idx` 推进语义与 IFRNet 完全一致，避免“双重推进”或“漏推进”。
 
 ### 4.2 建议完成项（中优先级）
-- [ ] **回归测试锁定**：新增或扩展 `tests/test_nvenc_la_frame_conservation.py`（或在 `tests/test_regression_min.py` 中新增行为断言），验证 `ESRGAN` 在 `LA=0` 与 `LA=8` 下的帧数守恒，包含真实 GPU 路径（若环境支持）。
+- [ ] **回归测试锁定**：新增或扩展 `Accessory/probe/nvenc_la_frame_conservation_suite.py`（或在 `Accessory/verify/test_regression_min.py` 中新增行为断言），验证 `ESRGAN` 在 `LA=0` 与 `LA=8` 下的帧数守恒，包含真实 GPU 路径（若环境支持）。
 - [ ] **遥测与诊断**：在 `_ce_final_drain` 中增加与 IFRNet 等价的遥测计数（`_diag_lock_err_*`、`_diag_illegal_size`、`_sizecap_force_dropped`），确保静默丢帧可被诊断而非仅靠段级审计发现。
 - [ ] **文档同步**：更新 `AGENTS.md`、`README.md` 及 `memory/` 索引（`MEMORY.md`），记录 REDRAIN 移植状态（已部分实现，但二次排空安全网未完全等价于 IFRNet 参考）。
 
@@ -74,5 +74,5 @@ ESRGAN 侧的 `encode_frames_batch_ce_pipeline`（`external/realesrgan_video/nve
 
 - 代码：`external/realesrgan_video/nvenc_sdk.py`、`external/ifrnet_video/nvenc_sdk.py`
 - 参考实现：`memory/nvenc-ce-pipeline-architecture.md`、`memory/realesrgan-missing-la-redrain.md`（如存在）
-- 测试：`tests/test_regression_min.py`、`tests/verify_plan_implementation.py`、`tests/test_nvenc_la_frame_conservation.py`
+- 测试：`Accessory/verify/test_regression_min.py`、`Accessory/verify/plan_implementation_gate.py`、`Accessory/probe/nvenc_la_frame_conservation_suite.py`
 - 审计：`AUDIT_REPORT_2026-09-18.md`、`Plan/Conversation-持续跟进6方案计划（GPU部分）-2026-09-17.txt`

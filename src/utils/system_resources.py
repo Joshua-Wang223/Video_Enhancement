@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 系统资源自动探测模块
-参考模式：tests/analyze_video_pipeline_v3.py、benchmark_ifrnet_versions_v3.py、verify_segment_bitstream_v5.py
+参考模式：Accessory/analyze/video_pipeline_analyzer_v3.py、ifrnet_versions_benchmark_v3.py、segment_bitstream_verify_v5.py
 功能：CPU/RAM 容器感知探测、GPU 型号识别、自动 workers 计算、GPU 并发上限、信号量管理
 """
 import os
@@ -47,7 +47,7 @@ class GPUInfo:
 
         [P1-3] 本属性是 GPU 解码并发口径的唯一来源：生产侧
         video_utils._get_gpu_hwaccel_config() 与验收侧
-        tests/verify_segment_bitstream_v5.py::compute_gpu_workers() 都由此派生
+        Accessory/verify/segment_bitstream_verify_v5.py::compute_gpu_workers() 都由此派生
         （后者留 25% 余量得出建议并发数：8→6、4→3、2→2）。
 
         分档（名称子串匹配，大小写不敏感）:

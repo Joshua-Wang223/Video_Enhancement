@@ -81,20 +81,20 @@ export MALLOC_CHECK_=3 MALLOC_PERTURB_=165 PYTHONMALLOC=malloc
 
 ```bash
 # 完整复验（约 2-3 分钟）
-python tests/diagnose_nvenc_qp0_segv.py --iters 15
+python Accessory/probe/nvenc_qp0_segv_repro.py --iters 15
 
 # 快速冒烟（约 30 秒）
-python tests/diagnose_nvenc_qp0_segv.py --iters 5 --modes ctor_only ce_pipeline
+python Accessory/probe/nvenc_qp0_segv_repro.py --iters 5 --modes ctor_only ce_pipeline
 
 # 对照组验证 qp=23 无崩
-python tests/diagnose_nvenc_qp0_segv.py --iters 5 --qp 23
+python Accessory/probe/nvenc_qp0_segv_repro.py --iters 5 --qp 23
 ```
 
 退出码：`1` = 观测到段错误（缺陷可复现），`0` = 未观测到。
 
 ## 相关文件
 
-- `tests/diagnose_nvenc_qp0_segv.py` —— 可复用诊断脚本
+- `Accessory/probe/nvenc_qp0_segv_repro.py` —— 可复用诊断脚本
 - `Plan/NVENC硬件测试隔离_立项Prompt.md` —— 完整调查记录（已修正归因）
 - `memory/crf0-la-depth-cli-ignore-fix.md` —— CRF=0 强制 CONSTQP 的配置来源
 - `external/realesrgan_video/nvenc_sdk.py:558` — `_NVENC_CRF0_FORCE_CONSTQP` 常量定义处

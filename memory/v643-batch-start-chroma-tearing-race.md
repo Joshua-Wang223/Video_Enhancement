@@ -71,11 +71,11 @@ v6.4.3 最小修复（不引入 _NVENCEncodeThread，遵守"只修 bug 不改架
 
 已通过 `python -m py_compile` 与 IDE 静态检查（无错误）。
 本机（Windows）无 torch/GPU 环境且 WSL 不可用（Hyper-V 未启用），GPU 验证需在
-生产 Linux 服务器执行：`python tests/benchmark_ifrnet_versions.py -i temp/fix_input_60s.mp4
+生产 Linux 服务器执行：`python Accessory/benchmark/ifrnet_versions_benchmark.py -i temp/fix_input_60s.mp4
 -o temp/benchmark_output_fix --versions v6.4.3 --keep-outputs`，随后对输出跑
-`tests/verify_segment_bitstream_v3.py`（预期：色度坏帧簇=0、PASS）。
+`Accessory/verify/segment_bitstream_verify_v3.py`（预期：色度坏帧簇=0、PASS）。
 
-## 验收脚本配套修复（tests/verify_segment_bitstream_v3.py v6）
+## 验收脚本配套修复（Accessory/verify/segment_bitstream_verify_v3.py v6）
 
 - 检查 2「段首连 IDR」阈值 `> 0` → `>= 3`：v6.4.4/5 段首双 IDR 是 FIX-SPS-PPS-V2 冗余重注入的
   良性恢复点（首个 IDR → 冗余 SPS/PPS/AUD → 恢复点 IDR）；真 per-slot IDR 异常为 6-16+ 连 IDR。

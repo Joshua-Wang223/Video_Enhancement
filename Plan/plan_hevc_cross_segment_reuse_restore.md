@@ -152,7 +152,7 @@
 | **R1** | `_sps_pps_injected` **只在 `close()` 重置**，复用路径下不重置 → 段 2 的新 muxer 不做参数集预注入 | `nvenc_sdk.py:3136`（在 `close()` 内）；`nvenc_sdk.py:1949-1952`、`3422-3426` | 注释写「支持 encoder 复用」，实际恰好落在复用时被跳过的分支里，**注释与实现矛盾**。HEVC 的 `write_sps_pps` 是「缓存进 `_pending_sps_pps` 随首个 VCL 帧捆绑」（`nvenc_sdk.py:3740-3750`），跳过则段 2 首帧只能靠 `_prepend_param_sets`（`nvenc_sdk.py:1916-1924`）兜底。**这是独立于本议题的真实缺陷，无论是否恢复都应修** | 在段边界（`_stream_begin` 或 `_process_segment` 开头）显式重置 `_sps_pps_injected`（并把 `close()` 里那行改为「关闭即弃」语义的普通清理） |
 | **R2** | 恢复过程中误引入「段边界 `_frame_idx` 归零」 | — | memory `esrgan-segment-reuse-frame-idx-reset.md`：归零 → `inputTimeStamp` 回退 → 驱动 LA 重排序状态机打乱 → **段 2+ 丢帧 85%** | 铁律：**`_frame_idx` 跨段严格单调，永不重置**；code review 必查 |
 | **R3** | LA=0 与 LA>0 对 `_output_slot_idx` 的处理口径不一致 | `nvenc_sdk.py:2415`（每批 `_reset_output_slot_idx(0)`）vs `nvenc_sdk.py:1904`（段边界 `= _frame_idx`） | LA=0 下 `_drain_outputs_blocking` 不被调用（`nvenc_sdk.py:2465` 的 `if self._la_depth > 0`），靠 per-slot CE harvest，指针口径影响小；但恢复后必须复验段 2 首批 | A/B 实测中把「段 2 首批无空帧、无 slot mismatch」列为硬指标 |
-| **R4** | 驱动级 DPB / LA 状态机跨段残留 | 驱动内部，不可观测 | LA=8 窗口内帧在 EOS 后是否 100% 回收无软件侧探针 | 用 `tests/verify_segment_bitstream_v4.py` 的 frame_num 单调 + 单 IDR 门禁做**段级**验收 |
+| **R4** | 驱动级 DPB / LA 状态机跨段残留 | 驱动内部，不可观测 | LA=8 窗口内帧在 EOS 后是否 100% 回收无软件侧探针 | 用 `Accessory/verify/segment_bitstream_verify_v4.py` 的 frame_num 单调 + 单 IDR 门禁做**段级**验收 |
 | **R5** | 死锁不可中断 | ctypes 同步调用卡在驱动内 | `flush_and_join(timeout=120)` 只能判段失败（`nvenc_sdk.py:3486`），无法救活 | 必须有**一行可回滚开关**，禁止无条件放开 |
 | **R6** | `doNotWait` 在 T4+HEVC 上**实测无效** | `P0-FIX-HEVC-DRAIN-HANG` | 现有防挂手段是「无效但无害」，不能作为恢复复用的安全依据 | 安全性论证只能建立在「`_ready<=0` 不 Lock」+「slot 余量 +1」上 |
 | **R7** | 段级帧数守恒回归 | — | 会话 1 的「差 -1.0 帧」已随 f0 修复消失，但 `output_count` 计数口径（多写 1 个仅含参数集的包）**未根治** | 恢复后重跑段级守恒门禁，frames == packets == 期望值 |
@@ -195,7 +195,7 @@
 
 硬指标（任一 FAIL 即判该组合不可恢复）：
 - 三/多段全部完成，无挂死、无 `flush_and_join` 超时
-- 段级 `tests/verify_segment_bitstream_v4.py --skip-chroma`：帧守恒 / 单 IDR / frame_num 单调 / pts 全绿
+- 段级 `Accessory/verify/segment_bitstream_verify_v4.py --skip-chroma`：帧守恒 / 单 IDR / frame_num 单调 / pts 全绿
 - 全片 `ffmpeg -f null` 零解码错误，总帧数 == 期望（`2n−1` 口径）
 - 段 2+ 首帧 IDR 大小落在正常量级（会话 1 判据：~71KB 正常，~375KB = 噪声花屏）
 - 每段 SPS/PPS 存在且 extradata 可读（`ffprobe` 能直接读出分辨率）
@@ -242,7 +242,7 @@
 - `external/realesrgan_video/nvenc_sdk.py` —— `[FIX-SKIP-REOPEN]`(2812/3202/3398)、`_stream_begin`(2825)
 - `external/ifrnet_video/pipeline.py` —— `_infer_loop` 的 `encode_frame` 降级分支(1971/1980)
 - `config/default_config.json` —— ifrnet 段 78-91
-- `tests/verify_segment_bitstream_v4.py`、`tests/diagnose_hevc_la.py`、`tests/verify_plan_implementation.py`
+- `Accessory/verify/segment_bitstream_verify_v4.py`、`Accessory/probe/hevc_lookahead_diagnose.py`、`Accessory/verify/plan_implementation_gate.py`
 
 **历史（勿改，勿作为生产依据）**
 - `external/IFRNet/process_video_v6_*.py` 全系列、`archive/` 下的所有副本

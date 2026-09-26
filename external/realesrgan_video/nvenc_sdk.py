@@ -100,7 +100,7 @@ class _NvGuid(Structure):
 # NVENC 预定义 GUID 常量
 # ==============================================================================
 
-# [FIX-CODEC-GUID] 三 codec GUID（SDK 13.0 nvEncodeAPI.h，tests/test_nvenc_la_frame_conservation.py 已验证）。
+# [FIX-CODEC-GUID] 三 codec GUID（SDK 13.0 nvEncodeAPI.h，Accessory/probe/nvenc_la_frame_conservation_suite.py 已验证）。
 # 旧 NV_ENC_CODEC_H264_GUID = 0x6b9c211b 是错误死代码（驱动实际枚举的是 0x6bc82762），已更正。
 NV_ENC_CODEC_H264_GUID = _NvGuid(0x6bc82762, 0x4e63, 0x4ca4,
     (0xaa, 0x85, 0x1e, 0x50, 0xf3, 0x21, 0xf6, 0xbf))
@@ -601,7 +601,7 @@ class NVENCEncoder:
     Input: GPU tensor (NV12 format, uint8, H_total x W, contiguous)
     Output: H.264 Elementary Stream bytes
 
-    [FIX-NVENC-SDK13] Complete rewrite based on verified test_nvenc_pre_torch.py:
+    [FIX-NVENC-SDK13] Complete rewrite based on verified nvenc_session_pre_torch_probe.py:
       - CreateInputBuffer + LockInputBuffer + cuMemcpyDtoD_v2 (no RegisterResource)
       - CreateBitstreamBuffer for encoder output
       - All structs via byte array + manual offset writes (verified offsets)
@@ -652,7 +652,7 @@ class NVENCEncoder:
             la_depth = 0  # 硬件静默禁用 LA，此处显式清零
         self._la_depth = la_depth  # 在 constqp/CRF0 调整后重新赋值，确保实例属性与最终值一致
         # [FIX-HEVC-LA-ROUTE] HEVC/AV1 + LA 已 GPU 验证（2026-08-18
-        # tests/diagnose_hevc_la.py eos_probe：700 帧守恒 + ffmpeg decode OK），
+        # Accessory/probe/hevc_lookahead_diagnose.py eos_probe：700 帧守恒 + ffmpeg decode OK），
         # 不再降级 LA=0。中途排空与 EOS 排空分别由 FIX-HEVC-COUNTED /
         # FIX-HEVC-EOS 处理（见 encode_frames_stream）。
         #
@@ -696,7 +696,7 @@ class NVENCEncoder:
         self._slot_illegal_count: dict = {}
         self._sizecap_force_dropped: int = 0
         # [FIX-LA-OUTPTR] 独立输出槽位指针：跟踪下一个预期输出的 slot，
-        # 确保 LA 延迟产出帧按正确顺序取回（参照 test_nvenc_la_frame_conservation.py）
+        # 确保 LA 延迟产出帧按正确顺序取回（参照 nvenc_la_frame_conservation_suite.py）
         self._output_slot_idx = 0
         self._lock = threading.Lock()
         # [FIX-ASYNC-COPY] 专用非默认 CUDA stream，用于 NVENC 输入拷贝
@@ -972,7 +972,7 @@ class NVENCEncoder:
         # 偏移基准: _h264_cfg_off = 8(presetCfg) + 168(encodeCodecConfig)。
         # [FIX-CODEC-SUPPORT] 上述偏移为 NV_ENC_CONFIG_H264 专属，仅 h264 时写入；
         # HEVC/AV1 的 NV_ENC_CONFIG_HEVC/AV1 布局未验证，信任 preset 默认值
-        # （tests/test_nvenc_la_frame_conservation.py 已验证此策略 InitializeEncoder OK）。
+        # （Accessory/probe/nvenc_la_frame_conservation_suite.py 已验证此策略 InitializeEncoder OK）。
         if self._codec == "h264":
             _h264_cfg_off = 8 + 168
             # chromaFormatIDC@192 (VUI 112B 之后): 1=4:2:0，防止 SPS 声明 monochrome → 灰色输出 [FIX-CHROMA]
@@ -1579,7 +1579,7 @@ class NVENCEncoder:
         非阻塞方案已废弃。HEVC/AV1 + LA>0 的阻塞死锁由 __init__ 中的
         FIX-HEVC-LA-ROUTE（路由 LA=0 ce_pipeline）规避；H.264 本路径不变。
 
-        参照 tests/test_nvenc_la_frame_conservation.py 的 _drain_outputs() 验证模式：
+        参照 Accessory/probe/nvenc_la_frame_conservation_suite.py 的 _drain_outputs() 验证模式：
         - 从 _output_slot_idx 指向的 slot 开始，循环 Lock
         - 每成功取回一帧则推进 _output_slot_idx
         - 遇到 NEED_MORE_INPUT 时退出循环
@@ -3000,7 +3000,7 @@ class NVENCEncoder:
                                 for i in range(self._slot_count)]
                 # [FIX-HEVC-EOS-FLUSH] HEVC/AV1：只锁仍有 pending 帧的槽——
                 # 驱动对空槽的 blocking LockBitstream 永久阻塞
-                # （tests/diagnose_hevc_la.py test4 实测），EOS 后 pending 槽帧
+                # （Accessory/probe/hevc_lookahead_diagnose.py test4 实测），EOS 后 pending 槽帧
                 # 已就绪、按 pending 条数取回（test5 实测 vcl=700 守恒）。
                 # 与 encode_frames_batch() send_eos 的 FIX-HEVC-EOS 分支语义一致；
                 # H.264 保持原 while-True 轮转（空槽返回 SUCCESS+size=0，无死锁）。
@@ -3228,14 +3228,14 @@ class NVENCEncoder:
 
             # Restore saved context - [FIX-CTX-RESTORE-IDEMPOTENT]
             # （与 IFRNet 侧同款修复，逐字移植）
-            # 原实现无条件「先 pop 再 push」。实测（tests/sitecustomize.py + NVENC_CTXLOG）：
+            # 原实现无条件「先 pop 再 push」。实测（Accessory/infra/sitecustomize.py + NVENC_CTXLOG）：
             # 本进程只有一个 primary context 且主线程（torch）已将其设为 current，于是
             #   · 创建时的 cuCtxPushCurrent(primary)     恒返回 201（未真正入栈）
             #   · close 时的 cuCtxPopCurrent             返回 rc=0 但 *pctx=NULL（未真正出栈）
             #   · 紧随的 cuCtxPushCurrent(saved)         必然返回 201（铁律 1 同源）
             # 三者全是 no-op，警告属噪音；但原写法存在真实隐患：一旦某次 pop 真的
             # 解绑（例如另一线程已持有该 context 使其变为 non-floating），push 仍会
-            # 返回 201，本线程就永久失去 current context（tests/probe_cuda_context.py
+            # 返回 201，本线程就永久失去 current context（Accessory/probe/cuda_context_probe.py
             # 的 thread 模式已复现该路径）。改为先判后动 + SetCurrent 兜底。
             if getattr(self, '_saved_ctx', None) is not None and \
                     self._saved_ctx.value is not None:
@@ -3845,7 +3845,7 @@ class FFmpegMuxer:
         # （HEVC parser 会把"仅参数集 AU"当完整 packet 发出 → mp4 header 失败）。
         self._pending_sps_pps: Optional[bytes] = None
 
-        # [FIX-CODEC-SUPPORT] 封装格式映射（与 tests/test_nvenc_la_frame_conservation.py 一致）。
+        # [FIX-CODEC-SUPPORT] 封装格式映射（与 Accessory/probe/nvenc_la_frame_conservation_suite.py 一致）。
         _fmt = {"h264": "h264", "hevc": "hevc", "av1": "obu"}.get(codec, "h264")
         cmd = [
             ffmpeg_bin, "-y",

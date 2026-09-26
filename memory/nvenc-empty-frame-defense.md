@@ -39,7 +39,7 @@ NVENC `pipeline_depth` 创建内部流水线阶段（非独立编码槽）。loo
 
 ### 重新验证结果
 
-在 Tesla T4 / driver 580 / SDK 13.0 环境下运行 `test_nvenc_completion_event.py`：
+在 Tesla T4 / driver 580 / SDK 13.0 环境下运行 `nvenc_completion_event_matrix.py`：
 
 | 测试 | 空帧率 | FPS |
 |------|--------|-----|

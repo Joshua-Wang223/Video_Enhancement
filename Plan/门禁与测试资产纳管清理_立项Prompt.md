@@ -3,22 +3,22 @@
 > ## ✅ 执行状态（2026-09-17 Linux + GPU 完成）
 >
 > **本立项已完成（§2 任务 1~6 全部处置，7 已在 Linux 侧处理）**。
-> 清点表产出为 `tests/TEST_ASSET_INVENTORY.md`（59 个 py 文件逐个状态 + 引用矩阵 +
+> 清点表产出为 `Accessory/docs/TEST_ASSET_INVENTORY.md`（59 个 py 文件逐个状态 + 引用矩阵 +
 > 哈希 + 反例说明）。
 >
 > | 任务 | 结果 |
 > |---|---|
 > | 1 先修改名遗留 import | ✅ **核实为先前会话已落地**（`test_chroma_false_positive.py` 已双名兼容，标 `[FIX-VERIFY-RENAME]`）—— 先跑基线才发现，见 `feedback_verify_baseline_first` |
-> | 2 出清点表 | ✅ `tests/TEST_ASSET_INVENTORY.md` |
-> | 3 决定 tests/ 扫描范围 | ✅ **全量纳入**：`COVERAGE_ROOTS` 加 `"tests"`，`COMPILE_TARGETS` **54 → 112**，`BEH-H1` 调用点 **65 → 245**；`BEH-E2` 增加「tests 未全覆盖」探测（防排除规则写宽） |
+> | 2 出清点表 | ✅ `Accessory/docs/TEST_ASSET_INVENTORY.md` |
+> | 3 决定 Accessory/ 扫描范围 | ✅ **全量纳入**：`COVERAGE_ROOTS` 加 `"tests"`，`COMPILE_TARGETS` **54 → 112**，`BEH-H1` 调用点 **65 → 245**；`BEH-E2` 增加「tests 未全覆盖」探测（防排除规则写宽） |
 > | 4 更正 `_v4.py` 过时引用 | ✅ 活代码/文档 **13 处**（含 §1.3 点名的 `ifrnet_video/ffmpeg_io.py:436`）；v4/v5 **文件内部自指日志名有意不改**（改了就破坏两者逐字节一致） |
 > | 5 死代码 `verify_segment_output()` | ✅ **保留 + 显式标注**「仅参考实现、无调用方」（`video_utils.py` 的 `[FIX-GATE-STRICT-COUNT]` 注释块已补去留决定与理由） |
 > | 6 换行符统一 + `.gitattributes` | ✅ **Linux 侧已处理**（统一为 LF，`.gitattributes` 已建） |
-> | 7 复核版本控制 | ✅ **Linux 侧已处理**（仓库已初始化 git，`verify_segment_bitstream_v4.py`/`_v5.py` 已纳入跟踪） |
+> | 7 复核版本控制 | ✅ **Linux 侧已处理**（仓库已初始化 git，`segment_bitstream_verify_v4.py`/`_v5.py` 已纳入跟踪） |
 >
-> ### 意外收获（把 tests/ 纳入扫描立刻抓到的真实缺陷）
+> ### 意外收获（把 Accessory/ 纳入扫描立刻抓到的真实缺陷）
 >
-> `tests/diagnose_nvenc_rc_mode.py:178` 的
+> `Accessory/probe/nvenc_rc_mode_diagnose.py:178` 的
 > `subprocess.run(..., capture_output=True, ..., stderr=subprocess.DEVNULL)`
 > —— 两者互斥，运行时必抛 `ValueError`，而它被外层 `except Exception: pass`
 > **静默吞掉**，导致"兜底全盘查找 `nvEncodeAPI.h`"这段**从未真正生效**。
@@ -29,10 +29,10 @@
 >
 > **汇总：94 项 / 92 通过 / 0 失败 / 0 警告 / 2 跳过**
 >
-> - `BEH-E1` py_compile ×136 全通过（含 tests/ 112 文件）
+> - `BEH-E1` py_compile ×136 全通过（含 Accessory/ 112 文件）
 > - `BEH-E2` 覆盖自检 136 文件
 > - `BEH-H1` 254 调用点实参名合法
-> - `BEH-H2` 参数互斥检测 PASS（抓到 `diagnose_nvenc_rc_mode.py:178` `capture_output` 与 `stderr=DEVNULL` 互斥已修）
+> - `BEH-H2` 参数互斥检测 PASS（抓到 `nvenc_rc_mode_diagnose.py:178` `capture_output` 与 `stderr=DEVNULL` 互斥已修）
 > - `BEH-H3` 读帧器功能冒烟：两读帧器完整读完且帧数==ffprobe
 > - `BEH-B*` 行为验证全 PASS（分割/重编码/合并/actual_output 回传/文件存在）
 > - `BEH-F*` 配置校验 PASS
@@ -63,12 +63,12 @@
 | 项 | 状态 | 说明 |
 |---|---|---|
 | 生产代码编译/契约覆盖 | ✅ **已自动化** | 本轮把 `COMPILE_TARGETS` 从手工白名单改为按目录自动收集（54 文件），并加 `BEH-E2` 自检 |
-| `tests/` 下 56 个 py 的覆盖 | ⬜ **本立项待办** | 当前**只有** `test_regression_min.py` 在扫描范围内 |
+| `Accessory/` 下 56 个 py 的覆盖 | ⬜ **本立项待办** | 当前**只有** `test_regression_min.py` 在扫描范围内 |
 | 版本化历史脚本的活跃/历史判定 | ⬜ 待办 | 13 个 `_vN` 文件；⚠️ 其中 **v4 与 v5 都是活跃资产**（v5 = 生产侧最新版改名而来），不能按名字一刀切 |
-| `verify_segment_bitstream_v5.py` | ✅ 已定性 | **不是残留**：使用者确认 v5 即生产侧最新 v4 的内容（本地保留旧 v4、最新版另存 v5，Linux 侧亦已同步为 v5）⇒ **两个都不能删** |
-| ⚠️ 改名遗留：运行期 import 断裂 | ⬜ **步骤 0（优先）** | `tests/test_chroma_false_positive.py:137,165` 仍 `import verify_segment_bitstream_v4`，见 §1.3 |
+| `segment_bitstream_verify_v5.py` | ✅ 已定性 | **不是残留**：使用者确认 v5 即生产侧最新 v4 的内容（本地保留旧 v4、最新版另存 v5，Linux 侧亦已同步为 v5）⇒ **两个都不能删** |
+| ⚠️ 改名遗留：运行期 import 断裂 | ⬜ **步骤 0（优先）** | `Accessory/test/test_chroma_false_positive.py:137,165` 仍 `import verify_segment_bitstream_v4`，见 §1.3 |
 | ⚠️ 改名遗留：约 40 处文档/注释指向 `_v4.py` | ⬜ 待办 | 其中 `external/ifrnet_video/ffmpeg_io.py:436` 是承载实测论据的实质注释 |
-| `tests/verify_segment_bitstream_v4.py` 的版本控制 | ⬜ 待复核 | 会话记录其**未被 git 跟踪**，导致无法取基线做 A/B |
+| `Accessory/verify/segment_bitstream_verify_v4.py` 的版本控制 | ⬜ 待复核 | 会话记录其**未被 git 跟踪**，导致无法取基线做 A/B |
 | `src/utils/video_utils.py::verify_segment_output()` | ⬜ 待决 | **无任何调用方**（死代码）；语义是段级验收 |
 | 换行符一致性 | ⬜ 待办 | 4 个纯 CRLF + **1 个混合** vs 48 个 LF |
 
@@ -80,31 +80,31 @@
 
 - `COMPILE_TARGETS`（本轮已自动收集）= **54** 个文件
   ＝ `src/` (18) + `external/ifrnet_video/` (8) + `external/realesrgan_video/` (26)
-  + `external/nvenc_common/` (2) − 排除 1（`nvenc_sdk_bak.py`）+ `tests/test_regression_min.py`
+  + `external/nvenc_common/` (2) − 排除 1（`nvenc_sdk_bak.py`）+ `Accessory/verify/test_regression_min.py`
   - 规则：`COVERAGE_ROOTS` 四个根目录 + 排除 `*_bak*` / `*.bak*` / `* - Copy*` / `__pycache__`
   - 自检 `BEH-E2`：条目数 ≥ 45、`FILES` 具名文件全覆盖、`external/` 下无未纳管的新包
 - `external/IFRNet/`（50 个 py，拆包前历史单体）与 `external/Real-ESRGAN/`（42 个 py，上游第三方）
   **有意排除**。
 
-### 1.2 `tests/` 资产分布（56 个 py）
+### 1.2 `Accessory/` 资产分布（56 个 py）
 
 | 类别 | 数量 | 备注 |
 |---|---|---|
 | 版本化历史（`_vN`） | 13 | ⚠️ **不能一刀切**：v4 是活跃资产，见 §1.3 |
 | pytest/单测（`test_*`） | 13 | 含 `test_nvenc_completion_event_v1..v5`（v1~v5 并列） |
-| 其它（未归类） | 9 | 含 `conftest.py`、`minimal_validate_enhanced.py` 等 |
+| 其它（未归类） | 9 | 含 `conftest.py`、`minimal_enhanced_validation.py` 等 |
 | 诊断（`diagnose_*`） | 6 | |
 | 验证（`verify_*`） | 6 | |
 | 分析（`analyze_*`） | 4 | |
 | 基准（`benchmark_*`） | 1 | |
 | 复现（`repro_*`） | 2 | |
-| 内部/辅助（`_*`、`conftest`） | 3 | `_faultinj_wrap.py`、`_pipe_deadlock_test.py`、`conftest.py` |
+| 内部/辅助（`_*`、`conftest`） | 3 | `fault_injection_wrapper.py`、`pipe_deadlock_repro.py`、`conftest.py` |
 
 ### 1.3 ⚠️ 关键反例：`_vN` ≠ 历史，且 v4/v5 是**改名**而非冗余
 
 **已由使用者确认（2026-09-15）**：
 
-> `verify_segment_bitstream_v5.py` 就是生产侧最新的 `verify_segment_bitstream_v4.py`；
+> `segment_bitstream_verify_v5.py` 就是生产侧最新的 `segment_bitstream_verify_v4.py`；
 > 本地保留旧 v4、把最新版本另存为 v5，**Linux 生产侧也已同步为 v5**。
 
 因此 v4/v5 现在**内容逐字节相同**（sha256 前 16 位均 `2566804141ee2c7a`，均 192131 字节），
@@ -116,11 +116,11 @@
 
 **改名留下两个真实待办**（已在 §3 列为步骤 0）：
 
-1. **一处运行期 import 会断**：`tests/test_chroma_false_positive.py:137,165` 两处
+1. **一处运行期 import 会断**：`Accessory/test/test_chroma_false_positive.py:137,165` 两处
    `from verify_segment_bitstream_v4 import check_chroma_corruption` ——
    若生产侧只保留 v5，该测试会 `ModuleNotFoundError`。**必须改为 v5（或做双名兼容）**。
 2. **约 40 处文档/注释引用 `..._v4.py` 已过时**（`AGENTS.md`、`src/utils/*.py`、
-   `external/ifrnet_video/ffmpeg_io.py`、`tests/*.py`、`memory/*`、历史报告等）。
+   `external/ifrnet_video/ffmpeg_io.py`、`Accessory/*.py`、`memory/*`、历史报告等）。
    其中 `external/ifrnet_video/ffmpeg_io.py:436` 的引用承载着"为何不用 `-ss` 快速路径"
    的实测论据，属**实质注释**，应优先更正。
 3. 顺带（纯外观）：v5 内部自指的日志名仍是 `verify_segment_bitstream_v4_stuck.log`
@@ -160,29 +160,29 @@
 ## 2. 任务
 
 1. **先修改名遗留的断裂点**（步骤 0）：`test_chroma_false_positive.py` 的 import 指向 v5/双名兼容。
-2. **给 `tests/` 出一张清点表**：每个文件标注 `活跃 / 历史 / 可删 / 待定` + 判定依据
+2. **给 `Accessory/` 出一张清点表**：每个文件标注 `活跃 / 历史 / 可删 / 待定` + 判定依据
    （被谁引用、最后修改时间、是否有 `_vN` 后继、是否被生产注释引用）。
-3. **决定 `tests/` 的扫描范围**：把"活跃"的部分纳入 `COMPILE_TARGETS`
+3. **决定 `Accessory/` 的扫描范围**：把"活跃"的部分纳入 `COMPILE_TARGETS`
    （或新增一个 `COVERAGE_TEST_ROOTS` + 显式排除历史），让它们至少过 `py_compile`
    与 BEH-H1 调用契约扫描。
 4. **更正指向 `_v4.py` 的过时引用**（约 40 处，优先 `ffmpeg_io.py:436`）。
 5. **处理死代码**：决定 `verify_segment_output()` 的去留。
 6. **统一换行符**并加 `.gitattributes`。
-7. **复核版本控制**：确认 `verify_segment_bitstream_v4.py` / `_v5.py` 等资产是否已被 git 跟踪；
+7. **复核版本控制**：确认 `segment_bitstream_verify_v4.py` / `_v5.py` 等资产是否已被 git 跟踪；
    未被跟踪的必须纳入（它是被生产源码引用的门禁资产）。
 
 ---
 
 ## 3. 实施步骤（建议顺序）
 
-0. **先修 import**：把 `tests/test_chroma_false_positive.py:137,165` 的
+0. **先修 import**：把 `Accessory/test/test_chroma_false_positive.py:137,165` 的
    `from verify_segment_bitstream_v4 import ...` 改为 v5（或 try v5 → fallback v4 双名兼容），
    并**实测该 pytest 仍能收集与运行**（本次改动只需导入名，不碰断言）。
 1. 先跑 §4 的"引用矩阵"脚本，产出清点表（**不要手工判断**）。
 2. 只删/归档**双证据**（逐字节相同 + 零引用 + 已确认无改名/搬移意图）的项。
    ⚠️ v4 与 v5 虽然逐字节相同，但**都是有意的**，属例外，不得删。
-3. 把"活跃 tests"纳入扫描 —— 建议**分批**：先纳入 `verify_segment_bitstream_v5.py`
-   与 `minimal_validate_enhanced.py` 等被生产引用的，观察门禁是否因历史脚本的
+3. 把"活跃 tests"纳入扫描 —— 建议**分批**：先纳入 `segment_bitstream_verify_v5.py`
+   与 `minimal_enhanced_validation.py` 等被生产引用的，观察门禁是否因历史脚本的
    语法/契约问题而变红；再决定是否全量。
 4. 更正文档/注释里的 `_v4.py` 引用（纯文本，不碰代码逻辑）。
 5. 换行符统一**单独一次提交**，并在提交信息里写明"纯换行符，无逻辑变更"，
@@ -234,13 +234,13 @@ for p in sorted(Path(ROOT, "tests").rglob("*.py")):
 | # | 判据 | 期望 |
 |---|---|---|
 | 0 | **改名遗留已闭合** | `test_chroma_false_positive.py` 的 import 指向 v5（或双名兼容）且该测试可运行；`_v4.py` 的过时引用清单已产出 |
-| 1 | 引用矩阵 | 能输出每个 `tests/*.py` 的引用者列表（含生产源码注释）与内容哈希，用于识别重复 |
+| 1 | 引用矩阵 | 能输出每个 `Accessory/*.py` 的引用者列表（含生产源码注释）与内容哈希，用于识别重复 |
 | 2 | 清点表 | 每个文件都有一个明确状态（无"待定"遗留超过 3 个） |
 | 3 | 扫描范围 | 被生产引用/活跃的 tests 文件进入 `COMPILE_TARGETS` 或新增专用清单，且 **BEH-E2 自检覆盖到它们** |
 | 4 | 冗余副本 | v5 已删除或归档；v4 保留且可被引用 |
 | 5 | 死代码 | `verify_segment_output()` 已删或已注明"仅参考实现、无调用方" |
 | 6 | 换行符 | 全仓活跃 py 文件换行一致（或 `.gitattributes` 已钉死规则） |
-| 7 | 门禁 | `python tests/verify_plan_implementation.py --no-report-file` 无 FAIL |
+| 7 | 门禁 | `python Accessory/verify/plan_implementation_gate.py --no-report-file` 无 FAIL |
 | 8 | 无功能影响 | 本次改动全是资产/元数据层，`--dry-run` 与任一端到端素材行为不变 |
 
 ---

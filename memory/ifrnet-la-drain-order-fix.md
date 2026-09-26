@@ -62,7 +62,7 @@ gfi 单调；test8 规模下 LA 重路由使该假设失效 → 帧字节与标�
 1. `python -m py_compile` 三文件全部通过。
 2. 跨文件一致性：`_apply_drained_entries` / `_ensure_slot_free` / EOS leftover 归一化后完全一致。
 3. test8 全流程重跑（VBR_HQ+LA=8, 2x）需在生产 Linux 机执行（本机缺模型权重/TRT 缓存）：
-   `tests/verify_segment_bitstream_v3.py` 断言 frames==packets、frame_num 无回退、pts 无 drop。
+   `Accessory/verify/segment_bitstream_verify_v3.py` 断言 frames==packets、frame_num 无回退、pts 无 drop。
 
 ## 范围边界
 - 仅改三后端文件；processor `ifrnet_processor_v6_4_single.py` 的 break 语义（段失败即终止+保存进度）不改。

@@ -25,19 +25,19 @@
 ### 1. stdin加固策略定稿 ✅ **完整执行**
 
 **交付物验证**：
-- `tests/test_stdin_hardening_linux.py` 存在（19196 bytes，2026-09-16）
+- `Accessory/test/test_stdin_hardening_linux.py` 存在（19196 bytes，2026-09-16）
 - `src/utils/stdin_hardening.py` 模块存在，契约文档完整（2026-09-15 定稿）
 - 双侧 `ffmpeg_io.py` 均在导入时调用 `detach_background_stdin()`（幂等）
 - ESRGAN 侧 `FFmpegReader.__init__` 额外补一次加固（标记 `[FIX-STDIN-TTOU-L2]`）
 
 **实测结果**（2026-09-18）：
 ```
-tests/test_stdin_hardening_linux.py::test_criterion1_original_fault_and_fix PASSED
-tests/test_stdin_hardening_linux.py::test_criterion2_branch_matrix PASSED
-tests/test_stdin_hardening_linux.py::test_criterion3_exception_degradation PASSED
-tests/test_stdin_hardening_linux.py::test_criterion4_idempotent PASSED
-tests/test_stdin_hardening_linux.py::test_criterion5_import_order PASSED
-tests/test_stdin_hardening_linux.py::test_criterion6_callsite_fd0 PASSED
+Accessory/test/test_stdin_hardening_linux.py::test_criterion1_original_fault_and_fix PASSED
+Accessory/test/test_stdin_hardening_linux.py::test_criterion2_branch_matrix PASSED
+Accessory/test/test_stdin_hardening_linux.py::test_criterion3_exception_degradation PASSED
+Accessory/test/test_stdin_hardening_linux.py::test_criterion4_idempotent PASSED
+Accessory/test/test_stdin_hardening_linux.py::test_criterion5_import_order PASSED
+Accessory/test/test_stdin_hardening_linux.py::test_criterion6_callsite_fd0 PASSED
 ================== 6 passed in 25.41s ==================
 ```
 - **判据 1**：真实 SIGTTOU 复现（后台进程组 + tty stdin）→ 无加固超时、有加固 rc=0 ✅
@@ -48,7 +48,7 @@ tests/test_stdin_hardening_linux.py::test_criterion6_callsite_fd0 PASSED
 ### 2. NVENC硬件测试隔离 ⚠️ **部分执行，存在误导性声称**
 
 **交付物验证**：
-- `tests/diagnose_nvenc_qp0_segv.py` 诊断工具已创建（189 行，可复用、可配置）
+- `Accessory/probe/nvenc_qp0_segv_repro.py` 诊断工具已创建（189 行，可复用、可配置）
 - 正确固化了 qp=0 崩溃的**真实定性**：编码阶段触发、与建会话无关、与入口函数无关、qp=23 对照 0 崩溃
 - 代码中的错误根因断言已修正（`_NvEncPresetConfig` 尺寸修正非崩溃根因，注释已改正）
 
@@ -137,22 +137,22 @@ collected 32 items  # 非 92 项
 ### 6. IFRNet读帧器无界阻塞 ✅ **完整执行**
 
 **交付物验证**：
-- `tests/test_reader_unbound_watchdog.py` 存在（19196 bytes，2026-09-16）
+- `Accessory/test/test_reader_unbound_watchdog.py` 存在（19196 bytes，2026-09-16）
 - 覆盖 A/B/C 三类断言：语义分支（合成桩）、真实 ffmpeg 正常路径、真实 ffmpeg 注入路径
 
 **实测结果**（2026-09-18）：
 ```
-tests/test_reader_unbound_watchdog.py::test_env_resolution PASSED
-tests/test_reader_unbound_watchdog.py::test_dead_thread_raises_within_one_timeout PASSED
-tests/test_reader_unbound_watchdog.py::test_child_exited_without_sentinel_raises PASSED
-tests/test_reader_unbound_watchdog.py::test_alive_but_silent_is_bounded_at_two_timeouts PASSED
-tests/test_reader_unbound_watchdog.py::test_sentinel_exception_and_value_passthrough PASSED
-tests/test_reader_unbound_watchdog.py::test_timeout_zero_disables_watchdog PASSED
-tests/test_reader_unbound_watchdog.py::test_real_normal_path_frame_conservation_and_bytes PASSED
-tests/test_reader_unbound_watchdog.py::test_real_backpressure_slow_consumer PASSED
-tests/test_reader_unbound_watchdog.py::test_real_injection_dead_loop_raises PASSED
-tests/test_reader_unbound_watchdog.py::test_real_injection_stalled_loop_raises PASSED
-tests/test_reader_unbound_watchdog.py::test_real_sigstop_child_ffmpeg_raises PASSED
+Accessory/test/test_reader_unbound_watchdog.py::test_env_resolution PASSED
+Accessory/test/test_reader_unbound_watchdog.py::test_dead_thread_raises_within_one_timeout PASSED
+Accessory/test/test_reader_unbound_watchdog.py::test_child_exited_without_sentinel_raises PASSED
+Accessory/test/test_reader_unbound_watchdog.py::test_alive_but_silent_is_bounded_at_two_timeouts PASSED
+Accessory/test/test_reader_unbound_watchdog.py::test_sentinel_exception_and_value_passthrough PASSED
+Accessory/test/test_reader_unbound_watchdog.py::test_timeout_zero_disables_watchdog PASSED
+Accessory/test/test_reader_unbound_watchdog.py::test_real_normal_path_frame_conservation_and_bytes PASSED
+Accessory/test/test_reader_unbound_watchdog.py::test_real_backpressure_slow_consumer PASSED
+Accessory/test/test_reader_unbound_watchdog.py::test_real_injection_dead_loop_raises PASSED
+Accessory/test/test_reader_unbound_watchdog.py::test_real_injection_stalled_loop_raises PASSED
+Accessory/test/test_reader_unbound_watchdog.py::test_real_sigstop_child_ffmpeg_raises PASSED
 ================== 11 passed in 37.75s ==================
 ```
 - **判据 C3**：真实 `SIGSTOP` 变体 — `kill -STOP` 子 ffmpeg → `read()` 在 2×T 内抛出 `RuntimeError` ✅
@@ -183,7 +183,7 @@ tests/test_reader_unbound_watchdog.py::test_real_sigstop_child_ffmpeg_raises PAS
 ## 建议后续动作
 
 1. **修正方案文件统计数据**：将「92 PASS / 0 FAIL / 0 WARN / 2 SKIP」修正为实际值（~31 PASS / 1 SIGSEGV(known) / ~32 collected）
-2. **将 qp=0 测试标记为预期失败或文档化规避**：在 `test_nvenc_sdk_realesrgan.py` 中为 `test_no_empty_frames_constqp_la0` 添加 `xfail` 或 `skip` 理由，引用 `tests/diagnose_nvenc_qp0_segv.py` 与 `memory/nvenc-qp0-crash-workaround.md`
+2. **将 qp=0 测试标记为预期失败或文档化规避**：在 `nvenc_sdk_realesrgan_suite.py` 中为 `test_no_empty_frames_constqp_la0` 添加 `xfail` 或 `skip` 理由，引用 `Accessory/probe/nvenc_qp0_segv_repro.py` 与 `memory/nvenc-qp0-crash-workaround.md`
 3. **修复 pytest teardown crash**：升级 pytest 或调整 capture 配置（非阻塞性，可延后）
 
 ---
@@ -208,5 +208,5 @@ tests/test_reader_unbound_watchdog.py::test_real_sigstop_child_ffmpeg_raises PAS
 
 ### 补遗修复已执行
 - [x] 审计报告已合并并更新 §5 状态与新发现。
-- [x] `tests/test_nvenc_sdk_realesrgan.py::test_no_empty_frames_constqp_la0` 已标记 `@pytest.mark.skip(reason="...")`（见下文）。
+- [x] `Accessory/probe/nvenc_sdk_realesrgan_suite.py::test_no_empty_frames_constqp_la0` 已标记 `@pytest.mark.skip(reason="...")`（见下文）。
 - [x] 统计数据已在报告中修正。

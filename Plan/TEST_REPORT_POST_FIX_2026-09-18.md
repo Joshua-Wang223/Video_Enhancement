@@ -1,21 +1,21 @@
 # 补遗修复后完整测试报告（2026-09-18）
 
 ## 1. 测试范围
-- **功能测试（修复内容）**：修改文件 `tests/test_nvenc_sdk_realesrgan.py` 的 `@pytest.mark.skip` 注解；`AUDIT_REPORT_2026-09-18.md` 更新。
-- **回归测试（核心功能）**：`tests/test_regression_min.py --behavior-only`（行为验证阶段）；`tests/test_reader_unbound_watchdog.py`（合成路径）；`tests/test_stdin_hardening_linux.py`（合成路径）。
-- **接口与集成测试**：`pytest.ini` 解析与注册；`tests/verify_plan_implementation.py --behavior-only --no-report-file`；`external/*/ffmpeg_io.py` 滤镜一致性核查。
-- **健壮性/边界测试**：全活跃文件语法编译（175 个文件，排除 2 个已归档遗留文件）；内存镜像文件数核对（96/96）；`tests/diagnose_nvenc_qp0_segv.py` 可复现性验证（已知缺陷未引入新回归）。
+- **功能测试（修复内容）**：修改文件 `Accessory/probe/nvenc_sdk_realesrgan_suite.py` 的 `@pytest.mark.skip` 注解；`AUDIT_REPORT_2026-09-18.md` 更新。
+- **回归测试（核心功能）**：`Accessory/verify/test_regression_min.py --behavior-only`（行为验证阶段）；`Accessory/test/test_reader_unbound_watchdog.py`（合成路径）；`Accessory/test/test_stdin_hardening_linux.py`（合成路径）。
+- **接口与集成测试**：`pytest.ini` 解析与注册；`Accessory/verify/plan_implementation_gate.py --behavior-only --no-report-file`；`external/*/ffmpeg_io.py` 滤镜一致性核查。
+- **健壮性/边界测试**：全活跃文件语法编译（175 个文件，排除 2 个已归档遗留文件）；内存镜像文件数核对（96/96）；`Accessory/probe/nvenc_qp0_segv_repro.py` 可复现性验证（已知缺陷未引入新回归）。
 
 ## 2. 测试用例与结果
 
 | ID | 测试用例 | 测试类型 | 预期结果 | 实测结果 | 状态 |
 |---|---|---|---|---|---|
-| TC-1 | `tests/test_nvenc_sdk_realesrgan.py` 语法编译 | 功能/修复 | 无语法错误 | 通过（`py_compile` OK） | ✅ PASS |
+| TC-1 | `Accessory/probe/nvenc_sdk_realesrgan_suite.py` 语法编译 | 功能/修复 | 无语法错误 | 通过（`py_compile` OK） | ✅ PASS |
 | TC-2 | 审计报告完整性（`AUDIT_REPORT_2026-09-18.md` 头部与新增补遗段落） | 功能/修复 | 文件存在且包含修正内容 | 通过 | ✅ PASS |
 | TC-3 | `memory/` 镜像同步（文件数 96/96） | 集成 | 两侧一致（内容待逐字复核） | 通过（文件数一致） | ⚠️ 部分（内容差异未逐字复核） |
 | TC-4 | IFRNet / ESRGAN `ffmpeg_io.py` 滤镜一致性（`bt601`/`tv`） | 接口/集成 | 双侧均应用 | IFRNet (`-vf scale=...` 字符串) + ESRGAN (`.filter(...)` 对象) 均已应用 | ✅ PASS |
 | TC-5 | ESRGAN REDRAIN 状态核查（`nvenc_sdk.py` 代码注释与实现） | 回归 | 缺二次排空安全网已记录 | `line 1625` 自认缺失；`line 2688-2712` 有部分二次排空实现 | ⚠️ 未完全闭环（见风险） |
-| TC-6 | 行为验证 `tests/verify_plan_implementation.py --behavior-only` | 回归 | 无失败 | 38 PASS / 0 FAIL / 2 SKIP（SKIP 为 `fips_enabled` 环境错误，非代码缺陷） | ✅ PASS |
+| TC-6 | 行为验证 `Accessory/verify/plan_implementation_gate.py --behavior-only` | 回归 | 无失败 | 38 PASS / 0 FAIL / 2 SKIP（SKIP 为 `fips_enabled` 环境错误，非代码缺陷） | ✅ PASS |
 | TC-7 | 读帧器看门狗 `test_reader_unbound_watchdog.py` | 回归 | 11/11 通过（真实路径受环境限制） | 5/11 真实路径 FAIL（`ffmpeg` SIGABRT，环境 `libgcrypt` 问题）；6/11 合成路径 PASS | ⚠️ 环境受限，不影响修复 |
 | TC-8 | stdin 加固 `test_stdin_hardening_linux.py` | 回归 | 6/6 通过 | 4/6 真实路径 FAIL（同上环境 `SIGABRT`）；2/6 合成路径 PASS（分支矩阵、异常退化、幂等性、顺序保证） | ⚠️ 环境受限，不影响修复 |
 | TC-9 | `pytest.ini` 加载与标记注册 | 接口/集成 | `testpaths` + `hw` 标记可解析 | 通过 | ✅ PASS |
@@ -28,10 +28,10 @@
 - **健壮性**：无新增语法错误；已知 `qp=0` SIGSEGV 已通过 `skip` 标记隔离，不引入运行时崩溃。
 
 ## 4. 测试结论
-- **修复已验证通过**：`test_nvenc_sdk_realesrgan.py` 的 `skip` 注解已正确应用，审计报告已合并更新。
+- **修复已验证通过**：`nvenc_sdk_realesrgan_suite.py` 的 `skip` 注解已正确应用，审计报告已合并更新。
 - **无新缺陷引入**：行为验证 38 PASS / 0 FAIL；全活跃代码编译无新增语法错误。
 - **环境受限项已隔离**：真实 `ffmpeg` 测试（看门狗、stdin 加固）的 `SIGABRT` 由系统 `libgcrypt` / `crypto/fips_enabled` 引起，与本次修复无关，已在报告中标注为环境差异，不视为功能失败。
-- **已知缺陷未恶化**：`qp=0` SIGSEGV 仍为已知驱动缺陷，已通过 `skip` + 文档引用（`memory/nvenc-qp0-crash-workaround.md`、`tests/diagnose_nvenc_qp0_segv.py`）明确隔离，避免误判为回归。
+- **已知缺陷未恶化**：`qp=0` SIGSEGV 仍为已知驱动缺陷，已通过 `skip` + 文档引用（`memory/nvenc-qp0-crash-workaround.md`、`Accessory/probe/nvenc_qp0_segv_repro.py`）明确隔离，避免误判为回归。
 
 ## 5. 遗留风险与建议
 
