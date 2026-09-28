@@ -121,7 +121,11 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 # =============================================================================
 
 TESTS_DIR      = Path(__file__).resolve().parent
-PROJECT_ROOT   = TESTS_DIR.parent
+# [FIX-ACC-PATH] 脚本在 Accessory/<分类>/ 下，需回退两层到项目根。
+# 原值 TESTS_DIR.parent 是 tests/ 时代的遗留：2026-09-26 迁入 Accessory/verify/ 后
+# 会指向 .../Accessory，导致 quality_map / main_video_optimized 全部 ModuleNotFoundError
+# （--quick 出现 19 个假 FAIL）。与 plan_implementation_gate.py / benchmark/* 同约定。
+PROJECT_ROOT   = TESTS_DIR.parent.parent
 SRC_DIR        = PROJECT_ROOT / "src"
 UTILS_DIR      = SRC_DIR / "utils"
 PROC_DIR       = SRC_DIR / "processors"
@@ -151,15 +155,20 @@ CHANGED_FILES = [
     "external/realesrgan_video/nvenc_sdk.py",
 ]
 
-# 基准轴参考值（报告 §4.3 的统一默认）：libx264 CRF 21 的等效映射
+# 基准轴参考值（原报告 §4.3 的统一默认）：libx264 CRF 21 的等效映射。
+# ⚠ 本表是**独立期望**（人为审定），不随 convert_crf.QUALITY_MAP 自动更新；
+#   每次改动共享真源（QUALITY_MAP 的 a/b）都必须同步复核此表。
+#   2026-09-28：软编三项按「真实素材·等体积」重标定同步更新
+#   （libx265 1.0/3.0→0.9155/1.6385、libsvtav1 1.0/6.0→1.9450/−15.62、
+#    libvpx-vp9 1.98/−14.46→1.6198/−5.7553），值均为 round(a×21+b)。
 REF21_EXPECTED: Dict[str, Tuple[str, int]] = {
     "libx264":    ("-crf", 21),
-    "libx265":    ("-crf", 24),
+    "libx265":    ("-crf", 21),
     "h264_nvenc": ("-cq:v", 26),
     "hevc_nvenc": ("-cq:v", 28),
     "av1_nvenc":  ("-cq:v", 27),
-    "libsvtav1":  ("-crf", 27),
-    "libvpx-vp9": ("-crf", 27),
+    "libsvtav1":  ("-crf", 25),
+    "libvpx-vp9": ("-crf", 28),
     "librav1e":   ("-qp", 80),
 }
 
@@ -293,8 +302,13 @@ class Ctx:
             ) -> Tuple[int, str, str]:
         timeout = timeout or self.args.timeout
         try:
+            # [FIX-STDIN-TTOU-GATE] 显式 stdin=DEVNULL：在「后台进程组 + tty stdin」
+            # 下启动的 ffmpeg 会对 fd0 调 ioctl(TCSETS) 触发 SIGTTOU，整组被 group-stop
+            # （ps 见主进程与子 ffmpeg 同时为 `T`，永久挂死且无输出）。与
+            # src/utils/stdin_hardening.py 同源，构成 main() 入口 + 每个子进程两层防护。
             p = subprocess.run(list(cmd), capture_output=True, text=True,
-                               timeout=timeout, encoding="utf-8", errors="ignore")
+                               timeout=timeout, encoding="utf-8", errors="ignore",
+                               stdin=subprocess.DEVNULL)
             return p.returncode, p.stdout or "", p.stderr or ""
         except subprocess.TimeoutExpired:
             return 124, "", f"timeout after {timeout}s"
@@ -779,6 +793,20 @@ def group_table(ctx: Ctx, v: Verifier) -> None:
               Status.PASS if not bad else Status.FAIL,
               detail="全部一致" if not bad else "; ".join(bad))
 
+    # G1-8 [FIX-VAAPI-QP] VAAPI 族只有 -qp（无 -cq/-crf）：
+    #      参数名、能力判定、字面量量程三处必须同步，否则会下发非法选项。
+    _p_va, _v_va, _e_va, _ = Q.resolve_quality("h264_vaapi", cq=26)
+    _va_bad = []
+    if (_p_va, _v_va, _e_va) != ("-qp", 21, []):
+        _va_bad.append(f"resolve_quality(h264_vaapi,cq=26)=({_p_va},{_v_va},{_e_va})")
+    if Q.supports_cq("h264_vaapi") or Q.supports_crf("h264_vaapi"):
+        _va_bad.append("supports_cq/supports_crf 仍把 VAAPI 当 -cq/-crf 编码器")
+    if tuple(Q.literal_range("h264_vaapi", "cq")) != (0, 51):
+        _va_bad.append(f"literal_range(h264_vaapi,cq)={Q.literal_range('h264_vaapi','cq')}")
+    v.add("G1-8", "TABLE", "VAAPI 族只有 -qp（参数名/能力/量程同步）",
+          Status.PASS if not _va_bad else Status.FAIL,
+          detail="全部一致" if not _va_bad else "; ".join(_va_bad))
+
 
 # =============================================================================
 # G2 resolve_quality 判定顺序
@@ -815,7 +843,7 @@ def group_resolve(ctx: Ctx, v: Verifier) -> None:
     expect("G2-9", "cq_ref=0 无损意图", "libx265", {"cq_ref": 0}, "-crf", 0)
     expect("G2-10", "librav1e 用 -qp 而非 -crf", "librav1e", {}, "-qp", 80)
     expect("G2-11", "libvpx-vp9 必须配 -b:v 0", "libvpx-vp9", {},
-           "-crf", 27, ["-b:v", "0"])
+           "-crf", 28, ["-b:v", "0"])
 
     # 未知编码器：不猜测，原样下发（不抛异常）
     try:
@@ -826,6 +854,22 @@ def group_resolve(ctx: Ctx, v: Verifier) -> None:
     except Exception as exc:  # noqa: BLE001
         v.add("G2-12", "RESOLVE", "未知编码器不抛异常（原样兜底）",
               Status.FAIL, detail=f"异常 {exc}")
+
+    # G2-13 [FIX-VAAPI-QP] VAAPI：任意质量输入先归一到基准轴（与 x264 QP 同尺度），
+    #         再以 -qp 下发 —— 不走 CQ 轴的 +3/+5 偏移。
+    _va_cases = [
+        ({"crf": 21}, 21), ({"cq": 26}, 21),
+        ({"crf_ref": 21}, 21), ({"cq_ref": 26}, 21),
+        ({}, 21), ({"cq": 0}, 0),
+    ]
+    _va_bad2 = []
+    for _kw, _exp in _va_cases:
+        _p, _val, _e, _ = Q.resolve_quality("h264_vaapi", **_kw)
+        if (_p, _val, _e) != ("-qp", _exp, []):
+            _va_bad2.append(f"{_kw or '默认'}→({_p},{_val})≠(-qp,{_exp})")
+    v.add("G2-13", "RESOLVE", "VAAPI 任意质量输入归一到基准轴后走 -qp",
+          Status.PASS if not _va_bad2 else Status.FAIL,
+          detail="全部一致" if not _va_bad2 else "; ".join(_va_bad2))
 
 
 # =============================================================================
@@ -863,6 +907,21 @@ def group_constqp(ctx: Ctx, v: Verifier) -> None:
     v.add("G3-6", "CONSTQP", "CONSTQP 轴与 CQ 轴不混用（值不同）",
           Status.PASS if q2 != cq_val else Status.FAIL,
           detail=f"cq={cq_val} vs qp={q2}")
+
+    # G3-7 [FIX-QP-SCALE] AV1 的 -qp 是 qindex（0~255），与 -cq 的 0~63 不同刻度。
+    #   本断言只保证**函数按 ×4 输出 84**；"84 才是对的"需 L40 上按码率/PSNR 标定
+    #   （VidUtils/probe/verify_nvenc_quality_gpu.py C 组扫 -qp {21,84,105}）。
+    q_av1 = Q.to_constqp_qp("av1_nvenc", 27)
+    v.add("G3-7", "CONSTQP", "av1_nvenc：CQ 27 → QP 84（AV1 qindex ≈4×，待 L40 复核）",
+          Status.PASS if q_av1 == 84 else Status.FAIL,
+          detail=f"QP={q_av1}（×4 倍率本身需 L40 标定，本机仅验函数逻辑）",
+          evidence=["[FIX-QP-SCALE] _QP_MAP_OVERRIDE['av1_nvenc'] = (4.0, 0.0, 0, 255)"])
+
+    # G3-8 [FIX-QP-SCALE] librav1e 的质量参数本身就落在 QP 刻度（4·ref−4），
+    #   用"单一倍率"会误算成 84；带截距的 QP 模型才是对的。
+    q_rav1e = Q.to_constqp_qp("librav1e", 80)
+    v.add("G3-8", "CONSTQP", "librav1e：QP 80 → 80（截距 −4 不得丢）",
+          Status.PASS if q_rav1e == 80 else Status.FAIL, detail=f"QP={q_rav1e}")
 
 
 # =============================================================================
@@ -1071,6 +1130,33 @@ def group_static(ctx: Ctx, v: Verifier) -> None:
     v.add("G5-11", "STATIC", "主入口接线 literal_range（[P0-FIX-QUALITY-RANGE]）",
           Status.PASS if ok else Status.FAIL,
           detail="已导入并在校验循环中调用" if ok else "未接线")
+
+    # G5-12 [FIX-PRESET-WHITELIST] preset 能力必须是白名单，且只含真正接受
+    #     x264 风格 -preset 的编码器。用 AST 取集合字面量（不匹配注释文案），
+    #     避免"注释里写了就算过"。黑名单形态（把 svtav1/qsv/amf 放行）会下发非法档名。
+    import ast as _ast  # noqa: PLC0415
+    _vu = src("src/utils/video_utils.py")
+    _want_preset = {"libx264", "libx265", "h264_nvenc", "hevc_nvenc", "av1_nvenc"}
+    _got_preset, _ast_err = None, None
+    try:
+        for _n in _ast.walk(_ast.parse(_vu)):
+            _t = (_n.targets[0] if isinstance(_n, _ast.Assign)
+                  else (_n.target if isinstance(_n, _ast.AnnAssign) else None))
+            if isinstance(_t, _ast.Name) and _t.id == "_PRESET_CODECS":
+                _got_preset = _ast.literal_eval(_n.value)
+    except Exception as exc:  # noqa: BLE001
+        _ast_err = f"{type(exc).__name__}: {exc}"
+    _pre_bad = []
+    if _ast_err:
+        _pre_bad.append(_ast_err)
+    elif _got_preset != _want_preset:
+        _pre_bad.append(f"_PRESET_CODECS={_got_preset}")
+    if has(_vu, r"_NO_PRESET_CODECS"):
+        _pre_bad.append("黑名单 _NO_PRESET_CODECS 仍有残留引用")
+    v.add("G5-12", "STATIC", "preset 能力为白名单且成员正确（[FIX-PRESET-WHITELIST]）",
+          Status.PASS if not _pre_bad else Status.FAIL,
+          detail="白名单正确" if not _pre_bad else "; ".join(_pre_bad),
+          evidence=[f"_PRESET_CODECS={sorted(_got_preset)}" if _got_preset else ""])
 
     # G5-2 IFRNet 后端接入
     imain = src("external/ifrnet_video/main.py")
@@ -1313,6 +1399,12 @@ def group_emit(ctx: Ctx, v: Verifier) -> None:
          [("-rc:v", "constqp"), ("-qp", "21")], [("-cq:v", None)]),
         ("G6-6", "ESRGAN", "realesrgan_video", "libx265", 24, "vbr_hq", 8,
          [("-crf", "24")], [("-cq:v", None)]),
+        # G6-7 [FIX-QP-SCALE] AV1 的 constqp 必须发 qindex（0~255），不是 CQ 轴值：
+        #   crf=27 是 av1_nvenc 在基准 21 上的 -cq 值，切 constqp 后应换算成 84。
+        #   需 Ada(L40) 才能真正跑起来；T4 / 本机无 AV1 NVENC ⇒ 该格 SKIP。
+        ("G6-7", "IFRNet", "ifrnet_video", "av1_nvenc", 27, "constqp", 0,
+         [("-rc:v", "constqp"), ("-qp", "84")],
+         [("-cq:v", None), ("-b:v", None)]),
     ]
 
     for cid, stage, pkg, codec, crf, rc, la, want, forbid in cases:
@@ -2366,6 +2458,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    # [FIX-STDIN-TTOU-GATE] 入口即加固 fd0 —— 必须早于任何拉起 ffmpeg 的检查。
+    # 本判据的 G5-9 等会在导入期/静态核查后拉起 ffmpeg；「后台进程组 + tty stdin」
+    # 下会被 SIGTTOU group-stop（实测 6 分钟零输出，ps 见 `T` + `wchan=do_signal_stop`）。
+    # 与 Ctx.run() 的 stdin=DEVNULL 构成两层防护。详见 src/utils/stdin_hardening.py。
+    try:
+        if str(UTILS_DIR) not in sys.path:
+            sys.path.insert(0, str(UTILS_DIR))
+        from stdin_hardening import detach_background_stdin
+        if detach_background_stdin():
+            print("[判据] 检测到后台 tty stdin，已把 fd0 指向 /dev/null"
+                  "（避免子 ffmpeg 被 SIGTTOU 停住）", flush=True)
+    except Exception:
+        pass
     argv = list(argv if argv is not None else sys.argv[1:])
     args = build_parser().parse_args(argv)
 

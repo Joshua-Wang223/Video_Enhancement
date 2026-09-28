@@ -995,7 +995,9 @@ def _validate_effective_config(config: Config,
             _errors.append(f"models.{sect}.lookahead_depth 需在 0~32（当前 {la!r}）")
         rate = config.get("models", sect, "rate_mode", default="vbr_hq")
         if rate not in ("constqp", "vbr_hq", "qvbr"):
-            _errors.append(f"models.{sect}.rate_mode 需为 constqp/vbr_hq/qvbr（当前 {rate!r}）")
+            _errors.append(
+                f"models.{sect}.rate_mode 需为 constqp/vbr_hq/qvbr"
+                f"（NVENC SDK 直通仅支持这三档；当前 {rate!r}）")
 
     # ── 分段输出质量参数（IFRNet / ESRGan 两侧同规则）─────────────────────────
     # [P0-FIX-QUALITY-RANGE] 所有质量输入（字面量 crf/cq 与基准 crf_ref/cq_ref，
@@ -2479,10 +2481,11 @@ ESRGan 模型选项 (--esrgan-model):
                help="IFRNet 编码预设（libx264/libx265 名称，NVENC 自动映射为 p1~p7）")
     g.add_argument("--rate-mode-ifrnet", metavar="MODE",
                choices=["constqp", "vbr_hq", "qvbr"],
-               help="IFRNet NVENC 码率控制模式（默认 vbr_hq）")
+               help="IFRNet NVENC 码率控制模式（默认 vbr_hq）。"
+                    "NVENC SDK 直通仅支持 constqp / vbr_hq / qvbr 三档，"
+                    "其余取值（vbr/cbr/cbr_hq/cbr_ld_hq）为纯软件编码器的档位，此处不接受")
     g.add_argument("--lookahead-depth-ifrnet", type=int, metavar="N",
-               choices=[0, 8, 16, 32],
-               help="IFRNet NVENC 前向帧预看深度（默认 8）")
+               help="IFRNet NVENC 前向帧预看深度（0~32，NVENC 硬件上限 32，默认 8）")
     g.add_argument("--report-ifrnet", metavar="PATH",
                    help="IFRNet JSON 性能报告输出路径")
     g.add_argument("--preview-ifrnet", action="store_true",
@@ -2557,10 +2560,11 @@ ESRGan 模型选项 (--esrgan-model):
                    help="ESRGan libx264/libx265 编码预设（默认 medium，NVENC 自动映射为 p1~p7）")
     g.add_argument("--rate-mode-esrgan", metavar="MODE",
                    choices=["constqp", "vbr_hq", "qvbr"],
-                   help="ESRGan NVENC 码率控制模式（默认 vbr_hq）")
+                   help="ESRGan NVENC 码率控制模式（默认 vbr_hq）。"
+                        "NVENC SDK 直通仅支持 constqp / vbr_hq / qvbr 三档，"
+                        "其余取值（vbr/cbr/cbr_hq/cbr_ld_hq）为纯软件编码器的档位，此处不接受")
     g.add_argument("--lookahead-depth-esrgan", type=int, metavar="N",
-                   choices=[0, 8, 16, 32],
-                   help="ESRGan NVENC 前向帧预看深度（默认 8）")
+                   help="ESRGan NVENC 前向帧预看深度（0~32，NVENC 硬件上限 32，默认 8）")
     g.add_argument("--ffmpeg-bin", type=str,
                    help="ffmpeg 可执行文件路径（默认 ffmpeg）")
     # ── 高优先级覆盖开关（强制启用，覆盖 --no-* / config 中的禁用设置）──────────

@@ -479,13 +479,21 @@ _FUNC_IDX = {
 # ── _PRESET_P_INDEX ──
 # x264 preset name → NVENC preset array index (p-index)
 # NVENC driver returns presets in order: p1 (fastest) → p7 (slowest)
-# p1=0, p2=1, ..., p7=6
+# p1=0, p2=1, ..., p7=6   （消费点统一以 `p{index+1}` 下发）
 # Also supports direct p1-p7 strings as preset names
+#
+# [FIX-PRESET-ALIGN] 按 ffmpeg 官方枚举对齐（`ffmpeg -h encoder=h264_nvenc`）：
+#   p1 fastest / p2 faster / p3 fast / p4 medium(default) / p5 slow /
+#   p6 slower / p7 slowest
+# 旧表整体高 1~2 档（medium→p5、slow→p6、slower→p7），即"选 medium 实际拿到 slow"。
+# x264 的 9 档映射到 NVENC 的 7 档，两端各压缩一档。
+# ⚠ 本表与 VidUtils 的 NVENC_TO_X264_PRESET 是同一契约的两侧，
+#   单独改动后需与 VidUtils 侧核对（VidUtils 判据 ⑨ 组 note 会报告差异）。
 _PRESET_P_INDEX: dict = {
     "ultrafast": 0, "superfast": 0,
     "veryfast": 1, "faster": 2,
-    "fast": 3, "medium": 4,
-    "slow": 5, "slower": 6, "veryslow": 6, "placebo": 6,
+    "fast": 2, "medium": 3,
+    "slow": 4, "slower": 5, "veryslow": 6, "placebo": 6,
 }
 
 # [FIX-BR-CLAMP] avgBitrate 估算钳制上限（bps）。驱动对单会话码率有上限，

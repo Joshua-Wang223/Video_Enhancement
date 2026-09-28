@@ -28,13 +28,25 @@ try:
 except Exception:  # noqa: BLE001
     _resolve_quality = None
 
-# 不接受 x264 风格 -preset 的编码器（librav1e 用 -speed，libvpx 用 -deadline/-cpu-used）。
-# 硬编（NVENC/QSV/AMF…）接受 -preset（medium/p1..p7），故不在排除集内。
-_NO_PRESET_CODECS = {'librav1e', 'libvpx', 'libvpx-vp9'}
+# 接受 x264 风格 `-preset` 的编码器**白名单**（[FIX-PRESET-WHITELIST]）。
+# 实测 ffmpeg 8.0.1（`ffmpeg -h encoder=<name>`）：
+#   · libx264 / libx265  直接吃档名；
+#   · NVENC 族（h264/hevc/av1）由后端 `_PRESET_P_INDEX` 转 p1~p7；
+#   · 其余都不能用档名：
+#       h264_qsv  `-preset <int> 0..7`（传档名会失败）
+#       AMF / VideoToolbox  无 `-preset`
+#       libsvtav1 `-preset <int> -2..13`（传 "medium" 报 Unable to parse option value → 命令直接失败）
+#       libaom-av1  无 `-preset`（只有 `-cpu-used`）
+#       librav1e  用 `-speed`，libvpx 用 `-deadline` / `-cpu-used`
+# 原实现是黑名单（只排 librav1e/libvpx*），会把档名下发给 svtav1/qsv/amf。
+_PRESET_CODECS = {
+    'libx264', 'libx265',
+    'h264_nvenc', 'hevc_nvenc', 'av1_nvenc',
+}
 
 
 def _preset_supported(codec: str) -> bool:
-    return str(codec).lower() not in _NO_PRESET_CODECS
+    return str(codec).lower() in _PRESET_CODECS
 
 
 def _resolve_quality_args(codec: str, *, crf=None, cq=None,
@@ -58,6 +70,10 @@ def _resolve_quality_args(codec: str, *, crf=None, cq=None,
     args: List[str] = []
     if preset and _preset_supported(codec):
         args += ['-preset', str(preset)]
+    elif preset:
+        # 不静默丢弃：档位为何没下发要能在日志/返回说明里看到
+        _note = (f'{_note}；编码器 {codec} 不接受 x264 风格 -preset，'
+                 f'已省略 --preset {preset}')
     args += [_p, str(_val)] + list(_extra)
     return args, _note
 
