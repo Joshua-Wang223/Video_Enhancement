@@ -1,6 +1,6 @@
 ---
 name: GitHub 推送流程（SSH-over-443）与「密钥红线」
-description: force_push_github.sh 的正确调用方式、治理文件(.gitignore/.gitattributes/tar_excludes.txt)以 origin 为准的 [FIX-IGNORE-CANONICAL] 约定、快照已改用 make_snapshot.sh(git archive) 及 tar_excludes.txt 的废弃原因与 `./` 锚定历史、推送后一律复核 ls-remote 的铁律与「怎么读推送日志」（0 报错≠推送成功、dry-run 行与真实行同格式）、models.del 类改名残留绕过 .gitignore 与哨兵的缺口、以及 config/cc-switch-*.md 含真实 API Key 已被 .gitignore 排除（GitHub 只认 OpenRouter，DeepSeek 无检测器）；并含 2026-09-23 实测的「日常同步（非全量覆盖）」清单，以及「普通 git push 成功输出只有 1 行 `-> main`、勿套用 force_push 脚本日志判据」的判读
+description: force_push_github.sh 的正确调用方式、治理文件(.gitignore/.gitattributes/tar_excludes.txt)以 origin 为准的 [FIX-IGNORE-CANONICAL] 约定、快照已改用 make_snapshot.sh(git archive) 及 tar_excludes.txt 的废弃原因与 `./` 锚定历史、推送后一律复核 ls-remote 的铁律与「怎么读推送日志」（0 报错≠推送成功、dry-run 行与真实行同格式）、models.del 类改名残留绕过 .gitignore 与哨兵的缺口、以及 config/cc-switch-*.md 含真实 API Key 已被 .gitignore 排除（GitHub 只认 OpenRouter，DeepSeek 无检测器）；并含 2026-09-23 实测的「日常同步（非全量覆盖）」清单，以及「普通 git push 成功输出只有 1 行 `-> main`、勿套用 force_push 脚本日志判据」的判读；2026-09-28 补：自查命令 `cmd || echo 无命中` 会把语法错误伪装成通过、如何判定命中是"本次引入"还是"既有"、以及「用户说提交≠推送」的处置
 type: project
 ---
 
@@ -188,6 +188,54 @@ DIRTY=allow bash make_snapshot.sh          # 工作区不干净时也继续
 - 日常路径确认可用：本地提交后 `git push origin main`（fast-forward）。若并行会话已推进
   `origin/main`，应当 `git rebase origin/main` 后再推；rebase 冲突处理见
   [远程/本地分叉](feedback_remote_authoritative_merge_back.md)。
+
+## ⚠️ 自查命令写成 `cmd || echo "无命中"` 会把**语法错误**伪装成"检查通过"（2026-09-28 实测）
+
+本轮推送前跑密钥自查，写成了：
+
+```bash
+git grep -I -E -l '(gh[pousr]_|sk-|AKIA|...)' --cached || echo "无命中"
+```
+
+实际输出是 `fatal: option '--cached' must come before non-option arguments` —— **命令根本没执行**，
+但 `|| echo "无命中"` 把非零退出码换成了一行"无命中"，看上去就是"干净"。
+正确写法：`git grep -I -E -l -e '<pat>' HEAD -- .`（**选项在前**、模式用 `-e`）。
+
+**How to apply**：
+- 门禁/自查类命令**别用 `|| echo 通过`** 兜底；要么直接看退出码 + stderr，要么把 fallback 写成显眼的失败字样。
+- 看到自查"无命中"时顺手确认命令**确实跑过**（输出里不得有 `fatal:` / `error:`）。
+
+### 如何判定命中是"本次引入"还是"既有"
+
+命中 ≠ 你引入了。对**本次提交涉及的文件**逐个比对即可区分：
+
+```bash
+PAT='(gh[pousr]_|sk-|AKIA|xox[baprs]-|PRIVATE KEY|AIza|glpat-)'
+git diff --name-only HEAD~1 HEAD | while IFS= read -r f; do
+  git show "HEAD:$f" 2>/dev/null | grep -qIE "$PAT" && echo "命中: $f"
+done
+# 再用旧提交复核该文件是否早就命中：git show <old-sha>:$f | grep -qIE "$PAT"
+```
+
+2026-09-28 实测：全树命中 12 个文件，但与本提交文件集的**交集为空**，且它们在上一提交
+`dc63317` 就已命中 ⇒ 全是检测代码/文档里的**模式字符串本身**
+（`.gitignore`、`verify_segment_bitstream_verify_v5.py`、`memory/github-push-workflow-and-secrets.md`、
+`external/IFRNet/README.md` 等），**本次提交零新增**。别看到"命中 12 个"就以为要回滚。
+
+## 用户说「提交」≠「推送」—— 只 commit，推送单独确认（2026-09-28 做法）
+
+用户说「提交这些改动」时，只做 `git commit`（提交前照本文「日常同步」清单侦察：无分叉、治理文件与
+origin 一致、**只 add 目标路径**），**不顺手 push**，并在汇报末尾显式问一句"要推送吗？"。
+推送是**共享状态、他人可见**的动作，授权范围按用户实际说的那句话算；推完仍走本文那条铁律
+（`git ls-remote origin refs/heads/main` 独立复核）。
+
+**本轮实际值供对照**（2026-09-28）：提交 `9847f59`（23 files changed / 9083 insertions / 45 deletions，
+`fix(verify):` 前缀，未推送）；提交前 `origin/main == dc63317`（= 提交后的 `HEAD~1`）、
+`git rev-list --left-right --count origin/main...HEAD` = `0	0` ⇒ 无分叉、可 fast-forward。
+
+**提交时可参照的两条既有约定**：提交信息用直写工具写成文件再 `git commit -F <file>`
+（避免中文经 shell 转码）；`verification_report/` 是**惯例跟踪**目录（截至 2026-09-28 已有 42 个
+此类文件入库），所以本轮新产生的判据/门禁报告随代码一并提交属正常，不是"该忽略的产物"。
 
 ## Windows 开发机的推送路径（2026-09-24 建立）
 

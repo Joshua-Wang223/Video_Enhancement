@@ -5,7 +5,8 @@ type: project
 ---
 
 2026-09-28 在 Tesla T4 上跑完 VE 质量控制参数方案的「T4 可做部分」。
-权威记录在 `Plan/Video_Enhancement_质量控制参数修复方案.md` 的 **§6**（实测收口）与 **§7**（需 L40 的 AV1 清单）。
+权威记录在 `Plan/Video_Enhancement_质量控制参数修复方案.md` 的 **§6**（实测收口）与
+**§7**（AV1/VP9 的 AC0~AC7 测试内容，含一条命令入口）。
 
 **实测结果**
 
@@ -28,7 +29,7 @@ type: project
 - G7 编码阶段异常改为**逐项 FAIL**，不再让整组"执行中断"（原先一个 `Unknown encoder` 会把 G7-1..G7-8 全吞成 1 个组级 FAIL）。
 - 软件侧编码器：`libsvtav1` 在本机 ffmpeg 不存在 ⇒ 回退 `libvpx-vp9`（详见 [[nvenc-preset-and-encoder-availability]]）。
 
-**需 L40（或任意 Ada 卡）才能继续检测的 AV1 内容**（方案 §7 的 **AC1~AC6**）
+**需 L40/Ada（或目标机构建）才能继续检测的 AV1/VP9 内容**（方案 §7 的 **AC0~AC7**）
 
 核心是 **AC1：`src/utils/quality_map.py` 的 `_QP_MAP_OVERRIDE['av1_nvenc'] = (4.0, 0.0, 0, 255)`
 （标有 `[待 L40 复核]`）的 ×4 倍率定案** —— 扫 `-qp {21, 84, 105}`，若 84 落在
@@ -37,6 +38,25 @@ type: project
 `av1_qsv`/`av1_amf` 量程）见方案 §7 表。
 ⚠ 例外：**AC3（`G6-7` 命令形状捕获）不需要 AV1 硬件，T4 上实测已 PASS**——它只证明
 "函数把 27 换成了 84"，**期望值 84 是否正确仍由 AC1 决定**（原写"G6-7 需 Ada"不实，已纠正）。
+
+**AC7（2026-09-28 新增）· AV1/VP9 软件族复验** —— 三个 AV1 软编
+（`libsvtav1` / `libaom-av1` / `librav1e`）在**本机 ffmpeg 构建里根本不存在**，
+与算力无关 ⇒ **Ada 卡也不解决**，取决于目标机构建；其中 `libsvtav1` 的换算表是
+2026-09-28 刚重标定的（E6），**至今没有端到端验证**。VP9（`libvpx-vp9`，无硬件编码需求，
+NVENC 不提供 VP9）T4 已跑，见下。
+
+**一条命令入口（A8）**：`Accessory/probe/av1_vp9_quality_matrix.py`（2026-09-28 新增）
+覆盖家族全部 7 个编码器，构建 + 实跑双探测，并在 `av1_nvenc` 可用时自动跑 AC1 三点扫描与判读：
+
+```bash
+python3 Accessory/probe/av1_vp9_quality_matrix.py \
+    --src /workspace/input_videos/word_world_2.mp4 \
+    --report verification_report/av1_vp9_matrix_<机名>.md < /dev/null
+```
+
+T4 实测：`libvpx-vp9` → `-crf 28` / 码率比 **0.95×**（朴素 1.30×）/ ΔPSNR **−1.67 dB**（WARN），
+与判据脚本 §6.2 的 `G7-7` **逐位一致**（两条独立实现互证）；其余 6 个按预期 SKIP。
+L40 才走到的分支（B 组渲染 + AC1 三分支判读）已用构造数据验过；门禁仍 96/94/0/2。
 
 **Why:** 用户明确要求把"需 L40 环境继续检测的内容"在方案里写清楚，避免把 T4 已过的结论误当成 AV1 也已定案；随后进一步要求把 §7 写成**可直接执行的测试内容**（命令 + 判据 + 关闭动作）。
 **How to apply:** 任何涉及 `av1_nvenc` 的 constqp / `-qp` 结论一律按"**未定案**"对待；
@@ -72,4 +92,8 @@ AC1 的手工复现脚本必须与判据脚本 `Ctx._metric` **完全同口径**
   CPU 解码/缩放；本机 `hevc_nvenc` 可用，dry-run 实发 `-c:v hevc_nvenc -rc constqp -qp 18`。
   **属 VidUtils 仓内断言问题、非 VE 回归**，按"仅 VE 单侧"范围约定交其 V 系列会话处理；
   ⑨ 组跨项目真源一致仍 13/13。
-- 本次改动（判据脚本、chroma 测试、方案 md、memory）**尚未提交**。
+- 本次改动（判据脚本、chroma 测试、方案 md、memory + 14 个 `verification_report/*`）**已于 2026-09-28
+  提交为 `9847f59`**（`fix(verify):` 前缀，23 files changed / 9083 insertions / 45 deletions），
+  **未推送**。提交前 `origin/main == dc63317`（= 提交后的 `HEAD~1`）、`origin/main...HEAD` = `0	0`
+  ⇒ 无分叉、可 fast-forward。提交时的两条坑（自查命令 `|| echo` 假通过、"提交"≠"推送"）见
+  [[github-push-workflow-and-secrets]]。
