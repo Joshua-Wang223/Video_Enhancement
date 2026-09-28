@@ -1,6 +1,6 @@
 ---
 name: 开发与运行环境
-description: 开发环境 Windows，运行环境 Linux；含 2026-09-23 全仓 LF 策略、git 同步与并行会话覆盖警告
+description: 开发环境 Windows，运行环境 Linux；含 2026-09-23 全仓 LF 策略、git 同步与并行会话覆盖警告，以及 2026-09-28 容器依赖缺口划出的「本机可验证边界」
 type: project
 originSessionId: 549bd23c-b680-4b5e-b833-3852c89608f0
 ---
@@ -53,4 +53,29 @@ originSessionId: 549bd23c-b680-4b5e-b833-3852c89608f0
 - Windows 侧若看到"整仓被修改"，先 `git add --renormalize .` 再看 `git status`，不要盲目提交或回滚。
 - ⚠️ 陷阱：`git checkout-index -a -f` **不重写已存在文件**的行尾（实测无效）。要把工作区旧 CRLF 文件重写为 LF，用 `rm <file> && git checkout -- <file>`。
 - git 会把含**孤立 CR**（非 CRLF）的文件判为 `-text` 二进制并拒绝归一化（实例 5 个：`Plan/session-ses_fb90.md`、`fb9a`、`fbdc`、`fcd1`、`Accessory/docs/diag_output_fixed.log`），属预期保护行为。
+
+## 容器依赖缺口：本机只能验证纯 stdlib 模块（2026-09-28 实测）
+
+WSL 开发容器（`/mnt/d/...`）**既没有 GPU，也没有任何项目运行期依赖**：
+
+- `python3` = 3.14.4；`python3.11` 同样缺依赖；`numpy / cv2 / torch / pytest` 全部 `ModuleNotFoundError`；
+- `nvidia-smi` 不存在、无 `/dev/nvidia*`（GPU 判据见 `project_gpu_container_flaky.md`）；
+- `ffmpeg 8.0.1` **可用**，可 `ffmpeg -h encoder=<name>` 取选项量程（是本地最强的取证手段）。
+
+由此划出本机可验证边界（实测）：
+
+| 可在本机跑 | 不可在本机跑（环境限制，不是回归） |
+|---|---|
+| `import quality_map` / `import convert_crf`（纯 stdlib） | 任何 `import video_utils`（需 cv2） |
+| `py_compile`、AST / 文本静态断言 | 任何 `import main_video_optimized`（需 cv2 + torch） |
+| `ffmpeg -h encoder=<name>` 选项探测 | pytest 全套、判据的 `--gpu` 画质/码率组 |
+
+具体到判据脚本：`Accessory/verify/crf_cq_unification_verify.py --quick` 的 G1/G2/G3/G5 可跑；
+**G4/G6/G9/G10 在本机必然 FAIL**（`ModuleNotFoundError: No module named 'cv2'`）。
+同理 `plan_implementation_gate.py` 会给出 R5/R7/R8 与 BEH-* 的 WARN/SKIP（torch/cv2/numpy/libcuda 缺失）——
+**判 FAIL=0 即无回归**，不要被 WARN/SKIP 数量吓到，也不要把环境缺失当成代码问题。
+
+**How to apply:** 在本容器改代码时，门禁只用 `py_compile` + AST + `ffmpeg -h encoder=` + 纯 stdlib 单测；
+"运行时正确性"（判据全量、pytest、GPU 画质组）单独列清单交生产侧。调用这类脚本时加 `< /dev/null`
+（SIGTTOU 整组停住的坑见 `env-ffmpeg-ffprobe-gotchas.md`）。
 
