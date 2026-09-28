@@ -1,6 +1,6 @@
 ---
 name: GitHub 推送流程（SSH-over-443）与「密钥红线」
-description: force_push_github.sh 的正确调用方式、治理文件(.gitignore/.gitattributes/tar_excludes.txt)以 origin 为准的 [FIX-IGNORE-CANONICAL] 约定、快照已改用 make_snapshot.sh(git archive) 及 tar_excludes.txt 的废弃原因与 `./` 锚定历史、推送后一律复核 ls-remote 的铁律与「怎么读推送日志」（0 报错≠推送成功、dry-run 行与真实行同格式）、models.del 类改名残留绕过 .gitignore 与哨兵的缺口、以及 config/cc-switch-*.md 含真实 API Key 已被 .gitignore 排除（GitHub 只认 OpenRouter，DeepSeek 无检测器）
+description: force_push_github.sh 的正确调用方式、治理文件(.gitignore/.gitattributes/tar_excludes.txt)以 origin 为准的 [FIX-IGNORE-CANONICAL] 约定、快照已改用 make_snapshot.sh(git archive) 及 tar_excludes.txt 的废弃原因与 `./` 锚定历史、推送后一律复核 ls-remote 的铁律与「怎么读推送日志」（0 报错≠推送成功、dry-run 行与真实行同格式）、models.del 类改名残留绕过 .gitignore 与哨兵的缺口、以及 config/cc-switch-*.md 含真实 API Key 已被 .gitignore 排除（GitHub 只认 OpenRouter，DeepSeek 无检测器）；并含 2026-09-23 实测的「日常同步（非全量覆盖）」清单，以及「普通 git push 成功输出只有 1 行 `-> main`、勿套用 force_push 脚本日志判据」的判读
 type: project
 ---
 
@@ -17,6 +17,34 @@ PUSH=0 bash force_push_github.sh    # 只准备提交、不推送
 - 远程 `Joshua-Wang223/Video_Enhancement`，分支 `main`。脚本 `commit-tree -p origin/main` + `--force-with-lease`，正常情况是**在远程基线之上新增一个提交**（历史保留），不是孤儿覆盖；每轮自动打本地备份 tag `backup/pre-force-push-*`。
 - 本容器 `~/.ssh/config` 把 `github.com` 指向 **`ssh.github.com:443`**（22 端口被限），密钥 `~/.ssh/id_ed25519`；2026-09-23 实测 `ssh -T git@github.com` → `Hi Joshua-Wang223!`。容器内**没有** gh 登录 / credential helper / HTTPS 令牌文件 —— 别走 HTTPS 路径。
 - **Why**：容器重建后这些凭据与 `.git` 都不持久，脚本是唯一被设计来兜住这一点的入口。
+
+## 日常同步（非全量覆盖）清单 —— 2026-09-23「检查 remote repo 并更新」实测通过
+
+用户说「检查 remote repo 并更新」而本地只有 memory/文档这类增量、且与远程**无分叉**时，走普通 `commit` + `push` 即可，**不要**动 `force_push_github.sh`（那是「用本机完整工作区覆盖远程」的全量路径）：
+
+```bash
+cd /workspace/Video_Enhancement
+git status --short --branch                 # 本地脏文件 + 是否已分叉
+git fetch origin > /tmp/f.log 2>&1          # 裸 fetch，别接 | tail/head（SIGPIPE 家族，见下节）
+git ls-remote origin refs/heads/main        # 远程指针
+git rev-parse HEAD                          # 与上面对比：相等 ⇒ 无分叉
+git rev-list --left-right --count origin/main...HEAD   # 期望 `0	0`
+for f in .gitignore .gitattributes tar_excludes.txt; do
+  git diff --stat origin/main -- "$f"       # 空=与 origin 一致；有差异按 [FIX-IGNORE-CANONICAL] 先处理
+done
+git add memory/<具体文件>                    # 只 add 目标路径；别用 `git add -A`（会把未跟踪的会话转储一并带上）
+git commit -F /tmp/msg.txt                  # 沿用 conventional 前缀，如 docs(memory):
+git push origin main
+git ls-remote origin refs/heads/main        # 收尾铁律复核（与本地 rev-parse 逐字比对）
+```
+
+**⚠️ 别拿脚本日志的成功判据去判普通 `git push`。** 本文「怎么读推送日志」那三条签名（有 `=== 6. 预演 + 推送 ===`、**2 行** `-> main`、0 行 `rejected`）只适用于 `force_push_github.sh` —— 它先 dry-run 再真推，所以有两行。普通 `git push` 的成功输出**只有 1 行** `-> main`，形如：
+
+```
+   3f120c1..c8e0833  main -> main
+```
+
+既没有第 6 节小节、也没有第二行。2026-09-23 实测走完整条清单（远程与本地同为 `3f120c1`、治理文件 diff 为空、推完 `ls-remote` 与 `rev-parse HEAD` 同值、`origin/main...HEAD` 为 `0	0`）—— 看到"只有一行"就以为"没推出去"是**误判**。判据始终是 `git ls-remote`，不是日志行数或节标题。
 
 ## 铁律：任何推送之后一律独立复核远程 ref
 
