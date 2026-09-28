@@ -1,7 +1,9 @@
 # Video_Enhancement 质量控制参数（crf / cq / qp / preset）修复方案
 
 - 适用位置：`src/utils/quality_map.py`、`src/utils/video_utils.py`、
-  `src/main_video_optimized.py`、`src/utils/convert_crf.py`（及共享换算表的两处副本）
+  `src/main_video_optimized.py`、`src/utils/convert_crf.py`（及共享换算表的两处副本）；
+  判据/测试侧另含 `Accessory/verify/crf_cq_unification_verify.py`、
+  `Accessory/test/test_chroma_false_positive.py`
 - 共享真源：`src/utils/convert_crf.py` 的 `QUALITY_MAP`，与 `VidUtils/convert_crf.py`
   **必须逐条相等**（VidUtils 的判据 ⑨ 组会断言）
 - 姊妹文档：`VidUtils/Plan/VidUtils_质量控制参数修复方案.md`
@@ -13,28 +15,32 @@
 ## 0. 状态总览
 
 > 2026-09-28 更新。**本轮范围：仅 VE 单侧**（VidUtils 由另一会话按其 V 系列方案处理）。
-> 落地实现与文档原设想的差异见 **§5.1**；上机（T4/L40）验证方案见 **§5.2**。
+> 落地实现与文档原设想的差异见 **§5.1**；上机（T4/L40）验证方案见 **§5.2**；
+> **本轮 T4 实测收口见 §6**；**需 L40/Ada 才能检测验证的 AV1 测试内容（AC1~AC6）见 §7**。
 
 | 编号 | 内容 | 优先级 | 状态 | 依据强度 |
 |---|---|---|---|---|
 | E0 | `QUALITY_MAP['av1_nvenc']` 的 hi 51 → 63（与 VidUtils 同步） | P0 | **已落地** | 实测（`ffmpeg -h encoder=av1_nvenc` → `-cq (0 to 63)`） |
-| E1 | `to_constqp_qp()` 增加 **QP 尺度层**（AV1 族 ×4） | P0 | **已落地**；AV1 倍率标 `[待 L40 复核]` | 实测量程 + 推断倍率（需 L40 定案，见 §5.2 Gate 2） |
+| E1 | `to_constqp_qp()` 增加 **QP 尺度层**（AV1 族 ×4） | P0 | **已落地**；AV1 倍率标 `[待 L40 复核]` | 实测量程 + 推断倍率（需 L40 定案 → **§7 AC1**，含可直接执行的测试内容） |
 | E2 | `libsvtav1` / `libaom-av1` 不再收到非法 `-preset` | P0 | **已落地**（改为白名单，整数映射未做，见 §5.1） | 实测（libsvtav1 `-preset` 为 int `-2..13`，传 `medium` 直接解析失败） |
 | E3 | VAAPI → `-qp`（归一到基准轴） | P0 | **已落地** | 实测（h264_vaapi 只有 `-qp (0 to 52)`）；**前提已纠正**，见 §5.1 |
 | E4 | `_preset_supported()` 改白名单 | P0 | **已落地**（QSV/AMF/VT 保守排除，未上机） | 实测（ffmpeg 8.0.1：QSV 是 int `0..7`，本机无 AMF/VT） |
-| E5 | `_PRESET_P_INDEX` 对齐 ffmpeg 官方枚举 | P1 | **VE 侧已落地**；与 VidUtils 的最终对齐待其 V10 | 实测官方枚举（p4=medium / p5=slow / p6=slower / p7=slowest） |
+| E5 | `_PRESET_P_INDEX` 对齐 ffmpeg 官方枚举 | P1 | **VE 侧已落地**；与 VidUtils 的最终对齐待其 V10 | **实测修正**：只确认了 `medium ≡ p4`（逐字节相同）；`p5=slow / p6=slower / p7=slowest` 是 **NVIDIA p-梯命名**，不是 ffmpeg 命名 preset 的等价关系，见 §6.4 |
 | E6 | `libsvtav1` / `libvpx-vp9` / `libx265` 等体积重标定 | P1 | **已落地**（由**并行会话**完成，非本轮） | 真实素材等体积标定（`input_videos/new5_raw.mp4`） |
 | E7 | `--rate-mode` 取值表 | P1 | **已落地**（选"保持 3 档 + 明确写明"路线） | 取值表对比 |
 | E8 | `--lookahead-depth` 放开量程 | P1 | **已落地**（`0~32`，**不是**文档原写的 `0~250`） | 见 §5.1：NVENC 硬件上限 32，配置层校验本已如此 |
-| E9 | `CONSTQP_QP_OFFSET` 真实素材校准 + G7 扩 `av1_nvenc`/`libsvtav1` | P2 | 待办（需 GPU） | — |
-| E10 | G7 增加"合成 vs 真实素材"双跑 | P2 | 待办（需 GPU） | — |
+| E9 | `CONSTQP_QP_OFFSET` 真实素材校准 + G7 扩 `av1_nvenc`/`libsvtav1` | P2 | **判据侧已落地（2026-09-28）**：G7-7 软件侧覆盖已生效（本机以 `libvpx-vp9` 代理缺失的 `libsvtav1`）；G7-6 av1_nvenc 本机 SKIP；`CONSTQP_QP_OFFSET` 保持 0（实测已达标，无需调） | 见 §6.3：G7-7 实测 ΔPSNR −1.67 dB / 0.95×（PASS 带内）；`CONSTQP_QP_OFFSET=0` 下 G7-3 ΔPSNR +0.06 dB / 1.46× |
+| E10 | G7 增加"合成 vs 真实素材"双跑 | P2 | **已落地（2026-09-28）**：新增 `G7-8` | 见 §6.3：合成 ΔPSNR **+5.33 dB** / 1.53× vs 真实 **+0.06 dB** / 1.46× ⇒ 过配注解成立 |
 
 **本轮额外落地（不在 E0~E10 内）：**
 
 | 编号 | 内容 | 状态 |
 |---|---|---|
 | P0′ | `Accessory/verify/crf_cq_unification_verify.py` 的 `PROJECT_ROOT` 失效修复（`tests/`→`Accessory/` 搬迁遗留，曾造成 19 个假 FAIL）+ 子进程 stdin 加固 | **已落地** |
-| A5 | 判据新增 G1-8 / G2-13 / G3-7 / G3-8 / G5-12 + G6-7（AV1 constqp，需 Ada） | **已落地** |
+| A5 | 判据新增 G1-8 / G2-13 / G3-7 / G3-8 / G5-12 + G6-7（AV1 constqp） | **已落地**；⚠ **2026-09-28 纠正**：`G6-7` 走 `Popen` 替身捕获命令形状、**不需要 AV1 硬件**，T4 上实测已 PASS（原写"需 Ada"不实）；其**期望值**的正确性才依赖 §7 AC1 |
+| E9′ | 判据新增 `G7-6`（AV1 硬编）/ `G7-7`（软件侧）/ `G7-8`（E10 双跑）；可选覆盖项改为**按构建可用性探测**（`ffmpeg -encoders`）+ 实跑探测 AV1 硬件能力 | **已落地（2026-09-28）** |
+| A6 | 判据健壮性：G7 编码阶段异常不再让整组"执行中断"（原会丢掉 G7-1..G7-8 全部逐项结论，只留 1 个组级 FAIL），改为逐项 FAIL | **已落地（2026-09-28）** |
+| A7 | `Accessory/test/test_chroma_false_positive.py` 的 `_load_chroma_check()` 导入修复（搬迁后仍用旧模块名 `verify_segment_bitstream_v5` 且未加 `Accessory/verify` 到 `sys.path` ⇒ 2 个用例 ModuleNotFoundError） | **已落地（2026-09-28）** |
 
 
 ---
@@ -210,6 +216,11 @@ _QP_SCALE = {'av1_nvenc': 4, 'librav1e': 4}   # 其余（含 h264/hevc_nvenc、v
 | E8 | `0~250` | `0~32` | NVENC 前向预看**硬件上限是 32**；配置层校验本已要求 `0<=la<=32`，故实际是"放开 CLI choices 到配置层允许的范围" |
 | E6 | 本方案待办 | 由**并行会话**在 2026-09-28 11:34 落地（`libx265 0.9155/1.6385`、`libvpx-vp9 1.6198/−5.7553`、`libsvtav1 1.9450/−15.62`） | 非本轮范围；已据此同步 `REF21_EXPECTED`（libx265→21、libsvtav1→25、libvpx-vp9→28） |
 
+> **2026-09-28 实测补记**：E5 的"按 ffmpeg 官方枚举"措辞不准（`medium≡p4` 成立，但
+> `slow` 并不等于 `p5`）；E9/E10 已于本轮在 T4 落地并实测，完整数据见 **§6**；
+> 需 Ada 才能定案的 AV1 测试内容（AC1~AC6，含可直接执行的命令与判据）见 **§7**。
+> ⑨ 组 `[9-preset]` 现已报「一致」。
+
 ### 5.2 GPU 上机验证方案（T4 / L40）
 
 #### 步骤 0 · 环境体检（**必须最先做**）
@@ -340,6 +351,9 @@ python3 Accessory/verify/segment_bitstream_verify_v5.py /tmp/seg_hevc_la8.mp4 < 
 > **结论**：**T4 能完成除"AV1 QP 倍率定案"之外的全部验证**；E1 的"待 L40 复核"标记
 > 必须等 L40（或任何 Ada 卡）跑完 Gate 2 的 C 组才能摘掉。若短期拿不到 Ada，
 > 建议保持标记并把 AV1 的 constqp 路径视为"未定案"，不要在生产 AV1 任务上依赖它。
+>
+> ✅ **本结论已于 2026-09-28 在 T4 实测验证**（Gate 0/1/3/4 全过，AV1 项 SKIP），
+> 实测数据见 **§6**；需 Ada 的逐项**测试内容（命令 + 判据 + 落地动作）见 §7 的 AC1~AC6**。
 
 #### 若生产机上没有 VidUtils 仓库
 
@@ -359,4 +373,276 @@ Gate 2 的脚本位于 VidUtils 仓。两种处理：
 | Gate 3 p4 语义不符预期 | 回滚两份 `_PRESET_P_INDEX`（`medium` 回到 p5） |
 | Gate 1 G7-3 constqp 码率比出带 | 调 `CONSTQP_QP_OFFSET`（可调口，当前 0）后复跑 |
 | Gate 0 门禁出现 FAIL | 先与记忆基线（95/93/0/2 或本机 84/0FAIL）差分，确认不是本轮 6 个文件的回归 |
+
+---
+
+## 6. 本轮 T4 实测收口（2026-09-28）
+
+> 环境：Tesla T4（Turing，**无 AV1 NVENC**）、torch 2.10.0+cu128、CUDA 可用；
+> 真实素材 `input_videos/word_world_2.mp4`（720x576 25fps）、
+> 码率素材 `input_videos/new4_raw.mp4`（1080p30）。
+> ⚠ 原 Gate 1 命令里的 `--bitrate-source .../new5_raw.mp4` **已不存在于本机**，
+> 本轮以 `new4_raw.mp4` 替代（同为真实高熵 1080p；G8 结论不受影响）。
+
+### 6.1 Gate 0 · 静态/门禁/真源一致
+
+| 判据 | 命令 | 结果 |
+|---|---|---|
+| 本仓判据（静态） | `crf_cq_unification_verify.py --quick` | **PASS 91 / FAIL 0 / WARN 0 / SKIP 11** |
+| 门禁全套 | `plan_implementation_gate.py` | **96 项 / 94 通过 / 0 失败 / 0 警告 / 2 跳过**（记忆基线 95/93/0/2） |
+| pytest | `pytest Accessory/test -q` | **24 passed / 0 failed**（修 A7 前为 2 failed） |
+| 跨项目真源一致 | `VidUtils/verify/verify_quality_mapping.py` | ⑨ 组 **13/13 一致**（含 `[9-preset]` 现已「一致」）；脚本整体 `exit=1`，见 §6.5 |
+
+### 6.2 Gate 1 · G7/G8 实测（`--gpu` + 真实素材）
+
+`PASS=99 / FAIL=0 / WARN=3 / SKIP=1`，报告见
+`verification_report/crfcq_gpu_T4_2026-09-28_0616.md`。
+
+| ID | 项 | 结论 | 关键数据 |
+|---|---|:--:|---|
+| G7-1 | h264_nvenc → `-cq:v 26` | ⚠️ WARN | ΔPSNR −1.93 dB / 1.07×（朴素 1.76×） |
+| G7-2 | hevc_nvenc → `-cq:v 28` | ⚠️ WARN | ΔPSNR −2.69 dB / 0.85×（朴素 1.70×） |
+| **G7-3** | **constqp `-qp 21` 对齐 libx264 crf21** | ✅ **PASS** | **ΔPSNR +0.06 dB / 1.46×（朴素 1.76×）** |
+| G7-4 | 换算后码率 ≤2.5× | ✅ PASS | h264 1.067× / hevc 0.845× / vp9 0.945× |
+| G7-5 | VMAF 对齐 | ✅ PASS | 最大偏差 2.00（软编基准 96.04） |
+| **G7-6** | av1_nvenc | ⏭️ SKIP | `av1_nvenc 实跑失败：No capable devices found`（无 AV1 NVENC）→ 关闭方式见 **§7 AC2** |
+| **G7-7** | **软件侧（libvpx-vp9）→ `-crf 28`** | ⚠️ WARN | ΔPSNR −1.67 dB / 0.95×（朴素 1.30×） |
+| **G7-8** | **合成 vs 真实双跑（constqp 轴）** | ✅ **PASS** | 合成 ΔPSNR **+5.33 dB** / 1.53× vs 真实 **+0.06 dB** / 1.46× |
+| G8 | avgBitRate 天花板 | ✅ 8/8 | — |
+
+判读：
+
+* **G7-3 PASS 且 ΔPSNR 仅 +0.06 dB ⇒ `CONSTQP_QP_OFFSET` 保持 0 即为最优，无需校准**（E9 的"校准"部分据此结案）。
+* G7-1/G7-2 的 WARN 与 2026-09-11 基线逐位相同（−1.93/−2.69），是**既有**的内容相关偏松，非本轮回归；G7-7 复现同一形态（−1.67），属同一已知边界（严格判据保留 + 标注）。
+* **G7-8 首次把"合成素材偏过配"从注释升级为实测**：合成 ΔPSNR 高出真实 5.27 dB、码率比高 0.07× ⇒ 方案 §4/G7-3 的原注解成立。
+
+### 6.3 E9 落地细节（与原设想的偏差）
+
+| 项 | 原设想 | 实际 | 原因 |
+|---|---|---|---|
+| 软件侧编码器 | `libsvtav1` | **`libsvtav1` → `libvpx-vp9` 回退** | **本机 ffmpeg 构建根本不含 `libsvtav1`**（也无 `libaom-av1` / `librav1e`），只有 `libvpx-vp9`。直接纳入会让整组因 `Unknown encoder` 中断 |
+| 可选覆盖的判定 | 直接纳入 | **先探可用性**（`ffmpeg -encoders`）再决定跑/SKIP | 同上；AV1 另加**实跑一帧**探测硬件能力（`-h encoder=av1_nvenc` 在 Turing 上照样打印选项表，不可作依据） |
+| libvpx-vp9 参数 | — | 显式 `-b:v 0 -cpu-used 4 -row-mt 1` | `-crf` 不配 `-b:v 0` 会退化为 constrained quality；默认 `-cpu-used 0` 在长素材上会超时 |
+| G7 组异常语义 | — | 编码阶段异常改为**逐项 FAIL**，不再整组"执行中断" | 一个 `Unknown encoder` 曾把 G7-1..G7-8 全吞成 1 个组级 FAIL，丢掉全部逐项结论（该次失败产物留档：`verification_report/crfcq_gpu_T4_2026-09-28_0612.md`，`QUALITY 共 1 项 / FAIL 1`） |
+
+### 6.4 Gate 3 · E5 preset 实测（结论有修正）
+
+真实 1080p 素材上按 md5 去重后的全量 preset 扫描（`h264_nvenc -rc:v vbr_hq -cq:v 26 -b:v 0`）：
+
+| ffmpeg `-preset` 名 | 等价 pN | 体积 |
+|---|---|---|
+| `default` / `medium` | **`p4`（逐字节相同）** | 20,336,278 |
+| `fast` / `hp` | `p1` | 20,405,873 |
+| `slow` | **不落在 p1~p7 梯上**（遗留 "hq 2 passes"） | 20,360,228 |
+| `bd` | `p5` | 20,242,485 |
+| `hq` | `p7` | 20,110,133 |
+| — | `p2` / `p3` / `p6` 各有独立输出 | 20,387,297 / 20,355,501 / 20,065,785 |
+
+* ✅ **E5 的锚点成立**：`medium ≡ p4` 逐字节相同 ⇒ 表里 `medium: 3 → p4` 正确。
+* ⚠ **方案 §0/§5.1 里「实测官方枚举（p4=medium / p5=slow / p6=slower / p7=slowest）」措辞不准**：
+  那是 **NVIDIA p-梯的命名**，不是 ffmpeg **命名 preset** 的等价关系。
+  ffmpeg 的 `slow` 是遗留档、`bd≡p5`、`hq≡p7`、`fast≡p1`。VE 表映射 x264 名 → pN 仍然正确，
+  但"按 ffmpeg 官方枚举对齐"这句话应改为"按 NVIDIA p-梯命名对齐，并以 `medium≡p4` 实测锚定"。
+* 运行时语义变更（`medium` 由 p5 → p4）**可感知影响很小**：p4 中位 4.81s / p5 4.86s（差在噪声内），
+  同 `-cq` 下 p4 体积 +0.46% ⇒ **无需回滚 E5**。
+
+### 6.5 Gate 4 · hevc + LA=8 帧守恒回归
+
+```
+python3 run.py -i /tmp/seg_src_5s.mp4 -o /tmp/seg_hevc_la8.mp4 \
+    --mode interpolate_then_upscale \
+    --codec-ifrnet hevc_nvenc --codec-esrgan hevc_nvenc \
+    --rate-mode-ifrnet vbr_hq --lookahead-depth-ifrnet 8
+python3 Accessory/verify/segment_bitstream_verify_v5.py /tmp/seg_hevc_la8.mp4
+```
+
+* 管线 `exit=0`，1 个分段，耗时 92.9s，GPU 峰值 3.51 GB。
+* **验收 ✅ 通过**：`frames=253 == packets=253`、段首 32 NAL 内无第二个 IDR、
+  `frame_num` 回退=0、无 `pts_anomaly`、色度坏帧簇=0。
+* 帧数核对：源 segment 的容器元数据 `nb_frames=177` 与 `duration×fps=127` 不一致
+  （`-c copy` 分段常见），管线取 **127** → 2× 插帧 = **253 = 2n−1**，**精确守恒**。
+* ⚠ 方案 §4 写的"单 IDR"措辞不精确：实际验收口径是"段首无连 IDR + `frame_num` 单调"，
+  本产物 IDR=5（周期性 IDR，正常）。
+
+### 6.6 范围外发现（未改 VidUtils）
+
+`VidUtils/verify/verify_quality_mapping.py` ① 组 `[1] 端到端命令：
+--codec hevc_nvenc --rc-mode constqp --qp 18 → -crf 18` 报 `得到 False`，导致脚本 `exit=1`。
+**根因已定位且属 VidUtils 仓内**：该判据用 `--decode cpu --scale-algo libswscale-lanczos`
+（`cpu_only=True`）后仍期望**编码器**降级到软编并下发 `-crf 18`，但这两个开关只强制
+CPU 解码/缩放；本机 `hevc_nvenc` 可用，故 dry-run 实发的是 `-c:v hevc_nvenc -rc constqp -qp 18`。
+⇒ 判据的环境假设不成立（不是 VE 侧回归，也不影响 ⑨ 组 13/13 的跨项目一致性结论）。
+按本轮"仅 VE 单侧"的范围约定**未改动 VidUtils**，移交其 V 系列会话处理。
+
+---
+
+## 7. 需 L40（或任意 Ada 卡）才能检测验证的 AV1 测试内容 —— AC1~AC6
+
+> **编号约定：AC = Ada Case**（必须 Ada 架构 NVENC 才能执行的上机用例），与 §0 的
+> `[待 L40 复核]` 标记、§6 的 T4 实测收口配套。**AC1 是核心项**（E1 的 ×4 倍率定案）。
+> 本机为 Tesla T4（Turing），实跑已确认 `av1_nvenc` 报 `No capable devices found`
+> ⇒ AC1/AC2/AC4/AC6 在 T4 上只能 SKIP（AC3 例外，见下；AC5 另需 QSV/AMF 硬件）。
+
+### AC0 · 前置检查（每台机先做一次；不通过则 AC1/AC2/AC4/AC6 全部记 SKIP）
+
+```bash
+cd /workspace/Video_Enhancement
+nvidia-smi -L                                     # 需 L40 / A10 / RTX 40 等 Ada 及以上
+python3 -c "import torch;print(torch.cuda.get_device_name(0),torch.version.cuda)"
+ffmpeg -hide_banner -encoders | grep av1_nvenc    # ①构建里有没有该编码器名
+
+# ②硬件能力：唯一可靠判据是**实跑一帧**（`-h encoder=av1_nvenc` 在 Turing 上照样打印选项表）
+ffmpeg -hide_banner -f lavfi -i testsrc2=size=320x240:rate=30:duration=1 \
+       -c:v av1_nvenc -f null - < /dev/null ; echo "rc=$?"
+```
+
+* `rc=0` ⇒ 可执行 AC1/AC2/AC4/AC6；
+* `rc≠0`（`No capable devices found`）⇒ 维持 SKIP，**保持 `[待 L40 复核]`，不要改动任何期望值**。
+
+### AC1 · AV1 CONSTQP 的 QP 尺度（×4）定案 —— 核心
+
+**被测断言**：`-qp` 是 AV1 的 **qindex（0~255）**，与 `-cq:v`（0~63）不是同一刻度；
+现状模型 `QP = 4.0 × 基准轴`（基准轴 21 → QP 84）。
+
+**待改锚点（先记下，AC1 定案后按实测改这些位置）**
+
+| 位置 | 现状 |
+|---|---|
+| `src/utils/quality_map.py:194` | `'av1_nvenc':  (4.0, 0.0, 0, 255),   # [待 L40 复核]` |
+| `Accessory/verify/crf_cq_unification_verify.py:983` | `Status.PASS if q_av1 == 84 else Status.FAIL`（G3-7 期望钉在 84） |
+| `Accessory/verify/crf_cq_unification_verify.py:1473` | `("G6-7", "IFRNet", "ifrnet_video", "av1_nvenc", 27, "constqp", 0, [("-rc:v","constqp"), ("-qp","84")], ...)` |
+
+**素材**：建议与 G7 同源，便于和 h264/hevc 的结论横向比较（§6.2 用的是
+`/workspace/input_videos/word_world_2.mp4`）。PSNR 一律**对源**度量。
+
+```bash
+SRC=/workspace/input_videos/word_world_2.mp4
+W=/tmp/ac1; mkdir -p $W
+
+# ① 软编基准（与 G7 同参）
+ffmpeg -hide_banner -y -v error -i "$SRC" -c:v libx264 -preset medium -crf 21 \
+       -pix_fmt yuv420p $W/soft.mp4 < /dev/null
+
+# ② 三点扫描：21=旧实现的错误值 / 84=拟定案值 / 105=×5 方向对照
+for q in 21 84 105; do
+  ffmpeg -hide_banner -y -v error -i "$SRC" -c:v av1_nvenc -preset p4 \
+         -rc:v constqp -qp $q -bf 0 -pix_fmt yuv420p $W/qp$q.mp4 < /dev/null
+  echo "encode qp$q rc=$?"
+done
+
+# ③ 码率比 + ΔPSNR
+# ⚠ 必须严格镜像判据脚本 Ctx._metric 的口径：-v info + **显式 [0:v][1:v] 标签**。
+#   裸 `-lavfi psnr` 会走出不同结果（实测 43.40 vs 正确值 46.58），不可用。
+N=$(ffprobe -v error -select_streams v:0 -show_entries stream=nb_frames -of csv=p=0 "$SRC")
+psnr_of() {
+  ffmpeg -hide_banner -v info -i "$1" -i "$SRC" -frames:v "$N" \
+         -lavfi "[0:v][1:v]psnr" -f null - 2>&1 \
+    | grep -oP 'average:\s*\K[0-9.]+' | tail -1
+}
+bitrate_of() {
+  ffprobe -v error -select_streams v:0 -show_entries format=bit_rate -of csv=p=0 "$1"
+}
+SBR=$(bitrate_of $W/soft.mp4); SPS=$(psnr_of $W/soft.mp4)
+printf "soft   bitrate=%s psnr=%s\n" "$SBR" "$SPS"
+for q in 21 84 105; do
+  BR=$(bitrate_of $W/qp$q.mp4); PS=$(psnr_of $W/qp$q.mp4)
+  awk -v q=$q -v br=$BR -v ps=$PS -v sbr=$SBR -v sps=$SPS \
+    'BEGIN{printf "qp%-4s ratio=%.2fx  dPSNR=%+.2f dB\n", q, br/sbr, ps-sps}'
+done
+```
+
+**③ 已在 T4 上端到端预验证**（把 `av1_nvenc` 换成本机可用的 `h264_nvenc`、
+扫描点改为 `21/26` 以适配本机，其余命令逐字未改）：
+
+```
+encode qp21 rc=0
+encode qp26 rc=0
+soft   bitrate=1427280 psnr=46.580407
+qp21   ratio=1.46x  dPSNR=+0.06 dB      ← 与 §6.2 报告里 G7-3 的 1.46× / +0.06 dB 逐位一致
+qp26   ratio=0.93x  dPSNR=-3.07 dB
+```
+
+⇒ 度量管线（码率口径 + PSNR 口径 + 解析）已被证明正确且与判据脚本同源，
+**L40 上唯一的未知量就是 `av1_nvenc` 的 ×4 是否成立**。
+
+**判据**（与判据脚本同一套容忍带：`RATE_PASS=(0.65,1.50)`、`TOL_PSNR_DB=1.5`）
+
+> 口径说明：码率取 `ffprobe format=bit_rate`（与判据脚本 `Ctx.media_info` 完全同口径，
+> 两者都未加 `-an`，因此含音轨；因软编与候选含同一音轨，比值口径一致、可与 §6.2 的
+> G7 数值直接比较）。
+
+| 扫描点 | 期望 | 作用 |
+|---|---|---|
+| `qp 84` | `0.65 ≤ ratio ≤ 1.50` 且 `ΔPSNR ≥ −1.5 dB` | **落带内 ⇒ ×4 成立（AC1 PASS）** |
+| `qp 105` | ratio 应低于 84（单调方向） | 仅方向性对照，**不参与定案** |
+| `qp 21` | ratio 应远大于 1.50（近无损 ⇒ 体积暴涨） | 反例对照，确认"旧实现确实错" |
+
+**结果解读与落地动作**
+
+| 实测 | 动作 |
+|---|---|
+| **84 落带内** | ① 删掉 `quality_map.py:194` 的 `# [待 L40 复核]`；② 去掉判据 `G3-7`(:983) / `G6-7`(:1473) 标题里的"待 L40 复核"字样（期望值 84 不变）；③ §0 的 E1 行改为"已定案" |
+| **84 不落带内** | ① 取落带内最接近 21 的点 `qp*`，改 `_QP_MAP_OVERRIDE['av1_nvenc']` 为 `a = qp*/21`（保留 1 位小数）；② **同步改 `G3-7` 与 `G6-7` 的期望值**（现均钉 84，必须与 `a` 一致）；③ 复跑 AC1 确认新点落带内 |
+| **三点全出带** | AV1 的 `-qp` 与基准轴非线性 ⇒ 停手，记录三点原始数据，在 §7 追加"AV1 constqp 不适用线性模型"，并把生产 AV1 的 constqp 路径标为**不支持**（走 `-cq`/VBR） |
+
+**回退**：AC1 只动一个常量 + 两处判据期望值 ⇒ 还原 `a=4.0`、期望 84，并恢复 `[待 L40 复核]` 标记即可。
+
+### AC2 · AV1 硬编 `-cq` 与软编基准同量级（对应判据 G7-6）
+
+AC0 通过后 G7-6 会自动由 SKIP 转判，无需额外命令：
+
+```bash
+python3 Accessory/verify/crf_cq_unification_verify.py --gpu \
+  --source /workspace/input_videos/word_world_2.mp4 \
+  --bitrate-source /workspace/input_videos/new4_raw.mp4 \
+  --report "verification_report/crfcq_gpu_Ada_$(date +%F_%H%M).md" < /dev/null
+```
+
+* **判据**：ratio ∈ `RATE_PASS` 且 `ΔPSNR ≥ −TOL_PSNR_DB` ⇒ PASS；落 `RATE_WARN` ⇒ WARN；`ΔPSNR < −3.0 dB` ⇒ FAIL。
+* **预期**：与 G7-1/G7-2 同形态（内容相关偏松 −1.7~−2.7 dB、码率达标）属**已知边界**，**只有 FAIL 才算回归**。
+* 关闭动作：把 §6.2 表中 G7-6 的 ⏭️ SKIP 填成实测结论。
+
+### AC3 · AV1 constqp 的下发命令形状（对应判据 G6-7）
+
+* **不需要 AV1 硬件**：判据走 `subprocess.Popen` 替身捕获命令形状，并把
+  `HardwareCapability.best_encoder` 临时替换为恒等函数 —— **本机 T4 上实测已 PASS**
+  （§6.2 报告 `G6-7 ✅ PASS`）。⇒ §0 早期"A5 需 Ada"的说法据此纠正。
+* ⚠ 但它只能证明"函数把 27 换成了 84"，**不能证明 84 是正确刻度**；期望值的正确性依赖 AC1。
+* AC1 定案后：若 `a ≠ 4.0`，必须同步改 `:1473` 的 `-qp 84`。
+
+### AC4 · AV1 的 `-cq` 等质量性（Gate 2 B 组 av1 格）
+
+* 内容：`crf_ref 21` 换算出的 `-cq:v <val>`（E0 后量程 0~63）与"朴素下发 21"对比，容忍带同 AC2。
+* 载体：`VidUtils/probe/verify_nvenc_quality_gpu.py` 的 B 组（T4 上 h264/hevc 已跑，av1 格 SKIP）。
+* 与 AC1 **正交**（判的是 CQ 轴而非 QP 轴），可独立关闭。
+
+### AC5 · `av1_qsv` / `av1_amf` 量程实测
+
+* 现状：`QUALITY_MAP` 里两者的 hi 仍为 51（`av1_nvenc` 已是 63）。
+* **需 Intel QSV / AMD AMF 硬件，Ada 卡也覆盖不了。**
+* 探测：`ffmpeg -h encoder=av1_qsv | grep -A2 -- '-cq'`（取实际量程）→ 按同一张表同步 hi。
+* 无对应硬件时：维持 51 并在旁标注"未核实"（现状已如此）。
+
+### AC6 · 跨项目交叉印证（VidUtils Gate 2 C 组）
+
+`VidUtils/probe/verify_nvenc_quality_gpu.py` 的 C 组是 AC1 的同源实现，结论应与 AC1 一致；
+若相左，以**本仓 AC1 的手工三点数据**为准并追查脚本差异（两边容忍带本就同一套：
+`TOL_PSNR=1.5`、`RATE_PASS=(0.65,1.50)`）。
+
+### 汇总：AC × 前置 × 本机（T4）状态 × 关闭动作
+
+| ID | 需什么硬件 | T4 状态 | 关闭动作 |
+|---|---|---|---|
+| **AC1** | Ada（L40/A10/RTX40） | ⏭️ SKIP | 按实测定案 ×4 或改 `a` + 同步 `G3-7`/`G6-7` 期望 |
+| AC2 | Ada | ⏭️ SKIP（G7-6） | §6.2 表 G7-6 由 SKIP 填实测值 |
+| **AC3** | **无**（逻辑/命令捕获层） | ✅ **PASS** | 仅需在 AC1 定案后同步期望值 |
+| AC4 | Ada | ⏭️ SKIP | Gate 2 B 组 av1 格转正 |
+| AC5 | Intel QSV / AMD AMF | ⏭️ SKIP | 同步 `QUALITY_MAP` 的 hi 值 |
+| AC6 | Ada | ⏭️ SKIP | 与 AC1 交叉印证 |
+
+> **建议**：短期拿不到 Ada 时，**保持 `[待 L40 复核]` 标记**，把 AV1 的 constqp 路径视为
+> "未定案"——生产 AV1 任务不要依赖 `-qp` 换算，优先用 `-cq`/VBR 路径（后者已有 E0 的
+> 0~63 量程实测量纲支撑）。
+
+
 

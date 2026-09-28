@@ -22,18 +22,28 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 def _load_chroma_check():
     """[FIX-VERIFY-RENAME] 取 check_chroma_corruption。
 
-    2026-09-15 起该验收脚本在生产侧已改名为 `segment_bitstream_verify_v5.py`
-    （内容与旧 `..._v4.py` 逐字节相同，见 Plan/门禁与测试资产纳管清理_立项Prompt.md）。
-    这里做**双名兼容**，避免改名期间任一侧缺失导致本测试 ModuleNotFoundError。
+    验收脚本现名 `Accessory/verify/segment_bitstream_verify_v5.py`（旧名
+    `tests/verify_segment_bitstream_v5.py`；v4 与 v5 逐字节相同，见
+    Plan/门禁与测试资产纳管清理_立项Prompt.md）。
+
+    [FIX-CHROMA-TEST-RENAME] 1565908 搬迁把文件从 `tests/verify_segment_bitstream_v5.py`
+    改名为 `Accessory/verify/segment_bitstream_verify_v5.py`（目录 + 前缀→后缀两处变化），
+    但本测试仍按旧模块名导入且未把 verify 目录加入 sys.path ⇒ 两个用例双双
+    ModuleNotFoundError。这里按新名导入，并保留旧名作兼容回退。
     """
     import importlib
+    _verify_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "verify")
+    if os.path.isdir(_verify_dir) and _verify_dir not in sys.path:
+        sys.path.insert(0, _verify_dir)
     last = None
-    for _name in ("verify_segment_bitstream_v5", "verify_segment_bitstream_v4"):
+    for _name in ("segment_bitstream_verify_v5", "segment_bitstream_verify_v4",
+                  "verify_segment_bitstream_v5", "verify_segment_bitstream_v4"):
         try:
             return getattr(importlib.import_module(_name), "check_chroma_corruption")
         except (ImportError, AttributeError) as e:
             last = e
-    raise ImportError("找不到 verify_segment_bitstream_v5 / _v4 里的 "
+    raise ImportError("找不到 segment_bitstream_verify_v5 / _v4 里的 "
                       "check_chroma_corruption: %s" % last)
 
 
