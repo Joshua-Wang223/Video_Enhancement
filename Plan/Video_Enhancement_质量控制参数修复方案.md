@@ -728,5 +728,30 @@ ffmpeg 构建。而其中 `libsvtav1` 的换算表是 2026-09-28 刚按真实素
 
 > **状态**：L40 上 AC1~AC4、AC6 已全部闭环，**AV1 CONSTQP QP 尺度确认为 ×3（QP 63）**。生产 AV1 任务的 constqp 路径现已可用（基准 21 → QP 63），`-cq`/VBR 路径亦已有 E0 的 0~63 量程支撑。VP9 侧无硬件依赖，`libvpx-vp9` 表值已在 T4/L40 实测（WARN，内容相关偏松，非回归）。
 
+---
+
+## 后续建议（下一步）
+
+| 优先级 | 事项 | 说明 |
+|---|---|---|
+| **P1** | **AC5：`av1_qsv`/`av1_amf` 量程实测** | 需 Intel QSV（Arc/新 iGPU）或 AMD AMF（RDNA3+）硬件。探测 `ffmpeg -h encoder=av1_qsv | grep -A2 -- '-cq'` 取实际量程，同步 `QUALITY_MAP` 的 `hi` 值。 |
+| **P1** | **AC7：AV1/VP9 软件族在目标机构建上复验** | 需目标机 ffmpeg 构建含 `libsvtav1`/`libaom-av1`/`librav1e`。用 `python3 Accessory/probe/av1_vp9_quality_matrix.py --src <素材>` 一条命令复验；偏离则按 E6 等体积口径重标定。 |
+| **P2** | **V9 多素材/多分辨率复核** | 当前 `libx265`/`libvpx-vp9`/`libsvtav1` 表基于单条 4s 1080p 素材。建议换 2~3 条不同类型/分辨率素材重跑 `probe/calibrate_soft_offsets.py` 再落表。 |
+| **P2** | **VidUtils 侧对齐（V10）** | VE 的 `_PRESET_P_INDEX` 已按 ffmpeg 官方枚举落地（`medium≡p4`）。VidUtils 需同步对齐 `X264_TO_NVENC_PRESET`，确保 ⑨ 组 `[9-preset]` 彻底一致。 |
+| **P3** | **长视频冒烟验证** | 在 L40 上跑 ≥5min 真实素材的完整增强流程（插帧+超分+AV1 NVENC constqp/vbr），验证全链路帧守恒、无内存泄漏、QA sidecar 完整。 |
+
+> **复现命令**：
+> ```bash
+> # AC5/AC7 复验入口（有硬件/构建时）
+> python3 Accessory/probe/av1_vp9_quality_matrix.py --src /workspace/input_videos/word_world_2.mp4
+> 
+> # V9 重标定
+> python3 probe/calibrate_soft_offsets.py --src /workspace/input_videos/new5_raw.mp4
+> 
+> # 长视频冒烟（示例）
+> python3 src/main_video_optimized.py -c config/default_config.py -i <长视频> -o <输出> \
+>     --codec-ifrnet av1_nvenc --rate-mode-ifrnet vbr --skip-upscale --segment-duration 30
+> ```
+
 
 
