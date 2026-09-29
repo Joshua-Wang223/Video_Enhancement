@@ -1,0 +1,115 @@
+{
+  "generated": "2026-09-29T14:21:58",
+  "src": "/workspace/input_videos/word_world_2.mp4",
+  "src_frames": 687,
+  "ref_crf": 21,
+  "soft": {
+    "kbps": 1425,
+    "psnr": 46.581049
+  },
+  "tolerances": {
+    "RATE_PASS": [
+      0.65,
+      1.5
+    ],
+    "RATE_WARN": [
+      0.55,
+      1.65
+    ],
+    "TOL_PSNR_DB": 1.5,
+    "TOL_PSNR_WARN": 3.0
+  },
+  "matrix": [
+    {
+      "codec": "av1_nvenc",
+      "verdict": "SKIP",
+      "why": "实跑一帧失败（需 Ada 及以上 GPU（L40/A10/RTX40））: [av1_nvenc @ 0x55975559e480] Cannot load libcuda.so.1"
+    },
+    {
+      "codec": "av1_qsv",
+      "verdict": "SKIP",
+      "why": "实跑一帧失败（需 Intel QSV（Arc / 新 iGPU））: [av1_qsv @ 0x559004930480] Error creating a MFX session: -9."
+    },
+    {
+      "codec": "av1_amf",
+      "verdict": "SKIP",
+      "why": "本机 ffmpeg 构建不含该编码器（需 AMD AMF（RDNA3+））"
+    },
+    {
+      "codec": "libsvtav1",
+      "param": "-crf",
+      "value": 25,
+      "naive": 21,
+      "note": "默认基准 CRF 21",
+      "extra_args": [
+        "-preset",
+        "8"
+      ],
+      "psnr": 46.565955,
+      "kbps": 1470,
+      "ratio": 1.031,
+      "d_psnr": -0.015,
+      "verdict": "PASS",
+      "naive_ratio": 1.218
+    },
+    {
+      "codec": "libaom-av1",
+      "param": "-crf",
+      "value": 25,
+      "naive": 21,
+      "note": "默认基准 CRF 21",
+      "extra_args": [
+        "-cpu-used",
+        "5"
+      ],
+      "psnr": 46.145765,
+      "kbps": 1129,
+      "ratio": 0.792,
+      "d_psnr": -0.435,
+      "verdict": "PASS",
+      "naive_ratio": 0.936
+    },
+    {
+      "codec": "librav1e",
+      "param": "-qp",
+      "value": 80,
+      "naive": 21,
+      "note": "默认基准 CRF 21",
+      "extra_args": [],
+      "psnr": null,
+      "kbps": 0,
+      "ratio": 0.0,
+      "d_psnr": null,
+      "verdict": "SKIP",
+      "naive_ratio": 0.0
+    },
+    {
+      "codec": "libvpx-vp9",
+      "param": "-crf",
+      "value": 28,
+      "naive": 21,
+      "note": "默认基准 CRF 21",
+      "extra_args": [
+        "-b:v",
+        "0",
+        "-cpu-used",
+        "4",
+        "-row-mt",
+        "1"
+      ],
+      "psnr": 44.909526,
+      "kbps": 1350,
+      "ratio": 0.947,
+      "d_psnr": -1.672,
+      "verdict": "WARN",
+      "naive_ratio": 1.3
+    }
+  ],
+  "av1_qp_scan": [],
+  "summary": {
+    "pass": 2,
+    "warn": 1,
+    "fail": 0,
+    "skip": 4
+  }
+}
