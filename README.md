@@ -1,7 +1,7 @@
 # Video Enhancement — 视频增强处理系统
 
 > **当前版本**: v2.0.0（优化版）｜IFRNet 后端 **v6.4.5.1**（NVENC SDK Level 1 GPU 直通 + CE-Pipeline 异步编码，深度模块化于 `external/ifrnet_video/`）/ Real-ESRGAN 后端 v6.4（深度模块化架构 + 独立优化版）
-> **最后更新**: 2026-06-15
+> **最后更新**: 2026-09-29
 
 一套完整的 AI 视频增强解决方案，整合了**视频插帧（IFRNet v6.3.5）**与**视频超分辨率（Real-ESRGAN v6.4）**两大模块，并针对单 GPU 环境进行了深度优化。IFRNet 后端在 v6.3.0 双流架构（H2D 预取 / D2H 独立流 + CudaEventPool）之上，v6.3.5 进一步改进编码稳定性与性能调优、日志可追溯性、软编并行与 NVENC pipe 场景参数等。Real-ESRGAN 侧通过 `realesrgan_video`（深度模块化、4 级并行 + **多片段复用**：模型/TRT 一次初始化、分段复用）与独立优化版 v6.4 并存。
 
@@ -1173,6 +1173,55 @@ Real-ESRGAN 后端内置 GPU 硬件型号静态表（`_GPU_PROFILES_TABLE`），
 - PCIe 带宽参考
 
 探测结果在初始化时打印（如 `[FIX-NVENC-UNIFIED] HW Profile: ...`），不依赖运行时 NVML 检测。
+
+---
+
+## 质量控制参数修复（crf / cq / qp / preset）
+
+2026-09-28 完成 VE 侧质量控制参数全面修复，涉及文件：`src/utils/quality_map.py`、`src/utils/video_utils.py`、`src/main_video_optimized.py`、`src/utils/convert_crf.py`（及共享换算表的两处副本 `external/ifrnet_video/nvenc_sdk.py`、`external/realesrgan_video/nvenc_sdk.py`）。
+
+**核心变更（E0~E10 + 判据/探针补齐）：**
+
+| 编号 | 修复内容 | 状态 | 验证 |
+|------|----------|------|------|
+| E0 | `av1_nvenc` CQ 量程 `hi: 51 → 63`（与 VidUtils 同步，实测 `ffmpeg -h encoder=av1_nvenc` → `-cq (0 to 63)`） | ✅ 已落地 | 实测 |
+| E1 | `to_constqp_qp()` 新增 **QP 尺度层** `_QP_MAP_OVERRIDE`（AV1 族 ×3）；原单一倍率方案不适配 `librav1e`（需 `4×ref−4`） | ✅ 已落地 | L40 实测确认 **×3（QP 63）**，非原推断 ×4 |
+| E2 | `libsvtav1` / `libaom-av1` 不再收到非法 `-preset`（改白名单，整数映射留待跨项目同批） | ✅ 已落地 | 实测消除 "Unable to parse option value" |
+| E3 | VAAPI 归一到基准轴输出 `-qp`（夹 0~52），修正原下发非法 `-cq:v` 导致 ffmpeg 直接报错 | ✅ 已落地 | 实测 h264_vaapi 仅支持 `-qp (0 to 52)` |
+| E4 | `_preset_supported()` 改白名单（仅 `libx264/libx265/h264_nvenc/hevc_nvenc/av1_nvenc`）；QSV/AMF/VT 保守排除 | ✅ 已落地 | ffmpeg 8.0.1 QSV 为 int `0..7`，非旧档名 |
+| E5 | `_PRESET_P_INDEX` 对齐 NVIDIA p-梯命名（`medium≡p4` 逐字节相同）；`slow` 等非 p-梯档位不再强行映射 | ✅ VE 侧已落地 | T4 实测 `medium` 与 `p4` 逐字节相同 |
+| E7 | `--rate-mode` 取值表明确写明"SDK 仅支持 3 档"（`constqp / vbr_hq / qvbr`）并拒绝其它值 | ✅ 已落地 | 取值表对比 |
+| E8 | `--lookahead-depth` 放开到配置层允许范围 `0~32`（NVENC 硬件上限） | ✅ 已落地 | 配置层校验本已要求 |
+| E9 | `CONSTQP_QP_OFFSET` 实测校准（T4 上 `ΔPSNR +0.06 dB / 1.46×` ⇒ 保持 0 即为最优） | ✅ 结案 | G7-3 实测 |
+| E10 | G7 新增"合成 vs 真实素材"双跑（G7-8）：合成 ΔPSNR **+5.33 dB** / 1.53× vs 真实 **+0.06 dB** / 1.46× ⇒ 过配注解升级为实测 | ✅ 已落地 | 真实素材 `word_world_2.mp4` |
+
+**判据/测试侧补齐：**
+
+- **A5** 判据新增 `G1-8 / G2-13 / G3-7 / G3-8 / G5-12 + G6-7`（AV1 constqp 命令形状捕获，**不需要 AV1 硬件**，T4 已 PASS）
+- **A6** 判据 G7 编码异常改为**逐项 FAIL**，不再整组"执行中断"（原会丢掉全部逐项结论）
+- **A7** `test_chroma_false_positive.py` 导入修复（搬迁后旧模块名 + 缺 sys.path ⇒ 2 用例 ModuleNotFoundError）
+- **A8** 新增 `Accessory/probe/av1_vp9_quality_matrix.py`：AV1/VP9 家族 7 个编码器**一条命令**验证入口（构建+实跑双探测 → 质量族矩阵 → `av1_nvenc` 可用时自动跑 AC1 三点 QP 扫描与判读）
+
+**需 L40/Ada（或目标机构建）才能定案的 AV1/VP9 测试内容（AC0~AC7）：**
+
+详见 `Plan/Video_Enhancement_质量控制参数修复方案.md` **§7**。核心项 **AC1** 验证 `av1_nvenc` CONSTQP QP 尺度（L40 已确认 **×3 / QP 63**），一条命令入口：
+
+```bash
+python3 Accessory/probe/av1_vp9_quality_matrix.py \
+    --src /workspace/input_videos/word_world_2.mp4 \
+    --report verification_report/av1_vp9_matrix_<机名>.md < /dev/null
+```
+
+**验证门禁（T4 实测收口 2026-09-28）：**
+
+| Gate | 命令 | 结果 |
+|------|------|------|
+| 0 静态/逻辑 | `crf_cq_unification_verify.py --quick` | PASS 91 / FAIL 0 / SKIP 11 |
+| 0 门禁全套 | `plan_implementation_gate.py` | 96 项 / 94 通过 / 0 失败 / 2 跳过 |
+| 0 pytest | `pytest Accessory/test -q` | 24 passed / 0 failed |
+| 1 GPU 画质 | `crf_cq_unification_verify.py --gpu --source ...` | PASS 99 / FAIL 0 / WARN 3 / SKIP 1 |
+| 3 preset 实测 | `h264_nvenc -preset p4/p5` 扫描 | `medium≡p4` 逐字节相同，影响可忽略 |
+| 4 LA=8 回归 | hevc + LA=8 帧守恒 | ✅ frames=packets=253，单 IDR/单调/色度 0 簇 |
 
 ---
 
