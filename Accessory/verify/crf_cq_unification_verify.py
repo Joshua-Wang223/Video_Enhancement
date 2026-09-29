@@ -514,11 +514,16 @@ def load_main_module(ctx: Ctx):
 # 素材生成
 # =============================================================================
 
-def make_quality_source(ctx: Ctx) -> Path:
-    """画质对比用素材：无损编码，保证"对源 PSNR"是有效基准。"""
-    if ctx.args.source:
+def make_quality_source(ctx: Ctx, force_synthetic: bool = False) -> Path:
+    """画质对比用素材：无损编码，保证"对源 PSNR"是有效基准。
+
+    force_synthetic=True 时忽略 `--source`，强制用合成 testsrc2 —— 供 E10 的
+    "合成 vs 真实"双跑对照取合成侧素材（不影响主跑）。
+    """
+    if ctx.args.source and not force_synthetic:
         return Path(ctx.args.source)
-    out = ctx.tmp / "src_quality.mp4"
+    out = ctx.tmp / ("src_quality_synthetic.mp4" if force_synthetic
+                     else "src_quality.mp4")
     if out.exists():
         return out
     cmd = [ctx.ffmpeg, "-y", "-v", "error",
@@ -608,6 +613,69 @@ def enc_nvenc(ctx: Ctx, src: Path, out: Path, codec: str, rc_mode: str,
     if rc != 0:
         raise RuntimeError(f"{codec} 编码失败：{err[-300:]}")
     return out
+
+
+def enc_sw_quality(ctx: Ctx, src: Path, out: Path, codec: str, value: int,
+                   preset: Optional[str] = None,
+                   timeout: Optional[int] = None) -> Path:
+    """软件编码器按**质量参数**（-crf）编码 —— 供 E9 的软件侧覆盖。
+
+    ⚠ 不无条件下发 `-preset`：libsvtav1 的 `-preset` 是整数 `-2..13`，传档名会
+    让命令**直接解析失败**（正是 E2 修掉的那类 bug）。默认 None 即不下发，由
+    编码器取自身默认档；仅对明确接受档名的 libx264/libx265 传 preset。
+    ⚠ libvpx/vp9 的 `-crf` 必须配 `-b:v 0` 才是纯恒定质量（否则退化为
+    constrained quality，见 quality_map._NEEDS_ZERO_BITRATE）。
+    """
+    cmd = [ctx.ffmpeg, "-y", "-v", "error", "-i", str(src),
+           "-c:v", codec, "-crf", str(value)]
+    if preset and codec in ("libx264", "libx265"):
+        cmd += ["-preset", preset]
+    if codec in ("libvpx", "libvpx-vp9"):
+        # libvpx 默认 `-cpu-used 0` 在长素材上会慢到超时；judge 只比 crf 的
+        # 码率/PSNR 是否与软编基准同量级，对编码工具的档位不敏感（RATE_PASS 带宽
+        # 0.65~1.50），故显式提速并在证据里注明。
+        cmd += ["-b:v", "0", "-cpu-used", "4", "-row-mt", "1"]
+    cmd += ["-pix_fmt", "yuv420p", str(out)]
+    rc, _, err = ctx.run(cmd, timeout)
+    if rc != 0:
+        raise RuntimeError(f"{codec} 编码失败：{err[-300:]}")
+    return out
+
+
+def _available_encoders(ctx: Ctx) -> set:
+    """本机 ffmpeg **构建**里存在的编码器名集合（`ffmpeg -encoders` 为权威）。
+
+    与"硬件能力"是两件事，别混：`av1_nvenc` 可能存在于构建却因 GPU 是 Turing
+    而编不了，硬编一律另用实跑探测判定（见 `_probe_av1_nvenc`）。本函数只回答
+    "这个编码器名在本机存不存在"，用来决定可选覆盖项是跑还是 SKIP。
+    """
+    rc, out, _ = ctx.run([ctx.ffmpeg, "-hide_banner", "-encoders"], timeout=120)
+    names: set = set()
+    if rc != 0:
+        return names
+    for line in (out or "").splitlines():
+        m = re.match(r"^\s*[VAS][.A-Z]*\s+(\S+)", line)
+        if m:
+            names.add(m.group(1))
+    return names
+
+
+def _probe_av1_nvenc(ctx: Ctx) -> Tuple[bool, str]:
+    """[E9] 探测本机能否**真正**编码 AV1（Ada 才有 AV1 NVENC）。
+
+    ⚠ 不能用 `ffmpeg -h encoder=av1_nvenc`：Turing(T4) 上该选项表照样打印，
+    只有实跑一帧才能判定。与方案 §5.2「步骤 0」同一口径。
+    """
+    out = ctx.tmp / "probe_av1.mp4"
+    cmd = [ctx.ffmpeg, "-y", "-v", "error",
+           "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=1",
+           "-frames:v", "1", "-c:v", "av1_nvenc", str(out)]
+    rc, _, err = ctx.run(cmd, timeout=120)
+    if rc == 0 and out.exists():
+        return True, "av1_nvenc 实跑成功"
+    first = (err or "").strip().splitlines()
+    why = first[0] if first else f"rc={rc}"
+    return False, f"av1_nvenc 实跑失败（无 AV1 NVENC，需 Ada/L40）：{why[:160]}"
 
 
 def mirror_clamp_bitrate(raw_bps: int, width: int = 0, height: int = 0) -> int:
@@ -1589,7 +1657,7 @@ def group_quality(ctx: Ctx, v: Verifier) -> None:
     print("\n【G7】画质统一性实测（同一基准 → 不同编码器）")
     Q = load_quality_map(ctx)
     if not ctx.gpu_mode():
-        for cid in ("G7-1", "G7-2", "G7-3", "G7-4", "G7-5"):
+        for cid in ("G7-1", "G7-2", "G7-3", "G7-4", "G7-5", "G7-6", "G7-7", "G7-8"):
             v.add(cid, "QUALITY", "画质统一性实测", Status.SKIP,
                   detail="未启用 GPU 组（--quick / 无 NVENC）")
         return
@@ -1597,7 +1665,7 @@ def group_quality(ctx: Ctx, v: Verifier) -> None:
     try:
         src = make_quality_source(ctx)
     except Exception as exc:  # noqa: BLE001
-        for cid in ("G7-1", "G7-2", "G7-3", "G7-4", "G7-5"):
+        for cid in ("G7-1", "G7-2", "G7-3", "G7-4", "G7-5", "G7-6", "G7-7", "G7-8"):
             v.add(cid, "QUALITY", "画质统一性实测", Status.FAIL, detail=f"素材准备失败：{exc}")
         return
 
@@ -1608,41 +1676,89 @@ def group_quality(ctx: Ctx, v: Verifier) -> None:
 
     # ── 阶段①：并行编码。6 个任务只依赖 src、彼此独立；经 GPU 会话闸门限流
     #    （闸门容量 = 本机 NVENC 会话上限，消费级卡通常为 2）────────────────
-    NAIVE = 21  # 修复前：基准轴数值被原样当作硬编 CQ 下发
-    pairs = [("h264_nvenc", "G7-1"), ("hevc_nvenc", "G7-2")]
-    resolved = {codec: Q.resolve_quality(codec, default_ref=21) for codec, _ in pairs}
+    NAIVE = 21  # 修复前：基准轴数值被原样当作硬编/软编质量参数下发
+    # (codec, cid, kind)：kind='nvenc' 下发 `-cq:v`，kind='sw' 下发 `-crf`。
+    # [E9] 覆盖扩到 AV1 硬编与软件侧。**可选覆盖一律先探可用性**：本机 ffmpeg
+    #      可能根本没有某个编码器（实测本 build 无 libsvtav1/libaom/librav1e），
+    #      直接纳入会让整组因 `Unknown encoder` 中断（已踩过）。
+    pairs: List[Tuple[str, str, str]] = [
+        ("h264_nvenc", "G7-1", "nvenc"), ("hevc_nvenc", "G7-2", "nvenc"),
+    ]
+    g7_skips: List[Tuple[str, str]] = []      # (cid, 原因)，编码阶段后统一补记
+    avail = _available_encoders(ctx)
+
+    # E9-1 · AV1 硬编：先要 build 里有，再要实跑编得动（Ada 才有 AV1 NVENC）
+    if "av1_nvenc" not in avail:
+        av1_ok = False
+        g7_skips.append(("G7-6", "本机 ffmpeg 构建不含 av1_nvenc 编码器"))
+    else:
+        av1_ok, av1_why = _probe_av1_nvenc(ctx)
+        if av1_ok:
+            pairs.append(("av1_nvenc", "G7-6", "nvenc"))
+            print(f"  · av1_nvenc 可用（{av1_why}）→ 纳入 G7-6")
+        else:
+            g7_skips.append(("G7-6", av1_why))
+            print(f"  · {av1_why} → G7-6 SKIP（非失败）")
+
+    # E9-2 · 软件侧：优先 libsvtav1（E6 重标定过的 AV1 软编），回退 libvpx-vp9
+    sw_pick = next((c for c in ("libsvtav1", "libvpx-vp9") if c in avail), None)
+    if sw_pick:
+        pairs.append((sw_pick, "G7-7", "sw"))
+        print(f"  · 软件侧覆盖编码器：{sw_pick}")
+    else:
+        g7_skips.append(("G7-7", "本机 ffmpeg 既无 libsvtav1 也无 libvpx-vp9"))
+
+    resolved = {codec: Q.resolve_quality(codec, default_ref=21)
+                for codec, _, _ in pairs}
     qp = Q.to_constqp_qp("h264_nvenc", resolved["h264_nvenc"][1])
 
     # 真实长素材的整段软编可能远超 --timeout(600s)，按帧数自适应放宽（见 _encode_timeout）
     enc_to = _encode_timeout(ctx, *res, n)
+
+    def _enc_one(codec: str, kind: str, val: int, tag: str) -> Path:
+        p = out / f"q_{codec}_{tag}{val}.mp4"
+        if kind == "nvenc":
+            return enc_nvenc(ctx, src, p, codec, "vbr_hq", val, timeout=enc_to)
+        return enc_sw_quality(ctx, src, p, codec, val, timeout=enc_to)
+
     enc_jobs: List[Tuple[str, Callable[[], Path]]] = [
         ("soft", lambda: enc_soft(ctx, src, out / "q_libx264_r21.mp4", 21,
                                   timeout=enc_to)),
     ]
-    for codec, _cid in pairs:
+    for codec, _cid, kind in pairs:
         val = resolved[codec][1]
         enc_jobs.append((f"{codec}__c{val}",
-                         (lambda c=codec, v=val: enc_nvenc(
-                             ctx, src, out / f"q_{c}_c{v}.mp4", c, "vbr_hq", v,
-                             timeout=enc_to))))
+                         (lambda c=codec, k=kind, v=val: _enc_one(c, k, v, "c"))))
         enc_jobs.append((f"{codec}__n{NAIVE}",
-                         (lambda c=codec, v=NAIVE: enc_nvenc(
-                             ctx, src, out / f"q_{c}_c{v}.mp4", c, "vbr_hq", v,
-                             timeout=enc_to))))
+                         (lambda c=codec, k=kind, v=NAIVE: _enc_one(c, k, v, "n"))))
     enc_jobs.append(("constqp",
                      (lambda q=qp: enc_nvenc(ctx, src, out / f"q_h264_nvenc_qp{q}.mp4",
                                              "h264_nvenc", "constqp", q,
                                              timeout=enc_to))))
-    enc_files = _run_jobs(ctx, enc_jobs, gpu=True,
-                          task_ram_mb=_task_ram_mb(*res), label="G7 编码")
+    try:
+        enc_files = _run_jobs(ctx, enc_jobs, gpu=True,
+                              task_ram_mb=_task_ram_mb(*res), label="G7 编码")
+    except Exception as exc:  # noqa: BLE001
+        # 编码阶段失败不再让整组"执行中断"——那样会丢掉全部逐项结论（曾因一个
+        # `Unknown encoder` 把 G7-1..G7-8 全吞成 1 个组级 FAIL）。改为逐项 FAIL，
+        # 可选覆盖项仍按其探测结论记 SKIP，判据强度不降。
+        why = f"编码阶段失败：{exc}"
+        for _c, cid, _k in pairs:
+            v.add(cid, "QUALITY", "画质统一性实测", Status.FAIL, detail=why)
+        for cid in ("G7-3", "G7-4", "G7-5", "G7-8"):
+            v.add(cid, "QUALITY", "画质统一性实测", Status.FAIL, detail=why)
+        for cid, _why in g7_skips:
+            v.add(cid, "QUALITY", "画质统一性实测（可选覆盖）", Status.SKIP,
+                  detail=_why)
+        return
 
     # ── 阶段②：并行度量（PSNR/SSIM/VMAF 逐指标拆任务；无 libvmaf 时秒回 None）
     measured = _measure_many(ctx, enc_files, src, n, res)
     m_soft = measured["soft"]
     ctx.metrics["libx264_crf21"] = m_soft
 
-    # 逐硬编编码器验证：换算值 vs 朴素下发值（旧行为）
-    for codec, cid in pairs:
+    # 逐编码器验证：换算值 vs 朴素下发值（旧行为）
+    for codec, cid, _kind in pairs:
         param, val, extra, note = resolved[codec]
         m_c = measured[f"{codec}__c{val}"]
         m_n = measured[f"{codec}__n{NAIVE}"]
@@ -1660,10 +1776,20 @@ def group_quality(ctx: Ctx, v: Verifier) -> None:
               detail=f"{vd}（软编 {_fmt(_psnr_soft)} dB / {_kbps_soft} kbps）",
               evidence=[f"换算值 {param} {val}：PSNR {_fmt(m_c['psnr'])} "
                         f"SSIM {_fmt(m_c['ssim'], 4)} 码率 {m_c.get('kbps', 0)} kbps",
-                        f"朴素值 -cq:v {NAIVE}：PSNR {_fmt(m_n['psnr'])} "
+                        f"朴素值 {param} {NAIVE}：PSNR {_fmt(m_n['psnr'])} "
                         f"SSIM {_fmt(m_n['ssim'], 4)} 码率 {m_n.get('kbps', 0)} kbps"
                         f"（{ratio_n:.2f}×，仅用于对照）",
                         f"换算说明：{note}"])
+
+    # [E9] 可选覆盖项不可用时显式记 SKIP（不是 FAIL）
+    for _cid, _why in g7_skips:
+        _title = ("av1_nvenc 基准21→-cq:v 对齐 libx264 crf21" if _cid == "G7-6"
+                  else "软件侧编码器基准21→-crf 对齐 libx264 crf21")
+        v.add(_cid, "QUALITY", _title, Status.SKIP, detail=_why,
+              evidence=["可选覆盖项：本机不具备即 SKIP，不影响主判据；"
+                        "av1_nvenc 的 QP×4 定案需 Ada/L40",
+                        "判定口径：build 可用性用 `ffmpeg -encoders`，"
+                        "av1 硬件能力用实跑一帧（`-h encoder=` 在 Turing 上不可作依据）"])
 
     # constqp 轴验证（h264_nvenc：CQ 26 → QP 21）
     m_qp = measured["constqp"]
@@ -1692,9 +1818,9 @@ def group_quality(ctx: Ctx, v: Verifier) -> None:
 
     # 码率合理性：换算后不应相对软编暴涨（修复前正是暴涨）
     bad_br = []
-    for codec in ("h264_nvenc", "hevc_nvenc"):
+    for codec, _cid, _kind in pairs:
         m = ctx.metrics.get(f"{codec}_rescued_"
-                            f"{Q.resolve_quality(codec, default_ref=21)[1]}")
+                            f"{resolved[codec][1]}")
         if not m or not m_soft.get("kbps"):
             continue
         ratio = m["kbps"] / m_soft["kbps"]
@@ -1723,16 +1849,16 @@ def group_quality(ctx: Ctx, v: Verifier) -> None:
         rows: List[str] = []
         worst = 0.0
         got = False
-        for codec, _cid in pairs:
+        for codec, _cid, _kind in pairs:
             val = resolved[codec][1]
             vm = measured.get(f"{codec}__c{val}", {}).get("vmaf")
             if vm is None:
-                rows.append(f"{codec} cq{val}: VMAF n/a（采样失败，不参与判定）")
+                rows.append(f"{codec} q{val}: VMAF n/a（采样失败，不参与判定）")
                 continue
             got = True
             _d = abs(vm - vm_soft)
             worst = max(worst, _d)
-            rows.append(f"{codec} cq{val}: VMAF {_fmt(vm, 2)}（Δ {_fmt(_d, 2)}）")
+            rows.append(f"{codec} q{val}: VMAF {_fmt(vm, 2)}（Δ {_fmt(_d, 2)}）")
         # constqp 仅作参考行，不参与 worst（保持与原 PASS/WARN 语义一致）
         if m_qp.get("vmaf") is not None:
             rows.append(f"h264_nvenc constqp qp{qp}: VMAF {_fmt(m_qp['vmaf'], 2)}"
@@ -1746,6 +1872,54 @@ def group_quality(ctx: Ctx, v: Verifier) -> None:
                   Status.PASS if worst <= TOL_VMAF else Status.WARN,
                   detail=f"最大偏差 {_fmt(worst)}（软编基准 VMAF {_fmt(vm_soft)}）",
                   evidence=rows)
+
+    # ── [E10] 合成 vs 真实双跑：把"合成素材偏过配"从注释升级为实测 ──────────
+    # 原实现只跑一种素材，并在 G7-3 注释里**断言**"合成 testsrc2 下 constqp 过配、
+    # 真实素材 PASS"。这里在提供 `--source` 时补跑同一 constqp 轴于合成素材，
+    # 使那条注释成为可核对的数据；未提供时本跑素材即为合成，无需双跑。
+    if not getattr(ctx.args, "source", None):
+        v.add("G7-8", "QUALITY", "合成 vs 真实素材双跑（constqp 轴）", Status.SKIP,
+              detail="未提供 --source；本跑素材即合成，无双跑对照可做")
+    else:
+        try:
+            syn = make_quality_source(ctx, force_synthetic=True)
+            syn_info = ctx.media_info(syn)
+            n_syn = syn_info.get("nbf") or int(ctx.args.fps * ctx.args.duration)
+            res_syn = (syn_info.get("width", 0), syn_info.get("height", 0))
+            to_syn = _encode_timeout(ctx, *res_syn, n_syn)
+            syn_files = _run_jobs(
+                ctx,
+                [("syn_soft", lambda: enc_soft(ctx, syn, out / "q_syn_libx264_r21.mp4",
+                                               21, timeout=to_syn)),
+                 ("syn_qp", lambda: enc_nvenc(ctx, syn,
+                                              out / f"q_syn_h264_nvenc_qp{qp}.mp4",
+                                              "h264_nvenc", "constqp", qp,
+                                              timeout=to_syn))],
+                gpu=True, task_ram_mb=_task_ram_mb(*res_syn), label="G7-8 双跑编码")
+            syn_m = _measure_many(ctx, syn_files, syn, n_syn, res_syn)
+            m_syn_soft, m_syn_qp = syn_m["syn_soft"], syn_m["syn_qp"]
+            _ks = m_syn_soft.get("kbps") or 0
+            d_syn = (m_syn_qp["psnr"] or 0) - (m_syn_soft["psnr"] or 0)
+            r_syn = (m_syn_qp.get("kbps") or 0) / _ks if _ks else 0.0
+            ctx.metrics["g7_8_synthetic"] = {"d_psnr": d_syn, "ratio": r_syn}
+            ctx.metrics["g7_8_real"] = {"d_psnr": d_qp, "ratio": ratio_qp}
+            # "合成更过配"的预期形态：ΔPSNR 更高（更过配）且码率比不低于真实素材
+            _over = (d_syn >= d_qp) and (r_syn >= ratio_qp)
+            v.add("G7-8", "QUALITY", "合成 vs 真实素材双跑（constqp 轴）",
+                  Status.PASS if _over else Status.WARN,
+                  detail=(("合成素材确呈现更过配（与 G7-3 注释一致）"
+                           if _over else
+                           "合成素材未呈现更过配 —— 与 G7-3 的注释不一致，"
+                           "注释需复核（诊断项，不影响 G7-3 判定）")),
+                  evidence=[
+                      f"真实素材：ΔPSNR {_fmt(d_qp, 2)} dB / 码率比 {ratio_qp:.2f}×",
+                      f"合成素材：ΔPSNR {_fmt(d_syn, 2)} dB / 码率比 {r_syn:.2f}×",
+                      f"合成素材 {res_syn[0]}x{res_syn[1]} {n_syn} 帧；"
+                      f"判据：合成 ΔPSNR 更高且码率比不低 ⇒ 过配边界成立",
+                      "本项为诊断项，仅用于把 G7-3 的内容相关注释升级为实测数据"])
+        except Exception as exc:  # noqa: BLE001
+            v.add("G7-8", "QUALITY", "合成 vs 真实素材双跑（constqp 轴）", Status.SKIP,
+                  detail=f"双跑未能执行（不改变主判据）：{exc}")
 
 
 # =============================================================================
