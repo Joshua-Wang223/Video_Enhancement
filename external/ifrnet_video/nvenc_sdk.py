@@ -552,7 +552,10 @@ class NVENCEncoder:
                  rate_mode: str = "constqp", la_depth: int = 0):
         """rate_mode: 'constqp' | 'vbr_hq' (CQ via VBR_HQ + targetQuality) | 'qvbr'.
            la_depth: lookahead depth (0=disabled, 8~32 for -rc-lookahead equivalent).
-           将自动校准为 >= LA+1 (SDK 硬件安全要求)。"""
+           将自动校准为 >= LA+1 (SDK 硬件安全要求)。
+
+           ⚠ AV1 NVENC 仅支持 constqp / vbr / cbr 三种 RC 模式（无 vbr_hq / qvbr）。
+           遇到 av1 codec 时自动把 vbr_hq/qvbr 降级为 vbr 并打印警告。"""
         # [P3.1-SPLIT] 上帝函数拆解：原 ~553 行 __init__（含内联的 _open_session）
         # 按初始化阶段收敛为九个私有方法；调用顺序、语句顺序、失败 raise 路径
         # 与日志输出逐字保持不变（纯结构重构）。
@@ -560,8 +563,15 @@ class NVENCEncoder:
             raise ValueError("NVENCEncoder: unsupported codec %r (supported: h264/hevc/av1)" % codec)
         self._codec = codec
 
+        # AV1 NVENC 不支持 vbr_hq / qvbr，需降级到 vbr
+        effective_rate_mode = rate_mode
+        if codec == "av1" and rate_mode in ("vbr_hq", "qvbr"):
+            effective_rate_mode = "vbr"
+            print(f"[NVENCEncoder] WARNING: AV1 NVENC does not support rate_mode={rate_mode!r}, "
+                  f"auto-downgrading to {effective_rate_mode!r}", flush=True)
+
         self._init_session_state(width, height, fps, qp, preset,
-                                 rate_mode, la_depth, pipeline_depth)
+                                 effective_rate_mode, la_depth, pipeline_depth)
 
         _nvenc_api_version = self._load_dlls_and_detect_api()          # [P3.1-SPLIT] 步骤1-3
         cuda_ctx = self._acquire_cuda_context()                        # [P3.1-SPLIT] 步骤4

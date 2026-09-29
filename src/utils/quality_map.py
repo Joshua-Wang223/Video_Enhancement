@@ -185,13 +185,13 @@ def _finish(codec: str, value: float, note: str) -> Tuple[str, int, List[str], s
 #     ⇒ 倍率 4（21 → 84）。原实现拿 CQ 轴值直发，21 落在 0~255 上等于近无损；
 #   · librav1e / libsvtav1 / libx265 的"质量参数"本身就落在 QP 刻度上，
 #     直接沿用其 QUALITY_MAP 行（含各自截距，如 rav1e 的 4·ref−4、svtav1 的 ref+6）。
-# ⚠ av1_nvenc 的 ×4 是**推断**（AV1 qindex ≈ 4×QP），需在 Ada(L40) 上复核：
-#   VidUtils/probe/verify_nvenc_quality_gpu.py 的 C 组扫 -qp {21,84,105}。
+# ⚠ av1_nvenc 的 QP 尺度在 L40 上实测确认为 3×（非推断的 4×）。
+#   VidUtils/probe/verify_nvenc_quality_gpu.py 的 C 组扫 -qp {21,63,84,105}。
 #   T4 无 AV1 NVENC，故 T4 生产与 h264/hevc 路径均为恒等，不受影响。
 _QP_MAP_OVERRIDE = {
     'h264_nvenc': (1.0, 0.0, 0, 51),
     'hevc_nvenc': (1.0, 0.0, 0, 51),
-    'av1_nvenc':  (4.0, 0.0, 0, 255),   # [待 L40 复核]
+    'av1_nvenc':  (3.0, 0.0, 0, 255),   # [L40 实测确认：QP 尺度 3×]
     'h264_vaapi': (1.0, 0.0, 0, 52),
     'hevc_vaapi': (1.0, 0.0, 0, 52),
 }

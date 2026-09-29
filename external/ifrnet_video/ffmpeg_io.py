@@ -891,7 +891,7 @@ class FFmpegWriter:
             #   · -surfaces N        扩大 NVENC 内部帧缓冲（同 crf=0 路径）。
             # [FIX-FFMPEGWRITER-RC] 根据 Level 1 的 RC 模式选择对应的 FFmpeg -rc:v 值
             # 注意：qvbr 在旧版 FFmpeg h264_nvenc 中不可用，回退到 vbr_hq
-            _rc_v_map = {'vbr_hq': 'vbr_hq', 'qvbr': 'vbr_hq', 'constqp': 'constqp'}
+            _rc_v_map = {'vbr_hq': 'vbr_hq', 'qvbr': 'vbr_hq', 'vbr': 'vbr', 'cbr': 'cbr', 'constqp': 'constqp'}
             _rc_v = _rc_v_map.get(rc_mode, 'vbr_hq')
             if _rc_v == 'constqp':
                 # [QUALITY-UNIFY] CONSTQP 专用参数是 -qp，不是 -cq:v：

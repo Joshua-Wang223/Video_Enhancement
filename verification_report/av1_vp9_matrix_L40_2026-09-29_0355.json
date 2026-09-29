@@ -1,0 +1,152 @@
+{
+  "generated": "2026-09-29T04:05:26",
+  "src": "/workspace/input_videos/word_world_2.mp4",
+  "src_frames": 687,
+  "ref_crf": 21,
+  "soft": {
+    "kbps": 1425,
+    "psnr": 46.581226
+  },
+  "tolerances": {
+    "RATE_PASS": [
+      0.65,
+      1.5
+    ],
+    "RATE_WARN": [
+      0.55,
+      1.65
+    ],
+    "TOL_PSNR_DB": 1.5,
+    "TOL_PSNR_WARN": 3.0
+  },
+  "matrix": [
+    {
+      "codec": "av1_nvenc",
+      "param": "-cq:v",
+      "value": 27,
+      "naive": 21,
+      "note": "默认基准 CRF 21",
+      "extra_args": [
+        "-b:v",
+        "0"
+      ],
+      "psnr": 46.293216,
+      "kbps": 1624,
+      "ratio": 1.14,
+      "d_psnr": -0.288,
+      "verdict": "PASS",
+      "naive_ratio": 1.84
+    },
+    {
+      "codec": "av1_qsv",
+      "verdict": "SKIP",
+      "why": "实跑一帧失败（需 Intel QSV（Arc / 新 iGPU））: [av1_qsv @ 0x55698b274fc0] Error creating a MFX session: -9."
+    },
+    {
+      "codec": "av1_amf",
+      "verdict": "SKIP",
+      "why": "本机 ffmpeg 构建不含该编码器（需 AMD AMF（RDNA3+））"
+    },
+    {
+      "codec": "libsvtav1",
+      "param": "-crf",
+      "value": 25,
+      "naive": 21,
+      "note": "默认基准 CRF 21",
+      "extra_args": [
+        "-preset",
+        "8"
+      ],
+      "psnr": 46.565955,
+      "kbps": 1469,
+      "ratio": 1.031,
+      "d_psnr": -0.015,
+      "verdict": "PASS",
+      "naive_ratio": 1.218
+    },
+    {
+      "codec": "libaom-av1",
+      "param": "-crf",
+      "value": 25,
+      "naive": 21,
+      "note": "默认基准 CRF 21",
+      "extra_args": [
+        "-cpu-used",
+        "5"
+      ],
+      "psnr": 46.145765,
+      "kbps": 1129,
+      "ratio": 0.792,
+      "d_psnr": -0.435,
+      "verdict": "PASS",
+      "naive_ratio": 0.937
+    },
+    {
+      "codec": "librav1e",
+      "param": "-qp",
+      "value": 80,
+      "naive": 21,
+      "note": "默认基准 CRF 21",
+      "extra_args": [],
+      "psnr": 44.454979,
+      "kbps": 1126,
+      "ratio": 0.79,
+      "d_psnr": -2.126,
+      "verdict": "WARN",
+      "naive_ratio": 1.981
+    },
+    {
+      "codec": "libvpx-vp9",
+      "param": "-crf",
+      "value": 28,
+      "naive": 21,
+      "note": "默认基准 CRF 21",
+      "extra_args": [
+        "-b:v",
+        "0",
+        "-cpu-used",
+        "4",
+        "-row-mt",
+        "1"
+      ],
+      "psnr": 44.909526,
+      "kbps": 1350,
+      "ratio": 0.947,
+      "d_psnr": -1.672,
+      "verdict": "WARN",
+      "naive_ratio": 1.301
+    }
+  ],
+  "av1_qp_scan": [
+    {
+      "qp": 21,
+      "ok": true,
+      "psnr": 50.444667,
+      "ratio": 2.644979951805741,
+      "d_psnr": 3.8634410000000017,
+      "verdict": "FAIL"
+    },
+    {
+      "qp": 84,
+      "ok": true,
+      "psnr": 44.581383,
+      "ratio": 0.9327757451233838,
+      "d_psnr": -1.9998429999999985,
+      "verdict": "WARN"
+    },
+    {
+      "qp": 105,
+      "ok": true,
+      "psnr": 43.045707,
+      "ratio": 0.7392541819115747,
+      "d_psnr": -3.5355190000000007,
+      "verdict": "FAIL"
+    }
+  ],
+  "summary": {
+    "pass": 3,
+    "warn": 2,
+    "fail": 2,
+    "skip": 2
+  }
+}

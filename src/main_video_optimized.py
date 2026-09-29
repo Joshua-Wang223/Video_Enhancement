@@ -994,10 +994,10 @@ def _validate_effective_config(config: Config,
         if not isinstance(la, int) or isinstance(la, bool) or not (0 <= la <= 32):
             _errors.append(f"models.{sect}.lookahead_depth 需在 0~32（当前 {la!r}）")
         rate = config.get("models", sect, "rate_mode", default="vbr_hq")
-        if rate not in ("constqp", "vbr_hq", "qvbr"):
+        if rate not in ("constqp", "vbr_hq", "qvbr", "vbr", "cbr"):
             _errors.append(
-                f"models.{sect}.rate_mode 需为 constqp/vbr_hq/qvbr"
-                f"（NVENC SDK 直通仅支持这三档；当前 {rate!r}）")
+                f"models.{sect}.rate_mode 需为 constqp/vbr_hq/qvbr/vbr/cbr"
+                f"（NVENC SDK 直通支持的档位；当前 {rate!r}）")
 
     # ── 分段输出质量参数（IFRNet / ESRGan 两侧同规则）─────────────────────────
     # [P0-FIX-QUALITY-RANGE] 所有质量输入（字面量 crf/cq 与基准 crf_ref/cq_ref，
@@ -1011,6 +1011,17 @@ def _validate_effective_config(config: Config,
     # 与"配置默认"，用 config 判互斥会把默认配置误判成冲突。
     for _stage, _sfx in (("IFRNet", "ifrnet"), ("ESRGan", "esrgan")):
         _codec = config.get("models", _sfx, "codec", default="libx264") or "libx264"
+        # AV1 NVENC 仅支持 constqp / vbr / cbr 三种 RC 模式
+        # 若用户指定了 vbr_hq / qvbr，自动降级为 vbr 并警告
+        _rate_mode = config.get("models", _sfx, "rate_mode", default="vbr_hq")
+        if _codec == "av1_nvenc" and _rate_mode in ("vbr_hq", "qvbr"):
+            import warnings
+            warnings.warn(
+                f"{_stage}: AV1 NVENC does not support rate_mode={_rate_mode!r}, "
+                f"auto-downgrading to 'vbr'",
+                UserWarning
+            )
+            config.set("models", _sfx, "rate_mode", value="vbr")
         _lit = [(f"--{_n}-{_sfx}", _v) for _n, _v in
                 (("crf", getattr(args, f"crf_{_sfx}", None)),
                  ("cq",  getattr(args, f"cq_{_sfx}",  None))) if _v is not None]
@@ -2480,10 +2491,10 @@ ESRGan 模型选项 (--esrgan-model):
                         "medium", "slow", "slower", "veryslow"],
                help="IFRNet 编码预设（libx264/libx265 名称，NVENC 自动映射为 p1~p7）")
     g.add_argument("--rate-mode-ifrnet", metavar="MODE",
-               choices=["constqp", "vbr_hq", "qvbr"],
+               choices=["constqp", "vbr_hq", "qvbr", "vbr", "cbr"],
                help="IFRNet NVENC 码率控制模式（默认 vbr_hq）。"
-                    "NVENC SDK 直通仅支持 constqp / vbr_hq / qvbr 三档，"
-                    "其余取值（vbr/cbr/cbr_hq/cbr_ld_hq）为纯软件编码器的档位，此处不接受")
+                    "H.264/HEVC NVENC 支持 constqp / vbr_hq / qvbr；"
+                    "AV1 NVENC 仅支持 constqp / vbr / cbr（自动降级 vbr_hq/qvbr→vbr）。")
     g.add_argument("--lookahead-depth-ifrnet", type=int, metavar="N",
                help="IFRNet NVENC 前向帧预看深度（0~32，NVENC 硬件上限 32，默认 8）")
     g.add_argument("--report-ifrnet", metavar="PATH",
@@ -2559,10 +2570,10 @@ ESRGan 模型选项 (--esrgan-model):
                             "slow", "slower", "veryslow"],
                    help="ESRGan libx264/libx265 编码预设（默认 medium，NVENC 自动映射为 p1~p7）")
     g.add_argument("--rate-mode-esrgan", metavar="MODE",
-                   choices=["constqp", "vbr_hq", "qvbr"],
+                   choices=["constqp", "vbr_hq", "qvbr", "vbr", "cbr"],
                    help="ESRGan NVENC 码率控制模式（默认 vbr_hq）。"
-                        "NVENC SDK 直通仅支持 constqp / vbr_hq / qvbr 三档，"
-                        "其余取值（vbr/cbr/cbr_hq/cbr_ld_hq）为纯软件编码器的档位，此处不接受")
+                        "H.264/HEVC NVENC 支持 constqp / vbr_hq / qvbr；"
+                        "AV1 NVENC 仅支持 constqp / vbr / cbr（自动降级 vbr_hq/qvbr→vbr）。")
     g.add_argument("--lookahead-depth-esrgan", type=int, metavar="N",
                    help="ESRGan NVENC 前向帧预看深度（0~32，NVENC 硬件上限 32，默认 8）")
     g.add_argument("--ffmpeg-bin", type=str,

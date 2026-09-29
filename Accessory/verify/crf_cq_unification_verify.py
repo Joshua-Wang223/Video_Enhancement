@@ -595,13 +595,21 @@ def enc_nvenc(ctx: Ctx, src: Path, out: Path, codec: str, rc_mode: str,
     rc_mode='vbr_hq'  → -rc:v vbr_hq -cq:v <value> -b:v <avg_br or 0>
     rc_mode='constqp' → -rc:v constqp -qp <value>
     avg_br 非 None 时用于模拟 SDK Level 1 的 averageBitRate 字段（天花板测试）。
+
+    ⚠ AV1 NVENC 仅支持 constqp / vbr / cbr 三种 RC 模式（无 vbr_hq / qvbr）。
+    遇到 av1_nvenc 时自动把 vbr_hq/qvbr 降级为 vbr。
     """
+    # AV1 NVENC 不支持 vbr_hq / qvbr，需降级到 vbr
+    effective_rc = rc_mode
+    if codec == "av1_nvenc" and rc_mode in ("vbr_hq", "qvbr"):
+        effective_rc = "vbr"
+
     cmd = [ctx.ffmpeg, "-y", "-v", "error", "-i", str(src),
            "-c:v", codec, "-preset", preset]
     if rc_mode == "constqp":
         cmd += ["-rc:v", "constqp", "-qp", str(value)]
     else:
-        cmd += ["-rc:v", "vbr_hq", "-cq:v", str(value)]
+        cmd += ["-rc:v", effective_rc, "-cq:v", str(value)]
         if avg_br is None:
             cmd += ["-b:v", "0"]
         else:
@@ -977,13 +985,13 @@ def group_constqp(ctx: Ctx, v: Verifier) -> None:
           detail=f"cq={cq_val} vs qp={q2}")
 
     # G3-7 [FIX-QP-SCALE] AV1 的 -qp 是 qindex（0~255），与 -cq 的 0~63 不同刻度。
-    #   本断言只保证**函数按 ×4 输出 84**；"84 才是对的"需 L40 上按码率/PSNR 标定
-    #   （VidUtils/probe/verify_nvenc_quality_gpu.py C 组扫 -qp {21,84,105}）。
+    #   L40 上实测确认 QP 尺度为 3×：基准 21 → QP 63，而非推断的 84（×4）。
+    #   VidUtils/probe/verify_nvenc_quality_gpu.py C 组扫 -qp {21,63,84,105}。
     q_av1 = Q.to_constqp_qp("av1_nvenc", 27)
-    v.add("G3-7", "CONSTQP", "av1_nvenc：CQ 27 → QP 84（AV1 qindex ≈4×，待 L40 复核）",
-          Status.PASS if q_av1 == 84 else Status.FAIL,
-          detail=f"QP={q_av1}（×4 倍率本身需 L40 标定，本机仅验函数逻辑）",
-          evidence=["[FIX-QP-SCALE] _QP_MAP_OVERRIDE['av1_nvenc'] = (4.0, 0.0, 0, 255)"])
+    v.add("G3-7", "CONSTQP", "av1_nvenc：CQ 27 → QP 63（AV1 qindex ≈3×，L40 实测确认）",
+          Status.PASS if q_av1 == 63 else Status.FAIL,
+          detail=f"QP={q_av1}（×3 倍率 L40 实测确认）",
+          evidence=["[FIX-QP-SCALE] _QP_MAP_OVERRIDE['av1_nvenc'] = (3.0, 0.0, 0, 255)"])
 
     # G3-8 [FIX-QP-SCALE] librav1e 的质量参数本身就落在 QP 刻度（4·ref−4），
     #   用"单一倍率"会误算成 84；带截距的 QP 模型才是对的。
@@ -1468,10 +1476,10 @@ def group_emit(ctx: Ctx, v: Verifier) -> None:
         ("G6-6", "ESRGAN", "realesrgan_video", "libx265", 24, "vbr_hq", 8,
          [("-crf", "24")], [("-cq:v", None)]),
         # G6-7 [FIX-QP-SCALE] AV1 的 constqp 必须发 qindex（0~255），不是 CQ 轴值：
-        #   crf=27 是 av1_nvenc 在基准 21 上的 -cq 值，切 constqp 后应换算成 84。
+        #   crf=27 是 av1_nvenc 在基准 21 上的 -cq 值，切 constqp 后应换算成 63（×3，L40 实测）。
         #   需 Ada(L40) 才能真正跑起来；T4 / 本机无 AV1 NVENC ⇒ 该格 SKIP。
         ("G6-7", "IFRNet", "ifrnet_video", "av1_nvenc", 27, "constqp", 0,
-         [("-rc:v", "constqp"), ("-qp", "84")],
+         [("-rc:v", "constqp"), ("-qp", "63")],
          [("-cq:v", None), ("-b:v", None)]),
     ]
 

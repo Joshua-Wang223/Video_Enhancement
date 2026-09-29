@@ -1374,7 +1374,7 @@ class IFRNetVideoProcessor(TensorRTAccelMixin):
 
         # [P3.1-SPLIT] CRF=0 解耦决策 + Level 1 NVENC SDK 直通装配（含 code=8 preset 降级重试）
         (_nvenc_encoder, writer, _use_nvenc_direct,
-         _active_level) = self._setup_level1_nvenc(
+         _active_level, _level1_rate) = self._setup_level1_nvenc(
             W, H, new_fps, output_path, audio_src, use_codec)
 
         # [DIAG] 记录最终激活的编码级别，供 benchmark 诊断使用
@@ -1920,7 +1920,7 @@ class IFRNetVideoProcessor(TensorRTAccelMixin):
                     # 同样清空 cache，防止后续段复用失败 encoder。
                     self._cached_nvenc_encoder = None
                     self._cached_nvenc_key = None
-        return _nvenc_encoder, writer, _use_nvenc_direct, _active_level
+        return _nvenc_encoder, writer, _use_nvenc_direct, _active_level, _level1_rate
 
     def _record_pipeline_diagnostics(self, pipeline, effective_bs: int,
                                      H: int, W: int, pad_h: int, pad_w: int,

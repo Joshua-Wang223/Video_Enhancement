@@ -623,11 +623,20 @@ class NVENCEncoder:
                  rate_mode: str = "constqp", la_depth: int = 0):
         """rate_mode: 'constqp' | 'vbr_hq' (CQ via VBR_HQ + targetQuality) | 'qvbr'.
            la_depth: lookahead depth (0=disabled, 8~32 for -rc-lookahead equivalent).
-           pipeline_depth: NVENC multi-slot pipeline depth (1-8, default 4)."""
+           pipeline_depth: NVENC multi-slot pipeline depth (1-8, default 4).
+
+           ⚠ AV1 NVENC 仅支持 constqp / vbr / cbr 三种 RC 模式（无 vbr_hq / qvbr）。
+           遇到 av1 codec 时自动把 vbr_hq/qvbr 降级为 vbr 并打印警告。"""
         # [FIX-CODEC-SUPPORT] 支持 h264/hevc/av1 三 codec SDK 直通（默认 h264 保持回归不变）。
         if codec not in _CODEC_GUID_MAP:
             raise ValueError("NVENCEncoder: unsupported codec %r (supported: h264/hevc/av1)" % codec)
         self._codec = codec
+
+        # AV1 NVENC 不支持 vbr_hq / qvbr，需降级到 vbr
+        if codec == "av1" and rate_mode in ("vbr_hq", "qvbr"):
+            print(f"[NVENCEncoder] WARNING: AV1 NVENC does not support rate_mode={rate_mode!r}, "
+                  f"auto-downgrading to 'vbr'", flush=True)
+            rate_mode = "vbr"
 
         self._width = width
         self._height = height

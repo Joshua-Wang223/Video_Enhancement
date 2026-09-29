@@ -894,7 +894,7 @@ class FFmpegWriter:
                     # [V6451-RATEMODE] rc_mode / rc_lookahead 由 processor 层透传
                     # [FIX-QVBR-NVENC] FFmpeg NVENC CLI 不支持 "qvbr" 作为 -rc:v 值，
                     # 映射到 vbr_hq（语义等价：VBR + -cq:v 质量目标控制）。
-                    _NVENC_RC_MAP = {'constqp': 'constqp', 'vbr_hq': 'vbr_hq', 'qvbr': 'vbr_hq'}
+                    _NVENC_RC_MAP = {'constqp': 'constqp', 'vbr_hq': 'vbr_hq', 'qvbr': 'vbr_hq', 'vbr': 'vbr', 'cbr': 'cbr'}
                     nvenc_rc = _NVENC_RC_MAP.get(rc_mode, 'vbr_hq')
                     if nvenc_rc == 'constqp':
                         # [QUALITY-UNIFY] CONSTQP 专用参数是 -qp，不是 -cq:v：

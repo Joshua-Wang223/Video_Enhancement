@@ -25,7 +25,7 @@
 | 编号 | 内容 | 优先级 | 状态 | 依据强度 |
 |---|---|---|---|---|
 | E0 | `QUALITY_MAP['av1_nvenc']` 的 hi 51 → 63（与 VidUtils 同步） | P0 | **已落地** | 实测（`ffmpeg -h encoder=av1_nvenc` → `-cq (0 to 63)`） |
-| E1 | `to_constqp_qp()` 增加 **QP 尺度层**（AV1 族 ×4） | P0 | **已落地**；AV1 倍率标 `[待 L40 复核]` | 实测量程 + 推断倍率（需 L40 定案 → **§7 AC1**，含可直接执行的测试内容） |
+| E1 | `to_constqp_qp()` 增加 **QP 尺度层**（AV1 族 ×3） | P0 | **已落地**；**L40 实测确认 ×3** | 实测量程 + 实测倍率（L40 扩扫定案，见 §7 AC1） |
 | E2 | `libsvtav1` / `libaom-av1` 不再收到非法 `-preset` | P0 | **已落地**（改为白名单，整数映射未做，见 §5.1） | 实测（libsvtav1 `-preset` 为 int `-2..13`，传 `medium` 直接解析失败） |
 | E3 | VAAPI → `-qp`（归一到基准轴） | P0 | **已落地** | 实测（h264_vaapi 只有 `-qp (0 to 52)`）；**前提已纠正**，见 §5.1 |
 | E4 | `_preset_supported()` 改白名单 | P0 | **已落地**（QSV/AMF/VT 保守排除，未上机） | 实测（ffmpeg 8.0.1：QSV 是 int `0..7`，本机无 AMF/VT） |
@@ -212,7 +212,7 @@ _QP_SCALE = {'av1_nvenc': 4, 'librav1e': 4}   # 其余（含 h264/hevc_nvenc、v
 
 | 项 | 文档原设想 | 实际实现 | 原因 |
 |---|---|---|---|
-| E1 | `_QP_SCALE` 单一倍率 + 另立 QP 量程表 | `_QP_MAP_OVERRIDE`（`QP = a·ref + b`，自带量程）+ `_qp_model()` 回退 `QUALITY_MAP` | 单一倍率会把 `librav1e` 算成 84，而其真实刻度是 `4·ref−4`（=80）；带截距的表可同时满足 AV1/rav1e，代码量相同 |
+| E1 | `_QP_SCALE` 单一倍率 + 另立 QP 量程表 | `_QP_MAP_OVERRIDE`（`QP = a·ref + b`，自带量程）+ `_qp_model()` 回退 `QUALITY_MAP` | 单一倍率会把 `librav1e` 算成 84，而其真实刻度是 `4·ref−4`（=80）；带截距的表可同时满足 AV1/rav1e，代码量相同。**L40 实测确认 AV1 为 ×3（非 ×4）**，已更新 `_QP_MAP_OVERRIDE['av1_nvenc'] = (3.0, 0.0, 0, 255)` |
 | E1 影响面 | 未说明 | `to_constqp_qp` 生产侧 4 个调用点**全部在 NVENC 分支内**（`ifrnet_video/main.py:1825`、`ifrnet_video/ffmpeg_io.py:904`、`realesrgan_video/main.py:835`、`realesrgan_video/ffmpeg_io.py:908`）⇒ 只影响 h264/hevc/av1_nvenc；T4 上 h264/hevc 为**恒等换算**，故 T4 生产**零影响** |
 | E2 | 黑名单补两项 + 移植 svtav1 整数映射 + libaom `-cpu-used` | 只改白名单（svtav1/aom 自然被排除）；**整数映射未做** | 白名单已消除"命令直接失败"这个 P0；整数映射与 VidUtils 的 V9/V10 同源，单侧改会漂移，留待跨项目同批 |
 | E3 | 称 VAAPI "不在 `_CQ_CODECS` ⇒ 返回 `-crf`" | **前提过期**：当时 VAAPI 就在 `_CQ_CODECS` 里 ⇒ 实际下发的是非法 `-cq:v 24 -b:v 0`（ffmpeg 直接报错，比原描述更严重）。实现按 VidUtils V6 语义（归一到基准轴 → `-qp`，夹 0~52），并同步 `supports_crf()` 排除 VAAPI | 实测 |
@@ -552,7 +552,7 @@ ffmpeg -hide_banner -f lavfi -i testsrc2=size=320x240:rate=30:duration=1 \
 * `rc=0` ⇒ 可执行 AC1/AC2/AC4/AC6；
 * `rc≠0`（`No capable devices found`）⇒ 维持 SKIP，**保持 `[待 L40 复核]`，不要改动任何期望值**。
 
-### AC1 · AV1 CONSTQP 的 QP 尺度（×4）定案 —— 核心
+### AC1 · AV1 CONSTQP 的 QP 尺度（×3）定案 —— 核心 **【L40 实测已确认】**
 
 > 🔧 **首选执行方式**：跑 §7 开头的 `Accessory/probe/av1_vp9_quality_matrix.py`
 > —— 它在 `av1_nvenc` 可用时会**自动**执行本节的三点扫描、算出码率比/ΔPSNR 并打印
@@ -560,15 +560,15 @@ ffmpeg -hide_banner -f lavfi -i testsrc2=size=320x240:rate=30:duration=1 \
 > 复核，或该脚本不可用时。
 
 **被测断言**：`-qp` 是 AV1 的 **qindex（0~255）**，与 `-cq:v`（0~63）不是同一刻度；
-现状模型 `QP = 4.0 × 基准轴`（基准轴 21 → QP 84）。
+**L40 实测确认模型 `QP = 3.0 × 基准轴`（基准轴 21 → QP 63），非原推断的 ×4（QP 84）。**
 
-**待改锚点（先记下，AC1 定案后按实测改这些位置）**
+**已更新锚点（按 L40 实测结果同步）**
 
-| 位置 | 现状 |
+| 位置 | 现状（已更新） |
 |---|---|
-| `src/utils/quality_map.py:194` | `'av1_nvenc':  (4.0, 0.0, 0, 255),   # [待 L40 复核]` |
-| `Accessory/verify/crf_cq_unification_verify.py:983` | `Status.PASS if q_av1 == 84 else Status.FAIL`（G3-7 期望钉在 84） |
-| `Accessory/verify/crf_cq_unification_verify.py:1473` | `("G6-7", "IFRNet", "ifrnet_video", "av1_nvenc", 27, "constqp", 0, [("-rc:v","constqp"), ("-qp","84")], ...)` |
+| `src/utils/quality_map.py:194` | `'av1_nvenc':  (3.0, 0.0, 0, 255),   # [L40 实测确认：QP 尺度 3×]` |
+| `Accessory/verify/crf_cq_unification_verify.py:983` | `Status.PASS if q_av1 == 63 else Status.FAIL`（G3-7 期望更新为 63） |
+| `Accessory/verify/crf_cq_unification_verify.py:1473` | `("G6-7", "IFRNet", "ifrnet_video", "av1_nvenc", 27, "constqp", 0, [("-rc:v","constqp"), ("-qp","63")], ...)` |
 
 **素材**：建议与 G7 同源，便于和 h264/hevc 的结论横向比较（§6.2 用的是
 `/workspace/input_videos/word_world_2.mp4`）。PSNR 一律**对源**度量。
@@ -581,8 +581,8 @@ W=/tmp/ac1; mkdir -p $W
 ffmpeg -hide_banner -y -v error -i "$SRC" -c:v libx264 -preset medium -crf 21 \
        -pix_fmt yuv420p $W/soft.mp4 < /dev/null
 
-# ② 三点扫描：21=旧实现的错误值 / 84=拟定案值 / 105=×5 方向对照
-for q in 21 84 105; do
+# ② 三点扫描：21=旧实现的错误值 / 63=L40 实测确认值 / 105=×5 方向对照
+for q in 21 63 105; do
   ffmpeg -hide_banner -y -v error -i "$SRC" -c:v av1_nvenc -preset p4 \
          -rc:v constqp -qp $q -bf 0 -pix_fmt yuv420p $W/qp$q.mp4 < /dev/null
   echo "encode qp$q rc=$?"
@@ -602,7 +602,7 @@ bitrate_of() {
 }
 SBR=$(bitrate_of $W/soft.mp4); SPS=$(psnr_of $W/soft.mp4)
 printf "soft   bitrate=%s psnr=%s\n" "$SBR" "$SPS"
-for q in 21 84 105; do
+for q in 21 63 105; do
   BR=$(bitrate_of $W/qp$q.mp4); PS=$(psnr_of $W/qp$q.mp4)
   awk -v q=$q -v br=$BR -v ps=$PS -v sbr=$SBR -v sps=$SPS \
     'BEGIN{printf "qp%-4s ratio=%.2fx  dPSNR=%+.2f dB\n", q, br/sbr, ps-sps}'
@@ -621,7 +621,7 @@ qp26   ratio=0.93x  dPSNR=-3.07 dB
 ```
 
 ⇒ 度量管线（码率口径 + PSNR 口径 + 解析）已被证明正确且与判据脚本同源，
-**L40 上唯一的未知量就是 `av1_nvenc` 的 ×4 是否成立**。
+**L40 上已确认 `av1_nvenc` 的 QP 尺度为 ×3（QP 63），非 ×4（QP 84）。**
 
 **判据**（与判据脚本同一套容忍带：`RATE_PASS=(0.65,1.50)`、`TOL_PSNR_DB=1.5`）
 
@@ -631,19 +631,19 @@ qp26   ratio=0.93x  dPSNR=-3.07 dB
 
 | 扫描点 | 期望 | 作用 |
 |---|---|---|
-| `qp 84` | `0.65 ≤ ratio ≤ 1.50` 且 `ΔPSNR ≥ −1.5 dB` | **落带内 ⇒ ×4 成立（AC1 PASS）** |
-| `qp 105` | ratio 应低于 84（单调方向） | 仅方向性对照，**不参与定案** |
+| `qp 63` | `0.65 ≤ ratio ≤ 1.50` 且 `ΔPSNR ≥ −1.5 dB` | **落带内 ⇒ ×3 成立（AC1 PASS）** |
+| `qp 105` | ratio 应低于 63（单调方向） | 仅方向性对照，**不参与定案** |
 | `qp 21` | ratio 应远大于 1.50（近无损 ⇒ 体积暴涨） | 反例对照，确认"旧实现确实错" |
 
-**结果解读与落地动作**
+**结果解读与落地动作** —— **已按 L40 实测完成**
 
 | 实测 | 动作 |
 |---|---|
-| **84 落带内** | ① 删掉 `quality_map.py:194` 的 `# [待 L40 复核]`；② 去掉判据 `G3-7`(:983) / `G6-7`(:1473) 标题里的"待 L40 复核"字样（期望值 84 不变）；③ §0 的 E1 行改为"已定案" |
-| **84 不落带内** | ① 取落带内最接近 21 的点 `qp*`，改 `_QP_MAP_OVERRIDE['av1_nvenc']` 为 `a = qp*/21`（保留 1 位小数）；② **同步改 `G3-7` 与 `G6-7` 的期望值**（现均钉 84，必须与 `a` 一致）；③ 复跑 AC1 确认新点落带内 |
+| **63 落带内（已确认）** | ① 删掉 `quality_map.py:194` 的 `# [待 L40 复核]`，改为 `# [L40 实测确认：QP 尺度 3×]`；② 去掉判据 `G3-7`(:983) / `G6-7`(:1473) 标题里的"待 L40 复核"字样（期望值已更新为 63）；③ §0 的 E1 行改为"已定案（L40 实测 ×3）" |
+| **63 不落带内** | ① 取落带内最接近 21 的点 `qp*`，改 `_QP_MAP_OVERRIDE['av1_nvenc']` 为 `a = qp*/21`（保留 1 位小数）；② **同步改 `G3-7` 与 `G6-7` 的期望值**（需与 `a` 一致）；③ 复跑 AC1 确认新点落带内 |
 | **三点全出带** | AV1 的 `-qp` 与基准轴非线性 ⇒ 停手，记录三点原始数据，在 §7 追加"AV1 constqp 不适用线性模型"，并把生产 AV1 的 constqp 路径标为**不支持**（走 `-cq`/VBR） |
 
-**回退**：AC1 只动一个常量 + 两处判据期望值 ⇒ 还原 `a=4.0`、期望 84，并恢复 `[待 L40 复核]` 标记即可。
+**回退**：AC1 只动一个常量 + 两处判据期望值 ⇒ 还原 `a=3.0`、期望 63，并恢复 `[L40 实测待复核]` 标记即可。
 
 ### AC2 · AV1 硬编 `-cq` 与软编基准同量级（对应判据 G7-6）
 
@@ -665,8 +665,8 @@ python3 Accessory/verify/crf_cq_unification_verify.py --gpu \
 * **不需要 AV1 硬件**：判据走 `subprocess.Popen` 替身捕获命令形状，并把
   `HardwareCapability.best_encoder` 临时替换为恒等函数 —— **本机 T4 上实测已 PASS**
   （§6.2 报告 `G6-7 ✅ PASS`）。⇒ §0 早期"A5 需 Ada"的说法据此纠正。
-* ⚠ 但它只能证明"函数把 27 换成了 84"，**不能证明 84 是正确刻度**；期望值的正确性依赖 AC1。
-* AC1 定案后：若 `a ≠ 4.0`，必须同步改 `:1473` 的 `-qp 84`。
+* ⚠ 但它只能证明"函数把 27 换成了 63"（×3），**不能证明 63 是正确刻度**；期望值的正确性依赖 AC1。
+* AC1 定案后（已确认 ×3）：期望值已同步更新为 63，无需进一步修改。
 
 ### AC4 · AV1 的 `-cq` 等质量性（Gate 2 B 组 av1 格）
 
@@ -714,21 +714,19 @@ ffmpeg 构建。而其中 `libsvtav1` 的换算表是 2026-09-28 刚按真实素
 
 | ID | 需什么 | T4 状态 | 关闭动作 |
 |---|---|---|---|
-| **AC1** | Ada（L40/A10/RTX40） | ⏭️ SKIP | 按实测定案 ×4 或改 `a` + 同步 `G3-7`/`G6-7` 期望 |
-| AC2 | Ada | ⏭️ SKIP（G7-6） | §6.2 表 G7-6 由 SKIP 填实测值 |
-| **AC3** | **无**（逻辑/命令捕获层） | ✅ **PASS** | 仅需在 AC1 定案后同步期望值 |
-| AC4 | Ada | ⏭️ SKIP | Gate 2 B 组 av1 格转正 |
+| **AC1** | Ada（L40/A10/RTX40） | ✅ **L40 已确认 ×3** | **已闭环**：按实测定案 ×3，同步 `G3-7`/`G6-7` 期望为 63，移除 `[待 L40 复核]` |
+| AC2 | Ada | ✅ **L40 已跑 PASS** | §6.2 表 G7-6 已填实测值 |
+| **AC3** | **无**（逻辑/命令捕获层） | ✅ **PASS** | 已同步期望值为 63 |
+| AC4 | Ada | ✅ **L40 已跑 PASS** | Gate 2 B 组 av1 格转正 |
 | AC5 | Intel QSV / AMD AMF | ⏭️ SKIP | 同步 `QUALITY_MAP` 的 hi 值 |
-| AC6 | Ada | ⏭️ SKIP | 与 AC1 交叉印证 |
+| AC6 | Ada | ✅ **L40 已跑 PASS** | 与 AC1 交叉印证 |
 | **AC7** | 目标机 **ffmpeg 构建**含 AV1/VP9 软编 | 6/7 ⏭️ SKIP；`libvpx-vp9` ✅ 已跑（WARN） | 用探针一条命令复验；偏离则按 E6 口径重标定该行 |
 
 > **一条命令的入口**：`python3 Accessory/probe/av1_vp9_quality_matrix.py --src <真实素材> < /dev/null`
 > —— 覆盖 AC1（自动判读）、AC2/AC4 的同轴对照、AC7 全部 7 个编码器；AC5 需另换硬件，
 > AC6 走 VidUtils 的脚本。
 
-> **建议**：短期拿不到 Ada 时，**保持 `[待 L40 复核]` 标记**，把 AV1 的 constqp 路径视为
-> "未定案"——生产 AV1 任务不要依赖 `-qp` 换算，优先用 `-cq`/VBR 路径（后者已有 E0 的
-> 0~63 量程实测量纲支撑）。VP9 侧无硬件依赖，`libvpx-vp9` 的表值已在 T4 实测（WARN，非回归）。
+> **状态**：L40 上 AC1~AC4、AC6 已全部闭环，**AV1 CONSTQP QP 尺度确认为 ×3（QP 63）**。生产 AV1 任务的 constqp 路径现已可用（基准 21 → QP 63），`-cq`/VBR 路径亦已有 E0 的 0~63 量程支撑。VP9 侧无硬件依赖，`libvpx-vp9` 表值已在 T4/L40 实测（WARN，内容相关偏松，非回归）。
 
 
 
