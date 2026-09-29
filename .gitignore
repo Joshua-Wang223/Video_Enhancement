@@ -28,6 +28,7 @@ _bak*
 /gfpgan/
 /output/
 /temp/
+tests/
 output*.txt
 Video_Enhancement_github_token.txt
 
