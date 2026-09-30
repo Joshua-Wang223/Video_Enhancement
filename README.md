@@ -1223,6 +1223,9 @@ python3 Accessory/probe/av1_vp9_quality_matrix.py \
   `Accessory/probe/av1_vp9_quality_matrix.py` 新增 `--quality-mode size|quality`（默认 `quality`）。
 - 等质量表未覆盖的编码器**回退等体积表**；首版仅软编，硬编待上机（M5）。
 - 跨项目真源一致性由 VidUtils `verify/verify_quality_mapping.py` ⑨ 组断言（含新表逐条相等）。
+- 等质量回归判据 `Accessory/verify/verify_equal_quality.py`：**主门禁 `|ΔVMAF| ≤ 1.0`（唯一判红）**；
+  `|ΔPSNR| ≤ 0.3`、`|ΔPSNR-HVS| ≤ 0.5` 为**交叉参考（soft WARN，不判红）** —— 等质量表以 VMAF 定标，
+  同 VMAF 不蕴含同 PSNR，紧 PSNR 判红属跨轴假阳性（2026-09-30 定案）。
 
 **验证门禁（T4 实测收口 2026-09-28）：**
 

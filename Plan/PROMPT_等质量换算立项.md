@@ -14,6 +14,26 @@
 
 ## 0. 关键点速查（执行者先读这一节）
 
+### 0.0 实施状态快照（2026-09-30 更新，执行者必读）
+
+> **命名已按实现统一**（本文档早期提案名与实际落地不同，以本表为准）：
+
+| 本文档早期提案名 | **实际落地名（2026-09-30）** |
+|---|---|
+| 等体积表 `QUALITY_MAP` | **`SIZE_MAP`**（改名，语义即「等体积/文件大小优先」） |
+| 等质量表 `QUALITY_MAP_QUALITY` | **`QUALITY_MAP`**（占用原名，语义即「等质量/画质优先」） |
+| `--quality-mode volume\|quality` | `--quality-mode size\|quality` |
+| `--quality-table volume\|quality`（D6） | `--quality-mode size\|quality`（与上同一开关） |
+
+* **默认口径 = `quality`**（`convert_crf.py` / `quality_map.py` / 两个探针一致）；
+  等体积路径完整保留，`--quality-mode size` 显式选择。
+* **已落地**：D1（标定脚本）、D2（`QUALITY_MAP` 软编 5 条 + 跨仓逐条相等）、
+  D3（回归判据）、D6（AC7 探针口径开关）、README 说明；VU 侧方案 §4.12 已记录。
+* **未完成**（按算力分类详见 **§7.1**）：M1 多素材、M2 留一交叉验证、M3 rav1e speed 档、
+  M4 硬编（**需 GPU**）、D2b constqp 轴、D4 VE 方案章节（本节即补）、D5 AGENTS.md。
+* ⚠ **本 Windows/WSL checkout 无 `ffmpeg`/`libvmaf`**：§3 的环境基线指 Linux 容器；
+  §7.1 中标注「CPU」的事项**仍须在带 ffmpeg+libvmaf 的 Linux 容器**执行。
+
 ### 0.1 为什么现在做（一条实测数据）
 
 `librav1e` 用**已落表的等体积值** `(7.0032, −80.993)` 在门禁素材 `word_world_2.mp4`（687 帧）逐锚点实测：
@@ -49,16 +69,18 @@ AC7 判据只测 crf 21 ⇒ 这个缺陷一直没被门禁暴露。**这就是�
 
 ### 0.4 硬约束
 
-* **双仓 `QUALITY_MAP` 必须逐条相等**（VidUtils 判据 ⑨ 组断言）⇒ **等质量表也要两份同步副本**；
-* **默认 `--quality-mode volume`**，等体积路径行为**逐字不变**（G1~G6/G10 现有断言不得改动）；
+* **双仓 `SIZE_MAP` / `QUALITY_MAP` 两张表都必须逐条相等**（VidUtils 判据 ⑨ 组断言）⇒ **等质量表也要两份同步副本**；
+* **默认 `--quality-mode quality`**（与 `src/utils/convert_crf.py` 一致，2026-09-30 定案）；
+  等体积路径**完整保留**，由 `--quality-mode size` 显式选择；判据脚本内**显式钉 `size`** ⇒
+  G1~G6/G10 现有断言**数值不变地继续通过**；
 * 所有脚本**一律加 `< /dev/null`**（后台进程组 + tty stdin 下会被 SIGTTOU 整组停住）。
 
 ---
 
 ## 1. 背景：为什么要做等质量表
 
-本仓 `QUALITY_MAP`（`src/utils/convert_crf.py`）采用 **等体积（equal volume）** 口径标定，
-与其余协作项目（VidUtils）语义一致。标定链路是：
+本仓 `SIZE_MAP`（`src/utils/convert_crf.py`；2026-09-30 由 `QUALITY_MAP` 改名）采用
+**等体积（equal volume）** 口径标定，与其余协作项目（VidUtils）语义一致。标定链路是：
 
 ```
 锚点 libx264 CRF 18/21/24/27/30 (-preset medium)
@@ -86,7 +108,7 @@ AC7 判据只测 crf 21 ⇒ 这个缺陷一直没被门禁暴露。**这就是�
 这不是标定误差，而是「等体积口径的固有局限」——需要第二张**等质量表**来覆盖
 「画质优先」的场景。
 
-### 1.2 现状的覆盖盲区
+### 1.2 立项时的覆盖盲区（首版落地后已部分消除，见 §0.0）
 
 | 现状 | 说明 |
 |---|---|
@@ -96,7 +118,7 @@ AC7 判据只测 crf 21 ⇒ 这个缺陷一直没被门禁暴露。**这就是�
 
 ### 1.3 与 VidUtils 侧的关系与交叉引用
 
-**同步硬约束**：两仓的 `QUALITY_MAP` **必须逐条相等**（VidUtils 判据 ⑨ 组 `[9-*]` 断言）。
+**同步硬约束**：两仓的 `SIZE_MAP` / `QUALITY_MAP` **必须各自逐条相等**（VidUtils 判据 ⑨ 组 `[9-*]` 断言）。
 ⇒ **等质量表也必须是双仓同步的两份副本**，改动任一侧必须同步另一侧并回跑 ⑨ 组。
 
 **章节对照**（便于两仓执行者互相查阅、避免重复劳动）：
@@ -121,7 +143,7 @@ AC7 判据只测 crf 21 ⇒ 这个缺陷一直没被门禁暴露。**这就是�
 |---|---|---|
 | 无缓存标定骨架 | `VidUtils/probe/calibrate_soft_offsets_nocache.py` | 已实现独立工作目录 + `prep` md5 审计 + `--dense`；改「体积插值 → VMAF 插值」即可 |
 | VMAF 实测用法 | 见本文档 §11 | `model=` 而非 `model_version=`（K1） |
-| 度量口径同源实现 | `Accessory/probe/av1_vp9_quality_matrix.py` | 已封装码率/PSNR 采集 + 可用性探测 + 容忍带，直接扩展 `--quality-table` |
+| 度量口径同源实现 | `Accessory/probe/av1_vp9_quality_matrix.py` | 已封装码率/PSNR 采集 + 可用性探测 + 容忍带，直接扩展 `--quality-mode` |
 | GPU 画质判据框架 | `Accessory/verify/crf_cq_unification_verify.py` 的 G7 组 | 已有真实素材 GPU 实跑 + 报告产出 |
 
 **须避免的重复劳动**：素材预处理、VMAF 调用封装、PSNR 解析、报告渲染 —— 这些两仓同源，
@@ -180,12 +202,17 @@ libx264 CRF 21  ≈  libx265 CRF ?  ≈  libvpx-vp9 CRF ?  ≈  libsvtav1 CRF ? 
 | 指标 | 用途 | 采集方式（本机已验证） |
 |------|------|------------------------|
 | **VMAF** | 主指标，与主观相关性最好 | `ffmpeg -i dist -i ref -lavfi libvmaf=log_fmt=json:log_path=<out.json> -f null -`，取 `pooled_metrics.vmaf.mean` |
-| **PSNR** | 辅助/兜底，与现有 G7 判据同轴 | 见 §6.1 的**严格口径** |
+| **PSNR** | 平行**参考**（**soft，不判红**） | 见 §6.1 的**严格口径** |
 | **VIF / ADM** | 免费附赠 | 同一份 VMAF JSON 的 `integer_vif_scale*` / `integer_adm*`，零额外开销 |
-| 主观 AB | 最终定标（M3，可选） | ≥3 人双盲；ITU-R BT.500-13 |
+| 主观 AB | 最终定标（M6，可选） | ≥3 人双盲；ITU-R BT.500-13 |
 
 > **效率提示**：`libvmaf` 的 `feature` 选项可让 PSNR/SSIM 在**同一次**运行中一起出，
 > 避免"跑两遍滤镜"。执行者可在 M1 验证该写法。
+
+> ⚠ **门禁语义（2026-09-30 定案）**：**只有 VMAF 判红**（`|ΔVMAF| ≤ 1.0`）。
+> ΔPSNR / ΔPSNR-HVS 是**跨轴参考指标** —— 等质量表以 VMAF 定标，**同 VMAF 不蕴含同 PSNR**，
+> 拿 0.3/0.5 dB 判红必然假阳性 ⇒ 二者**只 WARN（打印 + 计数，不影响退出码）**。
+> 见 `verify_equal_quality.py`（`TOL_VMAF` 判红；`TOL_PSNR`/`TOL_HVS` 仅参考）。
 
 ### 4.2 标定流程
 
@@ -224,7 +251,8 @@ libx264 CRF 21  ≈  libx265 CRF ?  ≈  libvpx-vp9 CRF ?  ≈  libsvtav1 CRF ? 
 所以 **rav1e 的等质量表按 speed 档分别标定**，不能只出一张。
 
 本仓已具备的机制（可直接复用）：
-* `src/utils/quality_map.py` 的 `RAV1E_SPEED` / `_EQVOL_SPEED_OVERRIDE` 已实现"按 speed 档换表"；
+* `src/utils/quality_map.py` 的 `RAV1E_SPEED` / `_EQVOL_SPEED_OVERRIDE` / `_EQQUAL_SPEED_OVERRIDE`
+  已实现"按 speed 档换表"（等质量档 `_EQQUAL_SPEED_OVERRIDE` **待 M3 标定回填**，当前为空 ⇒ 回落）；
 * 已实测：`-speed 10` 下「等体积」与「等质量」**无法同时满足**
   （等体积解 ΔPSNR ≈ −2.7 dB；等质量解体积 +30%）。
 
@@ -238,21 +266,23 @@ libx264 CRF 21  ≈  libx265 CRF ?  ≈  libvpx-vp9 CRF ?  ≈  libsvtav1 CRF ? 
 
 ## 5. 交付物
 
-| # | 交付物 | 说明 |
-|---|---|---|
-| D1 | `Accessory/probe/calibrate_equal_quality.py` | 标定脚本；**必须无缓存**（§6.2）、支持多素材/多编码器/`--quick` |
-| D2 | `QUALITY_MAP_QUALITY` 表 | **新增**，与 `QUALITY_MAP`（等体积）**并存不覆盖**；双仓各一份且逐条相等 |
-| D3 | `Accessory/verify/verify_equal_quality.py` | 回归判据：按 VMAF/PSNR 误差设门限 |
-| D4 | 方案文档新章节 | 记录方法/素材集/拟合参数/误差分析/已知局限；写入 `Plan/` |
-| D5 | README / AGENTS.md 更新 | 说明何时用等体积表、何时用等质量表 |
-| D6 | AC7 判据扩展 | 现有 `Accessory/probe/av1_vp9_quality_matrix.py` 增加 `--quality-table volume\|quality` |
+| # | 交付物 | 说明 | 状态（2026-09-30） |
+|---|---|---|---|
+| D1 | `Accessory/probe/calibrate_equal_quality.py` | 标定脚本；**必须无缓存**（§6.2）、支持多素材/多编码器/`--quick` | ✅ 已落地（含 `--selftest`/`--resume`/rav1e 分档） |
+| D2 | **`QUALITY_MAP` 表（等质量）** | **新增**，与 `SIZE_MAP`（等体积，原名 `QUALITY_MAP`）**并存不覆盖**；双仓各一份且逐条相等 | ✅ 软编 5 条已落表；⚠ **单素材**、硬编未覆盖 |
+| D2b | **`QUALITY_MAP_QP`（constqp/QP 轴等质量，仅本仓）** | `external/*/nvenc_sdk.py` 走 ctypes 直连，`to_constqp_qp()` 需 QP 轴等质量值 | ❌ 空表（软编行可 CPU 镜像；NVENC 行**需 GPU**，见 §7.1） |
+| D3 | `Accessory/verify/verify_equal_quality.py` | 回归判据：主门禁 VMAF；PSNR 为**参考** | ✅ 已落地：主门禁 `\|ΔVMAF\|≤1.0` **判红**；ΔPSNR/ΔPSNR-HVS 为**交叉参考**（WARN 不判红，2026-09-30 定案） |
+| D4 | 方案文档新章节 | 记录方法/素材集/拟合参数/误差分析/已知局限；写入 `Plan/` | ✅ 本文档 §0.0 / §7.1 即补；VU 侧 §4.12 已有 |
+| D5 | README / AGENTS.md 更新 | 说明何时用等体积表、何时用等质量表 | ⚠ README ✅；**AGENTS.md 未更新** |
+| D6 | AC7 判据扩展 | `Accessory/probe/av1_vp9_quality_matrix.py` 增加 `--quality-mode size\|quality`（默认 `quality`） | ✅ 已落地（开关名按实现统一为 `--quality-mode`） |
 
 ### 5.1 CLI / API 兼容要求
 
-- 新增 `--quality-mode volume|quality`（**默认 `volume`**，保持旧行为不变）；
-- `quality_map.resolve_quality()` 增加 `table=` 参数，默认走 `QUALITY_MAP`；
-- **零侵入**：不改动现有等体积路径的任何行为，`Accessory/verify/crf_cq_unification_verify.py`
-  的 G1~G6/G10 现有断言必须**逐字不变地继续通过**。
+- 新增 `--quality-mode size|quality`（**默认 `quality`**，与 `convert_crf.py` 一致）；
+- `quality_map.resolve_quality()` 增加 `table=` 参数（**一次性覆盖**，无副作用）；
+  默认走当前活动表（`quality` 口径 = `QUALITY_MAP`，未覆盖编码器**回退 `SIZE_MAP`**）；
+- **零侵入**：等体积路径行为完整保留，`Accessory/verify/crf_cq_unification_verify.py`
+  的 G1~G6/G10 现有断言**数值不变地继续通过**（判据内显式钉 `size`）。
 
 ---
 
@@ -295,30 +325,61 @@ ffmpeg -hide_banner -v info -i "$DIST" -i "$SRC" -frames:v "$N" \
 
 ## 7. 里程碑
 
-| 阶段 | 交付 | 验收标准 | 依赖硬件 |
-|---|---|---|---|
-| **M0** | D1 骨架 + 口径自检 | 用 `word_world_2.mp4` 跑通 libx264/libx265/librav1e 三点；PSNR/VMAF 数值与手工命令**逐位一致** | 无（软编即可） |
-| **M1** | 3 条核心素材 × 4 软编编码器 | 单素材 ΔVMAF < 1.5、ΔPSNR < 0.3 dB | 无 |
-| **M2** | 补齐素材 + 留一交叉验证 | 留一法 ΔVMAF < 1.0、ΔPSNR < 0.3 dB | 无 |
-| **M3** | rav1e 等质量 × speed 档 | 至少覆盖 `speed 0/10` 两档；给出"等质量 vs 等体积"差异量化 | 无 |
-| **M4** | 硬编覆盖（NVENC h264/hevc/av1） | B/C 组入表；`av1_nvenc` 需 Ada 及以上 | **需 NVIDIA**（含 L40/Ada） |
-| **M5** | D2~D6 落地 + 双仓同步 + 门禁 | 见 §8 | 视 M4 |
-| **M6**（可选） | 主观 AB 测试 | 主观与 VMAF 预测一致性 > 85% | 需人 |
+| 阶段 | 交付 | 验收标准 | 算力需求 | 当前状态（2026-09-30） |
+|---|---|---|---|---|
+| **M0** | D1 骨架 + 口径自检 | 用 `word_world_2.mp4` 跑通 libx264/libx265/librav1e 三点；PSNR/VMAF 数值与手工命令**逐位一致** | **CPU** | ⏳ D1 已就绪；口径自检**待**在 Linux 容器实跑 |
+| **M1** | 3 条核心素材 × 4 软编编码器 | 单素材 ΔVMAF < 1.5、ΔPSNR < 0.3 dB | **CPU** | ⚠ 仅单素材（`new5_raw` 6s）；表值已落 |
+| **M2** | 补齐素材 + 留一交叉验证 | 留一法 ΔVMAF < 1.0、ΔPSNR < 0.3 dB | **CPU**（+ 素材采集含人力） | ❌ 未做（三类缺失素材见 §3.1） |
+| **M3** | rav1e 等质量 × speed 档 | 至少覆盖 `speed 0/10` 两档；给出"等质量 vs 等体积"差异量化 | **CPU** | ❌ 未做（`_EQQUAL_SPEED_OVERRIDE` 空） |
+| **M4** | 硬编覆盖（NVENC h264/hevc/av1） | B/C 组入表 | **GPU**：h264/hevc_nvenc **T4 即可**；`av1_nvenc` **必须 L40/Ada** | ❌ 未做 |
+| **M5** | D2~D6 落地 + 双仓同步 + 门禁 | 见 §8 | CPU（+ M4 的 GPU 部分） | ⚠ 部分：D1/D2/D3/D6/README 已落地；D4 本节补；**D5 AGENTS.md 未更新** |
+| **M6**（可选） | 主观 AB 测试 | 主观与 VMAF 预测一致性 > 85% | **人力** | ❌ 未做 |
 
-> ⚠ **M4 之前的所有结论都不能外推到 NVENC**：本容器无 CUDA，硬编必须换机。
+### 7.1 未完成事项按算力分类（2026-09-30，执行者按此排期）
+
+**A. 仅需 CPU（软编 + 文档 + 逻辑断言）** —— 但须在带 `ffmpeg`+`libvmaf` 的 **Linux 容器**执行
+（本 Windows/WSL checkout 无 ffmpeg，跑不了）：
+
+| 事项 | 归属 | 说明 |
+|---|---|---|
+| M0 口径自检 | M0 | 手工命令与脚本数值逐位比对 |
+| M1 多素材标定（3 核心素材 × 4 软编） | M1 | 复用 `calibrate_equal_quality.py --src A --src B …` |
+| M2 补齐素材 + 留一交叉验证 | M2 | 素材采集属人力；标定本身纯 CPU |
+| M3 rav1e 等质量 × speed 档 | M3 | 回填 `_EQQUAL_SPEED_OVERRIDE`（原生/speed10 两行） |
+| D2b 的**软编 QP 行**（libx265/libsvtav1/librav1e 的 `-qp`） | D2b | 镜像 `QUALITY_MAP` 即可，无需 GPU |
+| D4 方案章节 / D5 AGENTS.md / 命名文案一致性 | D4/D5 | 文档 |
+| "双重换算"针对性断言（§9） | 判据 | 纯逻辑 |
+| M5 的软编部分 + 双仓 ⑨ 组门禁 | M5 | 门禁需 ffmpeg（CPU） |
+
+**B. 必须 GPU（NVENC 直连，T4 / L40 分档）**：
+
+| 事项 | 最低硬件 | 说明 |
+|---|---|---|
+| M4 `h264_nvenc` / `hevc_nvenc` 的 `-cq` 等质量标定 | **T4**（Turing，支持 H.264/HEVC NVENC） | 等质量 `-cq` 轴未标（`QUALITY_MAP` 未覆盖硬编，当前回退 `SIZE_MAP`） |
+| M4 `av1_nvenc` 的 `-cq` 等质量标定 | **L40 / Ada**（T4 **无 AV1 NVENC**，报 `No capable devices found`） | 量程 0~63 |
+| D2b 的 **NVENC QP 行**（`to_constqp_qp` 的 constqp 轴） | h264/hevc **T4**；av1 **L40/Ada** | `av1_nvenc` QP 尺度 ×3 已由 L40 实测确认 |
+| 生产管线 GPU 实跑判据（G7/G8 等） | **T4 / L40** | 需真实素材 GPU 编码 |
+
+**C. 需其他硬件（非 T4/L40）**：QSV → Intel；AMF → AMD；VideoToolbox → macOS。
+（量程/等效点需对应机型实测，见 §4.3）
+
+**D. 需人力**：M6 主观 AB（≥3 人双盲，ITU-R BT.500-13）。
+
+> ⚠ **M4 之前的所有结论都不能外推到 NVENC**：CPU 标定容器无 CUDA，硬编必须换机；
+> 且 **T4 与 L40 不能互相替代**（T4 无 AV1 NVENC）。
 
 ---
 
 ## 8. 验收门禁（必须全绿）
 
-| 门 | 命令 | 判据 |
-|---|---|---|
-| 本仓静态判据 | `python3 Accessory/verify/crf_cq_unification_verify.py --quick < /dev/null` | **FAIL = 0**（现有 G1~G6/G10 断言逐字不变） |
-| 本仓门禁 | `python3 Accessory/verify/plan_implementation_gate.py < /dev/null` | **FAIL = 0** |
-| pytest | `python3 -m pytest Accessory/test -q` | 全绿 |
-| 等质量专用判据 | `python3 Accessory/verify/verify_equal_quality.py < /dev/null` | ΔVMAF / ΔPSNR 在门限内 |
-| **跨项目真源一致** | `python3 VidUtils/verify/verify_quality_mapping.py < /dev/null` | ⑨ 组 **13/13**（含新增等质量表逐条相等）。⚠ 该脚本在 **VU 仓**执行，两仓表任一不同步即红 |
-| AC7 扩展 | `python3 Accessory/probe/av1_vp9_quality_matrix.py --quality-table quality --src <素材> < /dev/null` | 退出码 0（无 FAIL） |
+| 门 | 命令 | 判据 | 算力 |
+|---|---|---|---|
+| 本仓静态判据 | `python3 Accessory/verify/crf_cq_unification_verify.py --quick < /dev/null` | **FAIL = 0**（现有 G1~G6/G10 断言数值不变；判据内显式钉 `size`） | CPU |
+| 本仓门禁 | `python3 Accessory/verify/plan_implementation_gate.py < /dev/null` | **FAIL = 0** | CPU |
+| pytest | `python3 -m pytest Accessory/test -q` | 全绿 | CPU |
+| 等质量专用判据 | `python3 Accessory/verify/verify_equal_quality.py < /dev/null` | 主门禁 ΔVMAF 在门限内；ΔPSNR/ΔPSNR-HVS 为**参考（WARN 不判红）**（**默认 6s，须与标定同口径**） | CPU |
+| **跨项目真源一致** | `python3 VidUtils/verify/verify_quality_mapping.py < /dev/null` | ⑨ 组 **14/14**（`SIZE_MAP` + `QUALITY_MAP` 逐条相等）。⚠ 该脚本在 **VU 仓**执行，两仓表任一不同步即红 | CPU |
+| AC7 扩展 | `python3 Accessory/probe/av1_vp9_quality_matrix.py --quality-mode quality --src <素材> < /dev/null` | 退出码 0（无 FAIL） | CPU（软编部分）／GPU（硬编条目） |
 
 **操作铁律**：所有脚本**一律加 `< /dev/null`**（后台进程组 + tty stdin 下会被 SIGTTOU 整组停住）。
 
@@ -329,10 +390,10 @@ ffmpeg -hide_banner -v info -i "$DIST" -i "$SRC" -frames:v "$N" \
 | 风险 | 证据/对策 |
 |---|---|
 | VMAF 对动画/屏幕内容失准 | 已知短板 ⇒ 必须补这三类素材；辅以 VIF/ADM 与主观 AB |
-| **「经中间编码器中转」的换算会漂移** | ⚠ **本项目已两次踩坑**：① `librav1e` 旧值经 libaom 中推，libaom 重标后自相矛盾；② 分支已换算又被下发处二次换算（`-qp 66`→夹成 255）。⇒ **新表一律直接从基准轴查表，禁止中转**；并加"双重换算"的针对性断言 |
+| **「经中间编码器中转」的换算会漂移** | ⚠ **本项目已两次踩坑**：① `librav1e` 旧值经 libaom 中推，libaom 重标后自相矛盾；② 分支已换算又被下发处二次换算（`-qp 66`→夹成 255）。⇒ **新表一律直接从基准轴查表，禁止中转**；并加"双重换算"的针对性断言（⚠ **仅部分**：VE 侧 `_crf_original` 防跨段二次换算已加；等质量路径的专项断言**待补**） |
 | 表值随编码器/speed/preset 漂移 | 配套参数必须锁定（§4.3）；CI 定期回跑判据 |
 | 素材集不具代表性 | 按内容类型分类覆盖；缺的三类必须补（§3.1） |
-| rav1e 标定极慢 | 实测原生档 ≈0.011× 实时 ⇒ rav1e 一律用 `-speed 10` 标定，并在表注中写明该口径 |
+| rav1e 标定极慢 | 实测原生档 ≈0.011× 实时 ⇒ 标定时 rav1e 用 `-speed 10` 提速，但**表按档分别落**（原生档 / speed10 各一行，见 M3）；表注写明口径 |
 | 本机无 GPU，NVENC 无法验证 | M4 单列；软编部分（M0~M3）不阻塞 |
 | 短 clip 不具代表性 | ⚠ 实测 2s clip 的 speed-10 标定（qp 84.7）与门禁素材（qp 77）不符 ⇒ **标定片段建议 ≥10s** |
 
@@ -340,10 +401,11 @@ ffmpeg -hide_banner -v info -i "$DIST" -i "$SRC" -frames:v "$N" \
 
 ## 10. 与现有体系的兼容
 
-* **不删除/不覆盖**现有 `QUALITY_MAP`（等体积），保留给「码率受限、文件大小优先」场景；
-* 新增等质量表，供「画质优先、存储/带宽次要」场景；
-* 两者**并存**，由 `--quality-mode` / `table=` 选择，**默认 `volume`** ⇒ 旧行为零变化；
-* 双仓（VE / VidUtils）**必须同步**，改一侧必回跑 ⑨ 组。
+* **不删除/不覆盖**等体积表（现名 `SIZE_MAP`），保留给「码率受限、文件大小优先」场景；
+* 等质量表（现名 `QUALITY_MAP`）供「画质优先、存储/带宽次要」场景；
+* 两者**并存**，由 `--quality-mode` / `table=` 选择，**默认 `quality`**
+  （等体积路径仍完整保留，`--quality-mode size` 可切回）；
+* 双仓（VE / VidUtils）**两张表都必须同步**，改一侧必回跑 ⑨ 组。
 
 ---
 
@@ -364,11 +426,14 @@ ffmpeg -hide_banner -v info -i /tmp/a.mp4 -i "$SRC" -frames:v "$N" \
        -lavfi "libvmaf=log_fmt=json:log_path=/tmp/vmaf.json" -f null - 2>&1 | tail -2
 python3 -c "import json;print(json.load(open('/tmp/vmaf.json'))['pooled_metrics']['vmaf']['mean'])"
 
-# 1) 建标定脚本（无缓存 + md5 审计 + VMAF 插值）
-#    结构参考 VidUtils/probe/calibrate_soft_offsets_nocache.py（已修 prep 缓存 bug）
+# 1) 标定脚本已落地（D1）：Accessory/probe/calibrate_equal_quality.py
+#    ✅ 无缓存 + prep md5 审计 + VMAF 插值 + --quick/--resume + rav1e 分档
 
-# 2) 先跑 rav1e：它是"等体积≠等质量"证据最充分的编码器，
-#    用它验证新表确实能把 ΔPSNR 从 -5.79 dB 拉回门限内
+# 2) 若要重跑/扩样（M1/M2/M3）——纯 CPU，需在带 ffmpeg+libvmaf 的 Linux 容器：
+#    python3 Accessory/probe/calibrate_equal_quality.py \
+#        --src <素材A> --src <素材B> --src <素材C> --duration 6 --resume
+#    librav1e 分档（M3）：--rav1e-speed native,10
+#    ⚠ 硬编（M4）本机无法跑，须换 T4（h264/hevc）或 L40/Ada（av1_nvenc）
 ```
 
 ---
@@ -387,10 +452,13 @@ python3 -c "import json;print(json.load(open('/tmp/vmaf.json'))['pooled_metrics'
 ---
 
 **优先级**：P1（画质一致性是视频增强管线的核心竞争力；当前非默认 CRF 已实测出 −5.79 dB 的画质落差）
-**预估工期**：M0~M3 约 1~2 周（纯 CPU 可完成）；M4 需 NVIDIA 机（含 Ada）；M6 需人力
+**预估工期**：M0~M3 约 1~2 周（纯 CPU 可完成）；M4 需 NVIDIA 机（h264/hevc 可 T4、av1 需 L40/Ada）；M6 需人力
 **负责人**：待指派
 **评审人**：需包含有主观测试经验、且熟悉本仓 NVENC 编码路径的工程师
-**阻塞项**：M4 依赖带 NVIDIA GPU（L40/Ada 优先）的机器；§3.1 的三类缺失素材需补齐
+**阻塞项**：
+* **CPU 事项**（M0~M3、D4/D5）——须在**带 ffmpeg+libvmaf 的 Linux 容器**执行（当前 Windows/WSL checkout 无 ffmpeg）；
+* **GPU 事项**（M4、D2b 的 NVENC 行）——h264/hevc_nvenc 需 **T4 及以上**；`av1_nvenc` 需 **L40/Ada**（T4 无 AV1 NVENC）；
+* §3.1 的三类缺失素材（屏幕内容/暗场高噪/纯动画）需补齐（人力）。
 
 ---
 
@@ -399,10 +467,11 @@ python3 -c "import json;print(json.load(open('/tmp/vmaf.json'))['pooled_metrics'
 | 项 | VidUtils | Video_Enhancement（本仓） |
 |---|---|---|
 | 定位 | 裁剪/转码工具，单文件命令行 | 插帧+超分**增强管线**，分段编码 + NVENC SDK 直通 |
-| 默认质量参数暴露 | `--crf/--cq/--qp/--crf-ref` 齐全 | 主要走配置 + `QUALITY_MAP` 内部换算，用户直给质量较少 |
+| 默认质量参数暴露 | `--crf/--cq/--qp/--crf-ref` 齐全 | 主要走配置 + `SIZE_MAP` / `QUALITY_MAP` 内部换算，用户直给质量较少 |
 | 硬编路径 | ffmpeg CLI 下发 | `external/*/nvenc_sdk.py` **ctypes 直连 SDK**（不过 ffmpeg） |
 | 质量判据 | `verify/verify_quality_mapping.py` ⑨/⑪ 组 | `crf_cq_unification_verify.py` G1~G10 + `av1_vp9_quality_matrix.py` |
 | 表副本 | `VidUtils/convert_crf.py` | `src/utils/convert_crf.py`（**两副本须逐条相等**） |
 
 ⇒ 本仓多一处「ctypes 直连 SDK」的量纲校验点：`to_constqp_qp()` 的 QP 刻度层
-（`av1_nvenc` ×3 已由 L40 实测确认）需在等质量表中**一并给出 constqp 轴的对应值**。
+（`av1_nvenc` ×3 已由 L40 实测确认）需在等质量表中**一并给出 constqp 轴的对应值**
+（即 **D2b `QUALITY_MAP_QP`**，⚠ **未做**：软编行可 CPU 镜像，NVENC 行需 T4/L40）。
