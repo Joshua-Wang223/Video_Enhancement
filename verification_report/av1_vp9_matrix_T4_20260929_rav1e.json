@@ -1,0 +1,45 @@
+{
+  "generated": "2026-09-30T00:03:41",
+  "src": "/workspace/input_videos/word_world_2.mp4",
+  "src_frames": 687,
+  "ref_crf": 21,
+  "soft": {
+    "kbps": 1425,
+    "psnr": 46.581049
+  },
+  "tolerances": {
+    "RATE_PASS": [
+      0.65,
+      1.5
+    ],
+    "RATE_WARN": [
+      0.55,
+      1.65
+    ],
+    "TOL_PSNR_DB": 1.5,
+    "TOL_PSNR_WARN": 3.0
+  },
+  "matrix": [
+    {
+      "codec": "librav1e",
+      "param": "-qp",
+      "value": 66,
+      "naive": 21,
+      "note": "默认基准 CRF 21",
+      "extra_args": [],
+      "psnr": 45.373916,
+      "kbps": 1301,
+      "ratio": 0.913,
+      "d_psnr": -1.207,
+      "verdict": "PASS",
+      "naive_ratio": 1.981
+    }
+  ],
+  "av1_qp_scan": [],
+  "summary": {
+    "pass": 1,
+    "warn": 0,
+    "fail": 0,
+    "skip": 0
+  }
+}

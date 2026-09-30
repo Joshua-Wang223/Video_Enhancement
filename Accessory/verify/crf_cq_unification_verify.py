@@ -162,6 +162,11 @@ CHANGED_FILES = [
 #   （libx265 0.9155/1.6385→0.9272/1.3360、libsvtav1 1.9450/−15.62→2.1445/−21.3547、
 #    libvpx-vp9 1.6198/−5.7553→1.6381/−6.2289、libaom-av1 1.0/4.0→2.0071/−21.3464），
 #   值均为 round(a×21+b)。
+#   2026-09-29 追加：librav1e 由 (4.0,−4.0)→qp80 改为 (7.0032,−80.993)→qp66。
+#   起因：旧值是「经 libaom 中转」推导（qp=4×(libaom−5)，再代入当时的 libaom=x264+4），
+#   而 libaom 行已重标为 2.007x−21.35 ⇒ 同一链式推导现在给 63，与旧表 80 自相矛盾。
+#   直接实测（生产路径 = rav1e 默认档，qp 扫 40~140，12 点）得 crf21 等体积点 = qp 64~66，
+#   且 VidUtils 判据 ⑨ 组期望值本已是 64 ⇒ 三方一致，qp80 判定为错值。
 REF21_EXPECTED: Dict[str, Tuple[str, int]] = {
     "libx264":    ("-crf", 21),
     "libx265":    ("-crf", 21),
@@ -170,7 +175,7 @@ REF21_EXPECTED: Dict[str, Tuple[str, int]] = {
     "av1_nvenc":  ("-cq:v", 27),
     "libsvtav1":  ("-crf", 24),
     "libvpx-vp9": ("-crf", 28),
-    "librav1e":   ("-qp", 80),
+    "librav1e":   ("-qp", 66),
 }
 
 # avgBitRate 天花板（两侧 nvenc_sdk.py 必须一致）
@@ -918,7 +923,8 @@ def group_resolve(ctx: Ctx, v: Verifier) -> None:
     expect("G2-8", "crf_ref=0 无损意图不套线性映射", "hevc_nvenc",
            {"crf_ref": 0}, "-cq:v", 0, ["-b:v", "0"])
     expect("G2-9", "cq_ref=0 无损意图", "libx265", {"cq_ref": 0}, "-crf", 0)
-    expect("G2-10", "librav1e 用 -qp 而非 -crf", "librav1e", {}, "-qp", 80)
+    # 期望 66：librav1e 2026-09-29 直接对基准轴等体积重标（详见 REF21_EXPECTED 注释）
+    expect("G2-10", "librav1e 用 -qp 而非 -crf", "librav1e", {}, "-qp", 66)
     expect("G2-11", "libvpx-vp9 必须配 -b:v 0", "libvpx-vp9", {},
            "-crf", 28, ["-b:v", "0"])
 
@@ -994,10 +1000,13 @@ def group_constqp(ctx: Ctx, v: Verifier) -> None:
           detail=f"QP={q_av1}（×3 倍率 L40 实测确认）",
           evidence=["[FIX-QP-SCALE] _QP_MAP_OVERRIDE['av1_nvenc'] = (3.0, 0.0, 0, 255)"])
 
-    # G3-8 [FIX-QP-SCALE] librav1e 的质量参数本身就落在 QP 刻度（4·ref−4），
-    #   用"单一倍率"会误算成 84；带截距的 QP 模型才是对的。
+    # G3-8 [FIX-QP-SCALE] librav1e 的质量参数本身就落在 QP 刻度上，
+    #   to_constqp_qp 对它是**恒等透传**（不套任何倍率/截距），
+    #   故 80 → 80。原注释按旧表 (4.0,−4.0) 论证"截距 −4 不得丢"已失效：
+    #   2026-09-29 该行重标为 (7.0032,−80.993)（详见 REF21_EXPECTED），
+    #   但**本用例验证的是透传不变式**，与该行的 a/b 无关，故仍取 80 作输入。
     q_rav1e = Q.to_constqp_qp("librav1e", 80)
-    v.add("G3-8", "CONSTQP", "librav1e：QP 80 → 80（截距 −4 不得丢）",
+    v.add("G3-8", "CONSTQP", "librav1e：QP 80 → 80（QP 原生刻度，恒等透传）",
           Status.PASS if q_rav1e == 80 else Status.FAIL, detail=f"QP={q_rav1e}")
 
 
