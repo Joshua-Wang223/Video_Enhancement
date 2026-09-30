@@ -162,11 +162,15 @@ CHANGED_FILES = [
 #   （libx265 0.9155/1.6385→0.9272/1.3360、libsvtav1 1.9450/−15.62→2.1445/−21.3547、
 #    libvpx-vp9 1.6198/−5.7553→1.6381/−6.2289、libaom-av1 1.0/4.0→2.0071/−21.3464），
 #   值均为 round(a×21+b)。
-#   2026-09-29 追加：librav1e 由 (4.0,−4.0)→qp80 改为 (7.0032,−80.993)→qp66。
-#   起因：旧值是「经 libaom 中转」推导（qp=4×(libaom−5)，再代入当时的 libaom=x264+4），
-#   而 libaom 行已重标为 2.007x−21.35 ⇒ 同一链式推导现在给 63，与旧表 80 自相矛盾。
-#   直接实测（生产路径 = rav1e 默认档，qp 扫 40~140，12 点）得 crf21 等体积点 = qp 64~66，
-#   且 VidUtils 判据 ⑨ 组期望值本已是 64 ⇒ 三方一致，qp80 判定为错值。
+#   2026-09-29 追加 · librav1e 两次修正：
+#   ① (4.0,−4.0)→qp80 是「经 libaom 中转」推导（qp=4×(libaom−5) 再代入当时的
+#      libaom=x264+4）；libaom 重标为 2.007x−21.35 后同链给 63，与 80 自相矛盾 ⇒ 80 是错值。
+#   ② 按 **rav1e 原生档（不下发 -speed）** 实测重标为 (7.0032,−80.993)→qp66，
+#      落点实测（门禁素材）ratio 0.91 / ΔPSNR −1.21 dB ⇒ PASS。
+#      曾评估把 `-speed 10` 设为默认（快 4.6×），但实测同码率下多掉 ~1.9 dB：
+#      speed10 等体积解 qp77 → ΔPSNR ≈ −2.7 dB（AC7 FAIL），等质量解 qp55 → 体积 +30%
+#      ⇒ 增强管线以画质为产品，**默认保持原生档**，`-speed` 仅作显式可选项
+#      （quality_map.RAV1E_SPEED / VIDEO_RAV1E_SPEED）。见方案 §6.11。
 REF21_EXPECTED: Dict[str, Tuple[str, int]] = {
     "libx264":    ("-crf", 21),
     "libx265":    ("-crf", 21),
@@ -923,7 +927,9 @@ def group_resolve(ctx: Ctx, v: Verifier) -> None:
     expect("G2-8", "crf_ref=0 无损意图不套线性映射", "hevc_nvenc",
            {"crf_ref": 0}, "-cq:v", 0, ["-b:v", "0"])
     expect("G2-9", "cq_ref=0 无损意图", "libx265", {"cq_ref": 0}, "-crf", 0)
-    # 期望 66：librav1e 2026-09-29 直接对基准轴等体积重标（详见 REF21_EXPECTED 注释）
+    # 期望 66：librav1e 在**原生 speed 档**下的等体积重标值。
+    # 默认**不下发** -speed：实测 -speed 10 虽快 4.6×，但同码率下多掉 ~1.9 dB
+    # （等体积解 ΔPSNR ≈ −2.7 dB 会让 AC7 FAIL），详见 REF21_EXPECTED 与方案 §6.11。
     expect("G2-10", "librav1e 用 -qp 而非 -crf", "librav1e", {}, "-qp", 66)
     expect("G2-11", "libvpx-vp9 必须配 -b:v 0", "libvpx-vp9", {},
            "-crf", 28, ["-b:v", "0"])

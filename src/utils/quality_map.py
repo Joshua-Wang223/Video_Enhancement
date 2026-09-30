@@ -24,11 +24,29 @@ libx264 的 ``-crf`` 与 NVENC 的 ``-cq:v`` 都号称"0-51，越小越好"，�
   原样下发；跨族（如给 GPU 的 cq 却落到 CPU 编码器）才做等效换算，并说明。
 * 基准参数（``crf_ref`` / ``cq_ref``）：以统一轴给出质量，按表换算到任意目标
   编码器。与字面量参数互斥。
-* ``crf_ref == 0`` / ``cq_ref == 0`` 表示"无损意图"，直接返回 0（不套线性
-  映射），以复用各后端已有的无损分支（libx265 → lossless=1、
-  nvenc → -qp 0、libx264 → -qp 0）。
+* ``crf_ref == 0`` / ``cq_ref == 0`` 表示"最高质量意图"，直接返回 0（不套线性
+  映射），以复用各后端已有的 0 号分支。按编码器**数学无损与否不同**：
+
+  ==========  ==========================================================
+  编码器      ``0`` 的语义
+  ==========  ==========================================================
+  libx265     **数学无损**（后端走 ``lossless=1``）
+  libx264     **数学无损**（``-qp 0``）
+  NVENC 族    ⚠ **仅"最高质量档"，不是逐位无损** —— H.264/HEVC NVENC 按
+             NVIDIA 规范**没有**无损模式。VidUtils `probe/probe_lossless_qp0.sh`
+             实测：像素恒等装置下 constqp ``-qp 0`` **561/561 帧与源不同**
+             （负向对照 ``-qp 18`` 亦全帧不同，证明装置有分辨力）。
+             注意本仓 0 号档走的是 **CQ 轴**（``-cq:v 0 -b:v 0``），
+             constqp 路径则由 ``to_constqp_qp()`` 另行给出 ``-qp 0``；
+             两者都只是"最高质量档"。
+  其余        按各编码器 0 号档的实际语义，不宣称无损。
+  ==========  ==========================================================
+
+  ⚠ 本容器 **无法实跑 NVENC**（无 ``/dev/nvidia*``、``libcuda.so.1`` 不可加载），
+    上述 NVENC 结论引自 VidUtils 的实测记录，本仓未复现；复现需带 NVIDIA 卡的机器。
 """
 
+import os
 from typing import Dict, List, Optional, Tuple
 
 # 换算表与基础换算函数：唯一来源，避免各处硬编码偏移量互相矛盾
@@ -86,6 +104,50 @@ _QP_ONLY_RANGE = (0, 52)    # VAAPI 的 -qp 量程（ffmpeg 实测 0 to 52）
 # 需要配套 -b:v 0 才是"纯恒定质量"的编码器：
 #   VP8/VP9 的 -crf 不配 -b:v 0 会退化成 constrained quality（受码率上限约束）
 _NEEDS_ZERO_BITRATE = {'libvpx', 'libvpx-vp9'}
+
+# ── librav1e 的 `-speed`（性能 / 画质取舍开关）───────────────────────────────
+# 实测（2026-09-29，方案 §6.11）：2s / 1280×720 / 8 核
+#   · 不传 `-speed`（rav1e 原生默认档）= 179.2 s  ≈ **0.011× 实时**（长视频不可用）
+#   · `-speed 10`               =  39.0 s  ≈ 0.051× 实时（快 4.6×）
+#   · `-tile-rows/-tile-columns 1` = **no-op**（输出字节与不分 tile 完全相同）⇒ 不下发
+#
+# ⚠ **`-speed` 不是免费的**（2026-09-30 在门禁素材 word_world_2 上实测）：
+#   同码率比（≈0.91~0.99）下，`-speed 10` 比原生默认档**多掉约 1.9 dB**：
+#       原生默认档  -qp 66  ratio 0.91   ΔPSNR **-1.21 dB**  → AC7 PASS
+#       -speed 10   -qp 85  ratio 0.91   ΔPSNR **-3.12 dB**  → AC7 **FAIL**（阈值 -3.0）
+#   即：**在 speed 10 下"等体积"与"等质量"两个判据无法同时满足** ——
+#       要守住质量（ΔPSNR ≥ -1.5）必须用 -qp 55，代价是码率比 **1.303（体积 +30%）**。
+#   ⇒ 视频增强管线以画质为产品，**默认保持 rav1e 原生档**（AC7 绿），
+#     `-speed 10` 作为**显式可选项**暴露（性能换体积/画质，由调用方决策）。
+#
+# ⚠ QUALITY_MAP['librav1e'] 的 a/b **只对已声明的 speed 档成立**（`-speed` 整体平移
+#   码率曲线）。若启用 `-speed 10`，必须换成 speed 10 的标定值：
+#     原生档 → (7.0032, -80.993)  crf21 ⇒ qp 66
+#     speed10 → (6.8159, -66.093) crf21 ⇒ qp 77（等体积）／等质量需 qp ≈ 55
+RAV1E_SPEED_DEFAULT = 0        # 0 = 不下发 -speed，用 rav1e 原生默认档
+RAV1E_SPEED = int(os.environ.get('VIDEO_RAV1E_SPEED', '') or RAV1E_SPEED_DEFAULT)
+
+#: ``-speed 10`` 下的**等体积**标定值（与 _RAV1E_EQVOL 原生档同一口径，只是曲线平移）。
+#: 实测（2026-09-30，门禁素材 word_world_2，qp 扫 55~105 六点 + libx264 锚点 18~30）：
+#:   等体积拟合 a=6.8159, b=−66.093 ⇒ crf 21 → qp 77（落点码率比 0.986）。
+#: ⚠ 该点 ΔPSNR ≈ −2.7 dB，**超出 AC7 的 −1.5 dB 质量地板** —— 这是 `-speed 10`
+#:   的固有代价（详见 RAV1E_SPEED 上方注释），不是标定误差。
+_EQVOL_SPEED_OVERRIDE: Dict[str, tuple] = {
+    'librav1e': (6.8159, -66.093, 0, 255),   # 仅当 RAV1E_SPEED > 0 时生效
+}
+
+
+def _eqvol_model(codec: str):
+    """返回该编码器**等体积**轴上的 ``(a, b, lo, hi)``；未知编码器返回 None。
+
+    与 :func:`_qp_model` 同构，但服务的是 **CQ/CRF 轴**（V9 的等体积口径），
+    并按当前生效的 ``-speed`` 档选取对应标定值 —— 因为 ``-speed`` 会整体平移
+    码率曲线，同一个基准轴值在不同 speed 下对应不同的 rav1e qp。
+    """
+    c = str(codec).lower()
+    if c == 'librav1e' and RAV1E_SPEED > 0:
+        return _EQVOL_SPEED_OVERRIDE[c]
+    return QUALITY_MAP.get(c)
 
 # ── CQ 轴可调偏移 ────────────────────────────────────────────────────────────
 # 各硬件编码器 -cq:v（targetQuality / CQ 轴）的微调量，单位与 CQ 同刻度。
@@ -146,7 +208,12 @@ def literal_range(codec: str, kind: str = 'crf') -> Tuple[int, int]:
 def _quality_param(codec: str) -> Tuple[str, List[str]]:
     """返回 (质量参数名, 配套参数列表)。"""
     c = str(codec).lower()
-    if c == 'librav1e' or c in _QP_ONLY_CODECS:
+    # librav1e：只有 -qp（0~255）。`-speed` 是**显式可选**的（RAV1E_SPEED>0 才下发）：
+    # 实测它能提速 4.6×，但同码率下多掉 ~1.9 dB，故默认不启用（见 RAV1E_SPEED_DEFAULT）。
+    # tile 实测为 no-op，任何情况下都不下发。
+    if c == 'librav1e':
+        return '-qp', (['-speed', str(RAV1E_SPEED)] if RAV1E_SPEED > 0 else [])
+    if c in _QP_ONLY_CODECS:
         return '-qp', []
     if c in _CQ_CODECS:
         return '-cq:v', ['-b:v', '0']
@@ -155,8 +222,22 @@ def _quality_param(codec: str) -> Tuple[str, List[str]]:
     return '-crf', []
 
 
+#: 0 号档里**数学无损**的编码器（其余的 0 只是"最高质量档"）
+_MATH_LOSSLESS_ZERO = {'libx264', 'libx265'}
+
+
+def _zero_note(codec: str) -> str:
+    """``0`` 号档的语义提示 —— 避免把"最高质量"误读成"逐位无损"。
+
+    只有 libx264 / libx265 的 0 是数学无损；NVENC 族按 NVIDIA 规范没有无损模式
+    （VidUtils ``probe/probe_lossless_qp0.sh`` 实测 561/561 帧与源不同）。
+    """
+    if str(codec).lower() in _MATH_LOSSLESS_ZERO:
+        return '，0 = 数学无损档'
+    return '，0 = 最高质量档（非逐位无损）'
+
+
 def _clamp_int(value: int, codec: str) -> int:
-    """把已换算好的值夹到该编码器的合法量程内；未知编码器返回原值。"""
     m = QUALITY_MAP.get(str(codec).lower())
     if m is None:
         return value
@@ -229,6 +310,21 @@ def to_constqp_qp(codec: str, value: int) -> int:
     return int(max(lo, min(hi, round(a * ref + b + CONSTQP_QP_OFFSET))))
 
 
+def _to_target_from_ref(codec: str, ref):
+    """把**基准轴（libx264 CRF）**值换算到目标编码器刻度，走当前 speed 档的等体积模型。
+
+    与 :func:`convert_crf.from_x264_crf` 的唯一差别：对 ``librav1e`` 且
+    ``RAV1E_SPEED > 0`` 时改用 speed 10 的标定值（``-speed`` 会整体平移码率曲线，
+    同一基准轴值在不同 speed 档下对应不同的 rav1e qp）。
+    其余编码器 ``_eqvol_model`` 直接落到 ``QUALITY_MAP``，行为与原函数逐字一致。
+    """
+    m = _eqvol_model(codec)
+    if m is None or ref is None:
+        return None
+    a, b, lo, hi = m
+    return max(lo, min(hi, a * float(ref) + b))
+
+
 def resolve_quality(codec: str, *,
                     crf: Optional[int] = None,
                     cq: Optional[int] = None,
@@ -285,17 +381,19 @@ def resolve_quality(codec: str, *,
         _lo, _hi = _QP_ONLY_RANGE
         return '-qp', int(max(_lo, min(_hi, round(ref)))), [], note
 
-    # ── 1/2. 基准轴输入（0 视为无损意图，直接下发 0 走各后端无损分支）────────
+    # ── 1/2. 基准轴输入（0 = 最高质量意图，直发 0 走各后端 0 号分支）──────
+    #    ⚠ 只有 libx265 / libx264 的 0 是**数学无损**；NVENC 的 0 仅"最高质量档"
+    #    （见模块 docstring 的分编码器说明），故对 NVENC 显式加注避免误读。
     if crf_ref is not None:
         note = f'--crf-ref {crf_ref}（libx264 CRF 基准）'
         if int(crf_ref) == 0:
-            return _finish(c, 0, note)
-        value = from_x264_crf(c, crf_ref)
+            return _finish(c, 0, note + _zero_note(c))
+        value = _to_target_from_ref(c, crf_ref)
     elif cq_ref is not None:
         note = f'--cq-ref {cq_ref}（h264_nvenc CQ 基准）'
         if int(cq_ref) == 0:
-            return _finish(c, 0, note)
-        value = from_x264_crf(c, to_x264_crf('h264_nvenc', cq_ref))
+            return _finish(c, 0, note + _zero_note(c))
+        value = _to_target_from_ref(c, to_x264_crf('h264_nvenc', cq_ref))
     else:
         # ── 3/4. 字面量同族：原样下发 ────────────────────────────────────────
         if cq is not None and supports_cq(c):
@@ -305,16 +403,16 @@ def resolve_quality(codec: str, *,
 
         # ── 5/6. 字面量跨族：按原量纲等效换算 ────────────────────────────────
         if cq is not None:
-            value = convert_quality('h264_nvenc', cq, c)
+            value = _to_target_from_ref(c, to_x264_crf('h264_nvenc', cq))
             note = (f'编码器 {c} 不支持 -cq，已将 --cq {cq}'
                     f'（h264_nvenc 量纲）映射为等效值')
         elif crf is not None:
-            value = convert_quality('libx264', crf, c)
+            value = _to_target_from_ref(c, crf)
             note = (f'编码器 {c} 不使用 -crf 刻度，已将 --crf {crf}'
                     f'（libx264 量纲）映射为等效值')
         # ── 7. 均未给：用全局基准 ────────────────────────────────────────────
         else:
-            value = from_x264_crf(c, default_ref)
+            value = _to_target_from_ref(c, default_ref)
             note = f'默认基准 CRF {default_ref}'
 
     if value is None:       # 未知编码器：不做猜测，原样下发
