@@ -893,6 +893,14 @@ class FFmpegWriter:
             # 注意：qvbr 在旧版 FFmpeg h264_nvenc 中不可用，回退到 vbr_hq
             _rc_v_map = {'vbr_hq': 'vbr_hq', 'qvbr': 'vbr_hq', 'vbr': 'vbr', 'cbr': 'cbr', 'constqp': 'constqp'}
             _rc_v = _rc_v_map.get(rc_mode, 'vbr_hq')
+            # [FIX-AV1-RC] av1_nvenc 的 `-rc` 只接受 constqp/vbr/cbr（实测 ffmpeg 7.1：
+            # `-rc:v vbr_hq` → `Undefined constant or missing '(' in 'vbr_hq'` →
+            # `Unable to parse option value` → 整条编码命令失败）。与
+            # nvenc_sdk.NVENCEncoder 的 AV1 自动降级、以及 realesrgan 侧同口径。
+            if 'av1' in codec and _rc_v in ('vbr_hq', 'qvbr'):
+                print(f'[FFmpegWriter] av1_nvenc 不支持 rc={_rc_v}，自动降级为 vbr',
+                      flush=True)
+                _rc_v = 'vbr'
             if _rc_v == 'constqp':
                 # [QUALITY-UNIFY] CONSTQP 专用参数是 -qp，不是 -cq:v：
                 #   ffmpeg: -cq "…for constant quality mode in VBR rate control"（仅 VBR 有效）

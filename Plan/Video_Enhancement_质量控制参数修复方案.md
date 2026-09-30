@@ -20,7 +20,15 @@
 > **需 L40/Ada（或目标机构建）才能检测验证的 AV1/VP9 测试内容（AC0~AC7）见 §7**
 > —— 一条命令入口：`python3 Accessory/probe/av1_vp9_quality_matrix.py --src <真实素材>`。
 >
-> 提交记录：判据/测试/方案/memory 与首轮 T4 报告 = **`9847f59`**；本轮的 AV1/VP9 探针与 §7 扩展 = **见 `git log -1`**（均未推送）。
+> **2026-09-30 更新（换到 L40 机器后补做）**：AC1/AC2/AC4/AC7 在 L40 上**独立复跑**，
+> **P3 长视频冒烟（330 s 真实素材，constqp + vbr 双跑）已执行** —— 过程中暴露并修复
+> **三处 AV1 路径缺陷**（其中一处让 AV1 在本仓完全跑不通）。完整数据、缺陷根因与
+> 回归结果见 **§8**；AC5 的探测方法被证伪（ffmpeg 7.1 的 QSV 选项表里没有 `-cq`），
+> 见 **§8.4**。§7 的状态表与文末「后续建议」已同步更新。
+>
+> 提交记录：判据/测试/方案/memory 与首轮 T4 报告 = **`9847f59`**；AV1/VP9 探针与 §7 扩展
+> = **`69b62db`**（L40 ×3 定案）；本轮（L40 收口 + 三处 AV1 修复 + §8）= **见 `git log -1`**
+> （均未推送）。
 
 | 编号 | 内容 | 优先级 | 状态 | 依据强度 |
 |---|---|---|---|---|
@@ -50,6 +58,9 @@
 | **A10** | **`libaom-av1` 加密复验 + 定位标定脚本缓存污染**：发现 §6.8 里两条不同素材的 libaom 体积逐位相同，定位为 `calibrate_soft_offsets.py` 的 `prep.mp4` **按文件名复用、不校验 `--src`/分辨率** | **已落地（2026-09-29）**；见 **§6.10**。新增无缓存脚本 `calibrate_soft_offsets_nocache.py`（独立工作目录 + 打印 `prep` md5 可审计 + `--dense` 加密扫描），原脚本加复用警告。**16 点 × 3 素材**重测：`a` 收敛稳定（1.976/1.986/1.825），`a=0.952` 确认为假值，曲线"悬崖"消失 ⇒ **现表 (2.007,−21.35) 判定正确、不改表** |
 | **A11** | **`librav1e` 编码性能测试 + 等体积重标**：拆解 A9 里的"编码超时"，分别测性能与表值 | **已落地（2026-09-29）**；见 **§6.11**。性能：默认档 179.2s/2s@720p（≈0.011× 实时），`-speed 10` 提速 **4.6×** 且体积 ×1.40，tile 1×1 为 no-op。**表值发现错误**：旧值 `(4.0,−4.0)→qp80` 系"经 libaom 中转"推导，而 libaom 行已重标 ⇒ 同链推导得 63，自相矛盾；直接实测（默认档 12 点、5/5 锚点）得 `a=7.0032, b=−80.993` ⇒ **crf21 → qp 66**，与 VidUtils 链式 64 一致。已落表 + 同步 `REF21_EXPECTED`/`G2-10` |
 | **A12** | **rav1e「等体积 vs 等质量」口径定案 + `-speed` 决策**：逐锚点实测（门禁素材 word_world_2，crf 18~30）显示 rav1e 两判据严重背离 —— 码率比恒定 0.91~1.00（等体积准）但 ΔPSNR 从 +0.59 单调恶化到 −5.79 dB（等质量不成立） | **已落地（2026-09-30）**；见 **§6.11.3**。**定案：只保留等体积表**（与其余 6 编码器语义一致），不引入等质量表（另立项目）。`-speed 10` 因同码率下多掉 ~1.9 dB、等体积/等质量无法兼得，**默认不启用**，改为 `VIDEO_RAV1E_SPEED` 显式可选；启用时 `_eqvol_model()` 自动切换到 speed 10 的等体积标定值 `(6.8159,−66.093)⇒qp77`，**等体积语义两档都成立**。同时修正 `quality_map` 把 `nvenc → -qp 0` 误列为「无损分支」的问题（VidUtils 实测 NVENC `-qp 0` 561/561 帧与源不同，仅「最高质量档」） |
+| **A13** | **P3 长视频冒烟在 L40 上执行完毕（2026-09-30）**：`interpolate_then_upscale` 2×+2×、330 s 真实素材（11 段）、IFRNet 与 ESRGan 两侧均 `av1_nvenc`，`constqp` 与 `vbr` 各跑一遍 | **已落地**；两次均 `exit 0`、15803 帧全链路守恒、解码级门禁通过、QA sidecar 完整、无内存泄漏。详见 **§8.5** |
+| **A14** | **P3 冒烟暴露的三处 AV1 路径缺陷（2026-09-30 修复）**：① `verify_video_integrity()` 用 cv2 读首帧，把**完好的 AV1 产物判成损坏**并 `unlink`（OpenCV 4.13 无 AV1 解码）⇒ 本仓 AV1 完全跑不通；② ESRGan 侧 `FFmpegWriter` 的 NVENC 判定用精确元组，`av1_nvenc` 落到 `else` 的 libx264 分支，**静默**把 CQ 27 当 CRF 下发；③ 两侧 CLI writer 都未把 AV1 的 `vbr_hq/qvbr` 降级为 `vbr`，而 av1_nvenc 的 `-rc` 只接受 `constqp/vbr/cbr` ⇒ **命令直接失败** | **已落地**；根因、证据与修法见 **§8.6** |
+| **A15** | **`av1_vp9_quality_matrix.py` 的 AC1 判读不再写死 `84`**：表已于 `69b62db` 改为 ×3（QP 63）后，脚本仍按 ×4 假设判读，在 L40 上会输出与表自相矛盾的结论。改为 `av1_expected_qp()` 现场走 `resolve_quality → to_constqp_qp` 推导锚点，JSON/MD 增列 `av1_qp_expected` + `ac1_verdict` | **已落地**；见 **§8.2** |
 
 
 ---
@@ -874,7 +885,12 @@ python3 Accessory/verify/crf_cq_unification_verify.py --gpu \
 
 * 现状：`QUALITY_MAP` 里两者的 hi 仍为 51（`av1_nvenc` 已是 63）。
 * **需 Intel QSV / AMD AMF 硬件，Ada 卡也覆盖不了。**
-* 探测：`ffmpeg -h encoder=av1_qsv | grep -A2 -- '-cq'`（取实际量程）→ 按同一张表同步 hi。
+* ⚠ **2026-09-30 在 L40（ffmpeg 7.1-\+av1）上实测：本节原写的探测方法不成立** ——
+  `av1_qsv` / `h264_qsv` / `hevc_qsv` 的**编码器选项表里根本没有 `-cq` / `-global_quality`**；
+  `-cq` 只以**通用 AVCodecContext 选项**形式存在（`ffmpeg -h full` 里有 3 份副本：
+  NVENC AV1 0~63、NVENC H.264/HEVC 0~51），**通用条目不按编码器区分量程**；
+  `av1_amf` 连编码器名都不在本 build 里（需 `--enable-amf` 重编）。
+  ⇒ 量程只能靠**实跑**取（像 `av1_nvenc` 那样），Ada 卡覆盖不了 QSV/AMF。详见 **§8.4**。
 * 无对应硬件时：维持 51 并在旁标注"未核实"（现状已如此）。
 
 ### AC6 · 跨项目交叉印证（VidUtils Gate 2 C 组）
@@ -907,23 +923,199 @@ ffmpeg 构建。而其中 `libsvtav1` 的换算表是 2026-09-28 刚按真实素
 
 ---
 
-### 汇总：AC × 前置 × 本机（T4）状态 × 关闭动作
+### 汇总：AC × 前置 × 分机状态 × 关闭动作（2026-09-30 更新）
 
-| ID | 需什么 | T4 状态 | 关闭动作 |
-|---|---|---|---|
-| **AC1** | Ada（L40/A10/RTX40） | ✅ **L40 已确认 ×3** | **已闭环**：按实测定案 ×3，同步 `G3-7`/`G6-7` 期望为 63，移除 `[待 L40 复核]` |
-| AC2 | Ada | ✅ **L40 已跑 PASS** | §6.2 表 G7-6 已填实测值 |
-| **AC3** | **无**（逻辑/命令捕获层） | ✅ **PASS** | 已同步期望值为 63 |
-| AC4 | Ada | ✅ **L40 已跑 PASS** | Gate 2 B 组 av1 格转正 |
-| AC5 | Intel QSV / AMD AMF | ⏭️ SKIP | 同步 `QUALITY_MAP` 的 hi 值 |
-| AC6 | Ada | ✅ **L40 已跑 PASS** | 与 AC1 交叉印证 |
-| **AC7** | 目标机 **ffmpeg 构建**含 AV1/VP9 软编 | ✅ **已完成**（重编 ffmpeg 启用 3 编码器） | 实测：libsvtav1 PASS、libaom-av1 PASS、**librav1e PASS（0.91×／−1.21 dB，修正表值后）**、libvpx-vp9 WARN（已知边界） |
+| ID | 需什么 | T4 状态 | L40 状态（2026-09-30 复核） | 关闭动作 |
+|---|---|---|---|---|
+| **AC1** | Ada（L40/A10/RTX40） | ⏭️ SKIP | ✅ **再次确认 ×3**（`69b62db` 已定案，本轮独立复现） | **已闭环**：按实测定案 ×3，同步 `G3-7`/`G6-7` 期望为 63，移除 `[待 L40 复核]`；探针判读改为跟随表（**A15**） |
+| AC2 | Ada | ⏭️ SKIP | ✅ **PASS**（G7-6：ΔPSNR **+0.16 dB** / 1.28×） | §6.2 表 G7-6 已填实测值 |
+| **AC3** | **无**（逻辑/命令捕获层） | ✅ **PASS** | ✅ **PASS** | 已同步期望值为 63 |
+| AC4 | Ada | ⏭️ SKIP | ✅ **PASS**（A 组 av1 格 1.14× / −0.29 dB） | Gate 2 B 组 av1 格转正 |
+| AC5 | Intel QSV / AMD AMF | ⏭️ SKIP | ⏭️ SKIP（**探测方法已被证伪**，见 §8.4） | 只能实跑取证；`QUALITY_MAP` 的 hi 维持 51 并标注"未核实" |
+| AC6 | Ada | ⏭️ SKIP | ✅ 已由 AC1 同源实现覆盖（VidUtils 脚本需另跑） | 与 AC1 交叉印证 |
+| **AC7** | 目标机 **ffmpeg 构建**含 AV1/VP9 软编 | ✅ **已完成**（重编 ffmpeg 启用 3 编码器） | ✅ 部分复跑（`libsvtav1` 1.09×/+0.25 PASS、`libvpx-vp9` 0.95×/−1.67 WARN，与 T4 逐位一致；`libaom-av1`/`librav1e` 本轮**未跑**，见 §8.2） | 已闭环（§6.10 / §6.11） |
 
-> **一条命令的入口**：`python3 Accessory/probe/av1_vp9_quality_matrix.py --src <真实素材> < /dev/null>`
+> **一条命令的入口**：`python3 Accessory/probe/av1_vp9_quality_matrix.py --src <真实素材> < /dev/null`
 > —— 覆盖 AC1（自动判读）、AC2/AC4 的同轴对照、AC7 全部 7 个编码器；AC5 需另换硬件，
 > AC6 走 VidUtils 的脚本。
 
-> **状态**：L40 上 AC1~AC4、AC6 已全部闭环，**AV1 CONSTQP QP 尺度确认为 ×3（QP 63）**。生产 AV1 任务的 constqp 路径现已可用（基准 21 → QP 63），`-cq`/VBR 路径亦已有 E0 的 0~63 量程支撑。VP9 侧无硬件依赖，`libvpx-vp9` 表值已在 T4/L40 实测（WARN，内容相关偏松，非回归）。**软件 AV1 族（libsvtav1/libaom-av1）已在 T4 经重编 ffmpeg 完整验证 PASS**。
+> **状态**：L40 上 AC1~AC4、AC6 已全部闭环，**AV1 CONSTQP QP 尺度确认为 ×3（QP 63）**（2026-09-30 二次复现）。生产 AV1 任务的 constqp 路径现已可用（基准 21 → QP 63），`-cq`/VBR 路径亦已有 E0 的 0~63 量程支撑。VP9 侧无硬件依赖，`libvpx-vp9` 表值已在 T4/L40 实测（WARN，内容相关偏松，非回归）。**软件 AV1 族（libsvtav1/libaom-av1）已在 T4 经重编 ffmpeg 完整验证 PASS**。
+> ⚠ **但"换算正确"不等于"管线能跑"**：2026-09-30 的 P3 长视频冒烟（§8.5）开箱即失败，
+> 根因是三处 AV1 路径缺陷（§8.6），已全部修复并复测通过。**AV1 端到端能力此前从未被验证过。**
+
+---
+
+## 8. L40 上机收口（2026-09-30）：AC 复核 + P3 长视频冒烟
+
+> 换机到 **Tesla L40**（Ada / sm89 / 46 GB / 48 核）后执行。环境：torch 2.10.0+cu128、
+> CUDA 可用；`ffmpeg 7.1-+av1`（重编含 `libsvtav1`/`libaom-av1`/`librav1e`）；OpenCV 4.13.0。
+> 门禁与静态判据同 §6.1 基线；本次新增项全部标 **[L40]**。
+
+### 8.1 AC0 · 前置检查
+
+```bash
+nvidia-smi -L                                       # NVIDIA L40
+python3 -c "import torch;print(torch.__version__, torch.version.cuda)"   # 2.10.0+cu128 True
+ffmpeg -hide_banner -encoders | grep -E 'av1_nvenc|av1_qsv|av1_vaapi'   # 三个都在 build 里
+ffmpeg -hide_banner -f lavfi -i testsrc2=size=320x240:rate=30:duration=1 \
+       -c:v av1_nvenc -f null - < /dev/null ; echo "rc=$?"              # rc=0
+```
+
+* ✅ `av1_nvenc` **实跑一帧 rc=0** ⇒ AC1/AC2/AC4 可执行。
+* ⚠ `av1_qsv` 在 build 里但**实跑失败**（`Error creating a MFX session: -9`）⇒ AC5 仍 SKIP。
+* ⚠ `av1_amf` 不在 build（`Codec 'av1_amf' is not recognized by FFmpeg`）。
+
+### 8.2 AC1 / AC4 / AC7 · 一条命令复跑（并修掉探针自身的缺陷）
+
+```bash
+python3 Accessory/probe/av1_vp9_quality_matrix.py \
+    --src /workspace/input_videos/word_world_2.mp4 \
+    --only av1_nvenc,av1_qsv,libvpx-vp9,libsvtav1 \
+    --report verification_report/av1_vp9_matrix_L40_2026-09-30_0501.md \
+    --json   verification_report/av1_vp9_matrix_L40_2026-09-30_0501.json < /dev/null
+```
+
+| 组 | 项 | 结论 | 数据 |
+|---|---|:--:|---|
+| A | `av1_nvenc` → `-cq:v 27` | ✅ **PASS** | 1.14×（朴素 1.84×）/ ΔPSNR **−0.29 dB** |
+| A | `libsvtav1` → `-crf 24` | ✅ **PASS** | 1.09×（朴素 1.22×）/ **+0.25 dB**（表值已于 §6.8 由 25 改 24） |
+| A | `libvpx-vp9` → `-crf 28` | ⚠️ WARN | 0.95×（朴素 1.30×）/ **−1.67 dB** —— 与 §6.2 的 `G7-7`、§6.7 的 T4 结果**逐位一致** |
+| A | `av1_qsv` | ⏭️ SKIP | MFX session −9（无 Intel 硬件） |
+| **B** | **`-qp 21`** | ❌ FAIL | **2.64× / +3.86 dB** —— 近无损导致体积暴涨，**证实旧实现（21）确实错** |
+| **B** | **`-qp 63`（表值）** | ✅ **PASS** | **1.16× / −0.59 dB** ⇒ **AC1 ×3 二次确认** |
+| B | `-qp 84`（旧 ×4 假设） | ⚠️ WARN | 0.93× / −2.00 dB |
+| B | `-qp 105`（×5 对照） | ❌ FAIL | 0.74× / −3.54 dB |
+
+* ✅ **软编基准与 T4 逐位相同**（1425 kbps / 46.581 dB）⇒ 两条独立运行（不同机器、不同日期）口径一致。
+* ⏭️ **本轮未跑 `libaom-av1` / `librav1e`**：CPU 上单条编码 ~2 min（`libaom` 尤慢），
+  与"快速执行"冲突；两者已在 §6.10 / §6.11 闭环，AC7 无需重开。
+  （若要复跑，去掉 `--only` 即可，代价约 6~8 min。）
+
+**A15 · 探针自身的缺陷（已修）**：B 组判读原先把 **`84`（×4 假设）写死**在脚本里。
+`69b62db` 已把表改成 ×3（QP 63），于是该脚本在 L40 上会打印
+「84 未落带内 ⇒ 改 a = 4.0」这种**与表自相矛盾**的结论。已改为：
+
+```python
+def av1_expected_qp(ref_crf: int) -> int:
+    _, cq_value, _, _ = Q.resolve_quality("av1_nvenc", default_ref=ref_crf)
+    return int(Q.to_constqp_qp("av1_nvenc", cq_value))     # 走生产同一条链
+```
+
+扫描点变为 `{21, 表值, 84, 105}`，JSON/MD 增列 `av1_qp_expected` 与 `ac1_verdict`；
+"落带点最接近 21" 的兜底分支也改成从实测落带点反推 `a`。
+⇒ **教训：判据/探针里凡是硬编码的期望值，都要确认它没被上游改动作废。**
+
+### 8.3 AC2 · G7/G8 门禁（L40）
+
+```bash
+python3 Accessory/verify/crf_cq_unification_verify.py --gpu \
+    --source /workspace/input_videos/word_world_2.mp4 \
+    --bitrate-source /workspace/input_videos/new4_raw.mp4 \
+    --report verification_report/crfcq_gpu_L40_2026-09-30_0502.md < /dev/null
+```
+
+* **总判定：PASS 101 / FAIL 0 / WARN 2 / SKIP 0**（两个 WARN 是 G7-1/G7-2 的既有内容相关偏松）。
+* **G7-6（AC2）PASS**：`av1_nvenc -cq:v 27` ΔPSNR **+0.16 dB** / 码率比 **1.28×**（朴素 **2.05×**）。
+* **G7-7 PASS**：`libsvtav1 -crf 24` −0.31 dB / 1.10×（本 build 有 svtav1，故不再回退 vp9）。
+* G7-3（constqp `-qp 21` 轴）PASS +0.05 dB / 1.44×；G7-5 VMAF 最大偏差 2.06；G8 8/8 PASS。
+
+### 8.4 AC5 · 探测方法被证伪（不是"缺硬件"，是"这条路本来就不通"）
+
+在 ffmpeg 7.1-\+av1 上逐项核查 §7 AC5 写的方法：
+
+| 核查项 | 结果 |
+|---|---|
+| `ffmpeg -h encoder=av1_qsv \| grep -- '-cq'` | **无 `-cq`、无 `-global_quality`**（只有 `-extbrc` / `-qsv_params` / `-preset` int 0..7 …） |
+| `h264_qsv` / `hevc_qsv` 同查 | **同样没有 `-cq`** ⇒ 不是 AV1 特有，是 QSV 族在 7.x 的普遍形态 |
+| `ffmpeg -h full \| grep '^\s*-cq'` | 有 **3 份** `-cq`：NVENC AV1（0 to 63）、NVENC H.264（0 to 51）、NVENC HEVC（0 to 51）—— 均为**编码器私有**条目 |
+| `av1_qsv -global_quality 26` 实跑 | ffmpeg **接受该选项**（报 MFX session −9，而非 unknown option）⇒ 走的是通用 AVCodecContext 的 `global_quality (INT_MIN..INT_MAX)`，**无量程可言** |
+| `av1_amf` | 本 build 无此编码器（需 `--enable-amf`） |
+
+⇒ **结论**：`-cq` 的 0~63 / 0~51 量程只存在于**编码器私有选项**里；QSV/AMF 在 ffmpeg 7.x
+不再声明 `-cq`，通用 `global_quality` 又是无限幅 int ⇒ **"从选项表取量程"这个方法对
+QSV/AMF 不成立**。要定案只能实跑（`av1_nvenc` 正是这么定的），而 Ada 卡覆盖不了 QSV/AMF。
+`QUALITY_MAP` 的 `av1_qsv` / `av1_amf` 维持 `hi=51` + "未核实"标注（本轮未改表）。
+
+### 8.5 P3 · 长视频冒烟（本轮主项，**开箱即失败 ⇒ 先修缺陷再复测**）
+
+**素材**（真实纪录片素材，5.5 min，带音轨）：
+
+```bash
+ffmpeg -y -ss 300 -i "/workspace/input_videos/WordWorld_S2/2-01. My Fuzzy Valentine - Love Bug.avi" \
+       -t 330 -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 128k -pix_fmt yuv420p src_5min.mp4
+# → 640×360 / 7912 帧 / 23.98 fps / 330.0 s
+```
+
+**两条命令**（IFRNet 与 ESRGan **两侧都**走 AV1 硬编）：
+
+```bash
+for RATE in constqp vbr; do
+  python3 src/main_video_optimized.py -c config/default_config.json \
+      -i src_5min.mp4 -o out_5min_$RATE.mp4 \
+      --codec-ifrnet av1_nvenc --codec-esrgan av1_nvenc \
+      --rate-mode-ifrnet $RATE --rate-mode-esrgan $RATE \
+      --segment-duration 30 < /dev/null
+done
+```
+
+| 项 | `constqp` | `vbr` |
+|---|---|---|
+| 管线退出码 | **0** | **0** |
+| 段数 / 段级解码级守恒 | 11 / 11 段 `decoded == expected` | 11 / 11 |
+| 最终产物 | **AV1** / 1280×720 / **15803 帧** / AAC 立体声 | 同 |
+| 输出时长 | 330.000 s | 330.000 s |
+| 平均码率 | 2.52 Mbps | 4.61 Mbps |
+| `validate_decodable_video(count_mode='decode')` | ✅ `ok=True`，15803 帧，0 解码错误，NVDEC 直解 | ✅ 同 |
+| `segment_bitstream_verify_v5 --skip-chroma` | ✅ frames==packets、无 pts_anomaly | ✅ 同 |
+| QA sidecar | ✅ 13 字段齐全（`codec_hint=av1_nvenc`、`rate_mode_ifrnet`、`fixes_applied`…） | ✅ 同 |
+| 耗时（TRT 引擎命中缓存） | **7 分 20 秒 ≈ 0.75× 实时** | 7 分 31 秒 |
+| 宿主 RSS（进程树） | 起步 0.6 GB → 平台期 ~5.0 GB，**后半段斜率 −326 MB/min** | 峰值 6.3 GB，斜率 **−390 MB/min** |
+| GPU 显存峰值 | 6.6 GB / 46 GB（14%） | 7.9 GB / 46 GB |
+
+* ✅ **帧守恒口径**：最终 15803 帧 = 11 个分段各自 `2n−1` 之和（源分段合计 7907 帧；
+  与整片 7912 的 5 帧差来自 `-c copy` 按时间切分的边界，§6.5 已记录同一现象）。
+* ✅ **无内存泄漏**：RSS 后半程斜率为**负**（平台期 ~5 GB），GPU 显存平稳。
+* ⚠ **色度检查（检查 4）在 AV1 长片上是内容相关假阳性**：5 min AV1 产物报 113 个"坏帧簇"
+  （索引呈**固定步长 8**：716, 724, 732 …），而**未经管线的源片段自己就报 40 个**
+  （358, 366, 374 … 同样步长 8）；同一 30 s 干净片段上 `av1_nvenc` / `libx264 crf21` /
+  `libx264 -qp 0` 三者均为 **0 簇** ⇒ 内容触发、非编码缺陷。
+  **验收硬指标一律加 `--skip-chroma`**（与 AGENTS.md / §6.5 的既有结论一致）。
+  （L40 侧新证据：L40 的 NVDEC **能**硬解 AV1（`hwaccel=nvdec` 直解 15803 帧），
+  cv2 失败纯粹是 OpenCV build 的问题，见 §8.6-①。）
+
+### 8.6 冒烟暴露的三处 AV1 缺陷（**均已修复**）
+
+| # | 位置 | 现象 | 根因 | 修法 |
+|---|---|---|---|---|
+| ① | `src/utils/video_utils.py` `verify_video_integrity()` | 管线在**第一个** AV1 分段就 `❌ 输出文件验证失败` → 终止，`decoded=1437` 的**完好**产物被 `unlink` | 该函数用 `cv2.VideoCapture().read()` 读首帧；**OpenCV 4.13 自带 FFmpeg 无 AV1 解码**（`Your platform doesn't support hardware accelerated AV1 decoding` / `Failed to get pixel format` / `Get current frame error`），而系统 ffmpeg 解同一文件 1437/1437 帧 rc=0 | 新增 `_ffmpeg_first_frame_ok()`：cv2 失败时回退 `ffmpeg -v error -frames:v 1 -f null -`（`-nostdin`）。严格验收仍由其后的 `validate_decodable_video(count_mode="decode")` 承担，**未放宽** |
+| ② | `external/realesrgan_video/ffmpeg_io.py` `FFmpegWriter._init_ffmpeg_process()` | 明明 `--codec-esrgan av1_nvenc`，实际命令是 `-vcodec libx264 -crf 27`；而末尾 `[FIX-NVENC-PIPE]` 摘要还打印 `NVENC constqp(cq=27)`，**日志与命令自相矛盾** | 两处 NVENC 判定用**精确元组** `video_codec in ('h264_nvenc','hevc_nvenc')`，`av1_nvenc` 落到 `else` 的 libx264 分支，**静默**把 NVENC 的 CQ 值当 CRF | 两处改为 `'nvenc' in video_codec`（与 `ifrnet_video/ffmpeg_io.py` 同口径）；preset 映射随之覆盖 av1（`medium`→`p4`，即 av1_nvenc 的 default 档，避免命中同名的另一枚举项 index 2 "hq 1 pass"） |
+| ③ | `external/{ifrnet,realesrgan}_video/ffmpeg_io.py` | `--rate-mode-* vbr_hq`（**配置默认值**）+ av1_nvenc ⇒ 编码命令**直接失败** | av1_nvenc 的 `-rc` 只接受 `constqp/vbr/cbr`；两处 CLI writer 把 `vbr_hq` 原样下发 ⇒ `Undefined constant or missing '(' in 'vbr_hq'` → `Unable to parse option value` → ffmpeg 非零退出 | 两侧在 `av1` in codec 且 rc ∈ {`vbr_hq`,`qvbr`} 时降级为 `vbr` 并打印警告，与 `nvenc_sdk.NVENCEncoder` 既有降级同口径 |
+
+**为什么这三处能潜伏至今**：AV1 在 L40 上**永远走不到 SDK 直通** ——
+`[NVENCEncoder] Level 1 失败: GetEncodePresetConfig failed, code=12`（`NVENC_ERR_INVALID_PARAM`）
+两侧都命中，随后按设计降级到 Level 2/3（ffmpeg CLI 管道 + NVENC）。
+⇒ **AV1 段实际一直是"ffmpeg CLI 调 av1_nvenc"**，而 ② ③ 两处缺陷恰好都在这条 CLI 路径上；
+① 则在验收层。AV1 端到端此前**从未被任何测试覆盖过**（AC1~AC7 全是"下发单条 ffmpeg 命令"的微观测试）。
+
+### 8.7 修复后的回归
+
+| 门 | 命令 | 结果 |
+|---|---|---|
+| VE 静态判据 | `crf_cq_unification_verify.py --quick` | **PASS 91 / FAIL 0 / WARN 0 / SKIP 11** |
+| 门禁全套 | `plan_implementation_gate.py` | **96 项 / 94 通过 / 0 失败 / 0 警告 / 2 跳过** |
+| pytest | `pytest Accessory/test -q` | **24 passed** |
+| 冒烟复测 | §8.5 两条命令 | constqp / vbr 均 `exit 0`（见 §8.5 表） |
+
+### 8.8 本轮之后仍剩什么
+
+1. **P2 · V9 更广泛素材复核**（不需 L40）：`libx265` / `libvpx-vp9` / `libsvtav1` 三行
+   仍只有 4 次标定（且首轮受 `prep.mp4` 缓存影响，仅首条素材有效）⇒ 用
+   `calibrate_soft_offsets_nocache.py` 重跑并补 4K / 高帧率 / 动画。
+2. **AC5 · `av1_qsv` / `av1_amf` 量程**：需对应硬件，且**只能实跑取**（§8.4）。
+3. **AC6 · VidUtils `verify_nvenc_quality_gpu.py` 的 C 组**（跨项目交叉印证）：
+   需在 VidUtils 仓所在机器上跑；本仓 AC1 的四点数据（21/63/84/105）已可直接对照。
+4. **AV1 的 Level 1 直通**（`GetEncodePresetConfig code=12`）：功能不受影响（已正确降级），
+   但少一层直通优化，值得单独立项查 SDK/驱动侧原因。
 
 ---
 
@@ -931,22 +1123,32 @@ ffmpeg 构建。而其中 `libsvtav1` 的换算表是 2026-09-28 刚按真实素
 
 | 优先级 | 事项 | 说明 |
 |---|---|---|
-| **P1** | **AC5：`av1_qsv`/`av1_amf` 量程实测** | 需 Intel QSV（Arc/新 iGPU）或 AMD AMF（RDNA3+）硬件。探测 `ffmpeg -h encoder=av1_qsv | grep -A2 -- '-cq'` 取实际量程，同步 `QUALITY_MAP` 的 `hi` 值。 |
+| ~~**P1**~~ | ~~AC5：`av1_qsv`/`av1_amf` 量程实测~~ | **方法已被证伪（§8.4）**：ffmpeg 7.x 的 QSV 族选项表里没有 `-cq`，通用 `global_quality` 无限幅 ⇒ 只能实跑取，需对应硬件，Ada 卡覆盖不了。`QUALITY_MAP` 维持 `hi=51` + "未核实"。 |
 | ~~**P1**~~ | ~~librav1e 编码性能验证~~ | **已完成（§6.11）**：默认档 179.2s/2s@720p（≈0.011× 实时）；`-speed 10` 提速 4.6× 但体积 ×1.40；tile 1×1 为 no-op。表值已按实测改为 `(7.0032,−80.993)`→qp66。**残留**：若生产启用 rav1e，建议显式下发 `-speed 10` 并按 1.40× 因子重标。 |
 | **P2** | **V9 更广泛素材复核（其余三个编码器）** | `libaom-av1` 已用加密扫描在 3 素材上复核完毕（§6.10，现表判定正确）。`libx265` / `libvpx-vp9` / `libsvtav1` 三行仍只有 4 次标定（且首轮受 prep 缓存影响，仅首条素材有效）⇒ 建议用 `calibrate_soft_offsets_nocache.py` 重跑，并补 4K/高帧率/动画等类型。 |
-| **P3** | **长视频冒烟验证** | 在 L40 上跑 ≥5min 真实素材的完整增强流程（插帧+超分+AV1 NVENC constqp/vbr），验证全链路帧守恒、无内存泄漏、QA sidecar 完整。 |
+| ~~**P3**~~ | ~~长视频冒烟验证~~ | **已完成（§8.5）**：330 s / 11 段 / 两侧 av1_nvenc，`constqp` 与 `vbr` 双跑均 `exit 0`，15803 帧全链路守恒、解码级门禁通过、QA sidecar 完整、无内存泄漏（RSS 后半程斜率 −326 MB/min）。**代价**：先修了三处 AV1 缺陷（§8.6）。 |
+| **P3′** | **AV1 端到端回归常态化** | 建议把「AV1 双 rate_mode 冒烟」做成可重复脚本（本次是临时脚本），并在门禁里加一条"`--codec-* av1_nvenc` 的命令形状"断言 —— §8.6 的 ② ③ 正是靠"命令形状断言"能提前抓到的（判据 G6 组已有同类断言，但只覆盖 constqp）。 |
+| **P3″** | **AV1 Level 1 直通（`GetEncodePresetConfig code=12`）** | 功能不受影响（正确降级到 CLI 管道），但 AV1 永远拿不到直通优化；单独立项查 SDK/驱动侧原因。 |
 
 > **复现命令**：
 > ```bash
-> # AC5/AC7 复验入口（有硬件/构建时）
+> # AC1/AC2/AC4/AC7 复验入口（有硬件/构建时）
 > python3 Accessory/probe/av1_vp9_quality_matrix.py --src /workspace/input_videos/word_world_2.mp4
-> 
+>
+> # G7/G8 门禁（AV1 相关格在 Ada 上才转正）
+> python3 Accessory/verify/crf_cq_unification_verify.py --gpu \
+>     --source /workspace/input_videos/word_world_2.mp4 --bitrate-source /workspace/input_videos/new4_raw.mp4
+>
 > # V9 重标定
-> python3 /workspace/VidUtils/probe/calibrate_soft_offsets.py --src /workspace/input_videos/new5_raw.mp4
-> 
-> # 长视频冒烟（示例，需 L40/Ada）
-> python3 src/main_video_optimized.py -c config/default_config.json -i <长视频> -o <输出> \
->     --codec-ifrnet av1_nvenc --rate-mode-ifrnet vbr --skip-upscale --segment-duration 30
+> python3 /workspace/VidUtils/probe/calibrate_soft_offsets_nocache.py --src /workspace/input_videos/new5_raw.mp4
+>
+> # 长视频冒烟（P3，constqp / vbr 各一遍；需 av1_nvenc 可用）
+> for RATE in constqp vbr; do
+>   python3 src/main_video_optimized.py -c config/default_config.json -i src_5min.mp4 \
+>       -o out_5min_$RATE.mp4 --codec-ifrnet av1_nvenc --codec-esrgan av1_nvenc \
+>       --rate-mode-ifrnet $RATE --rate-mode-esrgan $RATE --segment-duration 30 < /dev/null
+>   python3 Accessory/verify/segment_bitstream_verify_v5.py out_5min_$RATE.mp4 --skip-chroma < /dev/null
+> done
 > ```
 
 

@@ -1,0 +1,126 @@
+{
+  "generated": "2026-09-30T05:01:54",
+  "src": "/workspace/input_videos/word_world_2.mp4",
+  "src_frames": 687,
+  "ref_crf": 21,
+  "soft": {
+    "kbps": 1425,
+    "psnr": 46.581226
+  },
+  "tolerances": {
+    "RATE_PASS": [
+      0.65,
+      1.5
+    ],
+    "RATE_WARN": [
+      0.55,
+      1.65
+    ],
+    "TOL_PSNR_DB": 1.5,
+    "TOL_PSNR_WARN": 3.0
+  },
+  "matrix": [
+    {
+      "codec": "av1_nvenc",
+      "param": "-cq:v",
+      "value": 27,
+      "naive": 21,
+      "note": "默认基准 CRF 21",
+      "extra_args": [
+        "-b:v",
+        "0"
+      ],
+      "psnr": 46.293216,
+      "kbps": 1624,
+      "ratio": 1.14,
+      "d_psnr": -0.288,
+      "verdict": "PASS",
+      "naive_ratio": 1.84
+    },
+    {
+      "codec": "av1_qsv",
+      "verdict": "SKIP",
+      "why": "实跑一帧失败（需 Intel QSV（Arc / 新 iGPU））: [av1_qsv @ 0x55c35cadf480] Error creating a MFX session: -9."
+    },
+    {
+      "codec": "libsvtav1",
+      "param": "-crf",
+      "value": 24,
+      "naive": 21,
+      "note": "默认基准 CRF 21",
+      "extra_args": [
+        "-preset",
+        "8"
+      ],
+      "psnr": 46.834025,
+      "kbps": 1553,
+      "ratio": 1.09,
+      "d_psnr": 0.253,
+      "verdict": "PASS",
+      "naive_ratio": 1.218
+    },
+    {
+      "codec": "libvpx-vp9",
+      "param": "-crf",
+      "value": 28,
+      "naive": 21,
+      "note": "默认基准 CRF 21",
+      "extra_args": [
+        "-b:v",
+        "0",
+        "-cpu-used",
+        "4",
+        "-row-mt",
+        "1"
+      ],
+      "psnr": 44.909526,
+      "kbps": 1350,
+      "ratio": 0.947,
+      "d_psnr": -1.672,
+      "verdict": "WARN",
+      "naive_ratio": 1.301
+    }
+  ],
+  "av1_qp_scan": [
+    {
+      "qp": 21,
+      "ok": true,
+      "psnr": 50.444667,
+      "ratio": 2.644979951805741,
+      "d_psnr": 3.8634410000000017,
+      "verdict": "FAIL"
+    },
+    {
+      "qp": 63,
+      "ok": true,
+      "psnr": 45.986377,
+      "ratio": 1.157179386779279,
+      "d_psnr": -0.5948490000000035,
+      "verdict": "PASS"
+    },
+    {
+      "qp": 84,
+      "ok": true,
+      "psnr": 44.581383,
+      "ratio": 0.9327757451233838,
+      "d_psnr": -1.9998429999999985,
+      "verdict": "WARN"
+    },
+    {
+      "qp": 105,
+      "ok": true,
+      "psnr": 43.045707,
+      "ratio": 0.7392534801896895,
+      "d_psnr": -3.5355190000000007,
+      "verdict": "FAIL"
+    }
+  ],
+  "av1_qp_expected": 63,
+  "ac1_verdict": "表值 -qp 63 落带内 ⇒ AC1 PASS，`_QP_MAP_OVERRIDE['av1_nvenc']` 的 a=3.0 得到实测确认",
+  "summary": {
+    "pass": 2,
+    "warn": 1,
+    "fail": 2,
+    "skip": 1
+  }
+}

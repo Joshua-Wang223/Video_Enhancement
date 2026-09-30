@@ -834,7 +834,13 @@ class FFmpegWriter:
         _nvenc_qp: Optional[int] = None
 
         # [FIX-PRESET-UNIFY] NVENC preset 映射：x264 名称 → p1~p7 体系（统一 _PRESET_P_INDEX 口径）
-        if video_codec in ('h264_nvenc', 'hevc_nvenc'):
+        # [FIX-AV1-NVENC] 判定用 `'nvenc' in video_codec`（与 ifrnet_video/ffmpeg_io.py 同口径），
+        # 不能用精确元组 ('h264_nvenc','hevc_nvenc')：av1_nvenc 会被漏掉。
+        #   · 漏掉的后果 1（本行）：preset 不映射，av1_nvenc 的 `medium` 命中的是
+        #     ffmpeg 里另一个枚举项（index 2 = "hq 1 pass"），而非默认档 p4（index 15）；
+        #   · 后果 2（下方 quality_args 分支）：整段落到 libx264 分支，**静默**把
+        #     NVENC 的 CQ 值当 CRF 下发（实测 L40：请求 av1_nvenc 却得到 libx264 -crf 27）。
+        if 'nvenc' in video_codec:
             if preset in _PRESET_P_INDEX:
                 nvenc_preset = f"p{_PRESET_P_INDEX[preset] + 1}"
             else:
@@ -872,7 +878,8 @@ class FFmpegWriter:
         else:
             # [FIX-SLICE-THREAD / FIX-NVENC-PIPE / FIX-LOSSLESS]
             # 依据编解码器和 crf 构造最优编码参数
-            if video_codec in ('h264_nvenc', 'hevc_nvenc'):
+            # [FIX-AV1-NVENC] 同上：用子串判定，让 av1_nvenc 走 NVENC 分支
+            if 'nvenc' in video_codec:
                 if crf == 0:
                     # [FIX-LOSSLESS] NVENC 无损：常量 QP=0，去掉 vbr 码率控制
                     # [FIX-NVENC-PIPE] pipe 场景优化：-bf 0 + -surfaces N + -delay 0
@@ -915,6 +922,14 @@ class FFmpegWriter:
                             '-surfaces', str(_NVENC_SURFACES_PIPE),
                         ]
                     else:
+                        # [FIX-AV1-RC] av1_nvenc 的 `-rc` 只接受 constqp/vbr/cbr
+                        # （实测 ffmpeg 7.1：`Undefined constant or missing '(' in
+                        # 'vbr_hq'` → `Unable to parse option value` → 整条命令失败）。
+                        # 与 nvenc_sdk.NVENCEncoder 的 AV1 降级同口径。
+                        if 'av1' in video_codec and nvenc_rc in ('vbr_hq', 'qvbr'):
+                            print(f'[FFmpegWriter] av1_nvenc 不支持 rc={nvenc_rc}，'
+                                  f'自动降级为 vbr', flush=True)
+                            nvenc_rc = 'vbr'
                         print(f'[FFmpegWriter] rate_mode={rc_mode} rc-lookahead={rc_lookahead}')
                         quality_args = [
                             '-preset', nvenc_preset,

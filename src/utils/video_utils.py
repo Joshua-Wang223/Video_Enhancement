@@ -2334,10 +2334,41 @@ def verify_segment_output(output_path: Union[str, Path],
     return False, report
 
 
+def _ffmpeg_first_frame_ok(video_path: str, timeout: int = 120) -> bool:
+    """[FIX-AV1-CV2] 用 ffmpeg 探针代替 cv2 读首帧（OpenCV 无 AV1 解码时兜底）。
+
+    背景（2026-09-30 L40 实测）：OpenCV 4.13 自带的 FFmpeg **不含 AV1 解码**，
+    对 NVENC 直出的 AV1 分段 `cap.read()` 返回 False，而同一个文件用系统 ffmpeg
+    解码完全正常（1437/1437 帧、rc=0，连 `-hwaccel cuda` 都可用）。于是
+    `verify_video_integrity()` 会把**完全正确的 AV1 产物判成损坏**，
+    上层随即 `unlink` 掉它并终止整条流水线。
+    ⇒ 编码能力必须由 ffmpeg 决定（编码本来就是 ffmpeg 做的），不能由 OpenCV 决定。
+
+    这里只做"能否解出 1 帧"的轻量判定；严格的解码级帧守恒验收在其后的
+    `validate_decodable_video(count_mode="decode")`，不受本函数放宽影响。
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return False
+    cmd = [ffmpeg, "-hide_banner", "-v", "error", "-nostdin",
+           "-i", video_path, "-map", "0:v:0", "-frames:v", "1",
+           "-f", "null", "-"]
+    try:
+        r = subprocess.run(cmd, stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout)
+    except Exception:
+        return False
+    return r.returncode == 0
+
+
 def verify_video_integrity(video_path: str) -> bool:
     """
     验证视频文件完整性
-    
+
+    [FIX-AV1-CV2] cv2 读首帧失败时回退 ffmpeg 探针（OpenCV 构建可能不含
+    目标编码器的解码器，如 AV1）。详见 _ffmpeg_first_frame_ok 的背景说明。
+
     Args:
         video_path: 视频路径
     
@@ -2360,11 +2391,15 @@ def verify_video_integrity(video_path: str) -> bool:
             ret, frame = cap.read()
         
         cap.release()
-        return ret
+        if ret:
+            return True
     except Exception:
         # [P0-FIX-BARE-EXCEPT] 原裸 except 会吞掉 KeyboardInterrupt/SystemExit，
         # 中断瞬间命中此路径会被静默吞掉。
-        return False
+        pass
+
+    # [FIX-AV1-CV2] cv2 判失败 ≠ 文件损坏：交给 ffmpeg 复核一次
+    return _ffmpeg_first_frame_ok(video_path)
 
 
 def _fingerprint_matches(sidecar_path: str, current: dict) -> bool:

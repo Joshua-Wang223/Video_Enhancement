@@ -33,7 +33,9 @@
   换算出的等效质量）与「朴素下发」（基准轴数字原样下发）相对 `libx264 crf21` 的
   码率比与 ΔPSNR。判据沿用判据脚本同一套容忍带。
 * **B 组 · AV1 CONSTQP 的 QP 尺度（AC1）**：仅 `av1_nvenc` 可用时执行，扫
-  `-qp {21, 84, 105}`，用于给方案 §7 的 AC1（`×4` 倍率是否成立）**定案**。
+  `-qp {21, <表值>, 84, 105}`，用于给方案 §7 的 AC1（QP 尺度倍率是否成立）**定案**。
+  判读锚点由 `quality_map` 现场推导（`resolve_quality` → `to_constqp_qp`），不写死 ——
+  表从 ×4 改为 ×3（2026-09-29 L40 实测）后，写死的 `84` 会给出误导性判读。
 
 度量口径（与 `Accessory/verify/crf_cq_unification_verify.py` 严格同源）
 --------------------------------------------------------------------
@@ -265,9 +267,20 @@ def verdict(d_psnr: Optional[float], ratio: float) -> str:
     return "WARN"
 
 
+def av1_expected_qp(ref_crf: int) -> int:
+    """当前 `quality_map` 表把基准轴换算成 AV1 CONSTQP QP 后的**期望值**。
+
+    走生产同一条链（``resolve_quality`` → ``to_constqp_qp``），因此 AC1 的判读
+    锚点永远跟随表，而不是像旧版那样把 ``84``（×4 假设）写死在脚本里 ——
+    表已按 L40 实测改为 ×3（QP 63）后，写死的判读会给出误导性结论。
+    """
+    _, cq_value, _, _ = Q.resolve_quality("av1_nvenc", default_ref=ref_crf)
+    return int(Q.to_constqp_qp("av1_nvenc", cq_value))
+
+
 def scan_av1_qp(ffmpeg: str, ffprobe: str, src: Path, tmp: Path, n: int,
                 soft_psnr: Optional[float], soft_bps: int, timeout: int,
-                points: Tuple[int, ...] = (21, 84, 105)) -> List[dict]:
+                points: Tuple[int, ...]) -> List[dict]:
     """AC1：AV1 CONSTQP 的 QP 尺度扫描（需 av1_nvenc 可用）。"""
     rows = []
     for qp in points:
@@ -405,35 +418,51 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # ── 3. B 组：AV1 constqp QP 尺度（AC1）─────────────────────────────────
     qp_rows: List[dict] = []
+    exp_qp = av1_expected_qp(args.ref_crf)
+    ac1_text = "未执行（--skip-qp-scan 或 av1_nvenc 不可用）"
     if args.skip_qp_scan:
         print("\n【B 组】AV1 CONSTQP QP 扫描：已按 --skip-qp-scan 跳过")
     elif not status.get("av1_nvenc", {}).get("ok"):
-        print("\n【B 组】AV1 CONSTQP QP 扫描：⏭️ SKIP（av1_nvenc 不可用，AC1 需 Ada/L40）")
+        ac1_text = "SKIP：av1_nvenc 不可用（AC1 需 Ada/L40）"
+        print(f"\n【B 组】AV1 CONSTQP QP 扫描：⏭️ SKIP（av1_nvenc 不可用，AC1 需 Ada/L40）")
     else:
-        print("\n【B 组】AV1 CONSTQP QP 尺度扫描（方案 §7 AC1：×4 是否成立）")
+        # 扫描点 = 旧实现的错值(21) + 当前表期望值 + 84(×4 旧假设) + 105(×5 方向对照)
+        points = tuple(dict.fromkeys([21, exp_qp, 84, 105]))
+        print("\n【B 组】AV1 CONSTQP QP 尺度扫描"
+              f"（方案 §7 AC1；当前表期望 -qp {exp_qp}）")
         qp_rows = scan_av1_qp(ffmpeg, ffprobe, src, tmp, n_def, soft_psnr,
-                              soft_bps, args.timeout)
+                              soft_bps, args.timeout, points)
         for r in qp_rows:
             if not r["ok"]:
                 print(f"  ⏭️ -qp {r['qp']:<4} 编码失败: {r['why']}")
                 continue
+            mark = " ←表值" if r["qp"] == exp_qp else ""
             print(f"  {r['verdict']:5} -qp {r['qp']:<4} 码率比 {r['ratio']:.2f}×  "
-                  f"ΔPSNR {r['d_psnr']:+.2f} dB")
-        hit84 = any(x.get("ok") and x["qp"] == 84 and x["verdict"] == "PASS"
-                    for x in qp_rows)
+                  f"ΔPSNR {r['d_psnr']:+.2f} dB{mark}")
+        hit = any(x.get("ok") and x["qp"] == exp_qp and x["verdict"] == "PASS"
+                  for x in qp_rows)
         all_fail = bool(qp_rows) and all(
             x.get("ok") and x["verdict"] == "FAIL" for x in qp_rows)
-        if hit84:
-            ac1 = ("84 落带内 ⇒ ×4 成立，可摘掉 `quality_map` 里 "
-                   "`_QP_MAP_OVERRIDE['av1_nvenc']` 的 `[待 L40 复核]` 标记")
+        if hit:
+            ac1 = (f"表值 -qp {exp_qp} 落带内 ⇒ AC1 PASS，`_QP_MAP_OVERRIDE['av1_nvenc']` "
+                   f"的 a={exp_qp / args.ref_crf:.1f} 得到实测确认")
         elif all_fail:
-            ac1 = ("三点全出带 ⇒ AV1 的 -qp 与基准轴非线性，应记为「不支持」，"
+            ac1 = ("所有扫描点全出带 ⇒ AV1 的 -qp 与基准轴非线性，应记为「不支持」，"
                    "生产改走 -cq/VBR")
         else:
-            ac1 = ("84 未落带内 ⇒ 取落带内最接近 21 的点 qp*，改 "
-                   "`_QP_MAP_OVERRIDE['av1_nvenc']` 的 a = qp*/21，"
-                   "并同步判据 G3-7 / G6-7 的期望值")
+            inband = [x for x in qp_rows
+                      if x.get("ok") and RATE_PASS[0] <= x["ratio"] <= RATE_PASS[1]
+                      and x["d_psnr"] is not None and x["d_psnr"] >= -TOL_PSNR_DB]
+            if inband:
+                best = min(inband, key=lambda x: abs(x["qp"] - args.ref_crf))
+                ac1 = (f"表值 -qp {exp_qp} 未落带内，落带点为 {best['qp']} ⇒ 改 "
+                       f"`_QP_MAP_OVERRIDE['av1_nvenc']` 的 a = "
+                       f"{best['qp'] / args.ref_crf:.1f}，并同步判据 G3-7 / G6-7")
+            else:
+                ac1 = (f"表值 -qp {exp_qp} 未落带内且无落带点 ⇒ 重扫更密的 QP 网格，"
+                       f"再决定 a（不要凭单调性外推）")
         print(f"\n  ⇒ AC1 判读：{ac1}")
+        ac1_text = ac1
 
     # ── 4. 产出 ───────────────────────────────────────────────────────────
     n_fail = sum(1 for r in rows if r["verdict"] == "FAIL") + \
@@ -454,6 +483,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         "tolerances": {"RATE_PASS": RATE_PASS, "RATE_WARN": RATE_WARN,
                        "TOL_PSNR_DB": TOL_PSNR_DB, "TOL_PSNR_WARN": TOL_PSNR_WARN},
         "matrix": rows, "av1_qp_scan": qp_rows,
+        "av1_qp_expected": av1_expected_qp(args.ref_crf),
+        "ac1_verdict": ac1_text,
         "summary": {"pass": n_pass, "warn": n_warn, "fail": n_fail, "skip": n_skip},
     }
     md = _render_md(result)
@@ -502,15 +533,19 @@ def _render_md(r: Dict[str, Any]) -> str:
                  f"{x['ratio']:.2f}× | {nv_txt} | {d_txt} | {note} |")
     L += ["", "## B 组 · AV1 CONSTQP QP 尺度（方案 §7 AC1）", ""]
     if not r["av1_qp_scan"]:
-        L.append("未执行（`av1_nvenc` 不可用或已跳过）——AC1 需 Ada/L40。")
+        L.append(f"未执行 —— {r.get('ac1_verdict', 'av1_nvenc 不可用或已跳过')}。")
     else:
-        L += ["| `-qp` | 结论 | 码率比 | ΔPSNR |", "|---:|:--:|---:|---:|"]
+        exp = r.get("av1_qp_expected")
+        L += [f"当前 `quality_map` 表期望值：**`-qp {exp}`**", "",
+              "| `-qp` | 结论 | 码率比 | ΔPSNR | |", "|---:|:--:|---:|---:|---|"]
         for q in r["av1_qp_scan"]:
             if not q.get("ok"):
-                L.append(f"| {q['qp']} | 编码失败 | — | — |")
+                L.append(f"| {q['qp']} | 编码失败 | — | — | |")
                 continue
+            mark = " ←表值" if q["qp"] == exp else ""
             L.append(f"| {q['qp']} | {q['verdict']} | {q['ratio']:.2f}× | "
-                     f"{q['d_psnr']:+.2f} dB |")
+                     f"{q['d_psnr']:+.2f} dB |{mark} |")
+        L += ["", f"**AC1 判读**：{r.get('ac1_verdict', '')}"]
     L += ["", "> 度量口径与 `Accessory/verify/crf_cq_unification_verify.py` 同源：",
           "> 码率 = `ffprobe format=bit_rate`；PSNR = `-v info` + 显式 `[0:v][1:v]psnr`。",
           "> ⚠ 裸 `-lavfi psnr` 或 `-v error` 都会给出错值。", ""]
