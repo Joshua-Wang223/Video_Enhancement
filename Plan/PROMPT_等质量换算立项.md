@@ -1,0 +1,322 @@
+# Video_Enhancement 等质量换算表立项 Prompt
+
+> 姊妹文档（VidUtils 侧同项目）：`VidUtils/Plan/PROMPT_等质量换算立项.md`
+> 本仓既有质量参数方案：`Plan/Video_Enhancement_质量控制参数修复方案.md`（E0~E10 / A1~A12）
+> **本文档只提需求与验收，不含实现结论；实现方案由执行者补。**
+
+---
+
+## 1. 背景：为什么要做等质量表
+
+本仓 `QUALITY_MAP`（`src/utils/convert_crf.py`）采用 **等体积（equal volume）** 口径标定，
+与其余协作项目（VidUtils）语义一致。标定链路是：
+
+```
+锚点 libx264 CRF 18/21/24/27/30 (-preset medium)
+  → 目标编码器扫 CRF/QP 记体积
+  → 在 log(体积) 曲线上插值出**等体积**参数
+  → 最小二乘拟合 value = a × x264_crf + b
+```
+
+### 1.1 已实测到的「等体积 ≠ 等质量」证据（2026-09-30，rav1e）
+
+在门禁素材 `word_world_2.mp4`（687 帧）上，用本仓**已落表的等体积值** `librav1e = (7.0032, −80.993)` 逐锚点实测：
+
+| x264 crf | 表值 qp | 码率比 | ΔPSNR vs libx264 crf21 | AC7 判定 |
+|---|---|---|---|---|
+| 18 | 45  | 0.956 | **+0.59 dB** | PASS |
+| 21 | 66  | 0.910 | **−1.21 dB** | PASS |
+| 24 | 87  | 0.939 | **−2.57 dB** | FAIL |
+| 27 | 108 | 0.995 | **−4.17 dB** | FAIL |
+| 30 | 129 | 1.000 | **−5.79 dB** | FAIL |
+
+* **码率比恒定在 0.91~1.00** ⇒ 等体积拟合本身很准；
+* **ΔPSNR 随 CRF 单调恶化到 −5.79 dB** ⇒ 同体积下画质持续劣化。
+
+**结论**：等体积表在 rav1e 上只覆盖到默认工作点 crf 21；**非默认 CRF 的画质等价性无保证**。
+这不是标定误差，而是「等体积口径的固有局限」——需要第二张**等质量表**来覆盖
+「画质优先」的场景。
+
+### 1.2 现状的覆盖盲区
+
+| 现状 | 说明 |
+|---|---|
+| AC7 判据**只测 crf 21** | 默认工作点绿 ≠ 全 CRF 区间绿（上表 crf24~30 即为红） |
+| 只有一张表 | 无「码率受限 / 画质优先」的选择开关 |
+| 无客观质量口径的标定 | 现有标定全程只用体积，从未用 VMAF/PSNR 定标 |
+
+### 1.3 与 VidUtils 的关系
+
+两仓的 `QUALITY_MAP` **必须逐条相等**（VidUtils 判据 ⑨ 组断言）。
+⇒ **等质量表也必须是双仓同步的两份副本**，改动任一侧必须同步另一侧并回跑 ⑨ 组。
+
+---
+
+## 2. 目标
+
+建立 **等质量（equal quality）** 换算表，使：
+
+```
+libx264 CRF 21  ≈  libx265 CRF ?  ≈  libvpx-vp9 CRF ?  ≈  libsvtav1 CRF ?  ≈  libaom-av1 CRF ?
+                     librav1e QP ?  ≈  h264_nvenc -cq ?  ≈  hevc_nvenc -cq ?  ≈  av1_nvenc -cq ?
+```
+
+在**同一客观/主观画质水平**下互换，而非同文件大小。
+
+---
+
+## 3. 本机环境基线（2026-09-30 实测，执行者可直接依赖）
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| **libvmaf** | ✅ 可用 | `ffmpeg -enable-libvmaf`；**选项名是 `model=`，不是 `model_version=`**（默认值已是 `version=vmaf_v0.6.1`） |
+| libvmaf JSON | ✅ 可解析 | `pooled_metrics` 含 `vmaf` / `integer_vif_scale{0,1,2,3}` / `integer_adm_*` / `integer_motion` |
+| psnr / ssim 滤镜 | ✅ 可用 | 口径见 §6.1 |
+| 软编 6 编码器 | ✅ 全部构建含且可跑 | libx264 / libx265 / libvpx-vp9 / libsvtav1 / libaom-av1 / librav1e |
+| **NVENC / QSV / AMF** | ❌ **本容器不可用** | `Cannot load libcuda.so.1`，无 `/dev/nvidia*`，`torch.cuda.is_available()=False` ⇒ 硬编部分**必须换机** |
+| ffmpeg | 7.1（`/usr/bin`）+ 7.1+av1（`/usr/local/bin`） | 软编标定建议固定用同一二进制 |
+
+### 3.1 可用作标定源的素材（`/workspace/input_videos/`）
+
+| 文件 | 时长 | 分辨率 | 建议归类 |
+|---|---|---|---|
+| `new5_raw.mp4` | 26.8s | 1920×1080 | 实拍/日常（**V9 基准素材**） |
+| `new4_raw.mp4` | 18.7s | 1920×1080 | 实拍/高熵 |
+| `new4_raw_4k.mp4` | 18.7s | **3840×2160** | 高细节 / 4K 尺度效应 |
+| `new2.mp4` | 33.2s | 1920×1080 | 待归类 |
+| `new1.mp4` | 42.4s | 1280×720 | 待归类 |
+| `word_world_2.mp4` | 27.5s | 720×576 | **G7/AC7 门禁素材**（必须纳入） |
+| `wws3e02_26s.mp4` | 26.1s | 640×360 | 低复杂度（动画/平涂？） |
+| `Earth.at.Night.in.Color.S02E01.mp4` | 1717s | 3840×2160 | 高动态/夜景（长，可切片） |
+| `112 Max Bed Time.avi` | 493.8s | 720×480 | 待归类 |
+
+**待补齐（当前素材库缺）**：屏幕内容/文字（合成字幕、UI）、暗场/高噪、纯动画。
+这三类是 VMAF 最容易失准的区间，**缺了会让 M2 的交叉验证偏乐观**。
+
+---
+
+## 4. 技术路线
+
+### 4.1 质量度量（三维并行）
+
+| 指标 | 用途 | 采集方式（本机已验证） |
+|------|------|------------------------|
+| **VMAF** | 主指标，与主观相关性最好 | `ffmpeg -i dist -i ref -lavfi libvmaf=log_fmt=json:log_path=<out.json> -f null -`，取 `pooled_metrics.vmaf.mean` |
+| **PSNR** | 辅助/兜底，与现有 G7 判据同轴 | 见 §6.1 的**严格口径** |
+| **VIF / ADM** | 免费附赠 | 同一份 VMAF JSON 的 `integer_vif_scale*` / `integer_adm*`，零额外开销 |
+| 主观 AB | 最终定标（M3，可选） | ≥3 人双盲；ITU-R BT.500-13 |
+
+> **效率提示**：`libvmaf` 的 `feature` 选项可让 PSNR/SSIM 在**同一次**运行中一起出，
+> 避免"跑两遍滤镜"。执行者可在 M1 验证该写法。
+
+### 4.2 标定流程
+
+```
+对每个编码器 × 每条素材：
+  1. 统一预处理 → 目标分辨率/时长/fps，yuv420p（⚠ 见 §6.2 的缓存陷阱）
+  2. libx264 -preset medium 扫 CRF 18/21/24/27/30（+ 建议 15/33 两端点做外推校验）
+     → 每个锚点记录 (体积, VMAF, PSNR)
+  3. 目标编码器扫 10~15 个参数点，覆盖锚点质量区间
+     → 每个点记录 (体积, VMAF, PSNR)
+  4. **在目标编码器的「参数 → VMAF」曲线上插值**，取与每个 libx264 锚点**等 VMAF**的参数值
+     （VMAF 对参数单调，插值比体积插值稳）
+  5. 对 (x264_CRF, 目标参数) 做最小二乘 → 等质量表
+  6. 留一素材交叉验证：预测误差目标 ΔVMAF < 1.0、ΔPSNR < 0.3 dB
+```
+
+### 4.3 各编码器的固定参数（标定与下发必须一致，否则等效点漂移）
+
+| 编码器 | 质量参数 | 必须锁定的配套参数 | 备注 |
+|---|---|---|---|
+| libx264 | CRF | `-preset medium` | 基准轴 |
+| libx265 | CRF | `-preset medium` | |
+| libvpx-vp9 | CRF | **`-b:v 0 -deadline good -cpu-used 2 -row-mt 1`** | 缺 `-b:v 0` 会退化为 constrained quality |
+| libsvtav1 | CRF | **`-preset 8`** | 换 preset 等效点会漂 |
+| libaom-av1 | CRF | **`-b:v 0 -cpu-used 6`** | 默认 cpu-used=1 极慢 |
+| librav1e | QP | **`-speed <档>`** | ⚠ 见 §4.4，表值随 speed 变 |
+| h264/hevc_nvenc | `-cq` | `-rc:v vbr_hq -b:v 0 -preset p4` | 需 NVIDIA 机 |
+| av1_nvenc | `-cq` | 同上 | 量程 0~63；需 Ada 及以上 |
+| h264/hevc_vaapi | `-qp` | — | 0~52 |
+| h264/hevc_qsv | 待确认 | — | 需 Intel 机；`-preset` 是 int 0~7 |
+| h264/hecv_amf / *_videotoolbox | 待确认 | — | 需 AMD / macOS |
+
+### 4.4 rav1e 的特殊性（必须先定，否则表值无从谈起）
+
+`-speed` 会**整体平移** rav1e 的码率曲线（实测：同 qp 下 speed 10 体积 ≈ 原生档 **1.40×**），
+所以 **rav1e 的等质量表按 speed 档分别标定**，不能只出一张。
+
+本仓已具备的机制（可直接复用）：
+* `src/utils/quality_map.py` 的 `RAV1E_SPEED` / `_EQVOL_SPEED_OVERRIDE` 已实现"按 speed 档换表"；
+* 已实测：`-speed 10` 下「等体积」与「等质量」**无法同时满足**
+  （等体积解 ΔPSNR ≈ −2.7 dB；等质量解体积 +30%）。
+
+⇒ **本项目要为 rav1e 产出「等质量 × 各 speed 档」的表**，这正是本项目的核心价值点之一。
+
+---
+
+## 5. 交付物
+
+| # | 交付物 | 说明 |
+|---|---|---|
+| D1 | `Accessory/probe/calibrate_equal_quality.py` | 标定脚本；**必须无缓存**（§6.2）、支持多素材/多编码器/`--quick` |
+| D2 | `QUALITY_MAP_QUALITY` 表 | **新增**，与 `QUALITY_MAP`（等体积）**并存不覆盖**；双仓各一份且逐条相等 |
+| D3 | `Accessory/verify/verify_equal_quality.py` | 回归判据：按 VMAF/PSNR 误差设门限 |
+| D4 | 方案文档新章节 | 记录方法/素材集/拟合参数/误差分析/已知局限；写入 `Plan/` |
+| D5 | README / AGENTS.md 更新 | 说明何时用等体积表、何时用等质量表 |
+| D6 | AC7 判据扩展 | 现有 `Accessory/probe/av1_vp9_quality_matrix.py` 增加 `--quality-table volume\|quality` |
+
+### 5.1 CLI / API 兼容要求
+
+- 新增 `--quality-mode volume|quality`（**默认 `volume`**，保持旧行为不变）；
+- `quality_map.resolve_quality()` 增加 `table=` 参数，默认走 `QUALITY_MAP`；
+- **零侵入**：不改动现有等体积路径的任何行为，`Accessory/verify/crf_cq_unification_verify.py`
+  的 G1~G6/G10 现有断言必须**逐字不变地继续通过**。
+
+---
+
+## 6. 三个必须遵守的实测口径（都是本项目踩过的坑）
+
+### 6.1 PSNR 口径（错一条就全盘失真）
+
+```bash
+# ✅ 唯一正确写法：-v info + 显式 [0:v][1:v] 标签
+ffmpeg -hide_banner -v info -i "$DIST" -i "$SRC" -frames:v "$N" \
+       -lavfi "[0:v][1:v]psnr" -f null - 2>&1 \
+  | grep -oP 'average:\s*\K[0-9.]+' | tail -1
+```
+
+* ❌ 裸 `-lavfi psnr`（不带 `[0:v][1:v]`）会走出**不同结果**（实测 43.40 vs 正确 46.58）；
+* ❌ `-v error` 会压掉 psnr 滤镜的 INFO 级汇总行 ⇒ **ΔPSNR 恒为 0.00 的假象**。
+
+码率口径：`ffprobe -v error -select_streams v:0 -show_entries format=bit_rate -of csv=p=0 <f>`，
+与判据脚本 `Ctx.media_info` 同源；注意未加 `-an` 时**含音轨**，软编与候选须同口径。
+
+### 6.2 预处理缓存陷阱（本项目已中招）
+
+`VidUtils/probe/calibrate_soft_offsets.py` 曾按文件名复用 `prep.mp4`、**不校验 `--src`/分辨率**，
+导致「两条不同素材跑出几乎相同的体积」——据此得出的 `libaom` 标定值一度全错。
+
+* 新脚本**每次运行独立工作目录**（目录名带 素材_分辨率_时长 指纹）、`prep` 强制重建、
+  **打印 `prep` 的 md5** 以便审计；
+* 若复用旧脚本，**换素材前必须先删 `prep.mp4`**。
+
+### 6.3 帧数核对
+
+`-frames:v N` 的 `N` 必须取自源；容器元数据 `nb_frames` 与 `duration×fps` 可能不一致
+（`-c copy` 分段常见）⇒ 取二者较大值，并在报告里记录实际取值。
+
+---
+
+## 7. 里程碑
+
+| 阶段 | 交付 | 验收标准 | 依赖硬件 |
+|---|---|---|---|
+| **M0** | D1 骨架 + 口径自检 | 用 `word_world_2.mp4` 跑通 libx264/libx265/librav1e 三点；PSNR/VMAF 数值与手工命令**逐位一致** | 无（软编即可） |
+| **M1** | 3 条核心素材 × 4 软编编码器 | 单素材 ΔVMAF < 1.5、ΔPSNR < 0.3 dB | 无 |
+| **M2** | 补齐素材 + 留一交叉验证 | 留一法 ΔVMAF < 1.0、ΔPSNR < 0.3 dB | 无 |
+| **M3** | rav1e 等质量 × speed 档 | 至少覆盖 `speed 0/10` 两档；给出"等质量 vs 等体积"差异量化 | 无 |
+| **M4** | 硬编覆盖（NVENC h264/hevc/av1） | B/C 组入表；`av1_nvenc` 需 Ada 及以上 | **需 NVIDIA**（含 L40/Ada） |
+| **M5** | D2~D6 落地 + 双仓同步 + 门禁 | 见 §8 | 视 M4 |
+| **M6**（可选） | 主观 AB 测试 | 主观与 VMAF 预测一致性 > 85% | 需人 |
+
+> ⚠ **M4 之前的所有结论都不能外推到 NVENC**：本容器无 CUDA，硬编必须换机。
+
+---
+
+## 8. 验收门禁（必须全绿）
+
+| 门 | 命令 | 判据 |
+|---|---|---|
+| 本仓静态判据 | `python3 Accessory/verify/crf_cq_unification_verify.py --quick < /dev/null` | **FAIL = 0**（现有 G1~G6/G10 断言逐字不变） |
+| 本仓门禁 | `python3 Accessory/verify/plan_implementation_gate.py < /dev/null` | **FAIL = 0** |
+| pytest | `python3 -m pytest Accessory/test -q` | 全绿 |
+| 等质量专用判据 | `python3 Accessory/verify/verify_equal_quality.py < /dev/null` | ΔVMAF / ΔPSNR 在门限内 |
+| **跨项目真源一致** | `python3 VidUtils/verify/verify_quality_mapping.py < /dev/null` | ⑨ 组 **13/13**（含新增等质量表逐条相等） |
+| AC7 扩展 | `python3 Accessory/probe/av1_vp9_quality_matrix.py --quality-table quality --src <素材> < /dev/null` | 退出码 0（无 FAIL） |
+
+**操作铁律**：所有脚本**一律加 `< /dev/null`**（后台进程组 + tty stdin 下会被 SIGTTOU 整组停住）。
+
+---
+
+## 9. 风险与对策
+
+| 风险 | 证据/对策 |
+|---|---|
+| VMAF 对动画/屏幕内容失准 | 已知短板 ⇒ 必须补这三类素材；辅以 VIF/ADM 与主观 AB |
+| **「经中间编码器中转」的换算会漂移** | ⚠ **本项目已两次踩坑**：① `librav1e` 旧值经 libaom 中推，libaom 重标后自相矛盾；② 分支已换算又被下发处二次换算（`-qp 66`→夹成 255）。⇒ **新表一律直接从基准轴查表，禁止中转**；并加"双重换算"的针对性断言 |
+| 表值随编码器/speed/preset 漂移 | 配套参数必须锁定（§4.3）；CI 定期回跑判据 |
+| 素材集不具代表性 | 按内容类型分类覆盖；缺的三类必须补（§3.1） |
+| rav1e 标定极慢 | 实测原生档 ≈0.011× 实时 ⇒ rav1e 一律用 `-speed 10` 标定，并在表注中写明该口径 |
+| 本机无 GPU，NVENC 无法验证 | M4 单列；软编部分（M0~M3）不阻塞 |
+| 短 clip 不具代表性 | ⚠ 实测 2s clip 的 speed-10 标定（qp 84.7）与门禁素材（qp 77）不符 ⇒ **标定片段建议 ≥10s** |
+
+---
+
+## 10. 与现有体系的兼容
+
+* **不删除/不覆盖**现有 `QUALITY_MAP`（等体积），保留给「码率受限、文件大小优先」场景；
+* 新增等质量表，供「画质优先、存储/带宽次要」场景；
+* 两者**并存**，由 `--quality-mode` / `table=` 选择，**默认 `volume`** ⇒ 旧行为零变化；
+* 双仓（VE / VidUtils）**必须同步**，改一侧必回跑 ⑨ 组。
+
+---
+
+## 11. 立即可执行的第一步
+
+```bash
+cd /workspace/Video_Enhancement
+
+# 0) 口径自检（M0 的核心：先证明度量管线正确，再谈标定）
+SRC=/workspace/input_videos/word_world_2.mp4
+N=$(ffprobe -v error -select_streams v:0 -show_entries stream=nb_frames -of csv=p=0 "$SRC")
+ffmpeg -nostdin -y -v error -i "$SRC" -c:v libx264 -preset medium -crf 21 -pix_fmt yuv420p /tmp/a.mp4
+# PSNR（唯一正确口径）
+ffmpeg -hide_banner -v info -i /tmp/a.mp4 -i "$SRC" -frames:v "$N" \
+       -lavfi "[0:v][1:v]psnr" -f null - 2>&1 | grep -oP 'average:\s*\K[0-9.]+' | tail -1
+# VMAF（注意选项名是 model=，默认已是 vmaf_v0.6.1；不要写 model_version=）
+ffmpeg -hide_banner -v info -i /tmp/a.mp4 -i "$SRC" -frames:v "$N" \
+       -lavfi "libvmaf=log_fmt=json:log_path=/tmp/vmaf.json" -f null - 2>&1 | tail -2
+python3 -c "import json;print(json.load(open('/tmp/vmaf.json'))['pooled_metrics']['vmaf']['mean'])"
+
+# 1) 建标定脚本（无缓存 + md5 审计 + VMAF 插值）
+#    结构参考 VidUtils/probe/calibrate_soft_offsets_nocache.py（已修 prep 缓存 bug）
+
+# 2) 先跑 rav1e：它是"等体积≠等质量"证据最充分的编码器，
+#    用它验证新表确实能把 ΔPSNR 从 -5.79 dB 拉回门限内
+```
+
+---
+
+## 12. 参考资料
+
+* 既有质量参数方案（本仓）：`Plan/Video_Enhancement_质量控制参数修复方案.md`
+  —— 重点 §6.8（V9 多素材复核）、**§6.11.3（等体积 vs 等质量口径分工与 rav1e 实测证据）**、§6.9（门禁基线）
+* 姊妹方案（VidUtils）：`VidUtils/Plan/VidUtils_质量控制参数修复方案.md` —— §V9、§3、§4
+* 无缓存标定实现：`VidUtils/probe/calibrate_soft_offsets_nocache.py`
+* AC7 探针（度量口径同源，可直接扩展）：`Accessory/probe/av1_vp9_quality_matrix.py`
+* 判据脚本（G7 组已有 GPU 实跑框架）：`Accessory/verify/crf_cq_unification_verify.py`
+* Netflix VMAF：`libvmaf` 的 `filter=libvmaf` 选项（`model=` / `feature=` / `log_fmt=json`）
+* ITU-R BT.500-13 主观测试方法学（M6）
+
+---
+
+**优先级**：P1（画质一致性是视频增强管线的核心竞争力；当前非默认 CRF 已实测出 −5.79 dB 的画质落差）
+**预估工期**：M0~M3 约 1~2 周（纯 CPU 可完成）；M4 需 NVIDIA 机（含 Ada）；M6 需人力
+**负责人**：待指派
+**评审人**：需包含有主观测试经验、且熟悉本仓 NVENC 编码路径的工程师
+**阻塞项**：M4 依赖带 NVIDIA GPU（L40/Ada 优先）的机器；§3.1 的三类缺失素材需补齐
+
+---
+
+## 附：与 VidUtils 侧同项目的差异（执行者注意）
+
+| 项 | VidUtils | Video_Enhancement（本仓） |
+|---|---|---|
+| 定位 | 裁剪/转码工具，单文件命令行 | 插帧+超分**增强管线**，分段编码 + NVENC SDK 直通 |
+| 默认质量参数暴露 | `--crf/--cq/--qp/--crf-ref` 齐全 | 主要走配置 + `QUALITY_MAP` 内部换算，用户直给质量较少 |
+| 硬编路径 | ffmpeg CLI 下发 | `external/*/nvenc_sdk.py` **ctypes 直连 SDK**（不过 ffmpeg） |
+| 质量判据 | `verify/verify_quality_mapping.py` ⑨/⑪ 组 | `crf_cq_unification_verify.py` G1~G10 + `av1_vp9_quality_matrix.py` |
+| 表副本 | `VidUtils/convert_crf.py` | `src/utils/convert_crf.py`（**两副本须逐条相等**） |
+
+⇒ 本仓多一处「ctypes 直连 SDK」的量纲校验点：`to_constqp_qp()` 的 QP 刻度层
+（`av1_nvenc` ×3 已由 L40 实测确认）需在等质量表中**一并给出 constqp 轴的对应值**。
