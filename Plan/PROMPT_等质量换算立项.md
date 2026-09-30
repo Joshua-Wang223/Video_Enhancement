@@ -1,8 +1,57 @@
 # Video_Enhancement 等质量换算表立项 Prompt
 
-> 姊妹文档（VidUtils 侧同项目）：`VidUtils/Plan/PROMPT_等质量换算立项.md`
-> 本仓既有质量参数方案：`Plan/Video_Enhancement_质量控制参数修复方案.md`（E0~E10 / A1~A12）
+> **姊妹文档（必须同步维护）**
+> * VidUtils 侧同项目：`VidUtils/Plan/PROMPT_等质量换算立项.md`
+> * VidUtils 侧质量参数方案：`VidUtils/Plan/VidUtils_质量控制参数修复方案.md`
+>
+> **本仓相关**
+> * 既有质量参数方案：`Plan/Video_Enhancement_质量控制参数修复方案.md`（E0~E10 / A1~A12）
+> * 其中 **§6.11.3** 是本立项的直接依据（等体积 vs 等质量口径分工 + rav1e 实测证据）
+>
 > **本文档只提需求与验收，不含实现结论；实现方案由执行者补。**
+
+---
+
+## 0. 关键点速查（执行者先读这一节）
+
+### 0.1 为什么现在做（一条实测数据）
+
+`librav1e` 用**已落表的等体积值** `(7.0032, −80.993)` 在门禁素材 `word_world_2.mp4`（687 帧）逐锚点实测：
+
+| x264 crf | 表值 qp | 码率比 | ΔPSNR vs libx264 crf21 | AC7 判定 |
+|---|---|---|---|---|
+| 18 | 45  | 0.956 | **+0.59 dB** | PASS |
+| 21 | 66  | 0.910 | **−1.21 dB** | PASS |
+| 24 | 87  | 0.939 | **−2.57 dB** | FAIL |
+| 27 | 108 | 0.995 | **−4.17 dB** | FAIL |
+| 30 | 129 | 1.000 | **−5.79 dB** | FAIL |
+
+**码率比恒定 0.91~1.00（等体积拟合很准），ΔPSNR 却单调恶化到 −5.79 dB。**
+AC7 判据只测 crf 21 ⇒ 这个缺陷一直没被门禁暴露。**这就是要等质量表的直接原因。**
+
+### 0.2 五个「只有实测才知道」的关键点（照做可省 1~2 周踩坑）
+
+| # | 关键点 | 说明 |
+|---|---|---|
+| K1 | **libvmaf 选项名是 `model=`，不是 `model_version=`** | 本机实测 `model_version=` 直接报 `Error applying option 'model_version' ... Option not found`；默认值已是 `version=vmaf_v0.6.1` |
+| K2 | **一次 VMAF 运行可产出多指标** | JSON 的 `pooled_metrics` 含 `vmaf` / `integer_vif_scale{0,1,2,3}` / `integer_adm_*` / `integer_motion` ⇒ 零额外开销拿到 VIF/ADM |
+| K3 | **PSNR 口径错一条就全盘失真** | 必须 `-v info` + 显式 `[0:v][1:v]`；裸 `psnr` 实测差 3 dB（43.40 vs 46.58），`-v error` 让 ΔPSNR **恒为 0.00** |
+| K4 | **预处理缓存会静默污染标定** | 曾因 `prep.mp4` 按文件名复用（不校验 `--src`/分辨率）导致 `libaom` 标定值全错；**标定片段建议 ≥10s**（2s clip 的 speed-10 值 qp 84.7 与门禁素材 qp 77 不符） |
+| K5 | **「经中间编码器中转」的换算会漂移** | 本项目已两次踩坑：① `librav1e` 旧值经 libaom 中推，libaom 行重标后自相矛盾（80 vs 63）；② 分支已换算又被下发处二次换算（`-qp 66` → 夹成 **255**）。⇒ **新表一律从基准轴直接查表，禁止中转** |
+
+### 0.3 本机能力边界（决定里程碑能否推进）
+
+| 能力 | 状态 |
+|---|---|
+| libvmaf / psnr / ssim 滤镜 | ✅ 可用 |
+| 软编 6 编码器（x264/x265/vpx-vp9/svtav1/aom/rav1e） | ✅ 全部可跑 |
+| **NVENC / QSV / AMF** | ❌ **不可用**（`Cannot load libcuda.so.1`、无 `/dev/nvidia*`）⇒ **M4 必须换机** |
+
+### 0.4 硬约束
+
+* **双仓 `QUALITY_MAP` 必须逐条相等**（VidUtils 判据 ⑨ 组断言）⇒ **等质量表也要两份同步副本**；
+* **默认 `--quality-mode volume`**，等体积路径行为**逐字不变**（G1~G6/G10 现有断言不得改动）；
+* 所有脚本**一律加 `< /dev/null`**（后台进程组 + tty stdin 下会被 SIGTTOU 整组停住）。
 
 ---
 
@@ -45,10 +94,39 @@
 | 只有一张表 | 无「码率受限 / 画质优先」的选择开关 |
 | 无客观质量口径的标定 | 现有标定全程只用体积，从未用 VMAF/PSNR 定标 |
 
-### 1.3 与 VidUtils 的关系
+### 1.3 与 VidUtils 侧的关系与交叉引用
 
-两仓的 `QUALITY_MAP` **必须逐条相等**（VidUtils 判据 ⑨ 组断言）。
+**同步硬约束**：两仓的 `QUALITY_MAP` **必须逐条相等**（VidUtils 判据 ⑨ 组 `[9-*]` 断言）。
 ⇒ **等质量表也必须是双仓同步的两份副本**，改动任一侧必须同步另一侧并回跑 ⑨ 组。
+
+**章节对照**（便于两仓执行者互相查阅、避免重复劳动）：
+
+| 本仓章节 | VidUtils 对应章节 | 关系 |
+|---|---|---|
+| §1.1 等体积≠等质量证据 | 该侧 §V9 + §4.1 表值说明 | **互补**：VU 侧有素材级标定数据，VE 侧有逐锚点 ΔPSNR 实测（−5.79 dB） |
+| §3 本机环境基线 | 该侧 §4.2 上机前置自检 | **互补**：环境不同（VE 侧无 CUDA 需换机；VU 侧素材与路径不同） |
+| §4.1 质量度量 | 该侧 §1「质量度量指标」 | **同源**：同为 VMAF + PSNR(+VIF/ADM) + 主观 AB |
+| §4.2 标定流程 | 该侧 §2「标定流程」 | **同源**，插值基准从「体积」改为「VMAF」 |
+| §4.3 配套参数锁定 | 该侧 §4 编码器覆盖范围 | **互补**：配套参数以 VE 实测为准 |
+| §4.4 rav1e 特殊性 | 该侧 §4.11（2026-09-30 新增） | **强耦合**：rav1e 表必须按 `-speed` 档同步标定 |
+| §5 交付物 | 该侧 §5 交付物 | **结构对齐**，文件名不同 |
+| §6 三个实测铁律 | 该侧 §4.1 注意事项 | **互补**：VU 侧踩过 prep 缓存坑，VE 侧踩过二次换算坑 |
+| §7 里程碑 M0~M6 | 该侧里程碑 M1~M4 | **阶段可对齐**（VU 无 NVENC 直连层，M4 内容不同） |
+| §8 验收门禁 | 该侧 §4.1 门禁 | **互补**：门禁命令各自仓内 |
+| 附录 架构差异 | — | **仅本仓**：ctypes 直连 SDK ⇒ constqp 轴也要给等质量值 |
+
+**可复用资产（不要重写）**：
+
+| 资产 | 位置 | 用途 |
+|---|---|---|
+| 无缓存标定骨架 | `VidUtils/probe/calibrate_soft_offsets_nocache.py` | 已实现独立工作目录 + `prep` md5 审计 + `--dense`；改「体积插值 → VMAF 插值」即可 |
+| VMAF 实测用法 | 见本文档 §11 | `model=` 而非 `model_version=`（K1） |
+| 度量口径同源实现 | `Accessory/probe/av1_vp9_quality_matrix.py` | 已封装码率/PSNR 采集 + 可用性探测 + 容忍带，直接扩展 `--quality-table` |
+| GPU 画质判据框架 | `Accessory/verify/crf_cq_unification_verify.py` 的 G7 组 | 已有真实素材 GPU 实跑 + 报告产出 |
+
+**须避免的重复劳动**：素材预处理、VMAF 调用封装、PSNR 解析、报告渲染 —— 这些两仓同源，
+建议**先在 VU 侧实现通用库、再复制到本仓**，避免两份实现漂移（`librav1e` 的链式换算漂移
+就是两仓实现不一致导致的，见 §9 风险表）。
 
 ---
 
@@ -150,6 +228,10 @@ libx264 CRF 21  ≈  libx265 CRF ?  ≈  libvpx-vp9 CRF ?  ≈  libsvtav1 CRF ? 
 * 已实测：`-speed 10` 下「等体积」与「等质量」**无法同时满足**
   （等体积解 ΔPSNR ≈ −2.7 dB；等质量解体积 +30%）。
 
+> 🔗 **交叉引用**：VU 侧已于 2026-09-30 同步改造 —— `crf_to_rav1e_qp()` 由「经 libaom 中转的
+> 链式推导」改为**直接查表**，并固定下发 `-speed 10`（详见 `VidUtils/Plan/VidUtils_质量控制参数修复方案.md`
+> **§4.11**）。⇒ 本仓的 rav1e 等质量表须与其保持同一 speed 档口径。
+
 ⇒ **本项目要为 rav1e 产出「等质量 × 各 speed 档」的表**，这正是本项目的核心价值点之一。
 
 ---
@@ -194,7 +276,11 @@ ffmpeg -hide_banner -v info -i "$DIST" -i "$SRC" -frames:v "$N" \
 ### 6.2 预处理缓存陷阱（本项目已中招）
 
 `VidUtils/probe/calibrate_soft_offsets.py` 曾按文件名复用 `prep.mp4`、**不校验 `--src`/分辨率**，
-导致「两条不同素材跑出几乎相同的体积」——据此得出的 `libaom` 标定值一度全错。
+导致「两条不同素材跑出几乎相同的体积」——据此得出的 `libaom` 标定值一度全错
+（详见本仓 `Plan/Video_Enhancement_质量控制参数修复方案.md` **§6.10**）。
+
+> 🔗 **交叉引用**：该坑已在 VU 侧修复并沉淀为 `VidUtils/probe/calibrate_soft_offsets_nocache.py`
+> （独立工作目录 + `prep` md5 审计 + `--dense` 加密扫描），**直接复用，不要重写**。
 
 * 新脚本**每次运行独立工作目录**（目录名带 素材_分辨率_时长 指纹）、`prep` 强制重建、
   **打印 `prep` 的 md5** 以便审计；
@@ -231,7 +317,7 @@ ffmpeg -hide_banner -v info -i "$DIST" -i "$SRC" -frames:v "$N" \
 | 本仓门禁 | `python3 Accessory/verify/plan_implementation_gate.py < /dev/null` | **FAIL = 0** |
 | pytest | `python3 -m pytest Accessory/test -q` | 全绿 |
 | 等质量专用判据 | `python3 Accessory/verify/verify_equal_quality.py < /dev/null` | ΔVMAF / ΔPSNR 在门限内 |
-| **跨项目真源一致** | `python3 VidUtils/verify/verify_quality_mapping.py < /dev/null` | ⑨ 组 **13/13**（含新增等质量表逐条相等） |
+| **跨项目真源一致** | `python3 VidUtils/verify/verify_quality_mapping.py < /dev/null` | ⑨ 组 **13/13**（含新增等质量表逐条相等）。⚠ 该脚本在 **VU 仓**执行，两仓表任一不同步即红 |
 | AC7 扩展 | `python3 Accessory/probe/av1_vp9_quality_matrix.py --quality-table quality --src <素材> < /dev/null` | 退出码 0（无 FAIL） |
 
 **操作铁律**：所有脚本**一律加 `< /dev/null`**（后台进程组 + tty stdin 下会被 SIGTTOU 整组停住）。
