@@ -1212,6 +1212,18 @@ python3 Accessory/probe/av1_vp9_quality_matrix.py \
     --report verification_report/av1_vp9_matrix_<机名>.md < /dev/null
 ```
 
+**等质量换算表（`QUALITY_MAP`，`--quality-mode quality`，2026-09-30）：**
+
+`src/utils/convert_crf.py` 原等体积表已**改名 `SIZE_MAP`**；**新增 `QUALITY_MAP`**
+为**等质量**口径（以 VMAF 定标，`Accessory/probe/calibrate_equal_quality.py` 生成，口径与 VidUtils 一致）。
+`quality_map.py` 已 re-export `SIZE_MAP` / `QUALITY_MAP` / `set_quality_mode` / `get_quality_map`。
+
+- 切换：`quality_map.set_quality_mode('size'|'quality')`（**默认 `quality`**）；
+  `--quality-mode` 未覆盖的编码器**回退 `SIZE_MAP`**；首版仅软编，硬编待上机（M5）。
+  `Accessory/probe/av1_vp9_quality_matrix.py` 新增 `--quality-mode size|quality`（默认 `quality`）。
+- 等质量表未覆盖的编码器**回退等体积表**；首版仅软编，硬编待上机（M5）。
+- 跨项目真源一致性由 VidUtils `verify/verify_quality_mapping.py` ⑨ 组断言（含新表逐条相等）。
+
 **验证门禁（T4 实测收口 2026-09-28）：**
 
 | Gate | 命令 | 结果 |

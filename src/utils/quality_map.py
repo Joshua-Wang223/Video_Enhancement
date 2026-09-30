@@ -51,7 +51,11 @@ from typing import Dict, List, Optional, Tuple
 
 # 换算表与基础换算函数：唯一来源，避免各处硬编码偏移量互相矛盾
 from convert_crf import (                     # noqa: F401  (re-export)
+    SIZE_MAP,
     QUALITY_MAP,
+    get_quality_map,
+    get_quality_mode,
+    set_quality_mode,
     from_x264_crf,
     to_x264_crf,
     convert_quality,
@@ -65,7 +69,7 @@ DEFAULT_REF: int = 21
 # ── CONSTQP 轴 ──────────────────────────────────────────────────────────────
 # NVENC 的 targetQuality / QVBR 的 qvbrQuality（即 FFmpeg 的 -cq:v）与 CONSTQP 的
 # QP（FFmpeg 的 -qp）是**两条刻度**：
-#   · CQ/targetQuality 相对 x264 CRF 有 +5(h264) / +7.5(hevc) 的偏移 —— 见 QUALITY_MAP
+#   · CQ/targetQuality 相对 x264 CRF 有 +5(h264) / +7.5(hevc) 的偏移 —— 见 SIZE_MAP
 #   · CONSTQP 直接下发量化步长，与 x264 的 QP 同量纲（x264 的 CRF 在中段近似
 #     等于其平均 QP），故应落在**基准轴**上，不再叠加上述偏移
 #
@@ -114,13 +118,13 @@ _NEEDS_ZERO_BITRATE = {'libvpx', 'libvpx-vp9'}
 # ⚠ **`-speed` 不是免费的**（2026-09-30 在门禁素材 word_world_2 上实测）：
 #   同码率比（≈0.91~0.99）下，`-speed 10` 比原生默认档**多掉约 1.9 dB**：
 #       原生默认档  -qp 66  ratio 0.91   ΔPSNR **-1.21 dB**  → AC7 PASS
-#       -speed 10   -qp 85  ratio 0.91   ΔPSNR **-3.12 dB**  → AC7 **FAIL**（阈值 -3.0）
+#       -speed 10   -qp 85  ratio 0.91   ΔPSNR **-3.12 dB**  → AC7 **FAIL**（阈值 -1.5）
 #   即：**在 speed 10 下"等体积"与"等质量"两个判据无法同时满足** ——
 #       要守住质量（ΔPSNR ≥ -1.5）必须用 -qp 55，代价是码率比 **1.303（体积 +30%）**。
 #   ⇒ 视频增强管线以画质为产品，**默认保持 rav1e 原生档**（AC7 绿），
 #     `-speed 10` 作为**显式可选项**暴露（性能换体积/画质，由调用方决策）。
 #
-# ⚠ QUALITY_MAP['librav1e'] 的 a/b **只对已声明的 speed 档成立**（`-speed` 整体平移
+# ⚠ SIZE_MAP['librav1e'] 的 a/b **只对已声明的 speed 档成立**（`-speed` 整体平移
 #   码率曲线）。若启用 `-speed 10`，必须换成 speed 10 的标定值：
 #     原生档 → (7.0032, -80.993)  crf21 ⇒ qp 66
 #     speed10 → (6.8159, -66.093) crf21 ⇒ qp 77（等体积）／等质量需 qp ≈ 55
@@ -136,23 +140,55 @@ _EQVOL_SPEED_OVERRIDE: Dict[str, tuple] = {
     'librav1e': (6.8159, -66.093, 0, 255),   # 仅当 RAV1E_SPEED > 0 时生效
 }
 
+#: ``-speed 10`` 下的**等质量**标定值。
+#: ``QUALITY_MAP['librav1e']`` 只对「已声明的 speed 档」成立（``-speed`` 整体
+#: 平移码率曲线），故等质量表的 rav1e 也按 speed 分档：原生档进 `QUALITY_MAP`，
+#: speed 10 档进本表。由 `Accessory/probe/calibrate_equal_quality.py` 标定回填。
+#: 空 dict ⇒ 未标定，质量模式下 rav1e 回落 ``_active_table``（即等体积/等质量表的原生档）。
+_EQQUAL_SPEED_OVERRIDE: Dict[str, tuple] = {}
 
-def _eqvol_model(codec: str):
-    """返回该编码器**等体积**轴上的 ``(a, b, lo, hi)``；未知编码器返回 None。
+# ── CONSTQP / QP 轴的**等质量**表（D2b，仅本仓）──────────────────────────────
+# 本仓走 ``external/*/nvenc_sdk.py`` 的 ctypes 直连 SDK，``to_constqp_qp()`` 需要
+# **QP 轴**上的等质量值，而 ``QUALITY_MAP`` 是 CQ/CRF 轴的表。
+#   · 软编（libx265/libsvtav1/librav1e）的 ``-qp`` 本身就落在 QP 刻度上 ⇒ 镜像 D2a；
+#   · ⚠ NVENC 的 QP 行**需上机标定**（M4，需 NVIDIA 卡）—— 在标定前，
+#     ``_QP_MAP_OVERRIDE`` 会先行命中（h264/hevc 基准轴直取、av1 ×3），行为与现状一致。
+QUALITY_MAP_QP: Dict[str, tuple] = {
+    # 由 calibrate_equal_quality.py 标定后回填（软编行镜像 QUALITY_MAP）。
+    # TODO(M4): 'h264_nvenc' / 'hevc_nvenc' / 'av1_nvenc' 需 NVIDIA 机上标定。
+}
 
-    与 :func:`_qp_model` 同构，但服务的是 **CQ/CRF 轴**（V9 的等体积口径），
-    并按当前生效的 ``-speed`` 档选取对应标定值 —— 因为 ``-speed`` 会整体平移
-    码率曲线，同一个基准轴值在不同 speed 下对应不同的 rav1e qp。
+
+def _active_table(table=None):
+    """当前生效的 ``{codec: (a, b, lo, hi)}``。
+
+    ``table`` 非 None ⇒ **一次性覆盖**（无副作用，供 probe 的 ``--quality-mode`` 用）；
+    否则取全局模式维护的活动表（``set_quality_mode()`` → ``convert_crf._ACTIVE_MAP``）。
+    默认口径为 ``quality`` ⇒ 用 ``QUALITY_MAP``（等质量；未覆盖的编码器回退 ``SIZE_MAP``）。
+    """
+    return table if table is not None else get_quality_map()
+
+
+def _eqvol_model(codec: str, table=None):
+    """返回该编码器 **CQ/CRF 轴**上的 ``(a, b, lo, hi)``；未知编码器返回 None。
+
+    按当前生效的 ``-speed`` 档选取 rav1e 标定值 —— ``-speed`` 会整体平移码率
+    曲线，同一基准轴值在不同 speed 下对应不同的 rav1e qp；**等质量模式**走
+    ``_EQQUAL_SPEED_OVERRIDE``，否则走 ``_EQVOL_SPEED_OVERRIDE``。
+    其余编码器落到 :func:`_active_table`（默认口径即 ``QUALITY_MAP``，未覆盖回退 ``SIZE_MAP``）。
     """
     c = str(codec).lower()
     if c == 'librav1e' and RAV1E_SPEED > 0:
-        return _EQVOL_SPEED_OVERRIDE[c]
-    return QUALITY_MAP.get(c)
+        ov = (_EQQUAL_SPEED_OVERRIDE if get_quality_mode() == 'quality'
+              else _EQVOL_SPEED_OVERRIDE)
+        if c in ov:
+            return ov[c]
+    return _active_table(table).get(c)
 
 # ── CQ 轴可调偏移 ────────────────────────────────────────────────────────────
 # 各硬件编码器 -cq:v（targetQuality / CQ 轴）的微调量，单位与 CQ 同刻度。
-#   · 默认**全 0** ⇒ resolve_quality 的输出严格等于 QUALITY_MAP（= 设计文档 §4.3）。
-#   · QUALITY_MAP 是固定线性模型，存在内容相关误差（合成素材偏过配、真实素材偏
+#   · 默认**全 0** ⇒ resolve_quality 的输出严格等于 SIZE_MAP（= 设计文档 §4.3）。
+#   · SIZE_MAP 是固定线性模型，存在内容相关误差（合成素材偏过配、真实素材偏
 #     欠配约 2 dB），单一常量无法同时消除；需要时按内容在此微调该编码器。
 #   · 仅作用于"换算 / 基准轴 / 默认基准"得到的值，**不影响**用户显式 --cq 字面量
 #     （字面量语义是"原样下发"，见 resolve_quality 的同族分支）。
@@ -175,11 +211,11 @@ def supports_cq(codec: str) -> bool:
 def supports_crf(codec: str) -> bool:
     """编码器是否用 -crf（软件编码器）。
 
-    排除 librav1e（只有 -qp）与 VAAPI 族（只有 -qp）——它们虽在 QUALITY_MAP 里，
+    排除 librav1e（只有 -qp）与 VAAPI 族（只有 -qp）——它们虽在 SIZE_MAP 里，
     但都不是 -crf 编码器，不能算作"字面量 crf 原生可用"。
     """
     c = str(codec).lower()
-    return (c in QUALITY_MAP and c not in _CQ_CODECS
+    return (c in SIZE_MAP and c not in _CQ_CODECS
             and c not in _QP_ONLY_CODECS and c != 'librav1e')
 
 
@@ -201,7 +237,7 @@ def literal_range(codec: str, kind: str = 'crf') -> Tuple[int, int]:
         key = c if supports_cq(c) else 'h264_nvenc'
     else:
         key = c if supports_crf(c) else 'libx264'
-    m = QUALITY_MAP.get(key) or QUALITY_MAP['h264_nvenc' if kind == 'cq' else 'libx264']
+    m = SIZE_MAP.get(key) or SIZE_MAP['h264_nvenc' if kind == 'cq' else 'libx264']
     return int(m[2]), int(m[3])
 
 
@@ -238,7 +274,7 @@ def _zero_note(codec: str) -> str:
 
 
 def _clamp_int(value: int, codec: str) -> int:
-    m = QUALITY_MAP.get(str(codec).lower())
+    m = SIZE_MAP.get(str(codec).lower())
     if m is None:
         return value
     lo, hi = m[2], m[3]
@@ -248,7 +284,7 @@ def _clamp_int(value: int, codec: str) -> int:
 def _finish(codec: str, value: float, note: str) -> Tuple[str, int, List[str], str]:
     """收尾：取整 → clamp 到编码器量程 → 配参数名。
 
-    注意：value 已是**目标编码器自身刻度**上的值（QUALITY_MAP 的 librav1e 行
+    注意：value 已是**目标编码器自身刻度**上的值（SIZE_MAP 的 librav1e 行
     直接输出 qp，无需二次换算）。
     """
     c = str(codec).lower()
@@ -258,14 +294,14 @@ def _finish(codec: str, value: float, note: str) -> Tuple[str, int, List[str], s
 
 # ── CONSTQP 的 QP 轴模型 ─────────────────────────────────────────────────────
 #   QP = a_qp × 基准轴 + b_qp     （再夹到 (lo, hi)）
-# 为什么不能直接复用 QUALITY_MAP：那张表描述的是 **CQ/targetQuality 轴**（-cq:v），
+# 为什么不能直接复用 SIZE_MAP：那张表描述的是 **CQ/targetQuality 轴**（-cq:v），
 # 而 CONSTQP 的 `-qp` 是"真实量化步长"轴，两者刻度不同：
 #   · NVENC H.264/HEVC 的 -cq:v 相对基准轴有 +5 / +7.5 偏移，而 -qp 没有
 #     ⇒ 截距清零（26→21、28→20）；
 #   · **AV1 的 -qp 是 qindex（0~255）**，与 -cq 的 0~63 完全是两条刻度
 #     ⇒ 倍率 4（21 → 84）。原实现拿 CQ 轴值直发，21 落在 0~255 上等于近无损；
 #   · librav1e / libsvtav1 / libx265 的"质量参数"本身就落在 QP 刻度上，
-#     直接沿用其 QUALITY_MAP 行（含各自截距，如 rav1e 的 4·ref−4、svtav1 的 ref+6）。
+#     直接沿用其 SIZE_MAP 行（含各自截距，如 rav1e 的 4·ref−4、svtav1 的 ref+6）。
 # ⚠ av1_nvenc 的 QP 尺度在 L40 上实测确认为 3×（非推断的 4×）。
 #   VidUtils/probe/verify_nvenc_quality_gpu.py 的 C 组扫 -qp {21,63,84,105}。
 #   T4 无 AV1 NVENC，故 T4 生产与 h264/hevc 路径均为恒等，不受影响。
@@ -278,13 +314,23 @@ _QP_MAP_OVERRIDE = {
 }
 
 
-def _qp_model(codec: str):
-    """返回该编码器 CONSTQP 轴上的 ``(a, b, lo, hi)``；未知编码器返回 None。"""
+def _qp_model(codec: str, table=None):
+    """返回该编码器 **CONSTQP / QP 轴**上的 ``(a, b, lo, hi)``；未知编码器返回 None。
+
+    优先级：硬编/VAAPI 的显式覆盖（``_QP_MAP_OVERRIDE``）→ 等质量模式下的
+    ``QUALITY_MAP_QP``（D2b，仅本仓）→ :func:`_active_table`。
+    ⚠ NVENC 的等质量 QP 行待 **M4**（需 NVIDIA 机）标定；标定前由 ``_QP_MAP_OVERRIDE``
+    先行命中 ⇒ 行为与现状逐字一致。
+    """
     c = str(codec).lower()
-    return _QP_MAP_OVERRIDE.get(c) or QUALITY_MAP.get(c)
+    if c in _QP_MAP_OVERRIDE:
+        return _QP_MAP_OVERRIDE[c]
+    if get_quality_mode() == 'quality' and c in QUALITY_MAP_QP:
+        return QUALITY_MAP_QP[c]
+    return _active_table(table).get(c)
 
 
-def to_constqp_qp(codec: str, value: int) -> int:
+def to_constqp_qp(codec: str, value: int, *, table=None) -> int:
     """把 CQ/targetQuality 轴上的值换算为该编码器 CONSTQP 的 QP。
 
     码率控制模式在运行中从 vbr_hq/qvbr 切到 constqp 时（如 Real-ESRGAN 的
@@ -294,7 +340,7 @@ def to_constqp_qp(codec: str, value: int) -> int:
         value --to_x264_crf--> 基准轴 --(×a_qp +b_qp +CONSTQP_QP_OFFSET)--> QP
 
     ``a_qp``/``b_qp`` 见 ``_QP_MAP_OVERRIDE``（H.264/HEVC = 基准轴直取；
-    AV1 = ×4 的 qindex 尺度；其余沿用 QUALITY_MAP 自身的 QP 刻度）。
+    AV1 = ×4 的 qindex 尺度；其余沿用 SIZE_MAP 自身的 QP 刻度）。
 
     未知编码器原样返回（不做猜测）。
     """
@@ -302,23 +348,24 @@ def to_constqp_qp(codec: str, value: int) -> int:
     # value 位于 CQ 轴，可能已包含 CQ_OFFSET；先扣除再回溯基准轴，保证与
     # resolve_quality 的偏移语义一致（CQ_OFFSET 默认 0 时此处为恒等）。
     _v = float(value) - (CQ_OFFSET.get(c, 0) if c in _CQ_CODECS else 0)
-    ref = to_x264_crf(c, _v)
-    model = _qp_model(c) if ref is not None else None
+    ref = to_x264_crf(c, _v, table=table)
+    model = _qp_model(c, table=table) if ref is not None else None
     if model is None:
         return int(value)
     a, b, lo, hi = model
     return int(max(lo, min(hi, round(a * ref + b + CONSTQP_QP_OFFSET))))
 
 
-def _to_target_from_ref(codec: str, ref):
-    """把**基准轴（libx264 CRF）**值换算到目标编码器刻度，走当前 speed 档的等体积模型。
+def _to_target_from_ref(codec: str, ref, table=None):
+    """把**基准轴（libx264 CRF）**值换算到目标编码器刻度。
 
     与 :func:`convert_crf.from_x264_crf` 的唯一差别：对 ``librav1e`` 且
-    ``RAV1E_SPEED > 0`` 时改用 speed 10 的标定值（``-speed`` 会整体平移码率曲线，
+    ``RAV1E_SPEED > 0`` 时改用对应 speed 档的标定值（``-speed`` 会整体平移码率曲线，
     同一基准轴值在不同 speed 档下对应不同的 rav1e qp）。
-    其余编码器 ``_eqvol_model`` 直接落到 ``QUALITY_MAP``，行为与原函数逐字一致。
+    其余编码器 ``_eqvol_model`` 直接落到 :func:`_active_table`（默认模式 = ``SIZE_MAP``，
+    此时行为与原函数逐字一致）。
     """
-    m = _eqvol_model(codec)
+    m = _eqvol_model(codec, table=table)
     if m is None or ref is None:
         return None
     a, b, lo, hi = m
@@ -331,6 +378,7 @@ def resolve_quality(codec: str, *,
                     crf_ref: Optional[int] = None,
                     cq_ref: Optional[int] = None,
                     default_ref: int = DEFAULT_REF,
+                    table: Optional[Dict[str, tuple]] = None,
                     ) -> Tuple[str, int, List[str], str]:
     """把四类质量输入统一解析成"针对 codec 的 (参数名, 值, 配套参数, 说明)"。
 
@@ -352,6 +400,9 @@ def resolve_quality(codec: str, *,
         crf / cq: 字面量质量值（None 表示未指定）
         crf_ref / cq_ref: 基准轴质量值（None 表示未指定）
         default_ref: 四类输入都为空时使用的 libx264 CRF 基准
+        table: 可选的换算表**一次性覆盖**（``{codec: (a, b, lo, hi)}``）。
+               None ⇒ 用当前活动表（``set_quality_mode()`` 维护；默认 ``size``）。
+               仅对**派生分支**（基准轴 / 跨族 / 默认）生效；字面量同族仍原样下发。
 
     Returns:
         (参数名, 参数值, 配套参数列表, 人类可读说明)
@@ -366,10 +417,10 @@ def resolve_quality(codec: str, *,
         if crf_ref is not None:
             ref, note = float(crf_ref), f'--crf-ref {crf_ref}（libx264 CRF 基准）'
         elif cq_ref is not None:
-            ref = float(to_x264_crf('h264_nvenc', cq_ref))
+            ref = float(to_x264_crf('h264_nvenc', cq_ref, table=table))
             note = f'--cq-ref {cq_ref}（h264_nvenc CQ 基准）'
         elif cq is not None:
-            ref = float(to_x264_crf('h264_nvenc', cq))
+            ref = float(to_x264_crf('h264_nvenc', cq, table=table))
             note = f'--cq {cq}（h264_nvenc CQ 刻度）'
         elif crf is not None:
             ref, note = float(crf), f'--crf {crf}（libx264 CRF 刻度）'
@@ -388,12 +439,13 @@ def resolve_quality(codec: str, *,
         note = f'--crf-ref {crf_ref}（libx264 CRF 基准）'
         if int(crf_ref) == 0:
             return _finish(c, 0, note + _zero_note(c))
-        value = _to_target_from_ref(c, crf_ref)
+        value = _to_target_from_ref(c, crf_ref, table=table)
     elif cq_ref is not None:
         note = f'--cq-ref {cq_ref}（h264_nvenc CQ 基准）'
         if int(cq_ref) == 0:
             return _finish(c, 0, note + _zero_note(c))
-        value = _to_target_from_ref(c, to_x264_crf('h264_nvenc', cq_ref))
+        value = _to_target_from_ref(c, to_x264_crf('h264_nvenc', cq_ref, table=table),
+                                    table=table)
     else:
         # ── 3/4. 字面量同族：原样下发 ────────────────────────────────────────
         if cq is not None and supports_cq(c):
@@ -403,16 +455,17 @@ def resolve_quality(codec: str, *,
 
         # ── 5/6. 字面量跨族：按原量纲等效换算 ────────────────────────────────
         if cq is not None:
-            value = _to_target_from_ref(c, to_x264_crf('h264_nvenc', cq))
+            value = _to_target_from_ref(c, to_x264_crf('h264_nvenc', cq, table=table),
+                                        table=table)
             note = (f'编码器 {c} 不支持 -cq，已将 --cq {cq}'
                     f'（h264_nvenc 量纲）映射为等效值')
         elif crf is not None:
-            value = _to_target_from_ref(c, crf)
+            value = _to_target_from_ref(c, crf, table=table)
             note = (f'编码器 {c} 不使用 -crf 刻度，已将 --crf {crf}'
                     f'（libx264 量纲）映射为等效值')
         # ── 7. 均未给：用全局基准 ────────────────────────────────────────────
         else:
-            value = _to_target_from_ref(c, default_ref)
+            value = _to_target_from_ref(c, default_ref, table=table)
             note = f'默认基准 CRF {default_ref}'
 
     if value is None:       # 未知编码器：不做猜测，原样下发

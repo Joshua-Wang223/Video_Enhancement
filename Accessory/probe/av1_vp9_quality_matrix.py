@@ -4,7 +4,7 @@
 
 用途
 ----
-`QUALITY_MAP` 里 AV1 / VP9 家族共 7 个编码器，它们分布在三种不同的前置条件下，
+`SIZE_MAP` 里 AV1 / VP9 家族共 7 个编码器，它们分布在三种不同的前置条件下，
 在 T4 上一次跑不完。本脚本把这一族收成**一条命令**，并在任何机器上给出：
 「哪些能跑、跑出来是否达标、不能跑的原因是什么」。
 
@@ -75,7 +75,7 @@ RATE_PASS = (0.65, 1.50)
 RATE_WARN = (0.55, 1.65)
 REF_CRF = 21
 
-# ── 覆盖对象：QUALITY_MAP 里全部 AV1 / VP9 编码器 ──────────────────────────────
+# ── 覆盖对象：SIZE_MAP 里全部 AV1 / VP9 编码器 ──────────────────────────────
 AV1_VP9_CODECS: Tuple[str, ...] = (
     "av1_nvenc", "av1_qsv", "av1_amf",
     "libsvtav1", "libaom-av1", "librav1e", "libvpx-vp9",
@@ -311,11 +311,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--skip-qp-scan", action="store_true",
                     help="跳过 B 组（AC1 的 AV1 constqp QP 扫描）")
     ap.add_argument("--ref-crf", type=int, default=REF_CRF, help=f"软编基准 CRF（默认 {REF_CRF}）")
+    ap.add_argument("--quality-mode", choices=["size", "quality"], default="quality",
+                    help="换算口径：size=等体积（文件大小优先）；quality=等质量（VMAF 定标，画质优先，默认）")
     ap.add_argument("--timeout", type=int, default=1800, help="单条编码/度量超时秒")
     ap.add_argument("--report", help="Markdown 报告输出路径")
     ap.add_argument("--json", dest="json_path", help="JSON 结果输出路径")
     ap.add_argument("--keep-temp", action="store_true", help="保留临时产物")
     args = ap.parse_args(argv)
+
+    # 选定换算口径（等体积/等质量）；默认 volume，旧行为逐字不变。
+    if hasattr(Q, "set_quality_mode"):
+        Q.set_quality_mode(args.quality_mode)
 
     ffmpeg = shutil.which("ffmpeg") or ""
     ffprobe = shutil.which("ffprobe") or ""
@@ -341,9 +347,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.only:
         want = {c.strip() for c in args.only.split(",") if c.strip()}
         codecs = [c for c in codecs if c in want]
-    unknown = [c for c in codecs if c not in Q.QUALITY_MAP]
+    _qm = Q.get_quality_map() if hasattr(Q, "get_quality_map") else Q.SIZE_MAP
+    unknown = [c for c in codecs if c not in _qm]
     if unknown:
-        print(f"⚠ 不在 QUALITY_MAP，忽略: {unknown}")
+        print(f"⚠ 不在换算表（{args.quality_mode} 口径），忽略: {unknown}")
 
     # ── 0. 可用性（构建 + 实跑）────────────────────────────────────────────
     status: Dict[str, dict] = {}

@@ -156,8 +156,8 @@ CHANGED_FILES = [
 ]
 
 # 基准轴参考值（原报告 §4.3 的统一默认）：libx264 CRF 21 的等效映射。
-# ⚠ 本表是**独立期望**（人为审定），不随 convert_crf.QUALITY_MAP 自动更新；
-#   每次改动共享真源（QUALITY_MAP 的 a/b）都必须同步复核此表。
+# ⚠ 本表是**独立期望**（人为审定），不随 convert_crf.SIZE_MAP 自动更新；
+#   每次改动共享真源（SIZE_MAP 的 a/b）都必须同步复核此表。
 #   2026-09-29：软编四项按「真实素材·等体积」重标定同步更新
 #   （libx265 0.9155/1.6385→0.9272/1.3360、libsvtav1 1.9450/−15.62→2.1445/−21.3547、
 #    libvpx-vp9 1.6198/−5.7553→1.6381/−6.2289、libaom-av1 1.0/4.0→2.0071/−21.3464），
@@ -507,6 +507,10 @@ def load_quality_map(ctx: Ctx):
                 sys.path.insert(0, p)
         import importlib
         ctx.quality_map = importlib.import_module("quality_map")
+        # 本判据的期望值（G1-2「报告 §4.3」等）全部按**等体积**口径写成；而 convert_crf 的
+        # 默认口径已改为 'quality'（2026-09-30）⇒ 这里显式钉 size，避免默认口径把判据染红。
+        # 等质量口径的专项断言见 Accessory/verify/verify_equal_quality.py。
+        ctx.quality_map.set_quality_mode("size")
     return ctx.quality_map
 
 
@@ -794,10 +798,10 @@ def group_table(ctx: Ctx, v: Verifier) -> None:
     print("\n【G1】换算表正确性")
     Q = load_quality_map(ctx)
 
-    v.add("G1-1", "TABLE", "单一真源：convert_crf.py 提供 QUALITY_MAP",
+    v.add("G1-1", "TABLE", "单一真源：convert_crf.py 提供 SIZE_MAP/QUALITY_MAP",
           Status.PASS if (CONVERT_CRF_PY.exists()
                           and isinstance(getattr(Q, "QUALITY_MAP", None), dict)
-                          and len(Q.QUALITY_MAP) >= 15) else Status.FAIL,
+                          and len(Q.SIZE_MAP) >= 15) else Status.FAIL,
           detail=f"{len(getattr(Q, 'QUALITY_MAP', {}))} 个编码器条目",
           evidence=[f"quality_map 自 {CONVERT_CRF_PY.name} 导入并 re-export"])
 
@@ -820,7 +824,7 @@ def group_table(ctx: Ctx, v: Verifier) -> None:
     # 单调性：正 a 递增，VideoToolbox（a<0）递减
     mono_bad = []
     for codec in ("libx264", "h264_nvenc", "hevc_nvenc", "libx265", "libsvtav1"):
-        a = Q.QUALITY_MAP[codec][0]
+        a = Q.SIZE_MAP[codec][0]
         prev = None
         for ref in range(5, 45):
             val = Q.from_x264_crf(codec, ref)
@@ -834,7 +838,7 @@ def group_table(ctx: Ctx, v: Verifier) -> None:
     # 往返一致：from∘to ≈ identity（避开 clamp 边界）
     rt_bad = []
     for codec in ("libx265", "h264_nvenc", "hevc_nvenc", "av1_nvenc", "libsvtav1"):
-        a, b, lo, hi = Q.QUALITY_MAP[codec]
+        a, b, lo, hi = Q.SIZE_MAP[codec]
         for ref in (10, 16, 21, 28, 35):
             back = Q.to_x264_crf(codec, Q.from_x264_crf(codec, ref))
             if back is None or abs(back - ref) > 0.6:
@@ -845,7 +849,7 @@ def group_table(ctx: Ctx, v: Verifier) -> None:
 
     # 边界 clamp
     clamp_bad = []
-    for codec, (a, b, lo, hi) in Q.QUALITY_MAP.items():
+    for codec, (a, b, lo, hi) in Q.SIZE_MAP.items():
         for ref in (0, 51):
             val = Q.from_x264_crf(codec, ref)
             if val is None or not (lo - 1e-6 <= val <= hi + 1e-6):
@@ -875,7 +879,7 @@ def group_table(ctx: Ctx, v: Verifier) -> None:
         }
         bad = [f"{c}/{k}: {tuple(Q.literal_range(c, k))} ≠ {r}"
                for (c, k), r in exp.items() if tuple(Q.literal_range(c, k)) != r]
-        v.add("G1-7", "TABLE", "literal_range 与 QUALITY_MAP 量程一致",
+        v.add("G1-7", "TABLE", "literal_range 与 SIZE_MAP 量程一致",
               Status.PASS if not bad else Status.FAIL,
               detail="全部一致" if not bad else "; ".join(bad))
 
