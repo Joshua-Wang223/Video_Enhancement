@@ -1497,6 +1497,25 @@ def group_emit(ctx: Ctx, v: Verifier) -> None:
         ("G6-7", "IFRNet", "ifrnet_video", "av1_nvenc", 27, "constqp", 0,
          [("-rc:v", "constqp"), ("-qp", "63")],
          [("-cq:v", None), ("-b:v", None)]),
+        # G6-8~G6-10 [FIX-AV1-NVENC / FIX-AV1-RC] 2026-09-30 L40 长视频冒烟暴露的
+        #   三处 AV1 缺陷的命令形状回归（详见方案 §8.6）。三者都**不需要 AV1 硬件**：
+        #   写入器只拼命令串，Popen 被替身捕获。
+        #   ② ESRGAN 侧原先用精确元组 ('h264_nvenc','hevc_nvenc') 判 NVENC，
+        #      av1_nvenc 落到 else 的 libx264 分支 → 静默发 `-crf 27`（把 CQ 当 CRF）。
+        ("G6-8", "ESRGAN", "realesrgan_video", "av1_nvenc", 27, "constqp", 0,
+         [("-vcodec", "av1_nvenc"), ("-preset", "p4"),
+          ("-rc:v", "constqp"), ("-qp", "63")],
+         [("-crf", None), ("-cq:v", None)]),
+        #   ③ av1_nvenc 的 `-rc` 只接受 constqp/vbr/cbr；`vbr_hq` 会让 ffmpeg
+        #      报 `Undefined constant or missing '(' in 'vbr_hq'` 并整条命令失败。
+        ("G6-9", "IFRNet", "ifrnet_video", "av1_nvenc", 27, "vbr_hq", 8,
+         [("-vcodec", "av1_nvenc"), ("-rc:v", "vbr"), ("-cq:v", "27"),
+          ("-b:v", "0"), ("-rc-lookahead", "8")],
+         [("-rc:v", "vbr_hq")]),
+        ("G6-10", "ESRGAN", "realesrgan_video", "av1_nvenc", 27, "vbr_hq", 8,
+         [("-vcodec", "av1_nvenc"), ("-rc:v", "vbr"), ("-cq:v", "27"),
+          ("-b:v", "0")],
+         [("-rc:v", "vbr_hq"), ("-crf", None)]),
     ]
 
     for cid, stage, pkg, codec, crf, rc, la, want, forbid in cases:

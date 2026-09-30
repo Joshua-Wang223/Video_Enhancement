@@ -27,8 +27,12 @@
 > 见 **§8.4**。§7 的状态表与文末「后续建议」已同步更新。
 >
 > 提交记录：判据/测试/方案/memory 与首轮 T4 报告 = **`9847f59`**；AV1/VP9 探针与 §7 扩展
-> = **`69b62db`**（L40 ×3 定案）；本轮（L40 收口 + 三处 AV1 修复 + §8）= **见 `git log -1`**
-> （均未推送）。
+> = **`69b62db`**（L40 ×3 定案）；L40 收口 + 三处 AV1 修复 + §8 = **`de243a3`**；
+> 回归保护（G6-8/9/10 + 新 pytest + 冒烟脚本）与 V9 三行复核（§9）= **见 `git log -1`**。
+>
+> **2026-09-30 第二轮提示**：该轮开工时容器已**丢失 GPU**（`libcuda` 变 0 字节桩、`/dev/nvidia*`
+> 消失，见 §9.1）⇒ P3″ 与 AC5 一样按"环境不支持"跳过，纯 CPU 项（G6 断言、pytest、
+> V9 重标定）照常完成。
 
 | 编号 | 内容 | 优先级 | 状态 | 依据强度 |
 |---|---|---|---|---|
@@ -61,6 +65,8 @@
 | **A13** | **P3 长视频冒烟在 L40 上执行完毕（2026-09-30）**：`interpolate_then_upscale` 2×+2×、330 s 真实素材（11 段）、IFRNet 与 ESRGan 两侧均 `av1_nvenc`，`constqp` 与 `vbr` 各跑一遍 | **已落地**；两次均 `exit 0`、15803 帧全链路守恒、解码级门禁通过、QA sidecar 完整、无内存泄漏。详见 **§8.5** |
 | **A14** | **P3 冒烟暴露的三处 AV1 路径缺陷（2026-09-30 修复）**：① `verify_video_integrity()` 用 cv2 读首帧，把**完好的 AV1 产物判成损坏**并 `unlink`（OpenCV 4.13 无 AV1 解码）⇒ 本仓 AV1 完全跑不通；② ESRGan 侧 `FFmpegWriter` 的 NVENC 判定用精确元组，`av1_nvenc` 落到 `else` 的 libx264 分支，**静默**把 CQ 27 当 CRF 下发；③ 两侧 CLI writer 都未把 AV1 的 `vbr_hq/qvbr` 降级为 `vbr`，而 av1_nvenc 的 `-rc` 只接受 `constqp/vbr/cbr` ⇒ **命令直接失败** | **已落地**；根因、证据与修法见 **§8.6** |
 | **A15** | **`av1_vp9_quality_matrix.py` 的 AC1 判读不再写死 `84`**：表已于 `69b62db` 改为 ×3（QP 63）后，脚本仍按 ×4 假设判读，在 L40 上会输出与表自相矛盾的结论。改为 `av1_expected_qp()` 现场走 `resolve_quality → to_constqp_qp` 推导锚点，JSON/MD 增列 `av1_qp_expected` + `ac1_verdict` | **已落地**；见 **§8.2** |
+| **A16** | **P3′ 回归保护（2026-09-30 续）**：① 判据新增 **G6-8/G6-9/G6-10** —— `av1_nvenc` 的**命令形状**断言（constqp 发 `-qp 63`；`vbr_hq` 必须降级为 `-rc:v vbr`；ESRGAN 侧必须发 `-vcodec av1_nvenc` 且**不得**出现 `-crf`）；② 新增 pytest `Accessory/test/test_verify_video_integrity_fallback.py`（cv2→ffmpeg 回退，含"回退不放宽"反证）；③ 新增可重复脚本 `Accessory/verify/av1_pipeline_smoke.py`（AV1 双 rate_mode 端到端冒烟 + 8 项验收，支持 `--checks-only` 复验既有产物） | **已落地**；三项均做了**反向验证**（回退修复后断言/用例如期 FAIL）。见 **§9.2~§9.4** |
+| **A17** | **P2 · V9 三行复核（`libx265` / `libvpx-vp9` / `libsvtav1`）**：用无缓存脚本 `calibrate_soft_offsets_nocache.py --dense` 在 3 条素材（720p30 / 1080p30 / 360p 低复杂度）上重跑等体积标定 | **已落地：表值判定正确，不改表**。基准素材上三行复现偏差 ≤0.14 crf；素材间残差最大 −2.27 crf（`libvpx-vp9`，即 AC7 里已知 WARN 的那一行）⇒ 线性常量的内容相关误差无法再压，与 E9 `CQ_OFFSET=0` 同结论。见 **§9.5** |
 
 
 ---
@@ -1119,16 +1125,181 @@ done
 
 ---
 
+## 9. 续：回归保护 + V9 复核（2026-09-30 第二轮）
+
+### 9.1 环境突变：会话中途 GPU 断联（本节所有"未跑"项的共同原因）
+
+| 时刻 | 现象 |
+|---|---|
+| ≤ 05:56 | L40 可用（`vbr_hq`→`vbr` 降级验证的 12 s pilot 正常出片） |
+| 06:07 | `/usr/lib/x86_64-linux-gnu/libcuda.so.1` 与 `libnvidia-ml.so.1` 被指向 **0 字节**的 `libcuda.so.580.65.06`；`/dev/nvidia*` 设备节点消失 |
+| 06:13 起 | `nvidia-smi` 报 `couldn't find libnvidia-ml.so`；`ffmpeg -c:v av1_nvenc` 报 `Cannot load libcuda.so.1`；`torch.cuda.is_available()=False` |
+
+* ⇒ **AC5 与 P3″（AV1 Level 1 `code=12` 根因）同样因环境不支持而跳过**（与 AC5 同类）。
+* ✅ 门禁的**环境探测按设计降级为 WARN**：`R5 CUDA / GPU 可用`、`R7 NVENC 环境探测` 两项 WARN，
+  **FAIL 仍为 0** —— 这正是"环境差异 ≠ 功能失败"的设计意图得到验证。
+* ⚠ 教训：长会话里 GPU 可能被回收；**任何 GPU 相关结论都必须在同一时刻实测**，
+  历史报告不能替代当场复跑（本文 §8 的 L40 结论因此仍然有效，但 P3″ 无法在本会话内闭环）。
+
+### 9.2 P3′-a · 判据：`av1_nvenc` 命令形状断言（G6-8 / G6-9 / G6-10）
+
+§8.6 的 ② ③ 两处缺陷本质是"**下发了错的命令**"，因此最该由命令形状断言守住
+（判据 G6 组本来就是干这个的，但只覆盖了 constqp）。新增三格（**不需要 AV1 硬件**，
+写入器只拼命令串、`Popen` 被替身捕获）：
+
+| ID | 侧 | codec | rate_mode | 必须出现 | 必须不出现 |
+|---|---|---|---|---|---|
+| G6-8 | ESRGAN | `av1_nvenc` | constqp | `-vcodec av1_nvenc`、`-preset p4`、`-rc:v constqp`、`-qp 63` | `-crf`、`-cq:v` |
+| G6-9 | IFRNet | `av1_nvenc` | **vbr_hq** | `-vcodec av1_nvenc`、`-rc:v vbr`、`-cq:v 27`、`-b:v 0`、`-rc-lookahead 8` | `-rc:v vbr_hq` |
+| G6-10 | ESRGAN | `av1_nvenc` | **vbr_hq** | `-vcodec av1_nvenc`、`-rc:v vbr`、`-cq:v 27`、`-b:v 0` | `-rc:v vbr_hq`、`-crf` |
+
+**反向验证（关键：断言必须真的会 FAIL）** —— 临时把 §8.6 的 ② ③ 两处修复回退后重跑：
+
+```
+❌ [G6-8]  缺少 ['-vcodec av1_nvenc','-preset p4','-rc:v constqp','-qp 63'] / 多出 ['-crf']
+❌ [G6-9]  缺少 ['-rc:v vbr'] / 多出 ['-rc:v']
+❌ [G6-10] 缺少 ['-vcodec av1_nvenc','-rc:v vbr','-cq:v 27','-b:v 0'] / 多出 ['-crf']
+合计：PASS=90  FAIL=3      （恢复修复后 → PASS=93  FAIL=0）
+```
+
+### 9.3 P3′-b · pytest：cv2 → ffmpeg 回退（`[FIX-AV1-CV2]` 的回归锁）
+
+`Accessory/test/test_verify_video_integrity_fallback.py`（3 例）：
+
+1. `test_cv2_failure_falls_back_to_ffmpeg` —— 猴补丁把 `cv2.VideoCapture` 换成"打不开/读不出帧"，
+   好文件**必须**仍判为完好（这是 AV1 能跑通的前提）。
+2. `test_fallback_still_rejects_broken_file` —— 4 KB 垃圾文件**必须**判坏
+   ⇒ 证明回退**没有**把判定放宽成"有 ffmpeg 就放行"。
+3. `test_missing_and_tiny_files_rejected` —— 缺文件 / <1 KB 的老闸门不受影响。
+
+**反向验证**：把 `verify_video_integrity` 临时改回旧行为（cv2 失败即 `return False`）后
+`test_cv2_failure_falls_back_to_ffmpeg` **FAIL**；恢复后 3/3 PASS。
+
+### 9.4 P3′-c · 可重复脚本：`Accessory/verify/av1_pipeline_smoke.py`
+
+把 §8.5 那次一次性手搓的冒烟固化成一条命令：
+
+```bash
+python3 Accessory/verify/av1_pipeline_smoke.py --src <真实素材> \
+    --rate-modes constqp,vbr --segment-duration 30 \
+    --report verification_report/av1_smoke_<机名>.md < /dev/null
+# 复验既有产物（不需要 GPU）
+python3 Accessory/verify/av1_pipeline_smoke.py --src <素材> --checks-only out.mp4 < /dev/null
+```
+
+| 项 | 内容 |
+|---|---|
+| 前置 | `av1_nvenc` **实跑一帧**；不可用 ⇒ **exit 2**（环境前置不成立，不是失败） |
+| 跑批 | 每个 rate_mode 调一次 `src/main_video_optimized.py`，两侧 `--codec-* av1_nvenc` |
+| 采样 | 整棵进程树 RSS + `nvidia-smi` 显存（判泄漏用后半程线性斜率） |
+| 验收 | S1 退出码 / S2 段级 `decoded==expected` / S3 产物帧数=各段之和 / S4 `validate_decodable_video(count_mode=decode)` / S5 `segment_bitstream_verify_v5 --skip-chroma` / S6 QA sidecar 字段 / S7 **产物编码器确为 av1** / S8 泄漏斜率 ≤ +50 MB/min |
+
+退出码：`0` 无 FAIL / `1` 有 FAIL / `2` 环境前置不成立。
+
+**本轮验证到的程度**（因 §9.1 的 GPU 断联）：
+
+| 分支 | 状态 |
+|---|---|
+| 前置不成立 ⇒ exit 2 + 明确提示 | ✅ 实跑（`Cannot load libcuda.so.1`） |
+| `--checks-only` 的 S4/S5/S6/S7 | ✅ 用 `libsvtav1` 产的 AV1 样本 + 复刻的 QA sidecar 实跑：4 PASS / 0 FAIL / 4 SKIP |
+| S7 的**反证** | ✅ 指向 h264 文件时 S7 **FAIL**（`codec=h264`）—— 这正是能抓住 §8.6-② 的那一项 |
+| 完整跑批分支（S1/S2/S3/S8） | ⏭️ 需 GPU，留待复跑 |
+
+### 9.5 P2 · V9 三行复核（无缓存脚本，3 素材，`--dense`）
+
+```bash
+V=/workspace/VidUtils/probe/calibrate_soft_offsets_nocache.py
+python3 $V --src /workspace/input_videos/new5_raw.mp4  --duration 4 --width 1280 --height 720  --codecs libx265,libvpx-vp9,libsvtav1 --dense --workroot temp/v9 --tag m1_720p30  # 基准素材
+python3 $V --src /workspace/input_videos/new4_raw.mp4  --duration 4 --width 1920 --height 1080 --codecs libx265,libvpx-vp9,libsvtav1 --dense --workroot temp/v9 --tag m2_1080p30
+python3 $V --src /workspace/input_videos/wws3e02_26s.mp4 --duration 4 --width 640 --height 360 --codecs libx265,libvpx-vp9,libsvtav1 --dense --workroot temp/v9 --tag m3_360p
+```
+
+| 素材（分辨率） | `libx265` | `libvpx-vp9` | `libsvtav1` |
+|---|---|---|---|
+| **m1 · new5_raw（720p30，= 原标定基准）** | 20.81（表 20.81，**Δ +0.00**） | 28.31（表 28.17，**Δ +0.14**） | 23.68（表 23.70，**Δ −0.02**） |
+| m2 · new4_raw（1080p30） | 20.29（Δ −0.52） | 28.49（Δ +0.32） | 22.38（Δ −1.32） |
+| m3 · wws3e02（360p 低复杂度） | 19.92（Δ −0.89） | **25.90（Δ −2.27）** | 22.62（Δ −1.07） |
+
+（表中 crf21 落点来自 `src/utils/quality_map.py::QUALITY_MAP`；`prep` md5/字节数落在
+`verification_report/v9_calib_nocache_m{1,2,3}_*.json`，可审计。）
+
+* ✅ **基准素材上三行逐条复现（|Δ| ≤ 0.14 crf）⇒ 现表值正确，不改表**。
+  （`libsvtav1` 现表 `(2.145, −21.35)` 正是 §6.8 落表值；`libvpx-vp9` `(1.6381, −6.2289)`
+  亦为 §6.8 首条素材的落表值 —— 本轮 m1 等于把那条被 `prep` 缓存污染过的记录重新干净地测了一遍。）
+* ⚠ **残差是内容/分辨率相关**，最大 −2.27 crf 落在 `libvpx-vp9` —— 正是 AC7 里
+  ΔPSNR −1.67 dB 那个已知 WARN 的编码器。单一线性常量压不掉内容相关误差
+  （与 E9 判 `CQ_OFFSET=0`、E10 判"合成过配/真实欠配"同源结论）⇒ **不为单素材微调表值**。
+* 证据：`verification_report/v9_calib_nocache_m{1,2,3}_*.json`。
+
+### 9.6 P3″ · AV1 Level 1 `GetEncodePresetConfig code=12`（**环境阻断，附复现片段**）
+
+现象：AV1 段恒定降级到 Level 2/3（ffmpeg CLI 管道 + NVENC），功能正确、少一层直通优化。
+已定位到的线索：失败发生在 `nvEncGetEncodePresetConfig(AV1_GUID, preset_GUID, &cfg)`，
+返回 `12 = NVENC_ERR_INVALID_PARAM`，且发生在 `OpenEncodeSessionEx` 成功、
+codec/preset GUID 都枚举成功之后。
+
+**待验证假设**：AV1 上 GUID 版 `GetEncodePresetConfig` 不可用，应改用 SDK 13.0 的
+`nvEncGetEncodePresetConfigEx(encoder, NV_ENC_CODEC_AV1=3, NV_ENC_PRESET_P4=8+3, &cfg)`
+（`_FUNC_IDX["GetEncodePresetConfigEx"] = 39` 已在 `nvenc_sdk.py` 里登记，只是没有回退路径）。
+
+```python
+# 复现/验证片段（需 GPU；本会话因 §9.1 未能执行）
+import ctypes, sys
+from ctypes import byref, cast, c_uint32, c_void_p
+sys.path.insert(0, "external")
+import torch; torch.cuda.init()          # 容器内 /usr/lib/.../libcuda.so.1 可能是桩，必须先由 torch 加载真库
+from ifrnet_video import nvenc_sdk as S
+
+_orig = S.NVENCEncoder._build_encoder_config
+def patched(self, codec_guid, preset_guid, w, h, fps, qp):
+    try:
+        return _orig(self, codec_guid, preset_guid, w, h, fps, qp)
+    except RuntimeError as exc:                     # GPC 失败 → 试 Ex
+        print("GPC 失败:", exc)
+        fn = ctypes.CFUNCTYPE(c_uint32, c_void_p, ctypes.c_int, ctypes.c_int,
+                              ctypes.POINTER(S._NvEncPresetConfig))(
+            self._get_func(S._FUNC_IDX["GetEncodePresetConfigEx"]))
+        pc = S._NvEncPresetConfig(); ctypes.memset(byref(pc), 0, ctypes.sizeof(pc))
+        pc.version = S.NV_ENC_PRESET_CONFIG_VER
+        cast(byref(pc, 8), ctypes.POINTER(c_uint32))[0] = S.NV_ENC_CONFIG_VER
+        st = fn(self._encoder, {"h264": 0, "hevc": 1, "av1": 3}[self._codec],
+                8 + S._PRESET_P_INDEX.get(self._preset_name, 4), byref(pc))
+        print("GPCEx ->", st)                        # 0 = 假设成立
+        raise
+S.NVENCEncoder._build_encoder_config = patched
+S.NVENCEncoder(640, 360, 30.0, qp=27, preset="medium", rate_mode="constqp",
+               la_depth=0, codec="av1")
+```
+
+| 判读 | 落地动作 |
+|---|---|
+| `GPCEx -> 0` 且能完成 `InitializeEncoder` | 在 `_build_encoder_config` 加"GPC 失败 ⇒ GPCEx"回退（两侧 `nvenc_sdk.py`），AV1 恢复 Level 1 |
+| `GPCEx` 也非 0 | 记为驱动侧限制，保持现有降级（功能无碍），在 `nvenc_sdk.py` 注释里写明"AV1 恒走 Level 2/3" |
+| 顺带测 `h264`/`hevc` 是否也失败 | 若 h264/hevc 正常 ⇒ 确证 AV1 专属；若也失败 ⇒ 是本机驱动/SDK 版本问题，与 codec 无关 |
+
+⚠ 复现时**必须先 `import torch; torch.cuda.init()`**：容器内 `/usr/lib/x86_64-linux-gnu/libcuda.so.1`
+可能是 0 字节桩，不先由 torch 加载真库会报 `Cannot load CUDA library: ... file too short`。
+
+### 9.7 本轮回归
+
+| 门 | 结果 |
+|---|---|
+| `crf_cq_unification_verify.py --quick` | **PASS 93 / FAIL 0 / WARN 0 / SKIP 12**（+3 = 新增 G6-8/9/10） |
+| `plan_implementation_gate.py` | 96 项 / 92 通过 / **0 失败** / 2 警告（R5 CUDA、R7 NVENC —— §9.1 环境）/ 2 跳过 |
+| `pytest Accessory/test -q` | **27 passed**（24 + 新增 3） |
+
+---
+
 ## 后续建议（下一步）
 
 | 优先级 | 事项 | 说明 |
 |---|---|---|
 | ~~**P1**~~ | ~~AC5：`av1_qsv`/`av1_amf` 量程实测~~ | **方法已被证伪（§8.4）**：ffmpeg 7.x 的 QSV 族选项表里没有 `-cq`，通用 `global_quality` 无限幅 ⇒ 只能实跑取，需对应硬件，Ada 卡覆盖不了。`QUALITY_MAP` 维持 `hi=51` + "未核实"。 |
 | ~~**P1**~~ | ~~librav1e 编码性能验证~~ | **已完成（§6.11）**：默认档 179.2s/2s@720p（≈0.011× 实时）；`-speed 10` 提速 4.6× 但体积 ×1.40；tile 1×1 为 no-op。表值已按实测改为 `(7.0032,−80.993)`→qp66。**残留**：若生产启用 rav1e，建议显式下发 `-speed 10` 并按 1.40× 因子重标。 |
-| **P2** | **V9 更广泛素材复核（其余三个编码器）** | `libaom-av1` 已用加密扫描在 3 素材上复核完毕（§6.10，现表判定正确）。`libx265` / `libvpx-vp9` / `libsvtav1` 三行仍只有 4 次标定（且首轮受 prep 缓存影响，仅首条素材有效）⇒ 建议用 `calibrate_soft_offsets_nocache.py` 重跑，并补 4K/高帧率/动画等类型。 |
+| **P2** | ~~V9 更广泛素材复核（其余三个编码器）~~ | **已完成（§9.5）**：`libx265` / `libvpx-vp9` / `libsvtav1` 三行用无缓存脚本 `--dense` 在 720p30 / 1080p30 / 360p 三素材上复核。**基准素材上 |Δ| ≤ 0.14 crf ⇒ 现表正确，不改表**；素材间残差最大 −2.27 crf（`libvpx-vp9`，内容相关，与 E9/E10 同源结论）。证据 `verification_report/v9_calib_nocache_m*.json`。**残留**：4K / 高帧率（50fps+）类型尚未覆盖（本会话 GPU 断联且这两类 CPU 标定耗时过长）。 |
 | ~~**P3**~~ | ~~长视频冒烟验证~~ | **已完成（§8.5）**：330 s / 11 段 / 两侧 av1_nvenc，`constqp` 与 `vbr` 双跑均 `exit 0`，15803 帧全链路守恒、解码级门禁通过、QA sidecar 完整、无内存泄漏（RSS 后半程斜率 −326 MB/min）。**代价**：先修了三处 AV1 缺陷（§8.6）。 |
-| **P3′** | **AV1 端到端回归常态化** | 建议把「AV1 双 rate_mode 冒烟」做成可重复脚本（本次是临时脚本），并在门禁里加一条"`--codec-* av1_nvenc` 的命令形状"断言 —— §8.6 的 ② ③ 正是靠"命令形状断言"能提前抓到的（判据 G6 组已有同类断言，但只覆盖 constqp）。 |
-| **P3″** | **AV1 Level 1 直通（`GetEncodePresetConfig code=12`）** | 功能不受影响（正确降级到 CLI 管道），但 AV1 永远拿不到直通优化；单独立项查 SDK/驱动侧原因。 |
+| ~~**P3′**~~ | ~~AV1 端到端回归常态化~~ | **已完成（§9.2~§9.4）**：判据新增 G6-8/9/10（`av1_nvenc` 命令形状，含 constqp + vbr_hq 降级）、pytest `test_verify_video_integrity_fallback.py`（3 例）、可重复脚本 `Accessory/verify/av1_pipeline_smoke.py`（8 项验收 + `--checks-only`）。三者均做过**反向验证**。**残留**：完整跑批分支（S1/S2/S3/S8）需 GPU，本会话未跑到。 |
+| **P3″** | **AV1 Level 1 直通（`GetEncodePresetConfig code=12`）** | 功能不受影响（正确降级到 CLI 管道）。假设与**可直接执行的复现片段**见 **§9.6**（`GetEncodePresetConfigEx` 回退）。**本会话因 GPU 断联（§9.1）未能验证**。 |
 
 > **复现命令**：
 > ```bash

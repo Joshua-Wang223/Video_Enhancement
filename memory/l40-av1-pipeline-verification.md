@@ -96,6 +96,69 @@ IFRNet 与 ESRGan **两侧都** `--codec-* av1_nvenc`。
 `plan_implementation_gate.py` = 96 项 / 94 通过 / 0 失败 / 0 警告 / 2 跳过；
 `pytest Accessory/test -q` = 24 passed。
 
+## 五、第二轮（同日续做）：回归保护 + V9 复核
+
+### 5.1 判据：G6-8 / G6-9 / G6-10（`av1_nvenc` 命令形状）
+
+§三 的 ② ③ 两处缺陷本质是"下发了错的命令"，最该由命令形状断言守住
+（G6 组本就是干这个的，但只覆盖 constqp）。三格都**不需要 AV1 硬件**：
+
+| ID | 侧 | rate_mode | 必须出现 | 必须不出现 |
+|---|---|---|---|---|
+| G6-8 | ESRGAN | constqp | `-vcodec av1_nvenc`、`-preset p4`、`-rc:v constqp`、`-qp 63` | `-crf`、`-cq:v` |
+| G6-9 | IFRNet | **vbr_hq** | `-rc:v vbr`、`-cq:v 27`、`-b:v 0`、`-rc-lookahead 8` | `-rc:v vbr_hq` |
+| G6-10 | ESRGAN | **vbr_hq** | `-vcodec av1_nvenc`、`-rc:v vbr`、`-cq:v 27`、`-b:v 0` | `-rc:v vbr_hq`、`-crf` |
+
+**反向验证**：临时回退 ② ③ 两处修复 → 三格**全 FAIL**（且诊断精确指出缺哪些/多哪些），
+恢复后 PASS=93。**新断言必须先证明"回退修复后它会 FAIL"，否则可能一辈子抓不到东西。**
+
+### 5.2 pytest `Accessory/test/test_verify_video_integrity_fallback.py`（3 例）
+
+猴补丁把 `cv2.VideoCapture` 换成"读不出帧"：① 好文件仍判完好；② **4 KB 垃圾文件仍判坏**
+（证明回退没把判定放宽）；③ 缺文件 / <1KB 老闸门不变。反向验证同样做过（旧行为 ⇒ ① FAIL）。
+**不需要 AV1 硬件**（用 libx264 样本 + 猴补丁即可）。
+
+### 5.3 可重复脚本 `Accessory/verify/av1_pipeline_smoke.py`
+
+把 §二 那次手搓的冒烟固化成一条命令；8 项验收（退出码 / 段级门禁 / 帧数等式 /
+`validate_decodable_video` / 码流硬指标 / QA sidecar / **产物编码器确为 av1** / 泄漏斜率），
+支持 `--checks-only` 复验既有产物（**不需要 GPU**）。退出码 0/1/**2（环境前置不成立）**。
+⚠ 该脚本的 `S7`（产物编码器 = av1）正是能抓住 5.1 表里 ② 那类"静默换编码器"的断言。
+
+### 5.4 P2 · V9 三行复核（无缓存脚本 + `--dense`，3 素材）
+
+| 素材 | `libx265` | `libvpx-vp9` | `libsvtav1` |
+|---|---|---|---|
+| **m1 · 720p30（原标定基准）** | Δ **+0.00** | Δ **+0.14** | Δ **−0.02** |
+| m2 · 1080p30 | −0.52 | +0.32 | −1.32 |
+| m3 · 360p 低复杂度 | −0.89 | **−2.27** | −1.07 |
+
+（Δ = 实测 crf21 落点 − `QUALITY_MAP` 现表落点。）
+
+⇒ **现表正确，不改表**。残差是**内容/分辨率相关**，最大 −2.27 落在 `libvpx-vp9`
+（= AC7 里 ΔPSNR −1.67 dB 那个已知 WARN 的编码器）。单一线性常量压不掉内容相关误差
+⇒ 与 E9 判 `CQ_OFFSET=0`、E10 判"合成过配/真实欠配"同源。证据
+`verification_report/v9_calib_nocache_m{1,2,3}_*.json`。
+⚠ 4K / 50fps+ 类型仍未覆盖（CPU 标定耗时过长）。
+
+### 5.5 ⚠ 会话中途 GPU 断联（环境教训）
+
+06:07 起 `/usr/lib/x86_64-linux-gnu/libcuda.so.1` 与 `libnvidia-ml.so.1` 被指向 **0 字节**的
+`libcuda.so.580.65.06`，`/dev/nvidia*` 消失 ⇒ `nvidia-smi` / `av1_nvenc` / `torch.cuda` 全废。
+后果：**P3″（AV1 Level 1 `GetEncodePresetConfig code=12` 根因）与 AC5 一并按"环境不支持"跳过**。
+
+* ✅ 门禁的探测按设计降级：`R5 CUDA`、`R7 NVENC` 两项 **WARN，FAIL 仍为 0**
+  ⇒ "环境差异 ≠ 功能失败"的设计意图得到实证。
+* ⚠ 教训：长会话里 GPU 可能被回收，**GPU 结论必须当场实测**，历史报告不能替代复跑。
+* 复现 NVENC SDK 问题时**必须先 `import torch; torch.cuda.init()`** ——
+  否则会撞上 0 字节的 `libcuda.so.1` 桩，报 `Cannot load CUDA library: ... file too short`。
+* P3″ 的假设与可直接执行的复现片段见方案 **§9.6**（`GetEncodePresetConfigEx` 回退，索引 39）。
+
+## 六、回归（第二轮后）
+
+`--quick` = PASS 93 / FAIL 0 / SKIP 12（+3 = G6-8/9/10）；
+门禁 = 96 项 / 92 通过 / **0 失败** / 2 警告（GPU 断联）/ 2 跳过；`pytest` = **27 passed**。
+
 **Why:** 用户要求"快速执行方案中最后剩余的需要 L40/Ada 的测试"。P3 长视频冒烟在
 **开箱状态下直接失败**，根因是三处 AV1 路径缺陷（其中 1 处是验收层把好文件判坏）。
 不修就无法验证 AV1 的 constqp/vbr 全链路。
