@@ -1,62 +1,63 @@
 ---
-name: 等质量换算 LOO 门禁未达标 —— 根因是表格式而非过拟合（2026-10-01）
-description: 第二轮标定 4 素材 LOO worst ΔVMAF 4.18~13.73（门禁 1.0），已排除过拟合与素材池污染，根因是 (a,b,lo,hi) 单行仿射表格式承载不了跨素材等质量关系；含「0 评估点假通过」判据漏洞与 LOO 工具位置
+name: 等质量换算 LOO 门禁未达标 —— 跨素材结构上限，已按戊方案落表（≤5.9）
+description: 第二轮 9 素材 LOO worst ΔVMAF 4.13~7.86（立项原门禁 1.0），四条排除性证据定性为结构性上限而非过拟合/素材/表格式/锚点；2026-10-01 仓主裁定放宽至 ≤5.9 并落表，含「0 评估点假通过」判据漏洞与分段/换锚点负收益实测
 type: project
 ---
 
-等质量换算表（`QUALITY_MAP`）第二轮标定（4 素材 × 6 档，`--subsample 1`）的
-**留一交叉验证（LOO）门禁 ΔVMAF < 1.0 全部不达标**，worst ΔVMAF：
+等质量换算表（`QUALITY_MAP`）**M2 的 LOO 门禁 ΔVMAF < 1.0 不可达**，
+2026-10-01 定案：仓主裁定**放宽至 ≤5.9** 并落表（戊方案），精度边界已在
+`convert_crf.QUALITY_MAP` 注释 / 两仓 README / 标定报告 §3.2 三处显式标注。
 
-| 编码器 | LOO worst | 主要离群素材 |
-|---|---|---|
-| libsvtav1 | 13.73 | new1 / word_world_2 |
-| libx265 | 6.89 | new1 |
-| libaom-av1 | 6.88 | new1 / new5_raw |
-| librav1e@10 | 5.05 | new1 / new5_raw |
-| libvpx-vp9 | 4.18 | new5_raw / new1 |
+**落表值（9 素材合并池化，两仓逐条相等）**
+x265 (1.0700, −1.8002) / vp9 (1.9531, −14.6476) / aom (2.2349, −20.0233) /
+svtav1 (2.2371, −17.1879) / rav1e native (7.5726, −92.4768)；
+`-speed 10` 档 (7.4342, −89.2928) 进 `quality_map._EQQUAL_SPEED_OVERRIDE`（分档语义）。
+素材 9 条覆盖立项 §3 全部 6 类（实拍 / 动画平涂 / 烧录字幕 / 暗场 / 屏幕 UI / 高细节纹理）。
+⚠ `librav1e` native 档仅 2 素材（VU 侧无 native 数据），LOO 未验证。
 
-**根因（已定性，纯 CPU 零重编码可复现）**：**表格式不足**，不是标定执行错误、
-不是过拟合、不是素材池污染。三条排除性证据：
+**根因：跨素材结构上限。** 四条排除性证据（纯 CPU 零重编码，全部可复现）：
 
-1. **oracle（素材自身拟合）本身就超门禁** —— `libsvtav1` 的 ΔVMAF 达
-   4.10（new4_raw）/ 5.61（new5_raw）/ 3.36（word_world_2）。留出素材完全不参与
-   拟合时仍不达标 ⇒ 训练内误差就超了，LOO 只是把它暴露出来。
-2. **换模型形式救不回** —— 分段（2 段）把 svtav1 从 4~5.6 降到 1.12~2.43 仍不达标；
-   仿射/分段/2 点 oracle 三种形式 LOO 全 FAIL（分段 4.2~10.7、2 点 3.8~7.7）。
-3. **素材池污染不是主因** —— 剔除 `word_world_2`（720×576 上采样，VMAF 由缩放主导）
-   后仍全 FAIL（x265 6.13 / svtav1 13.51 / rav1e@10 4.58）；锚点收窄到 26/22/30/34
-   也只降到 5.09 / 7.26 / 3.99。
+1. **非过拟合** —— svtav1 连**训练内**（素材自身拟合）ΔVMAF 都达 **8.29~11.22**，
+   分段也只降到 3.86~5.06；34 个 (档位,素材) 组合中 7 个训练内就超 1.0。
+2. **非表格式** —— 分段 L2/L3 无增益；**每素材专属表 LOO 4.02~13.77，比共享直线更差**。
+3. **非素材不足** —— 素材数 4→9 几乎无改善（worst 4.14~13.73 → 4.13~7.86）。
+4. **非锚点位置** —— 素材间「等 VMAF 参数」离散度随 crf **单调下降**
+   （x265 19%→6%、aom 51%→9%、svtav1 33%→8%）；锚点子集穷举 30+ 组合最优恒为
+   **最低 crf**。⇒「把锚点移出 VMAF 平坦区」是**负收益**，未执行 10 小时重跑。
 
-**归因**：各素材自身 (a, b) 都不可迁移（x265 的 a ∈ [1.031, 1.150]、
-b ∈ [−4.7, −0.3]；b_m 区间 [−4.33, −1.67]），且锚点区 x264 VMAF 局部斜率在
-crf18–22 仅 −0.11~−0.49（**近乎平坦 ⇒ 参数反解条件数极差**），小参数误差被放大成大
-VMAF 误差。达标需改**表格式**（分段/查表）或按内容类型分档出表。
+**机制**：`ΔVMAF ≈ |Δb| × |dVMAF/dparam|`，而目标曲线斜率随 crf 增大
+（crf18 处 0.02~0.18，crf34 处 1.2~3.7）⇒ 高 crf 端把小参数误差放大 20~50×。
+误差单调递增的原因是**放大倍数**，不是锚点位置不当。斜率加权（γ=2，权重 ∝ 斜率）
+可把 svtav1 从 13.73 降到 8.37，但单独不足以达标。
 
-**⚠ 判据漏洞（已修，值得记住）**：诊断中「二次模型 LOO 全 0.000 ✅」是**假通过** ——
-二次预测参数落到扫描区间外，`vmaf_at_param` 返回 `None` ⇒ 0 个评估点，而代码把
-「无评估点」当成 `worst=0` 报 PASS。凡是「预测值落在扫描区间外」的折叠式
-评估，**必须把 0 评估点判 `inf`（模型失效）而非 PASS**。
+**⚠ 判据漏洞（已修，值得记住）**：诊断中「二次模型 LOO 全 0.000✅」是**假通过** ——
+二次预测参数落到扫描区间外，`vmaf_at_param` 返回 `None` ⇒ 0 个评估点，
+而代码把「无评估点」当成 `worst=0` 报PASS。凡用 `interp/vmaf_at_param` 在有限扫描区间上
+做折叠回查，**必须有「0 评估点 ⇒ 判 `inf`（模型失效）」断言**。
+已写入 `Accessory/probe/loo_equal_quality.py` 与 `probe/loo_equal_quality.py`。
 
-**Why**：门禁不放水的前提是判据本身正确；这次若不查证就会拿一个 bug 结果
-（「二次模型完美达标」）去改生产表格式。
+**⚠ 绿灯不能背书**：`verify_equal_quality.py` 跑的是**单素材 in-sample**
+（new5_raw crf21，素材与锚点都在标定集内）⇒ 必过，结构上测不到跨素材问题。
+它与 LOO「不矛盾」，但**不能**用它为表值背书；LOO 才是落表前置门禁。
 
-**How to apply**：任何 LOO / 交叉验证脚本，凡用 `interp/vmaf_at_param` 在
-有限扫描区间上做折叠回查，都要有「0 评估点 ⇒ 失败」断言。本次已写入
-`Accessory/probe/loo_equal_quality.py` 与 `probe/loo_equal_quality.py`。
+**Why**：门禁不放水的前提是判据本身正确。这次若不查证，就会拿一个 bug 结果
+（「二次模型完美达标」）去改生产表格式；反过来，穷举证伪了「分段表」「换锚点」
+两条路线后，避免了 10 小时白跑。
 
-**产出与状态**：
-- LOO 工具从 harness 的 `--loo`（B 侧旧版）**迁为两仓同源独立脚本**：
-  `Accessory/probe/loo_equal_quality.py`（VE）/ `probe/loo_equal_quality.py`（VU），
-  支持 `--workroot/--tag`（可重复，Stage3 单独 workdir 时须多 `--tag` 合并）/
-  `--tiers/--tol/--quiet`，秒级完成（只读 `points.json`，不重编码）。
-- harness 两仓已同源（A 侧为基线，marker-walk 定位项目根）：PAVA 保序回归、
-  分段拟合诊断、`--selftest`（19 项纯逻辑自测）、`points.json` 逐点断点、
-  `librav1e` 按 `-speed` 档 tier 化。
-- **表值尚未回填** —— `QUALITY_MAP` 两仓仍是第一轮值，落表格式待用户裁定。
-- 门禁现状（2026-10-01）：`plan_implementation_gate` 84 项 75 通过 / **0 失败** / 4 警告 / 5 跳过；
-  `crf_cq_unification_verify --quick` PASS=50 **FAIL=3（G4/G9/G10，cv2 缺失，环境性）** / SKIP=24；
-  VidUtils `verify_quality_mapping` ⑨ 组 **14/14 全绿**。
+**How to apply**：后续若要真正压低误差，**不要再调表**（分段/加素材/换锚点均已证伪），
+只能改**基准指标**（如 PSNR-HVS 或组合等效轴）或引入**逐素材在线探测**
+（生产时先测 VMAF 再查表）。素材异质性显著增加时必须重跑标定并**重新定门禁**。
 
-**Why（背景）**：立项 M2 验收标准是「留一法 ΔVMAF < 1.0」，此前从未在 4 素材口径下
-真正跑过 LOO（第一轮 3 素材 subsample=8 已作废）。这次是首次执行该门禁，
-结论是**当前表格式达不到该门禁**，需要仓主在「改表格式」与「放宽门禁」之间裁定。
+**工具沉淀**（两仓同源）：
+- `Accessory/probe/loo_equal_quality.py` / `probe/loo_equal_quality.py` ——
+  LOO 独立脚本，只读 `points.json` 零重编码秒级完成；支持多 `--tag` 合并 workdir。
+- `Accessory/probe/convert_points_cache.py` —— 旧格式 `points_cache.json`
+  （键 `素材|时长|档位|参数`）→ 新格式 `points.json`（键 `素材|档位|参数`）迁移，
+  用于复用 VU 侧 2026-10-01 之前跑完的标定数据。
+- harness 两仓已同源（marker-walk 定位项目根）：PAVA 保序、分段诊断、
+  `--selftest`（19 项）、`points.json` 逐点断点、librav1e 按 `-speed` 档tier 化。
+
+**门禁（2026-10-01 落表后）**：`verify_equal_quality.py` 5/5 rc=0；
+`plan_implementation_gate` 84 项 / 75 通过 / **0 失败** / 4 警告 / 5 跳过；
+`crf_cq_unification_verify --quick` PASS=50 FAIL=3（G4/G9/G10 cv2 缺失，环境性）SKIP=24；
+VidUtils `verify_quality_mapping` ⑨ 组 **14/14 全绿**。

@@ -140,12 +140,17 @@ _EQVOL_SPEED_OVERRIDE: Dict[str, tuple] = {
     'librav1e': (6.8159, -66.093, 0, 255),   # 仅当 RAV1E_SPEED > 0 时生效
 }
 
-#: ``-speed 10`` 下的**等质量**标定值。
-#: ``QUALITY_MAP['librav1e']`` 只对「已声明的 speed 档」成立（``-speed`` 整体
+#: ``-speed 10`` 下的**等质量**标定值（2026-10-01 落表）。
+#: ``QUALITY_MAP['librav1e']`` 只对 **native 档**成立（``-speed`` 整体
 #: 平移码率曲线），故等质量表的 rav1e 也按 speed 分档：原生档进 `QUALITY_MAP`，
 #: speed 10 档进本表。由 `Accessory/probe/calibrate_equal_quality.py` 标定回填。
-#: 空 dict ⇒ 未标定，质量模式下 rav1e 回落 ``_active_table``（即等体积/等质量表的原生档）。
-_EQQUAL_SPEED_OVERRIDE: Dict[str, tuple] = {}
+#: 值来源：9 素材合并池化，720p prep，`n_subsample=1`，
+#: LOO worst |ΔVMAF| = **4.24**（门禁经仓主裁定放宽至 ≤5.9，精度边界见
+#: :data:`convert_crf.QUALITY_MAP` 注释）。
+#: 空 dict ⇒ 未标定，质量模式下 rav1e 回落 ``_active_table``（即等质量表的原生档）。
+_EQQUAL_SPEED_OVERRIDE: Dict[str, tuple] = {
+    'librav1e': (7.4342, -89.2928, 0, 255),   # 仅当 RAV1E_SPEED > 0 时生效
+}
 
 # ── CONSTQP / QP 轴的**等质量**表（D2b，仅本仓）──────────────────────────────
 # 本仓走 ``external/*/nvenc_sdk.py`` 的 ctypes 直连 SDK，``to_constqp_qp()`` 需要
@@ -154,8 +159,16 @@ _EQQUAL_SPEED_OVERRIDE: Dict[str, tuple] = {}
 #   · ⚠ NVENC 的 QP 行**需上机标定**（M4，需 NVIDIA 卡）—— 在标定前，
 #     ``_QP_MAP_OVERRIDE`` 会先行命中（h264/hevc 基准轴直取、av1 ×3），行为与现状一致。
 QUALITY_MAP_QP: Dict[str, tuple] = {
-    # 由 calibrate_equal_quality.py 标定后回填（软编行镜像 QUALITY_MAP）。
-    # TODO(M4): 'h264_nvenc' / 'hevc_nvenc' / 'av1_nvenc' 需 NVIDIA 机上标定。
+    # 软编行镜像 QUALITY_MAP 的 2026-10-01 标定值（9 素材合并，720p prep，
+    # n_subsample=1，LOO worst |ΔVMAF| ≤ 5.9 —— 精度边界见 convert_crf.QUALITY_MAP 注释）。
+    # ⚠ libx265/libvpx-vp9/libaom-av1/libsvtav1 的 QP 轴 = CRF 轴（ffmpeg 直接透传 -qp）。
+    # ⚠ TODO(M4): 'h264_nvenc' / 'hevc_nvenc' / 'av1_nvenc' 需 NVIDIA 机上标定。
+    'libx265':     (1.0700, -1.8002, 0, 51),
+    'libvpx-vp9':  (1.9531, -14.6476, 0, 63),
+    'libaom-av1':  (2.2349, -20.0233, 0, 63),
+    'libsvtav1':   (2.2371, -17.1879, 0, 63),
+    # ⚠ rav1e 分档：native 进 QUALITY_MAP，speed10 进 _EQQUAL_SPEED_OVERRIDE，
+    #   本表不重复登记 librav1e（避免与档位语义冲突）。
 }
 
 
@@ -169,13 +182,17 @@ def _active_table(table=None):
     return table if table is not None else get_quality_map()
 
 
-def _eqvol_model(codec: str, table=None):
+def _active_cq_model(codec: str, table=None):
     """返回该编码器 **CQ/CRF 轴**上的 ``(a, b, lo, hi)``；未知编码器返回 None。
 
     按当前生效的 ``-speed`` 档选取 rav1e 标定值 —— ``-speed`` 会整体平移码率
     曲线，同一基准轴值在不同 speed 下对应不同的 rav1e qp；**等质量模式**走
     ``_EQQUAL_SPEED_OVERRIDE``，否则走 ``_EQVOL_SPEED_OVERRIDE``。
     其余编码器落到 :func:`_active_table`（默认口径即 ``QUALITY_MAP``，未覆盖回退 ``SIZE_MAP``）。
+
+    注：2026-10-01 由 ``_eqvol_model`` 改名而来 —— 原名只提「等体积」，但本函数
+    同时服务等体积/等质量两套表（按 :func:`get_quality_mode` 分流），旧名有误导性。
+    保留同名薄封装仅为兼容既有测试/外部引用。
     """
     c = str(codec).lower()
     if c == 'librav1e' and RAV1E_SPEED > 0:
@@ -184,6 +201,10 @@ def _eqvol_model(codec: str, table=None):
         if c in ov:
             return ov[c]
     return _active_table(table).get(c)
+
+
+#: 旧名兼容别名（见 :func:`_active_cq_model` 的改名说明）。
+_eqvol_model = _active_cq_model
 
 # ── CQ 轴可调偏移 ────────────────────────────────────────────────────────────
 # 各硬件编码器 -cq:v（targetQuality / CQ 轴）的微调量，单位与 CQ 同刻度。
@@ -362,10 +383,10 @@ def _to_target_from_ref(codec: str, ref, table=None):
     与 :func:`convert_crf.from_x264_crf` 的唯一差别：对 ``librav1e`` 且
     ``RAV1E_SPEED > 0`` 时改用对应 speed 档的标定值（``-speed`` 会整体平移码率曲线，
     同一基准轴值在不同 speed 档下对应不同的 rav1e qp）。
-    其余编码器 ``_eqvol_model`` 直接落到 :func:`_active_table`（默认模式 = ``SIZE_MAP``，
+    其余编码器 ``_active_cq_model`` 直接落到 :func:`_active_table`（默认模式 = ``SIZE_MAP``，
     此时行为与原函数逐字一致）。
     """
-    m = _eqvol_model(codec, table=table)
+    m = _active_cq_model(codec, table=table)
     if m is None or ref is None:
         return None
     a, b, lo, hi = m
