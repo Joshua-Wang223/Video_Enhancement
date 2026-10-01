@@ -192,7 +192,7 @@ def _active_cq_model(codec: str, table=None):
 
     注：2026-10-01 由 ``_eqvol_model`` 改名而来 —— 原名只提「等体积」，但本函数
     同时服务等体积/等质量两套表（按 :func:`get_quality_mode` 分流），旧名有误导性。
-    保留同名薄封装仅为兼容既有测试/外部引用。
+    **旧名已彻底移除**（无兼容别名）。
     """
     c = str(codec).lower()
     if c == 'librav1e' and RAV1E_SPEED > 0:
@@ -201,10 +201,6 @@ def _active_cq_model(codec: str, table=None):
         if c in ov:
             return ov[c]
     return _active_table(table).get(c)
-
-
-#: 旧名兼容别名（见 :func:`_active_cq_model` 的改名说明）。
-_eqvol_model = _active_cq_model
 
 # ── CQ 轴可调偏移 ────────────────────────────────────────────────────────────
 # 各硬件编码器 -cq:v（targetQuality / CQ 轴）的微调量，单位与 CQ 同刻度。
