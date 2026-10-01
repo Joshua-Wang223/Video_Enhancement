@@ -61,15 +61,15 @@ DEFAULT_SRCS = [
     INPUT_VIDEOS / 'word_world_2.mp4',         # 720x576 门禁素材
 ]
 
-ANCHOR_CRFS = [18, 21, 24, 27, 30]
+ANCHOR_CRFS = [18, 22, 26, 30, 34]
 
 # 目标编码器扫描点。低端必须够低，使目标 VMAF 能高于 x264 crf18（否则高端锚点插值落空）。
 SWEEP = {
-    'libx265':    [10, 13, 16, 19, 21, 24, 27, 30, 34, 38],
-    'libvpx-vp9': [10, 13, 16, 20, 23, 26, 30, 34, 38, 44, 50],
-    'libaom-av1': [10, 13, 16, 20, 23, 26, 30, 34, 38, 44, 50],
-    'libsvtav1':  [10, 13, 16, 20, 23, 26, 30, 34, 38, 44, 50],
-    'librav1e':   [15, 25, 35, 45, 55, 66, 80, 95, 110, 130],
+    'libx265':    [10, 14, 18, 22, 26, 30, 34, 38, 44, 51],
+    'libvpx-vp9': [10, 16, 22, 28, 34, 40, 46, 52, 58, 63],
+    'libaom-av1': [10, 16, 22, 28, 34, 40, 46, 52, 58, 63],
+    'libsvtav1':  [10, 16, 22, 28, 34, 40, 46, 52, 58, 63],
+    'librav1e':   [10, 30, 50, 70, 90, 110, 130, 155, 180, 210],
 }
 
 # 各编码器**必须锁定**的配套参数（标定与下发必须一致，否则等效点漂移）。
@@ -211,11 +211,14 @@ def video_kbps(path):
 
 
 # ── 指标采集（两遍，口径按「唯一来源」）────────────────────────────────────
-def _vmaf_pass(dist, ref, nframes, log, subsample=5):
+def _vmaf_pass(dist, ref, nframes, log, subsample=1):
     """libvmaf 单遍：VMAF + PSNR-HVS（**唯一来源**）。
 
-    ``n_subsample`` 降本：每 N 帧算一次并池化，pooled mean 仍稳（拟合只需要
-    **相对排序**，不是绝对分位），可把长片测量成本降到 1/N。
+    ⚠ **`n_subsample` 必须为 1**（除 1 以外不写该选项）。实测 `subsample>1` 会
+    **偏置 VMAF**（同文件 vp9 crf35 差 1.9~3.0），且偏置量**随编码器而异** ⇒
+    会污染等 VMAF 匹配，使等质量表系统性失真（2026-10-01 二次标定实测确认：
+    3 素材 204 点用 subsample=8 跑出的表，留一交叉验证 6 个编码器里 5 个超标）。
+    涨本换准确：本机 subsample=1 单点约 44.7s（vs subsample=8 的 7.7s）。
     """
     log.unlink(missing_ok=True)
     filt = ('libvmaf=feature=name=psnr_hvs:'
@@ -255,12 +258,16 @@ def _filters_pass(dist, ref, nframes):
             'xpsnr': grab(r'XPSNR\s+y:\s*' + _NUM)}
 
 
-def measure(dist, ref, nframes, tmp, with_filters=False, subsample=8):
+def measure(dist, ref, nframes, tmp, with_filters=False, subsample=1):
     """采集一副 dist/ref 的指标。
 
     默认**只跑 VMAF + PSNR-HVS**（libvmaf 单遍）——标定的拟合轴只需要 VMAF，
     再花一遍跑 PSNR/SSIM/XPSNR 是纯浪费（它们由 ``verify_equal_quality.py`` 作
     平行门禁单独采集）。``with_filters=True`` 时额外跑那一遍。
+
+    ⚠ ``subsample`` 默认 **1**（禁用子采样）：`>1` 会偏置 VMAF 且偏置随编码器而异，
+    详见 :func:`_vmaf_pass`。用 `--subsample N` 显式降本只在**同编码器内做趋势判断**
+    时可接受，**不可用于跨编码器的等 VMAF 标定**。
     """
     m = _vmaf_pass(dist, ref, nframes, tmp / 'vmaf.json', subsample=subsample)
     if with_filters:
@@ -503,8 +510,9 @@ def main():
     ap.add_argument('--tag', default='')
     ap.add_argument('--keep', action='store_true')
     ap.add_argument('--resume', action='store_true', help='跳过 points.json 里已完成的点')
-    ap.add_argument('--subsample', type=int, default=8,
-                    help='libvmaf n_subsample（默认 8；1 = 全帧，最慢）')
+    ap.add_argument('--subsample', type=int, default=1,
+                    help='libvmaf n_subsample（默认 1 = 全帧。⚠ 仅 1 才可用于标定：'
+                         '>1 会偏置 VMAF 且偏置随编码器而异）')
     ap.add_argument('--with-filters', action='store_true',
                     help='标定时也采集 PSNR/SSIM/XPSNR（默认跳过，由判据脚本另采一遍）')
     ap.add_argument('--quick', action='store_true', help='快速干跑（3s / 2 编码器 / 2 点）')
