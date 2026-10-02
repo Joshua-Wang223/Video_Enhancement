@@ -287,6 +287,22 @@ rav1e@10×10 = **65 点**；每批 5 素材 = 325 点；庚(6s) + 己(10s) = **6
 **实测成本**：己批 325 点约 **4.5 h**（5 路并行）。瓶颈 `dark_10s` 单条 **270 min**
 （4K 下采样 + 夜拍 ⇒ 编码最慢）。native rav1e 单点 331~1029 s，素材间差约 3 倍。
 
+**门禁 `verify_equal_quality` 曾一度崩溃于 rav1e 段 —— 是环境竞争，不是表值**：
+症状 `encode()` 在 `out.stat()` 抛 `FileNotFoundError`（ffmpeg 返回 0 却无产物，
+报`moov atom not found`）。第八版把 crf21 的 rav1e native 从 qp **66 改成 63**，
+一度疑似表值导致编码失败。**排除过程（可复用的判据）**：
+用同一素材（`../input_videos/new5_raw.mp4`，注意在**父目录**）+ 同一 prep
+直接调 `encode(prep,'librav1e',63,out)` ⇒ **成功**（470s / 2.73MB / rc=0）；
+`qp=66`（第七版值）同样成功。`ps` 显示**另一会话并发跑同一条命令、同一 workdir**
+（`temp/verify_equal_quality/`）⇒ 产物互相覆盖。
+待对方结束后补跑：**5/5 达标，rc=0，11.5 min**。
+
+⚠ **How to apply**：判据脚本在某编码器段崩溃时，**先查是否有并发进程共用 workdir**
+（`ps -eo cmd | grep <脚本名>`），再用「同一素材 + 同一 prep 单点复现」区分
+「表值/参数导致失败」与「环境互删」。**两者症状相似**（都是产物缺失），
+但处置完全相反 —— 前者要改表，后者只需等待。
+同workdir 互删的通用教训见 `eqq-batch-measure-parallel-constraints.md`。
+
 ## 📜 第七版落表值（2026-10-02，已被第八版取代）
 
 | 编码器 | a | b | lo/hi | 样本 | LOO | 门禁 |
