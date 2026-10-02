@@ -125,3 +125,25 @@ rc=1  Failed to set value 'cuda' for option 'hwaccel': Option not found
 4. **「日志 0 行」≠ 卡死**。Python stdout 重定向到文件时**行缓冲关闭**，
    跑完前日志可长期 0 行。判定依据顺序：**查进程 → 查 ffmpeg CPU →才看日志**。
    （与已有「跑得异常久 + 完全无输出先看 `ps -o stat` 的 `T`」是同族经验。）
+
+## 附三：`grep -c` / `pgrep -cf` 会数出**不存在的进程**（2026-10-03 实测）
+
+查「某脚本是否还在跑」时：
+
+    ps aux | grep -c '[m]easure_uni'      # 报2
+    pgrep -cf measure_uni.py             # 报 2
+    ps -C python3                        # 实际为空 ⇒ 根本没有进程
+
+原因：**检查命令自身的命令行里就含被查的字样**（`grep -c '[m]easure_uni'`、
+`pgrep -f measure_uni.py`）⇒ 命中自己/管道，输出的是**假阳性计数**。
+`[m]` 那写法只能防 `grep` 自身那条匹配，**防不住管道与 `pgrep` 自己**。
+
+**可靠判据（按序）**：
+
+    ps -C <进程名>                      # 按名字匹配，不含检查命令自身
+    for p in $(pgrep -f <pat>); do tr '\0' ' ' < /proc/$p/cmdline; done   # 逐个验证
+    ps -o pid=,etime=,cmd= -p <pid>     # 确认还在、跑了多久
+
+⚠ 与已有「共享 GPU 主机并发污染性能测量」是同族经验（都是**别信单一信号**），
+但这条更基础：**先证明判据本身没骗你**。详细案例见
+`verify-gate-concurrent-workdir-race.md` 的「已闭合」节。
