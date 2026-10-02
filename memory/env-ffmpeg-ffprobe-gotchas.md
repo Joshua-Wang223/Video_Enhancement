@@ -106,3 +106,22 @@ rc=1  Failed to set value 'cuda' for option 'hwaccel': Option not found
 
 - `Accessory/verify/segment_bitstream_verify_v4.py` **未被 git 跟踪**（`git ls-files` 无记录），所以无法用 `git show HEAD:<path>` 取原版做 A/B 对照 —— 需要基线时请先自行备份副本。
 - 仓库根目录的 `core.24882` / `core.60971` 与全量 `pytest Accessory/` 的 SIGSEGV 属**既有**现象：NVENC 硬件测试彼此状态隔离不足，单独跑各测试类可通过（实测 `TestLAAccumulation` 2 passed）。`nvenc_sdk.py` 只依赖 stdlib+numpy+torch+ctypes，与解码/读帧链路无耦合。
+
+## 附二：长时 CPU 门禁的四个排查坑（2026-10-03 补，rav1e 门禁连崩两次）
+
+`verify_equal_quality.py` 的 rav1e 段连续两次 `encode()` 抛 `FileNotFoundError`
+（产物 mp4 缺失），**两次根因完全不同、都不是表值或代码缺陷**：
+
+1. **并发抢 CPU**（第一次）。本容器 8 核 / 7 GB（WSL 动态上限 8168 MB），
+   `librav1e -qp 64` 180 帧 720p 单点需 **7m44s**。同时跑其它门禁即OOM/超时⇒
+   ffmpeg 非正常退出。**单独复现 rc=0 成功**（`-qp 63` 与 `-qp 64` 均是）
+   ⇒ 判「表错」前**先单独复现一遍**。
+2. **预删 workdir 内容**（第二次，我自己的失误）。补跑前执行了
+   `rm -f temp/verify_equal_quality/*.mp4`，把脚本**自建的 `prep.mp4`** 删掉
+   ⇒ 第一步锚点编码就失败。**补跑前不要预删 workdir**。
+3. ⚠️ **`$?` 取错进程的退出码**：`( ffmpeg ... | tail -3 ); echo $?` 拿到的是
+   `tail` 的 rc，**会把 ffmpeg 失败误判成 rc=0**（我据此错误排除了「编码失败」）。
+   正确写法：`cmd > log 2>&1; echo $?`。
+4. **「日志 0 行」≠ 卡死**。Python stdout 重定向到文件时**行缓冲关闭**，
+   跑完前日志可长期 0 行。判定依据顺序：**查进程 → 查 ffmpeg CPU →才看日志**。
+   （与已有「跑得异常久 + 完全无输出先看 `ps -o stat` 的 `T`」是同族经验。）
