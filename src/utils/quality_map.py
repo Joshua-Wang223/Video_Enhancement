@@ -146,8 +146,9 @@ _EQVOL_SPEED_OVERRIDE: Dict[str, tuple] = {
 #: speed 10 档进本表。由 `Accessory/probe/calibrate_equal_quality.py` 标定回填。
 #: 值来源：统一锚点 **18/21/24/27/30**，11 个(素材,口径)样本池化（VU 7 素材 6s +
 #: VE 4 素材 10s），720p prep，`n_subsample=1`，
-#: LOO worst |ΔVMAF| = **7.15**（⚠ 超仓主裁定的 ≤5.9，rav1e 档训练内误差本身就最高，
-#: 属编码器特性；详见 :data:`convert_crf.QUALITY_MAP` 的「门禁偏离」说明）。
+#: LOO worst |ΔVMAF| = **7.15** ——按 rav1e 专用门禁 **≤7.5** 判定为**达标**
+#: （仓主 2026-10-02 裁定「门禁按编码器分档」：软编 ≤5.9 / rav1e ≤7.5；
+#: 分档依据见 :data:`convert_crf.QUALITY_MAP` 的「门禁按编码器分档」段）。
 #: 空 dict ⇒ 未标定，质量模式下 rav1e 回落 ``_active_table``（即等质量表的原生档）。
 _EQQUAL_SPEED_OVERRIDE: Dict[str, tuple] = {
     'librav1e': (7.8373, -95.5520, 0, 255),   # 仅当 RAV1E_SPEED > 0 时生效
@@ -161,7 +162,8 @@ _EQQUAL_SPEED_OVERRIDE: Dict[str, tuple] = {
 #     ``_QP_MAP_OVERRIDE`` 会先行命中（h264/hevc 基准轴直取、av1 ×3），行为与现状一致。
 QUALITY_MAP_QP: Dict[str, tuple] = {
     # 软编行镜像 QUALITY_MAP 的 2026-10-02 标定值（统一锚点 18/21/24/27/30，
-    # 11 个(素材,口径)样本，720p prep，n_subsample=1；LOO worst |ΔVMAF| 4.49~5.19
+    # 11 个(素材,口径)样本，720p prep，n_subsample=1；软编门禁 ≤5.9，
+    # 实测 x265 4.49 / aom 5.00 / svtav1 5.19 达标、vp9 6.71 略超
     # —— 精度边界见 convert_crf.QUALITY_MAP 注释）。
     # ⚠ libx265/libvpx-vp9/libaom-av1/libsvtav1 的 QP 轴 = CRF 轴（ffmpeg 直接透传 -qp）。
     # ⚠ TODO(M4): 'h264_nvenc' / 'hevc_nvenc' / 'av1_nvenc' 需 NVIDIA 机上标定。
