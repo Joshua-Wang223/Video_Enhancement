@@ -160,9 +160,11 @@ _EQQUAL_SPEED_OVERRIDE: Dict[str, tuple] = {
 #   · ⚠ NVENC 的 QP 行**需上机标定**（M4，需 NVIDIA 卡）—— 在标定前，
 #     ``_QP_MAP_OVERRIDE`` 会先行命中（h264/hevc 基准轴直取、av1 ×3），行为与现状一致。
 QUALITY_MAP_QP: Dict[str, tuple] = {
-    # 软编行镜像 QUALITY_MAP 的 2026-10-02 第五版标定值（统一锚点 18/21/24/27/30，
+    # 软编行镜像 QUALITY_MAP 的 2026-10-02 **第六版**标定值（统一锚点 18/21/24/27/30，
     # 按素材去重的 12 条素材池化，720p prep，n_subsample=1；软编门禁 ≤5.9，
     # 实测 x265 3.98 / vp9 4.59 / svtav1 4.66 / aom 5.13 —— **全部达标**）。
+    # ⚠ 第六版仅 `librav1e`（native，见 QUALITY_MAP）因 BBC 锚点补齐而变，
+    #   其余 4 行与第五版逐位相同 ⇒ 本表 4 行数值不变。
     # ⚠ libx265/libvpx-vp9/libaom-av1/libsvtav1 的 QP 轴 = CRF 轴（ffmpeg 直接透传 -qp）。
     # ⚠ TODO(M4): 'h264_nvenc' / 'hevc_nvenc' / 'av1_nvenc' 需 NVIDIA 机上标定。
     'libx265':     (1.0877, -2.4279, 0, 51),
