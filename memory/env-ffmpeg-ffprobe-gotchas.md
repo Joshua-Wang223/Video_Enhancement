@@ -1,6 +1,6 @@
 ---
-name: 本容器 ffmpeg/ffprobe 的两个环境坑（非代码缺陷）
-description: ffmpeg 因 stdin 是后台终端会被 SIGTTOU 停住（必须重定向 /dev/null）；本 build 的 ffprobe 不提供 -hwaccel 选项
+name: 本容器 ffmpeg/ffprobe 的环境坑（非代码缺陷）+ 长时门禁自伤四坑
+description: ffmpeg 因 stdin 是后台终端会被 SIGTTOU 停住（必须重定向 /dev/null）；本build 的 ffprobe 无 -hwaccel 选项；另含长时门禁连崩两次的四个自伤坑（自己并发抢 CPU / 预删 workdir 删掉自建 prep / `$?` 取到 tail 的 rc / 日志 0 行≠卡死）与「grep -c、pgrep -cf 会数出不存在的进程」
 type: project
 ---
 
@@ -112,19 +112,27 @@ rc=1  Failed to set value 'cuda' for option 'hwaccel': Option not found
 `verify_equal_quality.py` 的 rav1e 段连续两次 `encode()` 抛 `FileNotFoundError`
 （产物 mp4 缺失），**两次根因完全不同、都不是表值或代码缺陷**：
 
-1. **并发抢 CPU**（第一次）。本容器 8 核 / 7 GB（WSL 动态上限 8168 MB），
-   `librav1e -qp 64` 180 帧 720p 单点需 **7m44s**。同时跑其它门禁即OOM/超时⇒
-   ffmpeg 非正常退出。**单独复现 rc=0 成功**（`-qp 63` 与 `-qp 64` 均是）
-   ⇒ 判「表错」前**先单独复现一遍**。
-2. **预删 workdir 内容**（第二次，我自己的失误）。补跑前执行了
+1. **并发抢 CPU**（第一次）——⚠️ **而并发是我自己造成的**，不是别人的问题。
+   本容器 8 核 / 7 GB（WSL 动态上限 8168 MB），`librav1e -qp 64` 180 帧 720p
+   单点需 **7m44s**。我把 `verify_equal_quality` 放后台后，**同时**跑了
+   `plan_implementation_gate` / `crf_cq_unification_verify --quick` /
+   VidUtils `verify_quality_mapping` ⇒ rav1e 段 ffmpeg 非正常退出、产物缺失。
+   **单独复现 rc=0 成功**（`-qp 63` 与 `-qp 64` 均是）。
+   ⇒ **长时门禁（约 12 min、含 8 min/点的 rav1e）必须串行独占跑**，
+   不能「放后台再顺手跑下一个」；这是**自伤**而非环境问题，最容易误判成产品缺陷。
+2. **预删 workdir 内容**（第二次，也是我自己的失误）。补跑前执行了
    `rm -f temp/verify_equal_quality/*.mp4`，把脚本**自建的 `prep.mp4`** 删掉
-   ⇒ 第一步锚点编码就失败。**补跑前不要预删 workdir**。
+   ⇒ 第一步锚点编码就失败（`Error opening input file prep.mp4`）。
+   **补跑前不要预删 workdir**；要清理就让脚本自己 `finally` 清。
 3. ⚠️ **`$?` 取错进程的退出码**：`( ffmpeg ... | tail -3 ); echo $?` 拿到的是
-   `tail` 的 rc，**会把 ffmpeg 失败误判成 rc=0**（我据此错误排除了「编码失败」）。
-   正确写法：`cmd > log 2>&1; echo $?`。
+   `tail` 的 rc，**会把 ffmpeg 失败误判成 rc=0**（我据此错误排除了「编码失败」，
+   绕了一圈才回到真因）。正确写法：`cmd > log 2>&1; echo $?`。
 4. **「日志 0 行」≠ 卡死**。Python stdout 重定向到文件时**行缓冲关闭**，
    跑完前日志可长期 0 行。判定依据顺序：**查进程 → 查 ffmpeg CPU →才看日志**。
    （与已有「跑得异常久 + 完全无输出先看 `ps -o stat` 的 `T`」是同族经验。）
+
+⇒ **通用纪律**：门禁连崩时先问「我这一轮同时跑了什么」和「我动过 workdir 吗」。
+**两次都是自伤**（并发 + 预删），没有一次是表值或代码缺陷 —— 别急着改表。
 
 ## 附三：`grep -c` / `pgrep -cf` 会数出**不存在的进程**（2026-10-03 实测）
 
