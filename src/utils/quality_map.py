@@ -144,12 +144,13 @@ _EQVOL_SPEED_OVERRIDE: Dict[str, tuple] = {
 #: ``QUALITY_MAP['librav1e']`` 只对 **native 档**成立（``-speed`` 整体
 #: 平移码率曲线），故等质量表的 rav1e 也按 speed 分档：原生档进 `QUALITY_MAP`，
 #: speed 10 档进本表。由 `Accessory/probe/calibrate_equal_quality.py` 标定回填。
-#: 值来源：9 素材合并池化，720p prep，`n_subsample=1`，
-#: LOO worst |ΔVMAF| = **4.24**（门禁经仓主裁定放宽至 ≤5.9，精度边界见
-#: :data:`convert_crf.QUALITY_MAP` 注释）。
+#: 值来源：统一锚点 **18/21/24/27/30**，11 个(素材,口径)样本池化（VU 7 素材 6s +
+#: VE 4 素材 10s），720p prep，`n_subsample=1`，
+#: LOO worst |ΔVMAF| = **7.15**（⚠ 超仓主裁定的 ≤5.9，rav1e 档训练内误差本身就最高，
+#: 属编码器特性；详见 :data:`convert_crf.QUALITY_MAP` 的「门禁偏离」说明）。
 #: 空 dict ⇒ 未标定，质量模式下 rav1e 回落 ``_active_table``（即等质量表的原生档）。
 _EQQUAL_SPEED_OVERRIDE: Dict[str, tuple] = {
-    'librav1e': (7.4342, -89.2928, 0, 255),   # 仅当 RAV1E_SPEED > 0 时生效
+    'librav1e': (7.8373, -95.5520, 0, 255),   # 仅当 RAV1E_SPEED > 0 时生效
 }
 
 # ── CONSTQP / QP 轴的**等质量**表（D2b，仅本仓）──────────────────────────────
@@ -159,14 +160,15 @@ _EQQUAL_SPEED_OVERRIDE: Dict[str, tuple] = {
 #   · ⚠ NVENC 的 QP 行**需上机标定**（M4，需 NVIDIA 卡）—— 在标定前，
 #     ``_QP_MAP_OVERRIDE`` 会先行命中（h264/hevc 基准轴直取、av1 ×3），行为与现状一致。
 QUALITY_MAP_QP: Dict[str, tuple] = {
-    # 软编行镜像 QUALITY_MAP 的 2026-10-01 标定值（9 素材合并，720p prep，
-    # n_subsample=1，LOO worst |ΔVMAF| ≤ 5.9 —— 精度边界见 convert_crf.QUALITY_MAP 注释）。
+    # 软编行镜像 QUALITY_MAP 的 2026-10-02 标定值（统一锚点 18/21/24/27/30，
+    # 11 个(素材,口径)样本，720p prep，n_subsample=1；LOO worst |ΔVMAF| 4.49~5.19
+    # —— 精度边界见 convert_crf.QUALITY_MAP 注释）。
     # ⚠ libx265/libvpx-vp9/libaom-av1/libsvtav1 的 QP 轴 = CRF 轴（ffmpeg 直接透传 -qp）。
     # ⚠ TODO(M4): 'h264_nvenc' / 'hevc_nvenc' / 'av1_nvenc' 需 NVIDIA 机上标定。
-    'libx265':     (1.0700, -1.8002, 0, 51),
-    'libvpx-vp9':  (1.9531, -14.6476, 0, 63),
-    'libaom-av1':  (2.2349, -20.0233, 0, 63),
-    'libsvtav1':   (2.2371, -17.1879, 0, 63),
+    'libx265':     (1.0943, -2.4562, 0, 51),
+    'libvpx-vp9':  (1.9736, -12.3252, 0, 63),
+    'libaom-av1':  (2.2531, -20.5904, 0, 63),
+    'libsvtav1':   (2.2391, -16.7060, 0, 63),
     # ⚠ rav1e 分档：native 进 QUALITY_MAP，speed10 进 _EQQUAL_SPEED_OVERRIDE，
     #   本表不重复登记 librav1e（避免与档位语义冲突）。
 }
