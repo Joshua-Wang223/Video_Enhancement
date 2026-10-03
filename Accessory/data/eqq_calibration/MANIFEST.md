@@ -3,6 +3,9 @@
 对应素材库：`input_videos/eqq_calib/`（见其 `MANIFEST.md`）。
 落表产物：`src/utils/quality_map.py` 的 `QUALITY_MAP` + `_EQQUAL_SPEED_OVERRIDE`。
 
+📖 **总览与复用指南**：`Accessory/docs/EQQ_CALIBRATION_OVERVIEW.md`
+（含素材表、5 个脚本的用法、7 条踩坑教训）。本文件只讲数据本身。
+
 ## 权威数据源（18 个文件 / 1400 原始点 / ACC 1153）
 
 ```

@@ -122,7 +122,9 @@ CRF→CQ 等质量换算表（`src/utils/quality_map.py` 的 `QUALITY_MAP`）的
 | `_faultinj_wrap.py` | `fault_injection_wrapper.py` |
 | `_pipe_deadlock_test.py` | `pipe_deadlock_repro.py` |
 
-### docs/（13）/ video_check/（整体搬迁）
+### docs/（14）/ video_check/（整体搬迁）
+**入口文档**：`docs/EQQ_CALIBRATION_OVERVIEW.md` —— 等质量标定的素材/脚本/数据总览与复用指南。
+要重跑标定或换素材，从这篇开始看。
 
 ### archive/（3 + `eqq_diag/`）
 `*.bak*` 历史备份件（门禁旧版、码流验收旧版）+ `eqq_diag/`（等质量标定的 54 个
