@@ -1,0 +1,319 @@
+# Video_Enhancement L40 专项执行方案 —— av1_nvenc 等质量标定（M4·L40 侧，**只针对 AV1**）
+
+> **本方案只做 `av1_nvenc`**。共享方法论 / harness 改动 / 优秀做法 / 验收门禁的
+> **权威定义在 T4 母版**：`Plan/PROMPT_T4_NVENC等质量标定专项执行方案.md`（下称「T4 方案」）。
+> 本文件只写 **AV1 差异 + 执行步骤**，共享部分引用，避免两份实现漂移。
+> ⚠ L40 虽是 Ada 卡、h264/hevc NVENC 也可用，但**本仓 h264/hevc 基线在 T4 标定**
+> ⇒ 本专项**不重复标 h264/hevc**（重复标会引入第二套值）。
+>
+> **上位文档**：`Plan/PROMPT_等质量换算立项.md`（§0.0 / §7.1 B 组）
+> **姊妹方案**：`Plan/Video_Enhancement_质量控制参数修复方案.md`（§7 AC1~AC7 / §8 L40 收口 / §9.6）
+> **总览指南**：`Accessory/docs/EQQ_CALIBRATION_OVERVIEW.md`
+>
+> 状态：**纯方案，未落地**。本容器当前无 GPU；AV1 相关实测须在 L40（Ada）上执行。
+
+---
+
+## 0. 一句话范围
+
+在 L40（Ada）上补齐 **`av1_nvenc` 的等质量标定**两条轴，并复验 AV1 端到端能力：
+
+- **CQ 轴**（`-cq:v`，量程 **0~63**，rate control 用 **`vbr`**）→ 落 `QUALITY_MAP['av1_nvenc']`；
+- **QP 轴**（`-qp`，量程 **0~255**，与 CQ 非同刻度，L40 实测 **×3**）→ 落 `QUALITY_MAP_QP['av1_nvenc']`（D2b）；
+- 复验 AC1（QP ×3）/ AC2（G7-6）/ AC7（软编族，已闭环）与 **AV1 长视频冒烟 S1/S2/S3/S8**；
+- 可选：查 AV1 Level 1 直通失败的 `GetEncodePresetConfig code=12`（§9.6）。
+
+---
+
+## 1. 环境体检（Gate 0，最先做）
+
+```bash
+cd /workspace/Video_Enhancement
+nvidia-smi -L                                                       # 期望 NVIDIA L40（Ada / sm89）
+python3 -c "import torch;print(torch.cuda.get_device_name(0),torch.version.cuda,torch.cuda.is_available())"
+ffmpeg -hide_banner -encoders | grep -E 'av1_nvenc|av1_qsv|av1_amf'
+ffmpeg -hide_banner -version | head -1
+
+# ① 构建里有没有 av1_nvenc（构建层）
+ffmpeg -hide_banner -encoders | grep av1_nvenc
+# ② 硬件编不编得动：唯一可靠判据是【实跑一帧】（-h encoder=av1_nvenc 在 Turing 上照样打印选项表）
+ffmpeg -hide_banner -f lavfi -i testsrc2=size=320x240:rate=30:duration=1 \
+       -c:v av1_nvenc -f null - < /dev/null ; echo "rc=$?"
+# rc=0 ⇒ 可执行本方案全部项；rc≠0（No capable devices found）⇒ 环境不成立，停止
+```
+
+> ⚠ `av1_qsv` 常在构建里但实跑失败（`Error creating a MFX session: -9`）；
+> `av1_amf` 通常不在构建。两者**均不在本专项范围**（需 Intel/AMD 硬件，见方案 §8.4 / AC5）。
+
+---
+
+## 2. 待办任务清单（L40 侧，AV1 专项）
+
+| ID | 任务 | 轴 | 产出 | 依据 |
+|---|---|---|---|---|
+| **L40-1** | `av1_nvenc` CQ 等质量标定（`-rc:v vbr -cq:v`） | `-cq:v` | `QUALITY_MAP['av1_nvenc']` | 立项 §7.1 B |
+| **L40-2** | `av1_nvenc` QP 等质量标定（`-rc:v constqp -qp`） | `-qp` | `QUALITY_MAP_QP['av1_nvenc']` | D2b |
+| **L40-3** | AC1 复验：QP 尺度 ×3（扫 21 / 63 / 84 / 105） | `-qp` | 报告（已闭环，复验） | 方案 §7 AC1 |
+| **L40-4** | AC2：G7-6 `av1_nvenc -cq` 等质量 | `-cq:v` | 报告 | 方案 §7 AC2 / §8.3 |
+| **L40-5** | AV1 长视频冒烟 S1/S2/S3/S8（`av1_pipeline_smoke.py` 完整跑批） | — | 报告 | 方案 §9.4 / §8.5 |
+| **L40-6** | （可选）AV1 Level 1 `GetEncodePresetConfig code=12` 根因 | — | 结论 | 方案 §9.6 / P3″ |
+| **L40-7** | harness / `_qp_model` 共享改动复用 | — | 代码 | T4 方案 §4 |
+| **L40-8** | 跨仓 `QUALITY_MAP` 同步 + ⑨ 组 | — | 门禁 | T4 方案 §6 |
+
+> T4 侧清单（h264/hevc）见 T4 方案 §2。**两卡不互替**：T4 无 AV1 NVENC。
+
+---
+
+## 3. 优秀做法吸收（AV1 专属，通用 17 条见 T4 方案 §3）
+
+| # | 做法 | 出处 | 落地 |
+|---|---|---|---|
+| A1 | 硬件能力只认「实跑一帧」，不认 `-h encoder` | 方案 §7 AC0 / §8.1 | §1 |
+| A2 | `av1_nvenc` 的 `-cq` 量程是 **0~63**（不是 51），`-qp` 是 **0~255** | 方案 E0 / §6.11.2 | §4.1 |
+| A3 | **AV1 的 `-rc` 只接受 `constqp/vbr/cbr`** ⇒ `vbr_hq/qvbr` 必须降级为 `vbr` | 方案 §8.6-③ | §4.1 / harness 锁定 |
+| A4 | AV1 的 `-qp` 与 `-cq` 是两条刻度，QP 尺度经 L40 实测为 **×3** | 方案 §7 AC1 | §4.2；标定独立进行 |
+| A5 | AV1 **Level 1 SDK 直通恒失败**（`GetEncodePresetConfig code=12`）⇒ 实际走 ffmpeg CLI | 方案 §8.6 | 标定的 CLI 口径即生产实际口径 |
+| A6 | AV1 长视频色度检查（检查 4）**内容相关假阳性** ⇒ 验收加 `--skip-chroma` | 方案 §8.5 | §5.4 |
+| A7 | `verify_video_integrity` 的 cv2→ffmpeg 回退（OpenCV 无 AV1 解码） | 方案 §8.6-① / §9.3 | 若冒烟失败先查是否回退未生效 |
+| A8 | 判据/探针里**硬编码的期望值**要跟随上游表改动（A15：写死 84） | 方案 §8.2 / A15 | 探针已改 `av1_expected_qp()` 现场推导 |
+| A9 | 命令形状断言（G6-8/9/10）+ 反向验证 | 方案 §9.2 | 改 AV1 下发前先跑 |
+| A10 | AC7 软编族口径（`libsvtav1` 用 `-preset 8`、`libaom-av1` 用 `-cpu-used 6`） | 报告 §1.4 | 复跑 AC7 时锁定 |
+
+---
+
+## 4. AV1 差异（相对于 T4 方案的共享改动）
+
+> 共享改动（`SWEEP`/`BASE_LOCK`/`QUALITY_FLAG`/`--axis`/`_qp_model` 模式感知/落表器
+> `TIERS`+`GATE`+`tag`）**以 T4 方案 §4 为准**。以下是 AV1 的差异点。
+
+### 4.1 AV1 的档位定义（T4 方案 §4.1 中已含，此处强调）
+
+```python
+SWEEP['av1_nvenc']        = [12, 18, 23, 27, 31, 36, 41, 47, 54, 63]   # -cq 量程 0~63
+BASE_LOCK['av1_nvenc']    = ['-rc:v', 'vbr', '-b:v', '0', '-preset', 'p4']  # CR-2：显式 vbr
+QUALITY_FLAG['av1_nvenc'] = '-cq:v'
+HW_CODECS 含 av1_nvenc
+```
+
+> ℹ **CR-2（rate control）已裁定路线 B 并落地**：av1 统一**显式** `-rc:v vbr`
+> （VE 生产 writer 的 av1 降级路径本就是 `vbr`；VU 已把 av1 也改为显式 `-rc vbr`）。
+> ⚠ `vbr_hq` 对 av1 非法（§8.6-③），故 h264/hevc 用 `vbr_hq`、av1 用 `vbr`。
+> 探针侧 VE 已修（`av1_vp9_quality_matrix.py` 的 `_PROD_RC`）；仅 VU 探针待修（见 T4 方案 §12.3）。
+
+QP 轴由 `--axis qp` 切到 `-rc:v constqp -qp`，量程 `(0, 255)`（T4 方案 §4.2 的量程分支已含 AV1）。
+
+### 4.2 AV1 的 QP 尺度与既有 override
+
+现状 `src/utils/quality_map.py:340`：
+
+```python
+_QP_MAP_OVERRIDE['av1_nvenc'] = (3.0, 0.0, 0, 255)   # [L40 实测确认：QP 尺度 3×]
+```
+
+- 等体积口径：保持 `×3`（判据 G3-7 钉 `size`，26→63 期望不变）。
+- 等质量口径：T4 方案 §4.4 的「模式感知」改造后，**新落表的 `QUALITY_MAP_QP['av1_nvenc']` 优先**。
+  ⚠ 若标定结果与 `×3` 显著不同（如 b≠0），以**实测为准**并同步 G3-7 注释来源（判据仍钉 size 故数值不受影响）。
+
+### 4.3 AV1 的锚点/轴映射（标定的物理含义）
+
+| 轴 | ffmpeg 参数 | rate control | 生产对应路径 |
+|---|---|---|---|
+| CQ | `-cq:v <0~63>` | `-rc:v vbr` | ffmpeg CLI writer（Level 2/3）+ SDK vbr 分支 |
+| QP | `-qp <0~255>` | `-rc:v constqp` | ffmpeg CLI constqp + SDK Level 1（若未来恢复直通） |
+
+⇒ **两条轴都要标**，`QUALITY_MAP` 与 `QUALITY_MAP_QP` 各一行。
+
+---
+
+## 5. 执行步骤（L40）
+
+### 5.1 基线（改动前后对照）
+
+```bash
+python3 Accessory/verify/crf_cq_unification_verify.py --quick < /dev/null   # FAIL=0（除 cv2 环境项）
+python3 Accessory/verify/plan_implementation_gate.py < /dev/null            # FAIL=0
+python3 Accessory/probe/calibrate_equal_quality.py --selftest               # 39 项（含 NVENC/axis/跨仓）
+python3 Accessory/probe/av1_vp9_quality_matrix.py --selftest 2>/dev/null || true
+```
+
+### 5.2 素材（真实切片，覆盖 6 类，≤7 条，AV1 编码慢需控量）
+
+同 T4 方案 §5.2 的 7 条（`--src-is-prep`）。⚠ AV1 **软件**编码慢的是 `libaom-av1`/`librav1e`，
+本专项只用 `av1_nvenc`（硬件），编码快；成本主要在 VMAF（`n_subsample=1`，20~45 s/点）。
+
+### 5.3 标定（AV1 两条轴）
+
+```bash
+# ── CQ 轴 ──────────────────────────────────────────────────────
+for M in live_kids_play tv_bbc_s01e01 cganim_edu_wordworld anim2d_subs_tobot \
+         doc_dark_earth screen_ui_code live_texture_frog; do
+  python3 Accessory/probe/eqq_calibrate_clip.py \
+      --src input_videos/eqq_calib/<side>/${M}_src*.mp4 \
+      --out temp/eqq_gpu_l40/cq_${M} --tiers av1_nvenc \
+      --duration <6|10> --src-is-prep < /dev/null
+done
+# ── QP 轴 ──────────────────────────────────────────────────────
+for M in <同上 7 条>; do
+  python3 Accessory/probe/eqq_calibrate_clip.py \
+      --src input_videos/eqq_calib/<side>/${M}_src*.mp4 \
+      --out temp/eqq_gpu_l40/qp_${M} --tiers av1_nvenc --axis qp \
+      --duration <6|10> --src-is-prep < /dev/null
+done
+```
+
+### 5.4 AV1 端到端复验（AC1/AC2/AC4 + 冒烟）
+
+```bash
+# ── AC1/AC2/AC4 一条命令（自动判读，口径与判据同源）──────────
+python3 Accessory/probe/av1_vp9_quality_matrix.py \
+    --src /workspace/input_videos/word_world_2.mp4 \
+    --only av1_nvenc \
+    --report verification_report/av1_vp9_matrix_L40_$(date +%F).md \
+    --json   verification_report/av1_vp9_matrix_L40_$(date +%F).json < /dev/null
+# 判据：AC1 表值 -qp 落 RATE_PASS=(0.65,1.50) 且 ΔPSNR ≥ -1.5 dB；退出码 0
+
+# ── G7/G8 GPU 判据（AC2 = G7-6 转正）─────────────────────────
+python3 Accessory/verify/crf_cq_unification_verify.py --gpu \
+    --source /workspace/input_videos/word_world_2.mp4 \
+    --bitrate-source /workspace/input_videos/new4_raw.mp4 \
+    --report verification_report/crfcq_gpu_L40_$(date +%F).md < /dev/null
+
+# ── AV1 长视频冒烟（P3 完整跑批，S1/S2/S3/S8 需 GPU）─────────
+python3 Accessory/verify/av1_pipeline_smoke.py --src <330s真实素材> \
+    --rate-modes constqp,vbr --segment-duration 30 \
+    --report verification_report/av1_smoke_L40_$(date +%F).md < /dev/null
+# 退出码：0 无 FAIL / 1 有 FAIL / 2 环境前置不成立
+# 采样判据：S1 退出码 / S2 段级 decoded==expected / S3 产物帧数=各段之和
+#          / S4 解码级验证 / S5 segment_bitstream_verify_v5 --skip-chroma
+#          / S6 QA sidecar / S7 产物编码器确为 av1 / S8 泄漏斜率 ≤ +50 MB/min
+```
+
+### 5.5 入池 → LOO → 落表候选
+
+```bash
+python3 Accessory/probe/eqq_pool_fit_table.py \
+    --sides 6s,10s,legacy10s,gpu_l40 --out /tmp/table_l40.txt < /dev/null
+# 判据：av1_nvenc 行 LOO ≤5.9；顺序无关断言通过
+```
+
+### 5.6 （可选）L40-6 · AV1 Level 1 `code=12`
+
+按方案 §9.6 的复现片段（`GetEncodePresetConfigEx` 回退），
+⚠ 必须先 `import torch; torch.cuda.init()` 再加载 CUDA 库。
+判读：`GPCEx -> 0` 且能 `InitializeEncoder` ⇒ 加回退（两侧 `nvenc_sdk.py`）；
+否则记为驱动侧限制并注释「AV1 恒走 Level 2/3」。
+
+---
+
+## 6. 落表与跨仓同步
+
+| 表 | 键 | L40 新增 | 同步 |
+|---|---|---|---|
+| `QUALITY_MAP`（等质量） | `av1_nvenc` | CQ 轴标定值 `(a, b, 0, 63)` | **两仓逐条相等**（⑨ 组）；VidUtils 侧须同步 |
+| `QUALITY_MAP_QP`（QP 轴，仅本仓） | `av1_nvenc` | QP 轴标定值 `(a, b, 0, 255)` | 仅 VE |
+
+⚠ 写入后 `QUALITY_MAP['av1_nvenc']` 的 hi **必须是 63**（不是 51）——`SIZE_MAP` 已如此，
+等质量表须保持一致，否则 `crf_ref≥45` 被挤到 51（方案 E0 的老 bug）。
+
+---
+
+## 7. 验收门禁
+
+| 门 | 命令 | 判据 |
+|---|---|---|
+| 落表器 | `eqq_pool_fit_table.py --sides …,gpu_l40` | av1 行 LOO ≤5.9 + 顺序无关 ✅ |
+| AC1/AC2/AC4 探针 | `av1_vp9_quality_matrix.py --only av1_nvenc` | 退出码 0；AC1 表值落带内 |
+| GPU 判据 | `crf_cq_unification_verify.py --gpu …` | G7-6 PASS、FAIL=0 |
+| AV1 冒烟 | `av1_pipeline_smoke.py` | 退出码 0；S1~S8 无 FAIL |
+| 本仓判据/门禁/pytest | 同 T4 方案 §7 | FAIL=0 / 全绿 |
+| 跨仓真源 | `VidUtils/verify/verify_quality_mapping.py` | ⑨ 组 14/14 |
+
+---
+
+## 8. 回滚
+
+| 触发 | 动作 |
+|---|---|
+| av1 表 LOO 超门禁 | 不落表；保留 `gpu_l40` points 与报告，标注根因 |
+| `QUALITY_MAP_QP['av1_nvenc']` 与 ×3 冲突 | 以实测为准；若证据不足则维持 `_QP_MAP_OVERRIDE` 的 ×3 并回滚新行 |
+| 冒烟 S 项 FAIL | 先查 §8.6 三处 AV1 修复是否在位（②③ 命令形状 / ① cv2 回退）；再查编码线程 |
+| Level 1 回退无收益 | 保持现状（Level 2/3 功能正确），仅注释说明 |
+
+---
+
+## 9. 风险与坑
+
+| 风险 | 对策 |
+|---|---|
+| **`-rc:v vbr_hq/qvbr` 对 av1 非法** | 锁定 `vbr`（A3 / §4.1） |
+| **AV1 Level 1 恒降级** | 标定走 CLI 口径即生产实际口径（A5）；勿假设 SDK 直通 |
+| **色度检查假阳性** | 验收加 `--skip-chroma`（A6） |
+| **cv2 无 AV1 解码** | 若产物被判损坏，查 `[FIX-AV1-CV2]` 回退是否生效（A7） |
+| **探针硬编码期望值过期** | 已改现场推导 `av1_expected_qp()`（A8），勿再写死 |
+| **L40 会话中途 GPU 被回收** | 每步当场复跑；同 T4 方案 P17 |
+| **同机并发 NVENC** | `--jobs 1`；先查 `nvidia-smi` 与他人任务 |
+| **误把 av1_qsv/amf 当 AV1 NVENC** | §1 已区分；AC5 需 Intel/AMD 硬件，本专项不含 |
+
+---
+
+## 10. 复现命令汇总
+
+```bash
+cd /workspace/Video_Enhancement
+# 0 体检（AV1 实跑一帧）
+ffmpeg -hide_banner -f lavfi -i testsrc2=size=320x240:rate=30:duration=1 -c:v av1_nvenc -f null - < /dev/null; echo rc=$?
+# 1 标定（CQ 轴，单素材示例）
+python3 Accessory/probe/eqq_calibrate_clip.py \
+    --src input_videos/eqq_calib/6s/live_kids_play_src1280x720.mp4 \
+    --out temp/eqq_gpu_l40/cq_live_kids_play --tiers av1_nvenc \
+    --duration 6 --src-is-prep < /dev/null
+# 2 入池落表
+python3 Accessory/probe/eqq_pool_fit_table.py --sides 6s,10s,legacy10s,gpu_l40 < /dev/null
+# 3 AV1 端到端复验
+python3 Accessory/probe/av1_vp9_quality_matrix.py --src /workspace/input_videos/word_world_2.mp4 --only av1_nvenc < /dev/null
+python3 Accessory/verify/crf_cq_unification_verify.py --gpu --source /workspace/input_videos/word_world_2.mp4 --bitrate-source /workspace/input_videos/new4_raw.mp4 < /dev/null
+python3 Accessory/verify/av1_pipeline_smoke.py --src <330s素材> --rate-modes constqp,vbr < /dev/null
+# 4 门禁
+python3 Accessory/verify/plan_implementation_gate.py < /dev/null
+cd /workspace/VidUtils && python3 verify/verify_quality_mapping.py < /dev/null
+```
+
+---
+
+## 11. AC 覆盖现状（进入本专项前请核对）
+
+| AC | 内容 | 现状（方案 §8 收口） | 本专项动作 |
+|---|---|---|---|
+| AC1 | AV1 constqp QP 尺度 ×3 | ✅ 已闭环（L40 二次复现：`-qp 63` → 1.16× / −0.59 dB） | 复验（L40-3） |
+| AC2 | AV1 `-cq` 等质量（G7-6） | ✅ PASS（+0.16 dB / 1.28×） | 复验（L40-4） |
+| AC3 | AV1 constqp 命令形状（G6-7） | ✅ PASS（无需硬件） | — |
+| AC4 | AV1 `-cq` B 组 | ✅ PASS（1.14× / −0.29 dB） | 复验 |
+| AC5 | av1_qsv / av1_amf 量程 | ⏭️ SKIP（方法已证伪，需 Intel/AMD） | 不在本专项 |
+| AC6 | 跨项目 C 组交叉印证 | ✅ 由 AC1 同源覆盖 | VidUtils 侧另跑 |
+| AC7 | AV1/VP9 软编族 | ✅ 完成（T4 重编构建） | 不在本专项（无硬件依赖） |
+
+> **但「换算正确 ≠ 管线能跑」**：AV1 端到端能力由 P3 冒烟（§8.5）+ 三处修复（§8.6）保障，
+> 本专项的 **L40-5** 是它首次在 GPU 上的完整回归。
+
+---
+
+## 12. VidUtils（VU）对等方案态势（**协同必备**）
+
+> 完整契约见 **T4 方案 §12**；本节只列 AV1 相关的态势与协同点。
+
+- **VU 侧有同构的 L40 方案**：`/workspace/VidUtils/Plan/VidUtils_等质量标定_L40_AV1专项执行方案.md`
+  （其任务编号 `A0~A5` ↔ 本专项 `L40-1~L40-5`；VU `G3` ↔ 本专项 `L40-1`）。
+- **VU harness 已实现 AV1/NVENC + `--expect-av1`**；VE harness 已移植（+ `--axis` 扩展）。
+  两侧都用「实编探测 + fail-fast」，判据同为「rc==0 且产物非空」（T4 的 av1 会「列表里有、实编 -22」）。
+- **AV1 的 `-cq` 等质量行写入两仓共享 `QUALITY_MAP`** ⇒ 受 **CR-1（preset 口径）** 与
+  **CR-2（rate control 口径）** 约束。**CR-1 已收口：两仓统一 `p4`**（2026-10-04）——
+  VE 本就 p4；**VU 已把生产 `DEFAULT_PRESET_GPU` / harness / 探针一并改 p4**（残留 `p5` 均为
+  兼容显式 p5 的有意保留，见 T4 方案 §12.5）。
+- **CR-2（rate-control 口径）已裁定「路线 B」且两仓各层已落地**（2026-10-04）：h264/hevc `vbr_hq`、
+  av1 `vbr`，**均显式下发 `-rc`**。VE harness/探针（`av1_vp9_quality_matrix.py` 加 `_PROD_RC`）+
+  VU harness/生产（含 av1）+ VU 探针（`_cq_rc`）均已改 ⇒ **CR-2 全链路对齐，无残留**。
+- **QP 轴（`QUALITY_MAP_QP` / `_QP_SCALE`）**：VE 侧是独立表；VU 侧无表，只有 `_QP_SCALE`。
+  本专项落 `QUALITY_MAP_QP['av1_nvenc']` 后，若与 VU 的 `_QP_SCALE=3` 冲突，**通知 VU 同步**（CR-4）。
+- **跨仓态势已双向对称**：VE harness 现与 VU 一样会打印「两表是否相等 / 对侧 harness 是否同版 /
+  对侧方案文档」。上机前先看这一行，再决定要不要协调对侧。
+- **素材池共用**：17 条切片在 VE `input_videos/eqq_calib/`（仓库外）——L40 机上需先就位（CR-5）。

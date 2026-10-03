@@ -6,7 +6,17 @@
   * 插值基准从「体积」改为 **VMAF**：在目标编码器「参数 → VMAF」曲线上取等 VMAF 参数；
   * 采集 **VMAF / PSNR-HVS**（libvmaf 单遍）与 **PSNR / SSIM / XPSNR**（独立滤镜，另一遍）；
   * 支持多素材（多次 --src），跨素材聚合（a 池化最小二乘 + b 取中位数）；
-  * librav1e 按 `-speed` 档**分别标定**（native 与 speed 10 各出一行）。
+  * librav1e 按 `-speed` 档**分别标定**（native 与 speed 10 各出一行）；
+  * 支持 **NVENC 硬编**（`h264_nvenc` / `hevc_nvenc` / `av1_nvenc`）：走 `-cq` 轴 + `-b:v 0`，
+    并锁定**产品默认的 `-preset p4`**（VE 侧 `medium≡p4`，见方案 E5；换挡会整体平移率失真
+    曲线 ⇒ 等效点漂移）。⚠ 硬件编码器**「列表里有」≠「本机可编」**（T4 的 av1_nvenc 即此）：
+    开跑前用真实短编码**探测**，不可用即跳过该档；`--require-codecs` / `--expect-av1` 可把
+    「静默跳过」升级为 **fail-fast（exit 2）**。
+  * **VE 特有 `--axis {cq,qp}`**：本仓走 ctypes 直连 SDK，`to_constqp_qp()` 需要 **QP 轴**
+    等质量表（D2b `QUALITY_MAP_QP`）。`cq`（默认）= `-cq:v`（VBR）；`qp` = `-rc:v constqp -qp`。
+    ⚠ 对侧 VidUtils **无此轴**（无独立 QP 表）⇒ 这是本仓对等 harness 的**有意差异**。
+  * **跨仓态势**（VU 对等方案）：开跑前报告本仓角色 / 对侧仓库 / 两表是否同步 /
+    对侧 harness 是否同版 / 对侧方案文档位置（见 :func:`cross_repo_status`）。
 
 口径（对齐 VE 立项 v2 §4.1「唯一来源」，**不可混用**）：
   * VMAF      ← libvmaf `pooled_metrics.vmaf.mean`
@@ -28,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import re
 import statistics
@@ -78,7 +89,17 @@ SWEEP = {
     'libaom-av1': [10, 16, 22, 28, 34, 40, 46, 52, 58, 63],
     'libsvtav1':  [10, 16, 22, 28, 34, 40, 46, 52, 58, 63],
     'librav1e':   [10, 30, 50, 70, 90, 110, 130, 155, 180, 210],
+    # ---------- 硬件编码器（NVENC）----------
+    # 量程：h264/hevc_nvenc 的 `-cq` = 0~51；av1_nvenc 的 `-cq` = 0~63（AV1 qindex 尺度）。
+    # 低端须够低以覆盖 x264 crf18 的 VMAF、高端够高以覆盖 crf30；以「5 锚点都插值命中」为准微调。
+    # （与 VidUtils 对等 harness 同值，便于两侧结果横向可比）
+    'h264_nvenc': [10, 15, 19, 23, 26, 29, 33, 37, 42, 48, 51],
+    'hevc_nvenc': [12, 17, 21, 25, 28, 32, 36, 40, 45, 51],
+    'av1_nvenc':  [12, 18, 23, 27, 31, 36, 41, 47, 54, 63],
 }
+
+# 需要「实编探测」的硬件编码器：列表里有 ≠ 本机可编（T4 的 av1_nvenc 即此情形）。
+HW_CODECS = {'h264_nvenc', 'hevc_nvenc', 'av1_nvenc'}
 
 # 各编码器**必须锁定**的配套参数（标定与下发必须一致，否则等效点漂移）。
 # ⚠ librav1e 的 `-speed` 不在此处 —— 它按「档」在运行时追加（见 _lock_for）。
@@ -89,10 +110,24 @@ BASE_LOCK = {
     'libaom-av1': ['-b:v', '0', '-cpu-used', '6'],
     'libsvtav1':  ['-preset', '8'],
     'librav1e':   [],
+    # NVENC：`-cq:v` 是恒定质量目标、`-b:v 0` 关掉码率目标。
+    # ✅ 跨仓契约 **CR-1（preset）已收口**：统一 **p4**（以 VE 的 E5 为准）——
+    #   VE 生产 `medium→p4`，VU 生产/harness/探针亦已改 p4。
+    # ✅ 跨仓契约 **CR-2（rate control）已裁定（路线 B）**：
+    #   · h264/hevc → **`-rc:v vbr_hq`**（与 VE 生产 / SDK Level 1 直通的 RC_VBR_HQ 一致）；
+    #   · av1_nvenc 的 `-rc` 只接受 constqp/vbr/cbr ⇒ **`vbr`**（与 VE 生产降级口径一致）。
+    #     （VE 生产 h264/hevc = `vbr_hq`、av1 = 降级 `vbr`；标定必须逐项一致，否则等效点漂移。）
+    #   ⚠ VU 侧待同步：h264/hevc 由 `auto`(=VBR) 改为 `-rc:v vbr_hq`（生产 + harness，handoff）。
+    'h264_nvenc': ['-rc:v', 'vbr_hq', '-b:v', '0', '-preset', 'p4'],
+    'hevc_nvenc': ['-rc:v', 'vbr_hq', '-b:v', '0', '-preset', 'p4'],
+    'av1_nvenc':  ['-rc:v', 'vbr',    '-b:v', '0', '-preset', 'p4'],
 }
 QUALITY_FLAG = {
     'libx264': '-crf', 'libx265': '-crf', 'libvpx-vp9': '-crf',
     'libaom-av1': '-crf', 'libsvtav1': '-crf', 'librav1e': '-qp',
+    # NVENC 恒定质量走 `-cq:v`（CQ 轴；与 constqp 的 `-qp` 不是同一刻度）。
+    # `cq` 轴只标 CQ；QP 轴由 `--axis qp` 另走 `-rc:v constqp -qp`（VE 独有）。
+    'h264_nvenc': '-cq:v', 'hevc_nvenc': '-cq:v', 'av1_nvenc': '-cq:v',
 }
 
 # 标定「档位」键：`<ffmpeg 编码器名>` 或 `<名>@<rav1e -speed>`。
@@ -128,6 +163,73 @@ def _max_resid(key):
     return MAX_RESID.get(_ffcodec(key), MAX_RESID_DEFAULT)
 
 
+def _table_range(codec):
+    """档位 → 目标编码器的量程 (lo, hi)（CQ/CRF 轴）。
+
+    ⚠ 不能直接读 ``CRF.QUALITY_MAP[codec]``：**首次标定**某硬编码器时它尚未落表
+    （硬编当前回退 `SIZE_MAP`），直接索引会 KeyError。按 QUALITY_MAP → SIZE_MAP 顺序回退。
+    """
+    for tbl in (getattr(CRF, 'QUALITY_MAP', {}), getattr(CRF, 'SIZE_MAP', {})):
+        m = tbl.get(codec)
+        if m:
+            return int(m[2]), int(m[3])
+    return 0, 63
+
+
+def _missing_required(avail, required):
+    """required 里在本机不可编的编码器（avail: {codec: (ok, detail)}）。纯函数，供 selftest。"""
+    return sorted(c for c in required if not avail.get(c, (False, ''))[0])
+
+
+# ── 轴（axis）—— VE 特有 ─────────────────────────────────────────────────────
+# cq（默认）：CQ/CRF 轴 → 落 QUALITY_MAP；qp：CONSTQP 轴 → 落 QUALITY_MAP_QP（D2b）。
+# `-cq:v` 与 `-qp` 是**两条刻度、两套 rate control**，不能一次扫完。
+# ⚠ 对侧 VidUtils 无 `--axis`（无独立 QP 表）⇒ 本块是 VE 对等 harness 的**有意差异**。
+AXES = ('cq', 'qp')
+QP_LOCK = {   # qp 轴配套：只锁 rate control + preset（不锁 -b:v 0 / -rc:v vbr*）
+    'h264_nvenc': ['-rc:v', 'constqp', '-preset', 'p4'],
+    'hevc_nvenc': ['-rc:v', 'constqp', '-preset', 'p4'],
+    'av1_nvenc':  ['-rc:v', 'constqp', '-preset', 'p4'],
+}
+QP_LIMITS = {'av1_nvenc': 255}   # QP 轴量程（其余默认 0~51）
+QP_SWEEP = {   # QP 轴扫描点（与 CQ 轴不同：AV1 的 qp ≈ 3×基准轴，故右移）
+    'h264_nvenc': [10, 15, 19, 23, 26, 29, 33, 37, 42, 48, 51],
+    'hevc_nvenc': [10, 15, 19, 23, 26, 29, 33, 37, 42, 48, 51],
+    'av1_nvenc':  [30, 45, 60, 75, 90, 105, 120, 150, 180, 210, 255],
+}
+
+
+def _sweep_for(key, axis='cq'):
+    """档位 + 轴 → 扫描点。qp 轴用 QP_SWEEP（AV1 qindex 0~255 需右移）。"""
+    if axis == 'qp':
+        return QP_SWEEP.get(_ffcodec(key), SWEEP[_ffcodec(key)])
+    return SWEEP[_ffcodec(key)]
+
+
+def _qflag(key, axis='cq'):
+    """档位 + 轴 → ffmpeg 质量参数名。"""
+    if axis == 'qp':
+        return '-qp'
+    return QUALITY_FLAG[_ffcodec(key)]
+
+
+def _axis_lock(key, axis='cq'):
+    """轴 → 该次编码必须附带的 rate control / preset 参数。"""
+    if axis == 'qp':
+        c = _ffcodec(key)
+        if c not in QP_LOCK:
+            raise SystemExit(f'--axis qp 仅支持硬件编码器 {sorted(QP_LOCK)}，收到 {c!r}')
+        return list(QP_LOCK[c])
+    return _lock_for(key)
+
+
+def _axis_range(key, axis='cq'):
+    """档位 + 轴 → 量程 (lo, hi)。cq 走 QUALITY_MAP→SIZE_MAP 回退；qp 走 QP 轴量程。"""
+    if axis == 'qp':
+        return 0, QP_LIMITS.get(_ffcodec(key), 51)
+    return _table_range(_ffcodec(key))
+
+
 def _fmt(x, n=3):
     """None → '—'（**不回落 0**，见立项 K3）。"""
     return '—' if x is None else f'{x:.{n}f}'
@@ -144,11 +246,161 @@ def run(cmd, timeout=7200):
     return p
 
 
+def run_try(cmd, timeout=180):
+    """跑子进程但**不抛异常**，返回 (rc, stdout+stderr)。用于可用性探测（失败是预期结果）。"""
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding='utf-8', errors='replace',
+                           stdin=subprocess.DEVNULL, timeout=timeout)
+        return p.returncode, (p.stdout or '') + (p.stderr or '')
+    except Exception as e:                                  # 超时 / 找不到二进制等
+        return 1, str(e)
+
+
+# ── GPU 能力探测 ─────────────────────────────────────────────────────────────
+def gpu_info():
+    """nvidia-smi 的 '名字, 驱动' 一行；无卡/无工具返回空串（记入指纹，不阻断软编）。"""
+    try:
+        p = subprocess.run(['nvidia-smi', '--query-gpu=name,driver_version',
+                            '--format=csv,noheader'], capture_output=True, text=True,
+                           encoding='utf-8', errors='replace',
+                           stdin=subprocess.DEVNULL, timeout=30)
+        return (p.stdout or '').strip().splitlines()[0] if p.stdout.strip() else ''
+    except Exception:
+        return ''
+
+
+def make_probe_src(work):
+    """生成一个极小的合成源，供硬件编码器可用性探测（与素材无关，开跑前一次性）。"""
+    out = work / '_hw_probe_src.mp4'
+    out.unlink(missing_ok=True)
+    run(['ffmpeg', '-nostdin', '-y', '-hide_banner', '-loglevel', 'error',
+         '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=5:duration=1',
+         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '12',
+         '-pix_fmt', 'yuv420p', str(out)])
+    return out
+
+
+def probe_hw_codec(codec, probe_src, work, axis='cq'):
+    """真编一小段验证硬件编码器可开，返回 (ok, 失败尾部)。
+
+    ⚠ 判据是 **rc==0 且产物非空**：T4 的 av1_nvenc 会「列表里有、实编报 -22、
+    产物 0 字节」——只 grep `-encoders` 会误判为可用。
+    """
+    out = work / f'_probe_{codec}.mp4'
+    out.unlink(missing_ok=True)
+    cmd = ['ffmpeg', '-nostdin', '-y', '-hide_banner', '-loglevel', 'error',
+           '-i', str(probe_src), '-frames:v', '2', '-an', '-c:v', codec]
+    cmd += _axis_lock(codec, axis) + ['-pix_fmt', 'yuv420p', str(out)]
+    rc, log = run_try(cmd)
+    ok = rc == 0 and out.is_file() and out.stat().st_size > 0
+    out.unlink(missing_ok=True)
+    tail = ' / '.join(l for l in log.strip().splitlines()[-3:])
+    return ok, tail
+
+
 def md5(path, nbytes=1 << 20):
     h = hashlib.md5()
     with open(path, 'rb') as f:
         h.update(f.read(nbytes))
     return h.hexdigest()
+
+
+# ── 跨仓态势（VidUtils 对等方案）──────────────────────────────────────────────
+# 本 harness 两仓同源（VU `probe/` 与 VE `Accessory/probe/`），落表真源也须两仓逐字相等
+# （判据 ⑨ 组）。开跑前报告「本仓角色 / 对侧仓库 / 两表是否同步 / 对侧 harness 是否同版 /
+# 对侧方案文档位置」，便于两侧协同（改表、改 harness 时知道对侧要不要跟）。
+def _repo_role():
+    return 'VE' if (ROOT / 'src' / 'utils' / 'convert_crf.py').is_file() else 'VU'
+
+
+def _default_sibling():
+    """自动找对侧仓库（与本仓同级的 VidUtils / Video_Enhancement）。找不到返回 None。"""
+    name = 'VidUtils' if _repo_role() == 'VE' else 'Video_Enhancement'
+    cand = ROOT.parent / name
+    return cand if cand.is_dir() else None
+
+
+def _load_module(path, name):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _cmp_tables(local_map, other_map):
+    """比较两张 {codec: (a,b,lo,hi)}，返回 (是否相等, 差异键)。纯函数，供 selftest。"""
+    keys = set(local_map) | set(other_map)
+    diffs = [k for k in sorted(keys) if local_map.get(k) != other_map.get(k)]
+    return (not diffs), diffs
+
+
+def cross_repo_status(sibling_root):
+    """采集对侧（VidUtils）对等方案的态势，写入报告 + 启动打印。只读，缺项优雅降级。"""
+    role = _repo_role()
+    st = {'role': role, 'local_root': str(ROOT),
+          'sibling_root': str(sibling_root) if sibling_root else '', 'found': False}
+    if not sibling_root or not sibling_root.is_dir():
+        return st
+    st['found'] = True
+    # 对侧落表真源（VE 在 src/utils/，VU 在仓库根）
+    other_convert = sibling_root / 'src' / 'utils' / 'convert_crf.py'
+    if not other_convert.is_file():
+        other_convert = sibling_root / 'convert_crf.py'
+    st['sibling_convert_crf'] = str(other_convert) if other_convert.is_file() else ''
+    if other_convert.is_file():
+        try:
+            other = _load_module(other_convert, 'sibling_convert_crf')
+            for tname in ('SIZE_MAP', 'QUALITY_MAP'):
+                eq, diffs = _cmp_tables(getattr(CRF, tname, {}) or {},
+                                        getattr(other, tname, {}) or {})
+                st[f'{tname}_equal'] = eq
+                if not eq:
+                    st[f'{tname}_diffs'] = diffs
+        except Exception as e:                              # 对侧结构不同/导入失败：不阻断
+            st['table_cmp_error'] = str(e)
+    # 对侧 harness（两仓同源，比对 md5 看是否需要协调同步）
+    for cand in (sibling_root / 'Accessory' / 'probe' / 'calibrate_equal_quality.py',
+                 sibling_root / 'probe' / 'calibrate_equal_quality.py'):
+        if cand.is_file():
+            st['sibling_harness'] = str(cand)
+            st['sibling_harness_md5'] = md5(cand)
+            st['harness_in_sync'] = (md5(cand) == md5(Path(__file__).resolve()))
+            break
+    # 对侧方案文档（VE 侧路径；VU 侧亦兼容）
+    plans = []
+    for rel in ('Plan/PROMPT_等质量换算立项.md',
+                'Plan/Video_Enhancement_质量控制参数修复方案.md',
+                'Plan/VidUtils_等质量标定_T4专项执行方案.md',
+                'Plan/VidUtils_等质量标定_L40_AV1专项执行方案.md',
+                'Accessory/docs/EQQ_CALIBRATION_OVERVIEW.md'):
+        p = sibling_root / rel
+        if p.is_file():
+            plans.append(str(p))
+    st['sibling_plans'] = plans
+    return st
+
+
+def _print_cross_repo(st):
+    """把 :func:`cross_repo_status` 的结果打印成可读态势（协同用）。"""
+    if not st.get('found'):
+        print(f'跨仓态势：未找到对侧仓库（{st.get("sibling_root") or "同级无 VidUtils"}）；'
+              f'本仓角色 {st.get("role")}，跳过对侧比对')
+        return
+    print(f'跨仓态势（本仓 {st["role"]}；对侧 {st["sibling_root"]}）：')
+    for tname in ('SIZE_MAP', 'QUALITY_MAP'):
+        if f'{tname}_equal' in st:
+            eq = st[f'{tname}_equal']
+            extra = '' if eq else f'  ⚠ 差异键={st.get(f"{tname}_diffs")}'
+            print(f'  {tname}: {"✅ 两仓逐条相等" if eq else "❌ 不一致"}{extra}')
+    if 'sibling_harness' in st:
+        same = st.get('harness_in_sync')
+        note = '✅ 与本仓逐字节同版' if same else '⚠ 与本仓不同版（VE 有 --axis 扩展，属预期差异）'
+        print(f'  对侧 harness: {st["sibling_harness"]}  {note}')
+    if st.get('sibling_plans'):
+        print(f'  对侧方案文档: {len(st["sibling_plans"])} 份')
+    if st.get('table_cmp_error'):
+        print(f'  ⚠ 表比对失败：{st["table_cmp_error"]}')
 
 
 def ffprobe_video(path):
@@ -196,14 +448,24 @@ def make_prep(src, work, duration, width, height):
     return prep, hdr
 
 
-def encode(ref, key, value, out):
-    """用给定档位/质量值编码 ref。返回 (字节数, 秒)。"""
-    out.unlink(missing_ok=True)
+def encode_cmd(ref, key, value, out, axis='cq'):
+    """构造一次编码命令（纯函数，便于 selftest 断言命令形状）。
+
+    ``axis='cq'`` ⇒ `-cq:v`（或软编 `-crf`/`-qp`）+ VBR 系列配套；
+    ``axis='qp'`` ⇒ `-rc:v constqp -qp`（VE 特有，D2b QP 轴）。
+    """
     c = _ffcodec(key)
     cmd = ['ffmpeg', '-nostdin', '-y', '-hide_banner', '-loglevel', 'error',
-           '-i', str(ref), '-an', '-c:v', c, QUALITY_FLAG[c], str(value)]
-    cmd += _lock_for(key)
+           '-i', str(ref), '-an', '-c:v', c, _qflag(key, axis), str(value)]
+    cmd += _axis_lock(key, axis)
     cmd += ['-pix_fmt', 'yuv420p', str(out)]
+    return cmd
+
+
+def encode(ref, key, value, out, axis='cq'):
+    """用给定档位/质量值编码 ref。返回 (字节数, 秒)。"""
+    out.unlink(missing_ok=True)
+    cmd = encode_cmd(ref, key, value, out, axis=axis)
     t0 = time.time()
     run(cmd)
     return out.stat().st_size, time.time() - t0
@@ -500,6 +762,45 @@ def selftest():
     chk('_max_resid rav1e', _max_resid('librav1e@10'), 5.0, 1e-9)
     chk('_max_resid x265', _max_resid('libx265'), 1.5, 1e-9)
 
+    # ── GPU / NVENC 支持（移植自 VidUtils 对等 harness）──
+    chk('_ffcodec h264_nvenc', _ffcodec('h264_nvenc'), 'h264_nvenc')
+    chk('_lock_for h264_nvenc', _lock_for('h264_nvenc'),
+        ['-rc:v', 'vbr_hq', '-b:v', '0', '-preset', 'p4'])
+    chk('_lock_for av1_nvenc', _lock_for('av1_nvenc'),
+        ['-rc:v', 'vbr', '-b:v', '0', '-preset', 'p4'])
+    chk('QUALITY_FLAG av1_nvenc', QUALITY_FLAG['av1_nvenc'], '-cq:v')
+    chk('HW_CODECS 含 av1_nvenc', 'av1_nvenc' in HW_CODECS, True)
+    # 量程回退：av1_nvenc 尚未落 QUALITY_MAP ⇒ 必须回退 SIZE_MAP 的 (0,63)（否则会 KeyError）
+    chk('_table_range 硬编回退 SIZE_MAP', _table_range('av1_nvenc'), (0, 63))
+    chk('_table_range 软编读 QUALITY_MAP', _table_range('libx265'), (0, 51))
+    # 必选编码器缺失判定（保证 --expect-av1 的 fail-fast 在首次上机前就有自证）
+    chk('_missing_required 命中', _missing_required({'av1_nvenc': (False, 'x')}, ['av1_nvenc']),
+        ['av1_nvenc'])
+    chk('_missing_required 可用', _missing_required({'h264_nvenc': (True, '')}, ['h264_nvenc']), [])
+
+    # ── VE 特有：--axis（CQ 轴 / CONSTQP 轴）命令形状 ──
+    chk('_qflag cq', _qflag('h264_nvenc', 'cq'), '-cq:v')
+    chk('_qflag qp', _qflag('h264_nvenc', 'qp'), '-qp')
+    chk('_axis_lock qp', _axis_lock('h264_nvenc', 'qp'),
+        ['-rc:v', 'constqp', '-preset', 'p4'])
+    chk('_axis_lock cq', _axis_lock('h264_nvenc', 'cq'),
+        ['-rc:v', 'vbr_hq', '-b:v', '0', '-preset', 'p4'])
+    chk('_axis_range qp av1', _axis_range('av1_nvenc', 'qp'), (0, 255))
+    chk('_axis_range qp h264', _axis_range('h264_nvenc', 'qp'), (0, 51))
+    _cq = encode_cmd('REF.mp4', 'h264_nvenc', 26, 'OUT.mp4', axis='cq')
+    _qp = encode_cmd('REF.mp4', 'h264_nvenc', 26, 'OUT.mp4', axis='qp')
+    chk('encode_cmd cq 含 -cq:v 且不含 -qp', ('-cq:v' in _cq) and ('-qp' not in _cq), True)
+    chk('encode_cmd qp 含 -qp 与 -rc:v constqp 且不含 -cq:v',
+        ('-qp' in _qp) and ('constqp' in _qp) and ('-cq:v' not in _qp), True)
+    _av1 = encode_cmd('REF.mp4', 'av1_nvenc', 30, 'OUT.mp4', axis='cq')
+    chk('encode_cmd av1 cq = vbr（不得出现非法 vbr_hq）',
+        ('-rc:v' in _av1) and ('vbr' in _av1) and ('vbr_hq' not in _av1), True)
+
+    # ── 跨仓态势（纯函数）──
+    chk('_cmp_tables 相等', _cmp_tables({'a': (1, 0, 0, 1)}, {'a': (1, 0, 0, 1)})[0], True)
+    chk('_cmp_tables 漂移', _cmp_tables({'a': (1, 0, 0, 1)}, {'a': (2, 0, 0, 1)})[1], ['a'])
+    chk('_repo_role 合法', _repo_role() in ('VU', 'VE'), True)
+
     print('\n自测' + ('通过 ✅' if ok else '失败 ❌'))
     return 0 if ok else 1
 
@@ -512,9 +813,21 @@ def main():
     ap.add_argument('--width', type=int, default=1280)
     ap.add_argument('--height', type=int, default=720)
     ap.add_argument('--codecs', default='libx265,libvpx-vp9,libaom-av1,libsvtav1,librav1e')
+    ap.add_argument('--axis', choices=AXES, default='cq',
+                    help='质量轴：cq=CQ/CRF 轴（`-cq:v`，落 QUALITY_MAP）；'
+                         'qp=CONSTQP 轴（`-rc:v constqp -qp`，落 QUALITY_MAP_QP，**VE 特有 D2b**）')
+    ap.add_argument('--require-codecs', default='',
+                    help='逗号分隔；这些编码器在本机**必须可编**，否则 exit 2（防把「静默跳过」'
+                         '当成「已标定」）。用于 T4 的 h264/hevc_nvenc 等硬编前提。')
+    ap.add_argument('--expect-av1', action='store_true',
+                    help='等价于 --require-codecs av1_nvenc 并且自动把 av1_nvenc 并入 --codecs；'
+                         'L40/Ada 交接用（本卡不能编 AV1 即 exit 2）')
     ap.add_argument('--rav1e-speed', default='native,10',
                     help='rav1e speed 档，逗号分隔；native 表示不下发 -speed（默认 native,10）')
     ap.add_argument('--workroot', default='/tmp/eqq_calib')
+    ap.add_argument('--sibling-root', default='',
+                    help='对侧仓库根（VidUtils 对等方案）；不给则自动找同级 VidUtils。'
+                         '用于报告「两表是否同步 / 对侧 harness 是否同版」的跨仓态势。')
     ap.add_argument('--tag', default='')
     ap.add_argument('--keep', action='store_true')
     ap.add_argument('--resume', action='store_true', help='跳过 points.json 里已完成的点')
@@ -530,6 +843,10 @@ def main():
     if args.selftest:
         return selftest()
 
+    if args.expect_av1 and args.quick:
+        print('[ERROR] --expect-av1 需要真正跑探测/标定，不能与 --quick 同用')
+        return 2
+
     # 解析 rav1e 档位
     speeds = []
     for s in str(args.rav1e_speed).split(','):
@@ -539,12 +856,26 @@ def main():
         speeds.append(None if s.lower() in ('native', '0', '') else s)
 
     codecs = [c.strip() for c in args.codecs.split(',') if c.strip()]
+    # --expect-av1：既要求本卡可编 AV1，也把它并入标定档位
+    if args.expect_av1 and 'av1_nvenc' not in codecs:
+        codecs.append('av1_nvenc')
+    required = {c.strip() for c in args.require_codecs.split(',') if c.strip()}
+    if args.expect_av1:
+        required.add('av1_nvenc')
     tiers = []
     for c in codecs:
         if c == 'librav1e':
             tiers += ['librav1e' if s is None else f'librav1e@{s}' for s in speeds]
         else:
             tiers.append(c)
+
+    # --axis qp 仅对硬件编码器有意义（软编的 QP 轴 = CRF 轴，无需单独标定）
+    if args.axis == 'qp':
+        bad = sorted({_ffcodec(t) for t in tiers} - set(QP_LOCK))
+        if bad:
+            print(f'[ERROR] --axis qp 仅支持硬件编码器 {sorted(QP_LOCK)}；'
+                  f'以下档位不支持：{bad}', file=sys.stderr)
+            return 2
 
     if args.quick:
         args.duration = 3.0
@@ -565,10 +896,48 @@ def main():
     pts_path = work / 'points.json'
     points = _load_points(pts_path) if args.resume else {}
 
+    gpu = gpu_info()
+    sibling_root = Path(args.sibling_root) if args.sibling_root else _default_sibling()
+    cross = cross_repo_status(sibling_root)
+
+    # ── 硬件编码器可用性探测（列表里有 ≠ 本机可编；T4 的 av1_nvenc 即此）──
+    hw_tiers = [t for t in tiers if _ffcodec(t) in HW_CODECS]
+    hw_avail: dict = {}
+    if hw_tiers:
+        not_requested = sorted(c for c in (required & HW_CODECS)
+                               if c not in {_ffcodec(t) for t in tiers})
+        if not_requested:
+            print(f'[ERROR] --require-codecs 里的 {not_requested} 不在 --codecs 中（无法标定）',
+                  file=sys.stderr)
+            return 2
+        probe_src = make_probe_src(work)
+        print(f'\n── 硬件编码器可用性探测（GPU={gpu or "未探测到 nvidia-smi"}；轴={args.axis}）──')
+        for c in sorted({_ffcodec(t) for t in hw_tiers}):
+            ok, why = probe_hw_codec(c, probe_src, work, axis=args.axis)
+            hw_avail[c] = (ok, why)
+            print(f'  {"✓" if ok else "–"} {c}：{"可用" if ok else "不可用（" + why[:110] + "）"}')
+        probe_src.unlink(missing_ok=True)
+        missing = _missing_required(hw_avail, [c for c in required if c in HW_CODECS])
+        if missing:
+            print(f'\n[ERROR] --require-codecs / --expect-av1 未满足：{missing} 在本机不可编'
+                  f'（GPU={gpu or "未探测到"}）。')
+            print('        AV1 NVENC 需 Ada 及以上（RTX 40 / L40）；在非 AV1 卡上标定 AV1 无意义。')
+            return 2
+        # 探测失败的非必选档位：剔除，避免后续 encode 抛异常中断整批
+        dropped = [t for t in hw_tiers if not hw_avail.get(_ffcodec(t), (False, ''))[0]]
+        if dropped:
+            tiers = [t for t in tiers if t not in dropped]
+            print(f'  ⚠ 剔除不可用档位（非必选）：{[_ffcodec(t) for t in dropped]}')
+        if not tiers:
+            print('[ERROR] 无可标定的档位（硬件全不可用且无软编）', file=sys.stderr)
+            return 2
+
     ffver = run(['ffmpeg', '-hide_banner', '-version']).stdout.splitlines()[0]
     report = {'ffmpeg': ffver, 'project_root': str(ROOT),
               'width': args.width, 'height': args.height, 'duration': args.duration,
-              'tiers': tiers, 'lock': {t: _lock_for(t) for t in tiers},
+              'axis': args.axis, 'gpu': gpu, 'cross_repo': cross,
+              'tiers': tiers, 'lock': {t: _axis_lock(t, args.axis) for t in tiers},
+              'hw_avail': {k: v[0] for k, v in hw_avail.items()},
               'anchors': ANCHOR_CRFS, 'tol_vmaf': TOL_VMAF,
               'subsample': args.subsample, 'with_filters': bool(args.with_filters),
               'max_resid': {t: _max_resid(t) for t in tiers},
@@ -580,7 +949,8 @@ def main():
                   'xpsnr': 'standalone xpsnr filter'},
               'per_material': {}}
     print(f'ffmpeg: {ffver}')
-    print(f'根: {ROOT}\n工作目录: {work}\n档位: {tiers}')
+    print(f'根: {ROOT}\n工作目录: {work}\n档位: {tiers}  轴: {args.axis}')
+    _print_cross_repo(cross)
 
     per_tier_points = {t: [] for t in tiers}
     for src in srcs:
@@ -594,7 +964,9 @@ def main():
         assert prep.is_file(), 'prep 缺失'
         metrics = {}
         for key in ['libx264'] + tiers:
-            vals = ANCHOR_CRFS if key == 'libx264' else SWEEP[_ffcodec(key)]
+            # 锚点始终走 CQ/CRF 轴（libx264 `-crf`）；目标档位走所选轴
+            ax = 'cq' if key == 'libx264' else args.axis
+            vals = ANCHOR_CRFS if key == 'libx264' else _sweep_for(key, args.axis)
             metrics[key] = []
             for v in vals:
                 pk = _ptkey(src.name, key, v)
@@ -604,7 +976,7 @@ def main():
                     print(f'    [skip] {key:14} v={v:>3}  vmaf={_fmt(m["vmaf"], 3)}')
                     continue
                 out = work / f'{key.replace("@", "_")}_{v}.mp4'
-                sz, dt = encode(prep, key, v, out)
+                sz, dt = encode(prep, key, v, out, axis=ax)
                 m = measure(out, prep, nframes, work,
                             with_filters=args.with_filters, subsample=args.subsample)
                 m['kbps'] = video_kbps(out)
@@ -613,7 +985,7 @@ def main():
                 points[pk] = {'m': m, 'sec': round(dt, 2), 'material_md5': md5(prep)}
                 _save_points(pts_path, points)
                 metrics[key].append((v, m['vmaf']))
-                print(f'    {key:14} {QUALITY_FLAG[_ffcodec(key)]} {v:>3} '
+                print(f'    {key:14} {_qflag(key, ax)} {v:>3} '
                       f'→ {sz/1024:8.1f} KiB  vmaf={_fmt(m["vmaf"], 3)} '
                       f'hvs={_fmt(m["psnr_hvs"])} psnr={_fmt(m["psnr"])} '
                       f'ssim={_fmt(m["ssim"])} xpsnr={_fmt(m["xpsnr"])}  ({dt:5.1f}s)',
@@ -654,7 +1026,7 @@ def main():
             if 'a' in r:
                 bs.append(statistics.median([y - a * x for x, y in r['points']]))
         b = statistics.median(bs) if bs else 0.0
-        lo, hi = CRF.QUALITY_MAP[_ffcodec(key)][2], CRF.QUALITY_MAP[_ffcodec(key)][3]
+        lo, hi = _axis_range(key, args.axis)
         table[key] = [round(a, 4), round(b, 4), int(lo), int(hi)]
         print(f'  {key:14} a={a:.4f} b={b:+.3f}  区间=[{lo},{hi}]  '
               f'b_m范围=[{min(bs):+.2f}, {max(bs):+.2f}]  crf21→{a*21+b:.2f}')
@@ -663,9 +1035,15 @@ def main():
     (work / 'report.json').write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     print(f'\n报告: {work / "report.json"}')
-    print('候选 QUALITY_MAP（等质量，软编）；rav1e@10 请另存 _EQQUAL_SPEED_OVERRIDE：')
+    if args.axis == 'qp':
+        print('候选 QUALITY_MAP_QP（等质量 · CONSTQP/QP 轴，VE 特有 D2b）：')
+    else:
+        print('候选 QUALITY_MAP（等质量 · CQ/CRF 轴）；'
+              'rav1e@10 请另存 _EQQUAL_SPEED_OVERRIDE：')
     for k, v in table.items():
         print(f"    '{k}': ({v[0]}, {v[1]}, {v[2]}, {v[3]}),")
+    print('\n⚠ 落表前先核「跨仓态势」：两仓共享行须逐字相等（⑨ 组）；'
+          'preset/rate-control 口径不一致会导致两仓表漂移。')
     return 0
 
 

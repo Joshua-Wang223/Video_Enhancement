@@ -37,8 +37,11 @@ _spec = importlib.util.spec_from_file_location('eqq_harness', _HERE / 'calibrate
 CH = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(CH)
 
-TIERS = ['libx265', 'libvpx-vp9', 'libsvtav1', 'libaom-av1', 'librav1e@10', 'librav1e']
+TIERS = ['libx265', 'libvpx-vp9', 'libsvtav1', 'libaom-av1', 'librav1e@10', 'librav1e',
+         # NVENC 硬编（需 GPU 点数据；无数据时自动打印「拟合失败」并跳过）
+         'h264_nvenc', 'hevc_nvenc', 'av1_nvenc']
 #: LOO 门限。软编 0~63 刻度、rav1e 0~255 刻度，rav1e 天然更宽⇒ 单独放宽。
+#: NVENC 的 CQ 轴同为 0~63 刻度 ⇒ 按软编门限。
 GATE = {t: (7.5 if t.startswith('librav1e') else 5.9) for t in TIERS}
 SEEDS = (1, 2, 3)
 
@@ -165,6 +168,10 @@ def main():
                          'legacy10s = 4 个 eqq2 10s 文件 + m2_anchorA，'
                          '是7 条素材的 10s 侧有效观测，**不可剔除**')
     ap.add_argument('--out', default='', help='落表候选写入此文件（默认只打印）')
+    ap.add_argument('--axis', choices=('cq', 'qp'), default='cq',
+                    help='质量轴：cq → 候选 QUALITY_MAP / 量程取 CQ 轴；'
+                         'qp → 候选 QUALITY_MAP_QP（VE 特有 D2b）/ 量程取 QP 轴。'
+                         '⚠ 两条轴的点数据必须分目录（--sides 分开），勿混池。')
     args = ap.parse_args()
 
     files = [f for s in args.sides.split(',') if s for f in find_points(args.points_dir, s.strip())]
@@ -226,10 +233,13 @@ def main():
         assert_fail += [f'seed{seed}/{b}' for b in bad]
         print(f'  seed {seed}: {"✅ 6 档逐位一致" if not bad else "❌ " + "; ".join(bad)}')
 
-    print('\n=== 落表候选（写入 src/utils/quality_map.py 的QUALITY_MAP）===')
+    tbl_name = 'QUALITY_MAP_QP' if args.axis == 'qp' else 'QUALITY_MAP'
+    print(f'\n=== 落表候选（轴={args.axis}；写入 src/utils/quality_map.py 的 {tbl_name}）===')
     lines = []
     for t, a, b, n, w, g, ok, per in rows:
-        tag = 255 if 'rav1e' in t else (51 if t == 'libx265' else 63)
+        # hi 从**目标轴**量程取（不再硬编码 255/51/63）：
+        #   cq → QUALITY_MAP→SIZE_MAP 回退；qp → QP_LIMITS（AV1=255，其余 51）
+        tag = CH._axis_range(t, args.axis)[1]
         line = f"    '{t}': ({a:.4f}, {b:.4f}, 0, {tag}),   # LOO {w:.2f} ≤{g} {'✅' if ok else '❌'}"
         lines.append(line)
         print(line)

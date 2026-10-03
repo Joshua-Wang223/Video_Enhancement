@@ -66,7 +66,7 @@ def load(manifest):
         yield Path(m['name']).stem, src, dur
 
 
-def run_one(tag, src, dur, outroot, tiers, sweeps, src_is_prep, keep_prep):
+def run_one(tag, src, dur, outroot, tiers, sweeps, src_is_prep, keep_prep, axis='cq'):
     wd = Path(outroot) / tag
     wd.mkdir(parents=True, exist_ok=True)
     # 供 eqq_watch_batch.py --restart-on-abnormal 定位源
@@ -76,6 +76,8 @@ def run_one(tag, src, dur, outroot, tiers, sweeps, src_is_prep, keep_prep):
            '--duration', str(dur)]
     if tiers:
         cmd += ['--tiers', tiers]
+    if axis and axis != 'cq':
+        cmd += ['--axis', axis]
     for s in sweeps:
         cmd += ['--sweep', s]
     if src_is_prep:
@@ -98,6 +100,10 @@ def main():
     ap.add_argument('--outroot', required=True, help='批次根目录，每素材一个子 workdir')
     ap.add_argument('--jobs', type=int, default=1, help='并行路数（默认 1）')
     ap.add_argument('--tiers', default='', help='覆盖档位（空 = 全部 6 档）')
+    ap.add_argument('--axis', choices=('cq', 'qp'), default='cq',
+                    help='质量轴（VE 特有）：cq=`-cq:v`（落 QUALITY_MAP）；'
+                         'qp=`-rc:v constqp -qp`（落 QUALITY_MAP_QP，仅硬件编码器）。'
+                         '⚠ 两轴须用不同 outroot（points 键不含轴）。')
     ap.add_argument('--sweep', action='append', metavar='TIER=v1,v2',
                     help='覆盖某档位扫描点，逐素材透传（调试小样本时用）')
     ap.add_argument('--src-is-prep', action='store_true',
@@ -121,7 +127,7 @@ def main():
     fails = []
     with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as ex:
         futs = [ex.submit(run_one, tag, src, dur, args.outroot,
-                          args.tiers, args.sweep, args.src_is_prep, args.keep_prep)
+                          args.tiers, args.sweep, args.src_is_prep, args.keep_prep, args.axis)
                 for tag, src, dur in items]
         for fu in futs:
             tag, rc, n, dt = fu.result()

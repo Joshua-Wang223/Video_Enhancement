@@ -328,7 +328,8 @@ def _finish(codec: str, value: float, note: str) -> Tuple[str, int, List[str], s
 #   · NVENC H.264/HEVC 的 -cq:v 相对基准轴有 +5 / +7.5 偏移，而 -qp 没有
 #     ⇒ 截距清零（26→21、28→20）；
 #   · **AV1 的 -qp 是 qindex（0~255）**，与 -cq 的 0~63 完全是两条刻度
-#     ⇒ 倍率 4（21 → 84）。原实现拿 CQ 轴值直发，21 落在 0~255 上等于近无损；
+#     ⇒ 倍率 3（基准 21 → QP 63，L40 实测确认；原注释写的 ×4/84 是早期推断，已废弃）。
+#     原实现拿 CQ 轴值直发，21 落在 0~255 上等于近无损；
 #   · librav1e / libsvtav1 / libx265 的"质量参数"本身就落在 QP 刻度上，
 #     直接沿用其 SIZE_MAP 行（含各自截距，如 rav1e 的 4·ref−4、svtav1 的 ref+6）。
 # ⚠ av1_nvenc 的 QP 尺度在 L40 上实测确认为 3×（非推断的 4×）。
@@ -346,16 +347,38 @@ _QP_MAP_OVERRIDE = {
 def _qp_model(codec: str, table=None):
     """返回该编码器 **CONSTQP / QP 轴**上的 ``(a, b, lo, hi)``；未知编码器返回 None。
 
-    优先级：硬编/VAAPI 的显式覆盖（``_QP_MAP_OVERRIDE``）→ 等质量模式下的
-    ``QUALITY_MAP_QP``（D2b，仅本仓）→ :func:`_active_table`。
-    ⚠ NVENC 的等质量 QP 行待 **M4**（需 NVIDIA 机）标定；标定前由 ``_QP_MAP_OVERRIDE``
-    先行命中 ⇒ 行为与现状逐字一致。
+    **按口径分流**（2026-10-04 起，为 GPU 上机标定 D2b 做准备）：
+
+    ==========  ==========================================================
+    口径        优先级
+    ==========  ==========================================================
+    ``quality`` ``QUALITY_MAP_QP``（标定表，D2b）→ ``_QP_MAP_OVERRIDE``
+                （未标定的硬编回退）→ :func:`_active_table`
+    ``size``    ``_QP_MAP_OVERRIDE`` → :func:`_active_table`（**完全保持
+                改造前行为**，不受 ``QUALITY_MAP_QP`` 影响）
+    ==========  ==========================================================
+
+    为什么这样分流：
+      · **quality 口径**：``QUALITY_MAP_QP`` 是 M4/D2b 的落点，标定后必须优先命中，
+        否则 NVENC 行会被 ``_QP_MAP_OVERRIDE`` **永久遮蔽**（标了也不生效）；
+      · **size 口径**：判据 ``crf_cq_unification_verify.py`` 显式钉 ``size``
+        （G3/G6 的期望值按等体积口径写成），故 size 分支必须逐字不变，
+        保证「零侵入」——`G3-1`（h264 26→21）/`G3-7`（av1 27→63）不受影响。
+
+    ⚠ **当前表下本改造是恒等变换**：``QUALITY_MAP_QP`` 尚无 NVENC 行 ⇒ quality 口径的
+    NVENC 仍回退 ``_QP_MAP_OVERRIDE``，与改造前逐字一致（已用旧/新模块矩阵对比验证）。
+    仅当 M4 标定把 NVENC 行写入 ``QUALITY_MAP_QP`` 后，quality 口径才切换到标定值。
     """
     c = str(codec).lower()
+    if get_quality_mode() == 'quality':
+        if c in QUALITY_MAP_QP:          # D2b 标定表优先（NVENC 标定后由此生效）
+            return QUALITY_MAP_QP[c]
+        if c in _QP_MAP_OVERRIDE:        # 未标定的硬编/VAAPI 回退
+            return _QP_MAP_OVERRIDE[c]
+        return _active_table(table).get(c)
+    # size 口径：完全保持改造前行为（override → 活动表）
     if c in _QP_MAP_OVERRIDE:
         return _QP_MAP_OVERRIDE[c]
-    if get_quality_mode() == 'quality' and c in QUALITY_MAP_QP:
-        return QUALITY_MAP_QP[c]
     return _active_table(table).get(c)
 
 
@@ -368,8 +391,9 @@ def to_constqp_qp(codec: str, value: int, *, table=None) -> int:
 
         value --to_x264_crf--> 基准轴 --(×a_qp +b_qp +CONSTQP_QP_OFFSET)--> QP
 
-    ``a_qp``/``b_qp`` 见 ``_QP_MAP_OVERRIDE``（H.264/HEVC = 基准轴直取；
-    AV1 = ×4 的 qindex 尺度；其余沿用 SIZE_MAP 自身的 QP 刻度）。
+    ``a_qp``/``b_qp`` 由 :func:`_qp_model` 按口径分流给出：quality 口径优先
+    ``QUALITY_MAP_QP``（D2b 标定表），size 口径用 ``_QP_MAP_OVERRIDE``
+    （H.264/HEVC = 基准轴直取；AV1 = ×3 的 qindex 尺度，L40 实测）与活动表。
 
     未知编码器原样返回（不做猜测）。
     """

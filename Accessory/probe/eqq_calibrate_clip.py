@@ -75,6 +75,9 @@ def main():
                          '实测锚点 VMAF 偏移 0.02~0.29，与库内原始数据不可比')
     ap.add_argument('--keep-prep', action='store_true',
                     help='保留 work/prep.mp4（默认跑完删除）')
+    ap.add_argument('--axis', choices=CH.AXES, default='cq',
+                    help='质量轴（VE 特有）：cq=`-cq:v`（落 QUALITY_MAP）；'
+                         'qp=`-rc:v constqp -qp`（落 QUALITY_MAP_QP，仅硬件编码器）')
     args = ap.parse_args()
 
     src, out = Path(args.src), Path(args.out)
@@ -84,7 +87,9 @@ def main():
     pts_path = out / 'points.json'
     pts = json.loads(pts_path.read_text(encoding='utf-8')) if pts_path.is_file() else {}
     tiers = [t for t in args.tiers.split(',') if t]
-    sweep = parse_sweep(args.sweep, CH.SWEEP)
+    # 默认扫描点按轴选取（qp 轴用 QP_SWEEP：AV1 的 qp 量程 0~255 需右移）
+    soft_default = {t: CH._sweep_for(t, args.axis) for t in tiers}
+    sweep = parse_sweep(args.sweep, soft_default)
 
     print(f'== {src.name} -> {out} ==', flush=True)
     src_frames, src_dur, src_fps, sw, sh, _, _ = CH.ffprobe_video(src)
@@ -102,26 +107,28 @@ def main():
     nframes = CH.ffprobe_video(prep)[0]
     print(f'   参考片 {nframes}帧 md5={CH.md5(prep)[:12]} hdr_tonemap={hdr}', flush=True)
 
-    def one(tier, value):
+    def one(tier, value, axis='cq'):
         key = f'{src.name}|{tier}|{value:g}'
         if key in pts:
             print(f'   [skip] {tier} {value:g}', flush=True)
             return
         enc_out = out / f'{tier.replace("@", "_spd")}_{value:g}.mp4'
-        size, dt = CH.encode(prep, tier, value, enc_out)
+        size, dt = CH.encode(prep, tier, value, enc_out, axis=axis)
         m = CH.measure(enc_out, prep, nframes, out, with_filters=False, subsample=1)
         pts[key] = {'m': m, 'sec': round(dt, 2)}
         pts_path.write_text(json.dumps(pts, ensure_ascii=False, indent=1), encoding='utf-8')
         enc_out.unlink(missing_ok=True)
-        print(f'   {tier:<14}{value:>6g} -> {size / 1024:8.1f} KiB  '
+        print(f'   {tier:<14}{CH._qflag(tier, axis):<8}{value:>6g} -> {size / 1024:8.1f} KiB  '
               f'vmaf={m["vmaf"]:.3f}  ({dt:.1f}s)', flush=True)
 
+    # ⚠ 两条轴**必须用不同 workdir**：points 键只含 `素材|档位|参数`，同目录混跑会让
+    #    CQ 轴与 QP 轴的点在同名档位下互相污染（pool_fit_table 按档位聚合）。
     t0 = time.time()
     for tier in tiers:
         for crf in CH.ANCHOR_CRFS:
-            one('libx264', crf)
+            one('libx264', crf)              # 锚点恒走 CRF 轴
         for value in sweep.get(tier, RAV1E_QP_SWEEP):
-            one(tier, value)
+            one(tier, value, args.axis)
         print(f'   -- {tier} 完成，累计 {len(pts)} 点，'
               f'用时 {(time.time() - t0) / 60:.1f} min', flush=True)
 

@@ -1,0 +1,72 @@
+---
+name: 等质量 GPU 标定的跨仓契约（VE↔VU）
+description: M4 GPU 等质量标定的跨仓契约（VE↔VU）：preset/RC 口径分歧会让两仓共享 QUALITY_MAP 的 NVENC 行不逐字相等（⑨ 组红）。CR-1 preset 已统一 p4；CR-2 已裁定路线 B（h264/hevc 统一 vbr_hq、av1 保持 vbr）；含 harness 实现状态、SDK 不支持 vbr 的陷阱与 p5 残留甄别
+type: project
+---
+
+# 等质量 GPU 标定（M4）的跨仓契约 —— VE ↔ VidUtils
+
+**核心事实**：M4（NVENC 等质量标定）的产物 `h264_nvenc` / `hevc_nvenc` / `av1_nvenc` 行要写入
+**两仓共享**的 `QUALITY_MAP`，而 VidUtils 的 `verify/verify_quality_mapping.py` ⑨ 组断言
+**两仓该表逐条相等**。⇒ 两侧若用**不同的编码口径**标定，表必然不等，⑨ 组红。
+
+**Why**：两侧产品默认曾不同 —— VE 的 `medium→p4`（方案 E5 对齐 ffmpeg 官方枚举），
+VU 原 `DEFAULT_PRESET_GPU="p5"`。preset 与 rate control 会整体平移率失真曲线 ⇒ 同 `-cq`
+在不同 preset/rc 下达不到同一等效点。这是**口径分歧**，不是谁对谁错。
+⇒ 2026-10-04 裁定**统一到 p4**，VU 侧已对齐（CR-1 收口）。
+
+**How to apply**：上机（T4/L40）**之前**先落定 CR-1/CR-2；否则白跑一轮标定。
+- **CR-1 已收口**（2026-10-04，两仓均 p4）：VE 本已 p4；VU 已把生产默认 + harness + 探针
+  一并改 p4（残留 p5 为兼容显式 p5 的有意保留，详见 VE 方案 §12.5 的甄别表）。
+- **CR-2 已裁定「路线 B」**（2026-10-04）：**h264/hevc 统一 `vbr_hq`，av1 保持 `vbr`**。
+  * **VE 侧已落地**：生产**不动**（h264/hevc 本 `vbr_hq`、av1 降级 `vbr`）；**标定 harness 改**
+    h264/hevc → `-rc:v vbr_hq`、av1 → `-rc:v vbr`。**改 VE 生产被否**：其 h264/hevc 走 ctypes
+    直连 SDK，`nvenc_sdk` **不支持 `vbr`**（落到 `else` ⇒ 静默 CONSTQP；SDK 的 LA 门控只认
+    `vbr_hq/qvbr`）⇒ 直接改 config 会毁掉快路径且不报错。
+  * **VU 已同步（含 av1）**（2026-10-04 二次复检）：`_NVENC_DEFAULT_RC={h264_nvenc,hevc_nvenc:"vbr_hq",
+    av1_nvenc:"vbr"}`（两脚本孪生）+ harness `-rc vbr_hq`/`-rc vbr`（selftest 过）+ `t4_acceptance` A4
+    `-rc vbr_hq`。⇒ **生产与 harness 两仓口径已完全一致、且均显式下发 `-rc`**。
+  * **VE 探针已修**（2026-10-04）：`Accessory/probe/av1_vp9_quality_matrix.py` 新增 `_PROD_RC`
+    （`av1_nvenc → -rc:v vbr`、`h264/hevc → vbr_hq`），A 组 CQ 路径显式下发 rc；命令形状已 CPU 验证
+    （av1→vbr / h264→vbr_hq / 软编不带 -rc）。判据 `crf_cq_unification_verify.py` 的 NVENC 编码**本就带
+    `-rc:v`**（`:609-626`）⇒ VE 侧已无缺口。
+  * **VU 探针已修**（2026-10-04）：`probe/verify_nvenc_quality_gpu.py::encode_nvenc(mode='cq')`
+    改走 `_cq_rc(codec)`（av1→`vbr`、h264/hevc→`vbr_hq`），并加 selftest 断言
+    `(_cq_rc('av1_nvenc'), _cq_rc('h264_nvenc'), _cq_rc('hevc_nvenc')) == ('vbr','vbr_hq','vbr_hq')`。
+  * ✅ **结论**：生产 / harness / 探针 / 判据 **两仓各层全部显式对齐**，CR-2 无残留。
+
+## 契约清单
+
+| 编号 | 内容 | 现状 | 处置 |
+|---|---|---|---|
+| **CR-1** | NVENC preset：VE `p4` vs VU `p5` | ✅ **已收口（两仓均 p4）** | **VE 无需改**（本就 p4）。**VU 已改**：生产 `DEFAULT_PRESET_GPU` p5→p4（`vidcrop_cpu_v2.py` + `vidcrop_hwaccel.py` 孪生）+ harness `BASE_LOCK` p4 + 探针 `NVENC_PRESET='p4'` + README/`test/baseline` 同步。残留 `p5` 均**有意保留**（反向降级表 `p5→medium`、官方枚举 `slow→p5`、`_NVENC_PRESET_RETRY` 兼容显式 p5、QSV 断言） |
+| **CR-2** | NVENC rate control 口径：h264/hevc 与 av1 的 rc 两仓统一 | ✅ **生产 + harness 两仓均已统一**：h264/hevc `vbr_hq`、av1 `vbr`（**均显式下发 `-rc`**） | **VE**：生产不动（SDK RC_VBR_HQ / av1 降级 vbr）；harness `-rc:v vbr_hq`/`-rc:v vbr`。**VU 已同步**：`_NVENC_DEFAULT_RC={h264_nvenc,hevc_nvenc:"vbr_hq", av1_nvenc:"vbr"}`（两脚本孪生）+ harness `-rc vbr_hq`/`-rc vbr`（selftest 过）+ t4_acceptance A4 `-rc vbr_hq`。✅ **全链路对齐，无残留**：生产 / 标定 harness / 验收探针（两仓）**均显式下发 `-rc`**。VE 探针 `av1_vp9_quality_matrix.py` 加了 `_PROD_RC`；VU 探针 `verify_nvenc_quality_gpu.py` 加了 `_cq_rc`（cq 分支 `-rc vbr_hq`/`vbr`，含 selftest 断言）；判据 `crf_cq_unification_verify.py` 本就带 `-rc:v` |
+| **CR-3** | harness 是否同版 | VE 有 `--axis`（QP 轴 D2b），VU 无 ⇒ md5 不同 | **有意差异**；共享块改动两侧同步，`--axis` 各自演进 |
+| **CR-4** | QP 轴归属 | `QUALITY_MAP_QP` 仅 VE；VU 只有 `_QP_SCALE` | VU 改 `_QP_SCALE`（av1 ×3）须通知 VE 同步 |
+| **CR-5** | 素材池 | 17 条切片在 VE `input_videos/eqq_calib/`（**仓库外、不入 git**） | 上机机需先就位；两仓共用同一池保证口径一致 |
+
+## 态势快照（2026-10-04）
+
+- **VU harness 早已实现 G0/T0/A0**（NVENC + `--require-codecs`/`--expect-av1` fail-fast +
+  `nvidia-smi` 指纹 + `_table_range` 回退 + **跨仓态势 `cross_repo_status`**）；
+  VU 专项方案 `Plan/VidUtils_等质量标定_{T4,L40}_专项执行方案.md`（任务 `G0~G7`/`T0~T6`/`A0~A5`）。
+- **VE harness 已移植 VU 实现 + 叠加 VE 独有 `--axis {cq,qp}`**（2026-10-04）：
+  selftest 39 项、CPU 干跑通过、跨仓态势打印正确、无 GPU 时探测 exit 2。
+- **跨仓态势已双向**：此前只有 VU 能感知 VE，现 VE 也打印「两表是否相等 / 对侧 harness 是否同版 /
+  对侧方案文档」（VE harness `cross_repo_status()` / `_print_cross_repo()`）。
+- **`_qp_model` 已改「模式感知」**：quality 口径优先 `QUALITY_MAP_QP`、size 口径保持 override→活动表
+  （判据钉 size ⇒ G3/G6 零侵入）。当前表下是**恒等变换**（无 NVENC 行），已用旧/新模块 680 组对比验证。
+- **CR-1 preset 已收口**（2026-10-04 复检）：VU 生产 `DEFAULT_PRESET_GPU` 两文件均 **p4**、harness/探针 p4；
+  残留 `p5` 全为有意保留（反向降级表 / 官方枚举 / `_NVENC_PRESET_RETRY` / QSV 断言）——
+  甄别表见 VE 方案 §12.5。
+- **CR-2 路线 B：生产 + harness 两仓均已统一**（2026-10-04 二次复检）：h264/hevc `vbr_hq`、
+  av1 `vbr`，**均显式下发 `-rc`**（VU 已把 av1 也补成显式 `-rc vbr`）。**关键陷阱**：VE `nvenc_sdk`
+  不支持 `vbr`（静默当 CONSTQP），否决「VE 改 vbr」。**CR-2 无残留**：生产 / harness / 探针
+  （VE `_PROD_RC`、VU `_cq_rc`）/ 判据 两仓各层**均显式 `-rc`**。
+
+## 关联
+
+- 方案：`Plan/PROMPT_T4_NVENC等质量标定专项执行方案.md` §12、`Plan/PROMPT_L40_AV1等质量标定专项执行方案.md` §12
+- 立项目标与 B 组待办：`Plan/PROMPT_等质量换算立项.md` §0.0 / §7.1
+- VU 侧：`/workspace/VidUtils/Plan/VidUtils_等质量标定_{T4,L40}_专项执行方案.md`
+- ⑨ 组脚本：`/workspace/VidUtils/verify/verify_quality_mapping.py`

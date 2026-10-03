@@ -98,6 +98,18 @@ _EXTRA_ARGS: Dict[str, List[str]] = {
     "libvpx-vp9": ["-cpu-used", "4", "-row-mt", "1"],
 }
 
+# NVENC 的**生产 rc 口径**（跨仓契约 CR-2）——探针必须与生产/harness 一致，
+# 否则 A 组的 `-cq` 结论不代表生产实际等效点：
+#   · h264/hevc → `vbr_hq`（VE 生产 = SDK RC_VBR_HQ；不在本探针 codec 列表内，仅为同源登记）
+#   · av1_nvenc → `vbr`（VE 生产 av1 由 `vbr_hq` 降级为 `vbr`）
+# ⚠ 与 `Accessory/probe/calibrate_equal_quality.BASE_LOCK`、`ffmpeg_io` writer 的
+#   `_rc_v_map` 同源；软编不用 `-rc`，qsv/amf 不在 VE 生产路径故不猜。
+_PROD_RC: Dict[str, List[str]] = {
+    "h264_nvenc": ["-rc:v", "vbr_hq"],
+    "hevc_nvenc": ["-rc:v", "vbr_hq"],
+    "av1_nvenc":  ["-rc:v", "vbr"],
+}
+
 
 # =============================================================================
 # 进程与度量
@@ -215,9 +227,14 @@ def probe_frames(ffprobe: str, path: Path) -> Tuple[int, str]:
 
 def encode_quality(ffmpeg: str, src: Path, out: Path, codec: str, value: int,
                    param: str, extra: List[str], timeout: int) -> Tuple[bool, str]:
-    """按 `quality_map.resolve_quality` 给出的 (param, value, extra) 下发。"""
+    """按 `quality_map.resolve_quality` 给出的 (param, value, extra) 下发。
+
+    ⚠ NVENC 额外补 `_PROD_RC`（生产 rc 口径，跨仓契约 CR-2）——否则 `-cq` 会落在
+    ffmpeg preset 默认 rc 上，与生产不一致（h264/hevc 尤其：默认 VBR ≠ 生产 `vbr_hq`）。
+    """
     cmd = [ffmpeg, "-hide_banner", "-y", "-v", "error", "-i", str(src),
            "-c:v", codec, param, str(value)]
+    cmd += _PROD_RC.get(codec, [])          # 生产 rc（NVENC 显式下发，CR-2）
     cmd += list(extra)
     cmd += _EXTRA_ARGS.get(codec, [])
     cmd += ["-pix_fmt", "yuv420p", str(out)]
@@ -388,8 +405,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         param, val, extra, note = Q.resolve_quality(c, default_ref=args.ref_crf)
         # 「朴素下发」= 修复前的行为：把基准轴数字原样当该编码器的质量值
         naive = args.ref_crf
-        rec = {"codec": c, "param": param, "value": val, "naive": naive,
-               "note": note, "extra_args": list(extra) + _EXTRA_ARGS.get(c, [])}
+        rec = {"codec": c, "param": param, "value": val, "naive": naive, "note": note,
+               "extra_args": _PROD_RC.get(c, []) + list(extra) + _EXTRA_ARGS.get(c, [])}
         ok, why = encode_quality(ffmpeg, src, tmp / f"c_{c}.mp4", c, val,
                                  param, extra, args.timeout)
         if not ok:
