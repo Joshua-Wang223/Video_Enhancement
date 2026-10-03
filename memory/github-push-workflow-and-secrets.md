@@ -259,3 +259,28 @@ WSL 侧（`/mnt/d/Workspace_Python/Video_Enhancement`，与 Windows `D:\...` 是
 处置：把 Windows 侧**同一把**已注册密钥复制进 WSL —— `cp /mnt/c/Users/Administrator/.ssh/id_ed25519 ~/.ssh/`（私钥 600 / 公钥 644 / `~/.ssh` 700）。两侧指纹一致：`SHA256:4QQo43WGynDfmioB9ILHRpjwUU1QlCDRnlw1Obvw0xY`。实测 `ssh -T git@github.com` → `Hi Joshua-Wang223!`，`git ls-remote origin refs/heads/main` 正常。
 
 **How to apply:** 之后在 WSL 里可直接 `git push`，不必再走 `GIT_SSH_COMMAND`。⚠️ 不能图省事直接 `ssh -i /mnt/c/Users/Administrator/.ssh/id_ed25519`：drvfs 挂载文件权限恒为 777，ssh 会因 "UNPROTECTED PRIVATE KEY FILE" 拒绝；必须先复制到 ext4 侧再 `chmod 600`。临时用法（不落盘）也走这条路：`cp` 到 `/tmp` → 用完 `rm`。
+
+---
+
+## 2026-10-03 · 险情：合并本地历史会把「已忽略但曾被跟踪」的密钥重新带进推送
+
+背景：VE 仓库累积 15 个**未推送**本地提交，其中 `ca41043` 曾提交 **6.76 GiB `benchmark_output/*.mp4`**
+（后被 `c154b3e` 删除并 ignore，当前树已无，但 blob 仍在历史里）⇒ `git push` 报
+`remote: fatal: pack exceeds maximum allowed size (2.00 GiB)`。
+
+处置（按仓主裁定「压成单提交」，但**做法必须修正**）：
+- ❌ **不能** `git reset --soft <基座>` 后直接 `git commit`「净变更」：索引里仍带着前序提交的
+  `config/cc-switch-*.md`（**含真实 API Key**）与 `A`/`Had`/`Little`/`Lamb_Cropped.txt`/`p_testsrc*.mp4`
+  等垃圾 —— **`.gitignore` 只对未跟踪文件生效，对已跟踪文件无效**；此时 `git check-ignore` 也查不出来
+  （对已跟踪路径返回非零、无输出），极易漏判。
+- ✅ 正确做法：`git reset --mixed <基座>`（清空索引，工作区不动）→ **只 `git add` 本次要推的文件** → commit。
+  前序垃圾/密钥随即回到「未跟踪 + 被 ignore」状态，既不进树也不被推。
+- 复核三连：`git diff --cached --name-status` 人工过一遍；`git ls-tree -r HEAD --name-only | grep -E 'cc-switch|p_testsrc|^A$'`
+  查敏感/垃圾；推送后 `git ls-remote origin refs/heads/main` 比对 SHA（本次一致：`df78ad0`）。
+- 远端未含的本地提交被「重置+精选」后，仍是远端基座的**后继** ⇒ 普通 **fast-forward 推送，无需 force**。
+
+**How to apply（推送前必做）**：
+1. `git diff --cached --name-only | grep -E 'cc-switch|\.err$|conversation-|p_testsrc|settings\.local'` 有命中就停下；
+2. 推送 pack 过大（>2GiB）先查 `git rev-list --objects <base>..HEAD` 里的大 blob（本次元凶：`benchmark_output/*.mp4`），
+   别急着 force；
+3. 被丢弃的旧提交仍在 reflog/objects（含 6.76GiB），确认无误后可 `git gc --prune=now` 回收。
