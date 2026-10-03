@@ -404,3 +404,7 @@ VE `Accessory/probe/calibrate_equal_quality.py` 的 `ANCHOR_CRFS` 原仍是 `[18
 门禁（第四版落表后）：`verify_quality_mapping` ⑨组 14/14 全绿；
 `plan_implementation_gate` 84 项/0 失败；`crf_cq_unification_verify --quick`
 PASS=50/FAIL=3（G4/G9/G10 cv2 缺失，环境性）/SKIP=24。
+
+## VE 侧 CPU 待办（2026-10-03，已完成/已忽略）
+
+VE 侧确认 n3 subsample=1 重跑 和 rav1e-native 10s 剩余点复标 已完成或主动忽略（认为不需要），属于 CPU 标定任务，不再待办。GPU 等质量测定全部未开始。
