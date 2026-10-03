@@ -1,0 +1,100 @@
+== dark_10s.mp4 -> /tmp/eqq_uni_10s/dark_10s ==
+   已有 65 点；tiers=['libx265', 'libvpx-vp9', 'libaom-av1', 'libsvtav1', 'librav1e', 'librav1e@10']
+   prep 479 帧 md5=f1acf1175eee
+   [skip] libx264 18
+   [skip] libx264 21
+   [skip] libx264 24
+   [skip] libx264 27
+   [skip] libx264 30
+   [skip] libx265 10
+   [skip] libx265 13
+   [skip] libx265 16
+   [skip] libx265 19
+   [skip] libx265 21
+   [skip] libx265 24
+   [skip] libx265 27
+   [skip] libx265 30
+   [skip] libx265 34
+   [skip] libx265 38
+   -- libx265 完成，累计 65 点，用时 0.0 min
+   [skip] libx264 18
+   [skip] libx264 21
+   [skip] libx264 24
+   [skip] libx264 27
+   [skip] libx264 30
+   [skip] libvpx-vp9 10
+   [skip] libvpx-vp9 13
+   [skip] libvpx-vp9 16
+   [skip] libvpx-vp9 20
+   [skip] libvpx-vp9 23
+   [skip] libvpx-vp9 26
+   [skip] libvpx-vp9 30
+   [skip] libvpx-vp9 34
+   [skip] libvpx-vp9 38
+   [skip] libvpx-vp9 44
+   -- libvpx-vp9 完成，累计 65 点，用时 0.0 min
+   [skip] libx264 18
+   [skip] libx264 21
+   [skip] libx264 24
+   [skip] libx264 27
+   [skip] libx264 30
+   [skip] libaom-av1 10
+   [skip] libaom-av1 13
+   [skip] libaom-av1 16
+   [skip] libaom-av1 20
+   [skip] libaom-av1 23
+   [skip] libaom-av1 26
+   [skip] libaom-av1 30
+   [skip] libaom-av1 34
+   [skip] libaom-av1 38
+   [skip] libaom-av1 44
+   -- libaom-av1 完成，累计 65 点，用时 0.0 min
+   [skip] libx264 18
+   [skip] libx264 21
+   [skip] libx264 24
+   [skip] libx264 27
+   [skip] libx264 30
+   [skip] libsvtav1 10
+   [skip] libsvtav1 13
+   [skip] libsvtav1 16
+   [skip] libsvtav1 20
+   [skip] libsvtav1 23
+   [skip] libsvtav1 26
+   [skip] libsvtav1 30
+   [skip] libsvtav1 34
+   [skip] libsvtav1 38
+   [skip] libsvtav1 44
+   -- libsvtav1 完成，累计 65 点，用时 0.0 min
+   [skip] libx264 18
+   [skip] libx264 21
+   [skip] libx264 24
+   [skip] libx264 27
+   [skip] libx264 30
+   [skip] librav1e 10
+   [skip] librav1e 30
+   [skip] librav1e 50
+   [skip] librav1e 70
+   [skip] librav1e 90
+   [skip] librav1e 110
+   [skip] librav1e 130
+   [skip] librav1e 155
+   [skip] librav1e 180
+   [skip] librav1e 210
+   -- librav1e 完成，累计 65 点，用时 0.0 min
+   [skip] libx264 18
+   [skip] libx264 21
+   [skip] libx264 24
+   [skip] libx264 27
+   [skip] libx264 30
+   [skip] librav1e@10 10
+   [skip] librav1e@10 30
+   [skip] librav1e@10 50
+   [skip] librav1e@10 70
+   [skip] librav1e@10 90
+   [skip] librav1e@10 110
+   [skip] librav1e@10 130
+   [skip] librav1e@10 155
+   [skip] librav1e@10 180
+   [skip] librav1e@10 210
+   -- librav1e@10 完成，累计 65 点，用时 0.0 min
+== dark_10s.mp4 完成：65 点，用时 0.0 min

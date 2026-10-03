@@ -1,0 +1,100 @@
+== S05E01._Forever_Friends.mp4 -> /tmp/eqq_uni_6s/bbc_s05e01 ==
+   已有 0 点；tiers=['libx265', 'libvpx-vp9', 'libaom-av1', 'libsvtav1', 'librav1e', 'librav1e@10']
+   prep 180 帧 md5=8d4807f58291
+   libx264           18 ->   2246.9 KiB  vmaf=96.415  (10.5s)
+   libx264           21 ->   1462.7 KiB  vmaf=95.372  (9.8s)
+   libx264           24 ->    945.3 KiB  vmaf=93.697  (9.6s)
+   libx264           27 ->    611.7 KiB  vmaf=91.063  (7.0s)
+   libx264           30 ->    397.2 KiB  vmaf=87.245  (5.8s)
+   libx265           10 ->   6098.5 KiB  vmaf=97.911  (48.7s)
+   libx265           13 ->   3939.2 KiB  vmaf=97.492  (43.4s)
+   libx265           16 ->   2499.7 KiB  vmaf=96.888  (31.2s)
+   libx265           19 ->   1588.0 KiB  vmaf=96.118  (23.5s)
+   libx265           21 ->   1178.9 KiB  vmaf=95.443  (22.0s)
+   libx265           24 ->    760.4 KiB  vmaf=94.142  (20.2s)
+   libx265           27 ->    488.2 KiB  vmaf=92.100  (14.8s)
+   libx265           30 ->    313.2 KiB  vmaf=88.934  (12.1s)
+   libx265           34 ->    175.3 KiB  vmaf=82.169  (16.3s)
+   libx265           38 ->     99.8 KiB  vmaf=71.803  (13.8s)
+   -- libx265 完成，累计 15 点，用时 18.1 min
+   [skip] libx264 18
+   [skip] libx264 21
+   [skip] libx264 24
+   [skip] libx264 27
+   [skip] libx264 30
+   libvpx-vp9        10 ->   4948.6 KiB  vmaf=97.684  (78.5s)
+   libvpx-vp9        13 ->   3643.6 KiB  vmaf=97.352  (68.9s)
+   libvpx-vp9        16 ->   2806.6 KiB  vmaf=97.010  (65.6s)
+   libvpx-vp9        20 ->   2154.3 KiB  vmaf=96.548  (62.1s)
+   libvpx-vp9        23 ->   1801.8 KiB  vmaf=96.204  (67.5s)
+   libvpx-vp9        26 ->   1401.5 KiB  vmaf=95.589  (56.9s)
+   libvpx-vp9        30 ->   1015.8 KiB  vmaf=94.634  (55.4s)
+   libvpx-vp9        34 ->    715.1 KiB  vmaf=93.221  (45.0s)
+   libvpx-vp9        38 ->    495.8 KiB  vmaf=91.336  (46.9s)
+   libvpx-vp9        44 ->    297.7 KiB  vmaf=87.340  (36.6s)
+   -- libvpx-vp9 完成，累计 25 点，用时 37.2 min
+   [skip] libx264 18
+   [skip] libx264 21
+   [skip] libx264 24
+   [skip] libx264 27
+   [skip] libx264 30
+   libaom-av1        10 ->   2425.2 KiB  vmaf=97.427  (198.5s)
+   libaom-av1        13 ->   1781.7 KiB  vmaf=97.048  (167.2s)
+   libaom-av1        16 ->   1371.5 KiB  vmaf=96.666  (144.0s)
+   libaom-av1        20 ->   1031.2 KiB  vmaf=96.190  (125.0s)
+   libaom-av1        23 ->    885.0 KiB  vmaf=95.884  (121.0s)
+   libaom-av1        26 ->    708.0 KiB  vmaf=95.445  (109.3s)
+   libaom-av1        30 ->    546.5 KiB  vmaf=94.808  (103.7s)
+   libaom-av1        34 ->    416.1 KiB  vmaf=93.899  (79.9s)
+   libaom-av1        38 ->    323.8 KiB  vmaf=92.962  (70.8s)
+   libaom-av1        44 ->    226.3 KiB  vmaf=91.164  (58.4s)
+   -- libaom-av1 完成，累计 35 点，用时 66.1 min
+   [skip] libx264 18
+   [skip] libx264 21
+   [skip] libx264 24
+   [skip] libx264 27
+   [skip] libx264 30
+   libsvtav1         10 ->   3115.3 KiB  vmaf=97.258  (12.1s)
+   libsvtav1         13 ->   2257.8 KiB  vmaf=96.887  (9.9s)
+   libsvtav1         16 ->   1729.1 KiB  vmaf=96.532  (9.9s)
+   libsvtav1         20 ->   1324.6 KiB  vmaf=96.155  (10.0s)
+   libsvtav1         23 ->   1131.1 KiB  vmaf=95.954  (9.8s)
+   libsvtav1         26 ->    922.2 KiB  vmaf=95.577  (9.4s)
+   libsvtav1         30 ->    705.7 KiB  vmaf=95.141  (8.4s)
+   libsvtav1         34 ->    534.6 KiB  vmaf=94.552  (8.5s)
+   libsvtav1         38 ->    422.5 KiB  vmaf=93.917  (8.7s)
+   libsvtav1         44 ->    307.7 KiB  vmaf=92.902  (9.4s)
+   -- libsvtav1 完成，累计 45 点，用时 75.5 min
+   [skip] libx264 18
+   [skip] libx264 21
+   [skip] libx264 24
+   [skip] libx264 27
+   [skip] libx264 30
+   librav1e          10 ->   7416.0 KiB  vmaf=98.110  (653.7s)
+   librav1e          30 ->   2400.4 KiB  vmaf=96.982  (415.1s)
+   librav1e          50 ->   1297.0 KiB  vmaf=95.875  (337.0s)
+   librav1e          70 ->    856.1 KiB  vmaf=94.710  (292.2s)
+   librav1e          90 ->    611.5 KiB  vmaf=93.456  (263.1s)
+   librav1e         110 ->    404.6 KiB  vmaf=91.173  (235.8s)
+   librav1e         130 ->    256.4 KiB  vmaf=87.628  (215.7s)
+   librav1e         155 ->    142.7 KiB  vmaf=80.259  (189.9s)
+   librav1e         180 ->     77.3 KiB  vmaf=69.163  (174.0s)
+   librav1e         210 ->     39.9 KiB  vmaf=51.537  (158.1s)
+   -- librav1e 完成，累计 55 点，用时 131.4 min
+   [skip] libx264 18
+   [skip] libx264 21
+   [skip] libx264 24
+   [skip] libx264 27
+   [skip] libx264 30
+   librav1e@10       10 ->   8976.7 KiB  vmaf=98.097  (174.1s)
+   librav1e@10       30 ->   2952.0 KiB  vmaf=97.019  (108.8s)
+   librav1e@10       50 ->   1606.6 KiB  vmaf=95.888  (94.5s)
+   librav1e@10       70 ->   1057.0 KiB  vmaf=94.703  (90.0s)
+   librav1e@10       90 ->    769.3 KiB  vmaf=93.468  (85.2s)
+   librav1e@10      110 ->    510.4 KiB  vmaf=91.003  (88.8s)
+   librav1e@10      130 ->    318.6 KiB  vmaf=87.053  (80.6s)
+   librav1e@10      155 ->    172.4 KiB  vmaf=79.143  (91.0s)
+   librav1e@10      180 ->     91.2 KiB  vmaf=67.652  (72.9s)
+   librav1e@10      210 ->     47.6 KiB  vmaf=49.797  (57.8s)
+   -- librav1e@10 完成，累计 65 点，用时 153.5 min
+== S05E01._Forever_Friends.mp4 完成：65 点，用时 153.5 min

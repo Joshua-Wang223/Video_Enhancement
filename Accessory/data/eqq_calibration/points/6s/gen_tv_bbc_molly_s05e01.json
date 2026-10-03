@@ -1,0 +1,782 @@
+{
+ "S05E01._Forever_Friends.mp4|libx264|18": {
+  "m": {
+   "vmaf": 96.41535,
+   "psnr_hvs": 48.157802,
+   "vif_scale0": 0.82198,
+   "adm2": 0.993046,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 10.51
+ },
+ "S05E01._Forever_Friends.mp4|libx264|21": {
+  "m": {
+   "vmaf": 95.371654,
+   "psnr_hvs": 45.986351,
+   "vif_scale0": 0.770043,
+   "adm2": 0.990016,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 9.79
+ },
+ "S05E01._Forever_Friends.mp4|libx264|24": {
+  "m": {
+   "vmaf": 93.697082,
+   "psnr_hvs": 43.619113,
+   "vif_scale0": 0.707988,
+   "adm2": 0.985387,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 9.57
+ },
+ "S05E01._Forever_Friends.mp4|libx264|27": {
+  "m": {
+   "vmaf": 91.063348,
+   "psnr_hvs": 41.117424,
+   "vif_scale0": 0.640349,
+   "adm2": 0.978368,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 6.97
+ },
+ "S05E01._Forever_Friends.mp4|libx264|30": {
+  "m": {
+   "vmaf": 87.244596,
+   "psnr_hvs": 38.514343,
+   "vif_scale0": 0.568309,
+   "adm2": 0.969242,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 5.77
+ },
+ "S05E01._Forever_Friends.mp4|libx265|10": {
+  "m": {
+   "vmaf": 97.910562,
+   "psnr_hvs": 51.696147,
+   "vif_scale0": 0.920033,
+   "adm2": 0.998019,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 48.71
+ },
+ "S05E01._Forever_Friends.mp4|libx265|13": {
+  "m": {
+   "vmaf": 97.491686,
+   "psnr_hvs": 49.923563,
+   "vif_scale0": 0.888664,
+   "adm2": 0.996761,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 43.35
+ },
+ "S05E01._Forever_Friends.mp4|libx265|16": {
+  "m": {
+   "vmaf": 96.888291,
+   "psnr_hvs": 48.170678,
+   "vif_scale0": 0.852329,
+   "adm2": 0.994969,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 31.22
+ },
+ "S05E01._Forever_Friends.mp4|libx265|19": {
+  "m": {
+   "vmaf": 96.118106,
+   "psnr_hvs": 46.434238,
+   "vif_scale0": 0.811807,
+   "adm2": 0.992787,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 23.45
+ },
+ "S05E01._Forever_Friends.mp4|libx265|21": {
+  "m": {
+   "vmaf": 95.443108,
+   "psnr_hvs": 45.263298,
+   "vif_scale0": 0.781358,
+   "adm2": 0.990949,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 21.97
+ },
+ "S05E01._Forever_Friends.mp4|libx265|24": {
+  "m": {
+   "vmaf": 94.142358,
+   "psnr_hvs": 43.412537,
+   "vif_scale0": 0.729051,
+   "adm2": 0.987535,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 20.22
+ },
+ "S05E01._Forever_Friends.mp4|libx265|27": {
+  "m": {
+   "vmaf": 92.099552,
+   "psnr_hvs": 41.385054,
+   "vif_scale0": 0.668537,
+   "adm2": 0.982305,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 14.77
+ },
+ "S05E01._Forever_Friends.mp4|libx265|30": {
+  "m": {
+   "vmaf": 88.93382,
+   "psnr_hvs": 39.133349,
+   "vif_scale0": 0.602359,
+   "adm2": 0.974996,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 12.12
+ },
+ "S05E01._Forever_Friends.mp4|libx265|34": {
+  "m": {
+   "vmaf": 82.169357,
+   "psnr_hvs": 35.933239,
+   "vif_scale0": 0.5096,
+   "adm2": 0.959665,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 16.32
+ },
+ "S05E01._Forever_Friends.mp4|libx265|38": {
+  "m": {
+   "vmaf": 71.802898,
+   "psnr_hvs": 32.747824,
+   "vif_scale0": 0.423054,
+   "adm2": 0.935633,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 13.83
+ },
+ "S05E01._Forever_Friends.mp4|libvpx-vp9|10": {
+  "m": {
+   "vmaf": 97.684343,
+   "psnr_hvs": 49.442011,
+   "vif_scale0": 0.88292,
+   "adm2": 0.997243,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 78.45
+ },
+ "S05E01._Forever_Friends.mp4|libvpx-vp9|13": {
+  "m": {
+   "vmaf": 97.352352,
+   "psnr_hvs": 48.249438,
+   "vif_scale0": 0.857659,
+   "adm2": 0.996289,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 68.91
+ },
+ "S05E01._Forever_Friends.mp4|libvpx-vp9|16": {
+  "m": {
+   "vmaf": 97.009809,
+   "psnr_hvs": 47.2184,
+   "vif_scale0": 0.834872,
+   "adm2": 0.995353,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 65.55
+ },
+ "S05E01._Forever_Friends.mp4|libvpx-vp9|20": {
+  "m": {
+   "vmaf": 96.547657,
+   "psnr_hvs": 46.23876,
+   "vif_scale0": 0.810251,
+   "adm2": 0.994092,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 62.09
+ },
+ "S05E01._Forever_Friends.mp4|libvpx-vp9|23": {
+  "m": {
+   "vmaf": 96.203547,
+   "psnr_hvs": 45.577747,
+   "vif_scale0": 0.792618,
+   "adm2": 0.99317,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 67.48
+ },
+ "S05E01._Forever_Friends.mp4|libvpx-vp9|26": {
+  "m": {
+   "vmaf": 95.589084,
+   "psnr_hvs": 44.60967,
+   "vif_scale0": 0.76667,
+   "adm2": 0.991585,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 56.9
+ },
+ "S05E01._Forever_Friends.mp4|libvpx-vp9|30": {
+  "m": {
+   "vmaf": 94.633729,
+   "psnr_hvs": 43.335603,
+   "vif_scale0": 0.731346,
+   "adm2": 0.989205,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 55.35
+ },
+ "S05E01._Forever_Friends.mp4|libvpx-vp9|34": {
+  "m": {
+   "vmaf": 93.220645,
+   "psnr_hvs": 41.890238,
+   "vif_scale0": 0.689164,
+   "adm2": 0.985789,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 44.97
+ },
+ "S05E01._Forever_Friends.mp4|libvpx-vp9|38": {
+  "m": {
+   "vmaf": 91.336025,
+   "psnr_hvs": 40.302597,
+   "vif_scale0": 0.642426,
+   "adm2": 0.981524,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 46.86
+ },
+ "S05E01._Forever_Friends.mp4|libvpx-vp9|44": {
+  "m": {
+   "vmaf": 87.33982,
+   "psnr_hvs": 37.97994,
+   "vif_scale0": 0.573388,
+   "adm2": 0.972716,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 36.57
+ },
+ "S05E01._Forever_Friends.mp4|libaom-av1|10": {
+  "m": {
+   "vmaf": 97.427051,
+   "psnr_hvs": 49.071758,
+   "vif_scale0": 0.865854,
+   "adm2": 0.99678,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 198.48
+ },
+ "S05E01._Forever_Friends.mp4|libaom-av1|13": {
+  "m": {
+   "vmaf": 97.048477,
+   "psnr_hvs": 48.044808,
+   "vif_scale0": 0.843189,
+   "adm2": 0.995704,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 167.21
+ },
+ "S05E01._Forever_Friends.mp4|libaom-av1|16": {
+  "m": {
+   "vmaf": 96.665697,
+   "psnr_hvs": 47.109987,
+   "vif_scale0": 0.822726,
+   "adm2": 0.994671,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 143.99
+ },
+ "S05E01._Forever_Friends.mp4|libaom-av1|20": {
+  "m": {
+   "vmaf": 96.189921,
+   "psnr_hvs": 46.167972,
+   "vif_scale0": 0.800967,
+   "adm2": 0.993448,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 125.04
+ },
+ "S05E01._Forever_Friends.mp4|libaom-av1|23": {
+  "m": {
+   "vmaf": 95.88424,
+   "psnr_hvs": 45.651505,
+   "vif_scale0": 0.788927,
+   "adm2": 0.992639,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 120.96
+ },
+ "S05E01._Forever_Friends.mp4|libaom-av1|26": {
+  "m": {
+   "vmaf": 95.445317,
+   "psnr_hvs": 44.878864,
+   "vif_scale0": 0.769935,
+   "adm2": 0.991649,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 109.28
+ },
+ "S05E01._Forever_Friends.mp4|libaom-av1|30": {
+  "m": {
+   "vmaf": 94.808048,
+   "psnr_hvs": 43.939651,
+   "vif_scale0": 0.745484,
+   "adm2": 0.990015,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 103.68
+ },
+ "S05E01._Forever_Friends.mp4|libaom-av1|34": {
+  "m": {
+   "vmaf": 93.899404,
+   "psnr_hvs": 42.895923,
+   "vif_scale0": 0.717456,
+   "adm2": 0.987802,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 79.87
+ },
+ "S05E01._Forever_Friends.mp4|libaom-av1|38": {
+  "m": {
+   "vmaf": 92.961607,
+   "psnr_hvs": 41.906293,
+   "vif_scale0": 0.689421,
+   "adm2": 0.985509,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 70.81
+ },
+ "S05E01._Forever_Friends.mp4|libaom-av1|44": {
+  "m": {
+   "vmaf": 91.16352,
+   "psnr_hvs": 40.379321,
+   "vif_scale0": 0.645132,
+   "adm2": 0.981223,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 58.37
+ },
+ "S05E01._Forever_Friends.mp4|libsvtav1|10": {
+  "m": {
+   "vmaf": 97.257999,
+   "psnr_hvs": 48.401984,
+   "vif_scale0": 0.854668,
+   "adm2": 0.995865,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 12.14
+ },
+ "S05E01._Forever_Friends.mp4|libsvtav1|13": {
+  "m": {
+   "vmaf": 96.887321,
+   "psnr_hvs": 47.556249,
+   "vif_scale0": 0.832842,
+   "adm2": 0.994829,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 9.95
+ },
+ "S05E01._Forever_Friends.mp4|libsvtav1|16": {
+  "m": {
+   "vmaf": 96.531984,
+   "psnr_hvs": 46.853648,
+   "vif_scale0": 0.815093,
+   "adm2": 0.993918,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 9.88
+ },
+ "S05E01._Forever_Friends.mp4|libsvtav1|20": {
+  "m": {
+   "vmaf": 96.154873,
+   "psnr_hvs": 46.12734,
+   "vif_scale0": 0.796873,
+   "adm2": 0.993089,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 9.99
+ },
+ "S05E01._Forever_Friends.mp4|libsvtav1|23": {
+  "m": {
+   "vmaf": 95.953541,
+   "psnr_hvs": 45.68262,
+   "vif_scale0": 0.785764,
+   "adm2": 0.992749,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 9.77
+ },
+ "S05E01._Forever_Friends.mp4|libsvtav1|26": {
+  "m": {
+   "vmaf": 95.57668,
+   "psnr_hvs": 45.034927,
+   "vif_scale0": 0.769047,
+   "adm2": 0.991883,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 9.4
+ },
+ "S05E01._Forever_Friends.mp4|libsvtav1|30": {
+  "m": {
+   "vmaf": 95.140662,
+   "psnr_hvs": 44.166088,
+   "vif_scale0": 0.747678,
+   "adm2": 0.991101,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 8.42
+ },
+ "S05E01._Forever_Friends.mp4|libsvtav1|34": {
+  "m": {
+   "vmaf": 94.551864,
+   "psnr_hvs": 43.236473,
+   "vif_scale0": 0.723901,
+   "adm2": 0.990008,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 8.45
+ },
+ "S05E01._Forever_Friends.mp4|libsvtav1|38": {
+  "m": {
+   "vmaf": 93.917408,
+   "psnr_hvs": 42.366747,
+   "vif_scale0": 0.701565,
+   "adm2": 0.988837,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 8.67
+ },
+ "S05E01._Forever_Friends.mp4|libsvtav1|44": {
+  "m": {
+   "vmaf": 92.902213,
+   "psnr_hvs": 41.20006,
+   "vif_scale0": 0.671448,
+   "adm2": 0.986948,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 9.42
+ },
+ "S05E01._Forever_Friends.mp4|librav1e|10": {
+  "m": {
+   "vmaf": 98.109765,
+   "psnr_hvs": 52.397314,
+   "vif_scale0": 0.935958,
+   "adm2": 0.998526,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 653.67
+ },
+ "S05E01._Forever_Friends.mp4|librav1e|30": {
+  "m": {
+   "vmaf": 96.981714,
+   "psnr_hvs": 48.41641,
+   "vif_scale0": 0.853779,
+   "adm2": 0.994948,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 415.1
+ },
+ "S05E01._Forever_Friends.mp4|librav1e|50": {
+  "m": {
+   "vmaf": 95.875428,
+   "psnr_hvs": 46.183404,
+   "vif_scale0": 0.794844,
+   "adm2": 0.991716,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 337.02
+ },
+ "S05E01._Forever_Friends.mp4|librav1e|70": {
+  "m": {
+   "vmaf": 94.709919,
+   "psnr_hvs": 44.579332,
+   "vif_scale0": 0.747146,
+   "adm2": 0.988484,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 292.22
+ },
+ "S05E01._Forever_Friends.mp4|librav1e|90": {
+  "m": {
+   "vmaf": 93.455984,
+   "psnr_hvs": 43.103541,
+   "vif_scale0": 0.702737,
+   "adm2": 0.985141,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 263.08
+ },
+ "S05E01._Forever_Friends.mp4|librav1e|110": {
+  "m": {
+   "vmaf": 91.172557,
+   "psnr_hvs": 41.105661,
+   "vif_scale0": 0.645563,
+   "adm2": 0.979368,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 235.79
+ },
+ "S05E01._Forever_Friends.mp4|librav1e|130": {
+  "m": {
+   "vmaf": 87.628436,
+   "psnr_hvs": 38.711405,
+   "vif_scale0": 0.579854,
+   "adm2": 0.971223,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 215.66
+ },
+ "S05E01._Forever_Friends.mp4|librav1e|155": {
+  "m": {
+   "vmaf": 80.259032,
+   "psnr_hvs": 35.564643,
+   "vif_scale0": 0.495254,
+   "adm2": 0.953274,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 189.95
+ },
+ "S05E01._Forever_Friends.mp4|librav1e|180": {
+  "m": {
+   "vmaf": 69.162727,
+   "psnr_hvs": 32.33828,
+   "vif_scale0": 0.412564,
+   "adm2": 0.927251,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 174.0
+ },
+ "S05E01._Forever_Friends.mp4|librav1e|210": {
+  "m": {
+   "vmaf": 51.536875,
+   "psnr_hvs": 28.756578,
+   "vif_scale0": 0.32655,
+   "adm2": 0.87734,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 158.08
+ },
+ "S05E01._Forever_Friends.mp4|librav1e@10|10": {
+  "m": {
+   "vmaf": 98.097103,
+   "psnr_hvs": 51.205317,
+   "vif_scale0": 0.930702,
+   "adm2": 0.998516,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 174.11
+ },
+ "S05E01._Forever_Friends.mp4|librav1e@10|30": {
+  "m": {
+   "vmaf": 97.018808,
+   "psnr_hvs": 47.961399,
+   "vif_scale0": 0.849651,
+   "adm2": 0.995149,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 108.81
+ },
+ "S05E01._Forever_Friends.mp4|librav1e@10|50": {
+  "m": {
+   "vmaf": 95.887768,
+   "psnr_hvs": 45.896236,
+   "vif_scale0": 0.788273,
+   "adm2": 0.991792,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 94.48
+ },
+ "S05E01._Forever_Friends.mp4|librav1e@10|70": {
+  "m": {
+   "vmaf": 94.702946,
+   "psnr_hvs": 44.312992,
+   "vif_scale0": 0.742441,
+   "adm2": 0.98846,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 90.04
+ },
+ "S05E01._Forever_Friends.mp4|librav1e@10|90": {
+  "m": {
+   "vmaf": 93.467753,
+   "psnr_hvs": 42.86446,
+   "vif_scale0": 0.697716,
+   "adm2": 0.985121,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 85.25
+ },
+ "S05E01._Forever_Friends.mp4|librav1e@10|110": {
+  "m": {
+   "vmaf": 91.002557,
+   "psnr_hvs": 40.789254,
+   "vif_scale0": 0.633104,
+   "adm2": 0.978664,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 88.76
+ },
+ "S05E01._Forever_Friends.mp4|librav1e@10|130": {
+  "m": {
+   "vmaf": 87.052961,
+   "psnr_hvs": 38.275782,
+   "vif_scale0": 0.558908,
+   "adm2": 0.968796,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 80.64
+ },
+ "S05E01._Forever_Friends.mp4|librav1e@10|155": {
+  "m": {
+   "vmaf": 79.143298,
+   "psnr_hvs": 35.029029,
+   "vif_scale0": 0.471957,
+   "adm2": 0.949629,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 90.97
+ },
+ "S05E01._Forever_Friends.mp4|librav1e@10|180": {
+  "m": {
+   "vmaf": 67.651736,
+   "psnr_hvs": 31.717554,
+   "vif_scale0": 0.389681,
+   "adm2": 0.922046,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 72.86
+ },
+ "S05E01._Forever_Friends.mp4|librav1e@10|210": {
+  "m": {
+   "vmaf": 49.796945,
+   "psnr_hvs": 28.233729,
+   "vif_scale0": 0.311714,
+   "adm2": 0.87172,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 57.76
+ }
+}

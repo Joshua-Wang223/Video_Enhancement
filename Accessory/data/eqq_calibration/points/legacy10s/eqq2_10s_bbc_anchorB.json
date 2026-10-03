@@ -1,0 +1,110 @@
+{
+ "S01E01._The_New_Stall.mp4|libx264|21": {
+  "m": {
+   "vmaf": 95.915828,
+   "psnr_hvs": 44.968599,
+   "vif_scale0": 0.750902,
+   "adm2": 0.991236,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 5.49
+ },
+ "S01E01._The_New_Stall.mp4|libx264|24": {
+  "m": {
+   "vmaf": 94.085899,
+   "psnr_hvs": 42.402707,
+   "vif_scale0": 0.687926,
+   "adm2": 0.987087,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 5.2
+ },
+ "S01E01._The_New_Stall.mp4|libx264|27": {
+  "m": {
+   "vmaf": 91.395494,
+   "psnr_hvs": 39.774086,
+   "vif_scale0": 0.619631,
+   "adm2": 0.981633,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 4.85
+ },
+ "S03E01._James_and_Alice.mp4|libx264|21": {
+  "m": {
+   "vmaf": 95.616216,
+   "psnr_hvs": 44.826065,
+   "vif_scale0": 0.743251,
+   "adm2": 0.990247,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 5.39
+ },
+ "S03E01._James_and_Alice.mp4|libx264|24": {
+  "m": {
+   "vmaf": 93.858764,
+   "psnr_hvs": 42.366081,
+   "vif_scale0": 0.680941,
+   "adm2": 0.98624,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 6.99
+ },
+ "S03E01._James_and_Alice.mp4|libx264|27": {
+  "m": {
+   "vmaf": 91.133612,
+   "psnr_hvs": 39.851699,
+   "vif_scale0": 0.61373,
+   "adm2": 0.980289,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 4.99
+ },
+ "S05E01._Forever_Friends.mp4|libx264|21": {
+  "m": {
+   "vmaf": 95.908028,
+   "psnr_hvs": 45.175874,
+   "vif_scale0": 0.754528,
+   "adm2": 0.991281,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 5.49
+ },
+ "S05E01._Forever_Friends.mp4|libx264|24": {
+  "m": {
+   "vmaf": 94.17593,
+   "psnr_hvs": 42.688611,
+   "vif_scale0": 0.691042,
+   "adm2": 0.987212,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 5.02
+ },
+ "S05E01._Forever_Friends.mp4|libx264|27": {
+  "m": {
+   "vmaf": 91.451253,
+   "psnr_hvs": 40.133811,
+   "vif_scale0": 0.621761,
+   "adm2": 0.981146,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 4.52
+ }
+}

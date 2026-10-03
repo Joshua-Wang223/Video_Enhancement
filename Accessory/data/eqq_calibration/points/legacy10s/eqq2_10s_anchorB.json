@@ -1,0 +1,146 @@
+{
+ "new5_raw.mp4|libx264|21": {
+  "m": {
+   "vmaf": 98.563841,
+   "psnr_hvs": 43.138713,
+   "vif_scale0": 0.698422,
+   "adm2": 0.982339,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 7.48
+ },
+ "new5_raw.mp4|libx264|24": {
+  "m": {
+   "vmaf": 96.422044,
+   "psnr_hvs": 40.752645,
+   "vif_scale0": 0.634878,
+   "adm2": 0.975699,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 7.36
+ },
+ "new5_raw.mp4|libx264|27": {
+  "m": {
+   "vmaf": 92.62892,
+   "psnr_hvs": 38.275787,
+   "vif_scale0": 0.565666,
+   "adm2": 0.966468,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 6.3
+ },
+ "new4_raw.mp4|libx264|21": {
+  "m": {
+   "vmaf": 99.581528,
+   "psnr_hvs": 43.561849,
+   "vif_scale0": 0.736238,
+   "adm2": 0.983446,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 7.23
+ },
+ "new4_raw.mp4|libx264|24": {
+  "m": {
+   "vmaf": 98.795546,
+   "psnr_hvs": 40.928841,
+   "vif_scale0": 0.67765,
+   "adm2": 0.976989,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 6.64
+ },
+ "new4_raw.mp4|libx264|27": {
+  "m": {
+   "vmaf": 96.804814,
+   "psnr_hvs": 38.194841,
+   "vif_scale0": 0.613677,
+   "adm2": 0.96794,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 6.12
+ },
+ "new1.mp4|libx264|21": {
+  "m": {
+   "vmaf": 98.101251,
+   "psnr_hvs": 45.694653,
+   "vif_scale0": 0.776062,
+   "adm2": 0.987747,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 5.19
+ },
+ "new1.mp4|libx264|24": {
+  "m": {
+   "vmaf": 96.322131,
+   "psnr_hvs": 43.258261,
+   "vif_scale0": 0.719663,
+   "adm2": 0.981605,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 4.73
+ },
+ "new1.mp4|libx264|27": {
+  "m": {
+   "vmaf": 93.008813,
+   "psnr_hvs": 40.575082,
+   "vif_scale0": 0.651967,
+   "adm2": 0.972826,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 4.44
+ },
+ "word_world_2.mp4|libx264|21": {
+  "m": {
+   "vmaf": 95.265141,
+   "psnr_hvs": 45.799415,
+   "vif_scale0": 0.821404,
+   "adm2": 0.986934,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 4.42
+ },
+ "word_world_2.mp4|libx264|24": {
+  "m": {
+   "vmaf": 93.183027,
+   "psnr_hvs": 43.626447,
+   "vif_scale0": 0.776419,
+   "adm2": 0.980711,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 4.13
+ },
+ "word_world_2.mp4|libx264|27": {
+  "m": {
+   "vmaf": 90.215488,
+   "psnr_hvs": 41.401578,
+   "vif_scale0": 0.722852,
+   "adm2": 0.972564,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 3.44
+ }
+}

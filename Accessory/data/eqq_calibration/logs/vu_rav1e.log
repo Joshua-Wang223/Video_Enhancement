@@ -1,0 +1,294 @@
+########## [2026-10-01 21:01] VU rav1e 标定启动（7 素材 × native + speed10）##########
+---档位 librav1e --rav1e-speed native（tag=m2_7src_6s_rav1e）---
+ffmpeg: ffmpeg version 8.0.1-+vmaf Copyright (c) 2000-2025 the FFmpeg developers
+根: /mnt/d/Workspace_Python/VidUtils
+工作目录: /mnt/d/Workspace_Python/VidUtils/temp/eqq_calib/m2_7src_6s_rav1e
+档位: ['librav1e']
+
+══ 素材 new5_raw.mp4 ══
+  prep: prep.mp4  14637.6 KiB  md5=0209b9e62a8b740031b4a890dc88cbb5  frames=180  fps=30.00  hdr=False
+    libx264        -crf  18 →   4240.7 KiB  vmaf=99.795 hvs=45.169 psnr=— ssim=— xpsnr=—  (  5.8s)
+    libx264        -crf  21 →   2800.9 KiB  vmaf=99.135 hvs=42.807 psnr=— ssim=— xpsnr=—  (  6.2s)
+    libx264        -crf  24 →   1899.1 KiB  vmaf=96.979 hvs=40.327 psnr=— ssim=— xpsnr=—  (  4.6s)
+    libx264        -crf  27 →   1317.9 KiB  vmaf=92.880 hvs=37.778 psnr=— ssim=— xpsnr=—  (  4.5s)
+    libx264        -crf  30 →    930.8 KiB  vmaf=86.721 hvs=35.216 psnr=— ssim=— xpsnr=—  (  3.9s)
+    librav1e       -qp  10 →  18131.6 KiB  vmaf=99.984 hvs=51.911 psnr=— ssim=— xpsnr=—  (842.4s)
+    librav1e       -qp  30 →   6259.4 KiB  vmaf=99.972 hvs=47.583 psnr=— ssim=— xpsnr=—  (553.9s)
+    librav1e       -qp  50 →   3476.4 KiB  vmaf=99.844 hvs=45.128 psnr=— ssim=— xpsnr=—  (453.8s)
+    librav1e       -qp  70 →   2342.2 KiB  vmaf=99.425 hvs=43.287 psnr=— ssim=— xpsnr=—  (429.1s)
+    librav1e       -qp  90 →   1719.0 KiB  vmaf=98.423 hvs=41.648 psnr=— ssim=— xpsnr=—  (395.6s)
+    librav1e       -qp 110 →   1195.0 KiB  vmaf=95.928 hvs=39.534 psnr=— ssim=— xpsnr=—  (348.4s)
+    librav1e       -qp 130 →    791.3 KiB  vmaf=91.290 hvs=37.070 psnr=— ssim=— xpsnr=—  (304.7s)
+    librav1e       -qp 155 →    465.9 KiB  vmaf=82.197 hvs=33.933 psnr=— ssim=— xpsnr=—  (259.4s)
+    librav1e       -qp 180 →    265.0 KiB  vmaf=68.489 hvs=30.789 psnr=— ssim=— xpsnr=—  (224.4s)
+    librav1e       -qp 210 →    136.4 KiB  vmaf=47.250 hvs=27.315 psnr=— ssim=— xpsnr=—  (189.6s)
+  [librav1e] a=7.592519557276783 b=-83.13736866100587 resid=2.4917420385357048 dVMAF=0.7549623233735758 model=linear mono=0.0
+
+══ 素材 new4_raw.mp4 ══
+  prep: prep.mp4  12198.4 KiB  md5=2c4c656d95902f885fc4af280183f0c4  frames=180  fps=30.00  hdr=True
+    libx264        -crf  18 →   4184.5 KiB  vmaf=99.762 hvs=45.591 psnr=— ssim=— xpsnr=—  (  5.6s)
+    libx264        -crf  21 →   2861.1 KiB  vmaf=99.304 hvs=43.162 psnr=— ssim=— xpsnr=—  (  5.5s)
+    libx264        -crf  24 →   1984.3 KiB  vmaf=98.107 hvs=40.530 psnr=— ssim=— xpsnr=—  (  5.2s)
+    libx264        -crf  27 →   1395.7 KiB  vmaf=95.434 hvs=37.798 psnr=— ssim=— xpsnr=—  (  4.5s)
+    libx264        -crf  30 →    997.4 KiB  vmaf=90.098 hvs=35.058 psnr=— ssim=— xpsnr=—  (  4.2s)
+    librav1e       -qp  10 →  15407.8 KiB  vmaf=99.984 hvs=52.089 psnr=— ssim=— xpsnr=—  (862.0s)
+    librav1e       -qp  30 →   5775.2 KiB  vmaf=99.952 hvs=48.062 psnr=— ssim=— xpsnr=—  (606.8s)
+    librav1e       -qp  50 →   3411.6 KiB  vmaf=99.787 hvs=45.508 psnr=— ssim=— xpsnr=—  (490.4s)
+    librav1e       -qp  70 →   2382.1 KiB  vmaf=99.418 hvs=43.461 psnr=— ssim=— xpsnr=—  (435.8s)
+    librav1e       -qp  90 →   1790.9 KiB  vmaf=98.699 hvs=41.644 psnr=— ssim=— xpsnr=—  (384.5s)
+    librav1e       -qp 110 →   1279.5 KiB  vmaf=97.079 hvs=39.306 psnr=— ssim=— xpsnr=—  (339.0s)
+    librav1e       -qp 130 →    878.1 KiB  vmaf=93.105 hvs=36.607 psnr=— ssim=— xpsnr=—  (300.6s)
+    librav1e       -qp 155 →    535.9 KiB  vmaf=84.039 hvs=33.157 psnr=— ssim=— xpsnr=—  (262.1s)
+    librav1e       -qp 180 →    316.9 KiB  vmaf=70.672 hvs=29.741 psnr=— ssim=— xpsnr=—  (231.5s)
+    librav1e       -qp 210 →    164.4 KiB  vmaf=50.048 hvs=25.884 psnr=— ssim=— xpsnr=—  (195.7s)
+  [librav1e] a=7.299145774145125 b=-79.49909128052687 resid=1.6307406273498515 dVMAF=0.42918012702298824 model=linear mono=0.0
+
+══ 素材 cc_anim_300s.mkv ══
+  prep: prep.mp4  5996.2 KiB  md5=f66f20eaf6bebd9e087681ef9882655a  frames=144  fps=24.00  hdr=False
+    libx264        -crf  18 →   2307.9 KiB  vmaf=99.400 hvs=48.453 psnr=— ssim=— xpsnr=—  (  4.0s)
+    libx264        -crf  21 →   1674.2 KiB  vmaf=99.044 hvs=46.602 psnr=— ssim=— xpsnr=—  (  3.9s)
+    libx264        -crf  24 →   1239.4 KiB  vmaf=98.275 hvs=44.637 psnr=— ssim=— xpsnr=—  (  3.5s)
+    libx264        -crf  27 →    947.6 KiB  vmaf=96.675 hvs=42.584 psnr=— ssim=— xpsnr=—  (  3.7s)
+    libx264        -crf  30 →    739.5 KiB  vmaf=93.020 hvs=40.359 psnr=— ssim=— xpsnr=—  (  3.3s)
+    librav1e       -qp  10 →   5332.1 KiB  vmaf=99.665 hvs=52.736 psnr=— ssim=— xpsnr=—  (437.8s)
+    librav1e       -qp  30 →   2159.1 KiB  vmaf=99.525 hvs=49.135 psnr=— ssim=— xpsnr=—  (306.3s)
+    librav1e       -qp  50 →   1370.1 KiB  vmaf=99.327 hvs=47.456 psnr=— ssim=— xpsnr=—  (262.6s)
+    librav1e       -qp  70 →   1021.8 KiB  vmaf=99.004 hvs=46.208 psnr=— ssim=— xpsnr=—  (242.8s)
+    librav1e       -qp  90 →    820.8 KiB  vmaf=98.562 hvs=45.113 psnr=— ssim=— xpsnr=—  (229.9s)
+    librav1e       -qp 110 →    631.5 KiB  vmaf=97.584 hvs=43.622 psnr=— ssim=— xpsnr=—  (225.1s)
+    librav1e       -qp 130 →    477.8 KiB  vmaf=95.618 hvs=41.825 psnr=— ssim=— xpsnr=—  (203.8s)
+    librav1e       -qp 155 →    333.0 KiB  vmaf=90.189 hvs=39.204 psnr=— ssim=— xpsnr=—  (187.8s)
+    librav1e       -qp 180 →    227.6 KiB  vmaf=81.259 hvs=36.369 psnr=— ssim=— xpsnr=—  (172.1s)
+    librav1e       -qp 210 →    141.5 KiB  vmaf=64.866 hvs=32.785 psnr=— ssim=— xpsnr=—  (150.9s)
+  [librav1e] a=8.348180645918136 b=-106.91447434313241 resid=2.4388200784467102 dVMAF=0.3406611628253984 model=linear mono=0.0
+
+══ 素材 cc_subs_105s.mp4 ══
+  prep: prep.mp4  6887.1 KiB  md5=35320453f11b17bc52e2994a53f732bf  frames=144  fps=24.00  hdr=False
+    libx264        -crf  18 →   2536.6 KiB  vmaf=98.607 hvs=47.773 psnr=— ssim=— xpsnr=—  (  3.7s)
+    libx264        -crf  21 →   1737.3 KiB  vmaf=98.000 hvs=45.754 psnr=— ssim=— xpsnr=—  (  3.5s)
+    libx264        -crf  24 →   1203.2 KiB  vmaf=96.854 hvs=43.670 psnr=— ssim=— xpsnr=—  (  3.1s)
+    libx264        -crf  27 →    831.4 KiB  vmaf=94.695 hvs=41.457 psnr=— ssim=— xpsnr=—  (  3.3s)
+    libx264        -crf  30 →    580.0 KiB  vmaf=91.382 hvs=39.212 psnr=— ssim=— xpsnr=—  (  2.5s)
+    librav1e       -qp  10 →   6556.6 KiB  vmaf=99.261 hvs=52.094 psnr=— ssim=— xpsnr=—  (434.6s)
+    librav1e       -qp  30 →   2582.4 KiB  vmaf=98.715 hvs=48.224 psnr=— ssim=— xpsnr=—  (298.2s)
+    librav1e       -qp  50 →   1555.5 KiB  vmaf=98.127 hvs=46.112 psnr=— ssim=— xpsnr=—  (251.0s)
+    librav1e       -qp  70 →   1115.7 KiB  vmaf=97.437 hvs=44.544 psnr=— ssim=— xpsnr=—  (227.1s)
+    librav1e       -qp  90 →    864.8 KiB  vmaf=96.603 hvs=43.229 psnr=— ssim=— xpsnr=—  (207.6s)
+    librav1e       -qp 110 →    633.3 KiB  vmaf=95.006 hvs=41.543 psnr=— ssim=— xpsnr=—  (187.9s)
+    librav1e       -qp 130 →    438.8 KiB  vmaf=92.245 hvs=39.570 psnr=— ssim=— xpsnr=—  (173.3s)
+    librav1e       -qp 155 →    280.0 KiB  vmaf=86.686 hvs=36.992 psnr=— ssim=— xpsnr=—  (156.3s)
+    librav1e       -qp 180 →    173.4 KiB  vmaf=78.288 hvs=34.136 psnr=— ssim=— xpsnr=—  (141.0s)
+    librav1e       -qp 210 →     96.8 KiB  vmaf=63.386 hvs=30.564 psnr=— ssim=— xpsnr=—  (125.5s)
+  [librav1e] a=8.633552262766607 b=-123.71415949776386 resid=3.912658762936907 dVMAF=0.3595838566249512 model=linear mono=0.0
+
+══ 素材 earth_dark_80s.mp4 ══
+  prep: prep.mp4  9042.2 KiB  md5=eabb1d7cdc6e1c3d01d53a2fdda955a1  frames=284  fps=47.95  hdr=False
+    libx264        -crf  18 →   3626.6 KiB  vmaf=95.408 hvs=47.309 psnr=— ssim=— xpsnr=—  (  5.2s)
+    libx264        -crf  21 →   2545.0 KiB  vmaf=93.501 hvs=45.049 psnr=— ssim=— xpsnr=—  (  4.9s)
+    libx264        -crf  24 →   1786.3 KiB  vmaf=90.541 hvs=42.783 psnr=— ssim=— xpsnr=—  (  4.5s)
+    libx264        -crf  27 →   1248.6 KiB  vmaf=86.224 hvs=40.454 psnr=— ssim=— xpsnr=—  (  4.1s)
+    libx264        -crf  30 →    865.8 KiB  vmaf=80.216 hvs=38.095 psnr=— ssim=— xpsnr=—  (  3.8s)
+    librav1e       -qp  10 →  11838.5 KiB  vmaf=98.085 hvs=52.912 psnr=— ssim=— xpsnr=—  (680.0s)
+    librav1e       -qp  30 →   5548.9 KiB  vmaf=97.074 hvs=49.062 psnr=— ssim=— xpsnr=—  (478.8s)
+    librav1e       -qp  50 →   3577.9 KiB  vmaf=95.833 hvs=47.014 psnr=— ssim=— xpsnr=—  (375.3s)
+    librav1e       -qp  70 →   2651.6 KiB  vmaf=94.514 hvs=45.518 psnr=— ssim=— xpsnr=—  (339.4s)
+    librav1e       -qp  90 →   2122.4 KiB  vmaf=93.194 hvs=44.283 psnr=— ssim=— xpsnr=—  (316.7s)
+    librav1e       -qp 110 →   1552.1 KiB  vmaf=90.855 hvs=42.563 psnr=— ssim=— xpsnr=—  (287.5s)
+    librav1e       -qp 130 →   1101.9 KiB  vmaf=87.314 hvs=40.587 psnr=— ssim=— xpsnr=—  (269.4s)
+    librav1e       -qp 155 →    680.5 KiB  vmaf=80.116 hvs=37.749 psnr=— ssim=— xpsnr=—  (237.5s)
+    librav1e       -qp 180 →    391.3 KiB  vmaf=68.664 hvs=34.765 psnr=— ssim=— xpsnr=—  (218.7s)
+    librav1e       -qp 210 →    185.6 KiB  vmaf=50.628 hvs=31.131 psnr=— ssim=— xpsnr=—  (195.2s)
+  [librav1e] a=8.161229079686418 b=-87.46533540425665 resid=3.373886119362936 dVMAF=1.1859482792775111 model=linear mono=0.0
+
+══ 素材 ui_screen_10s.mp4 ══
+  prep: prep.mp4  569.3 KiB  md5=7fbe5b67f1be4194a017625917152345  frames=180  fps=30.00  hdr=False
+    libx264        -crf  18 →    355.5 KiB  vmaf=99.164 hvs=58.320 psnr=— ssim=— xpsnr=—  (  1.4s)
+    libx264        -crf  21 →    294.6 KiB  vmaf=98.514 hvs=56.067 psnr=— ssim=— xpsnr=—  (  1.3s)
+    libx264        -crf  24 →    245.1 KiB  vmaf=97.754 hvs=53.336 psnr=— ssim=— xpsnr=—  (  1.3s)
+    libx264        -crf  27 →    202.5 KiB  vmaf=96.165 hvs=50.172 psnr=— ssim=— xpsnr=—  (  1.3s)
+    libx264        -crf  30 →    166.0 KiB  vmaf=93.483 hvs=46.393 psnr=— ssim=— xpsnr=—  (  1.3s)
+    librav1e       -qp  10 →    765.3 KiB  vmaf=99.647 hvs=62.346 psnr=— ssim=— xpsnr=—  (129.5s)
+    librav1e       -qp  30 →    509.6 KiB  vmaf=99.144 hvs=59.784 psnr=— ssim=— xpsnr=—  (119.2s)
+    librav1e       -qp  50 →    398.6 KiB  vmaf=98.936 hvs=57.727 psnr=— ssim=— xpsnr=—  (115.8s)
+    librav1e       -qp  70 →    330.5 KiB  vmaf=98.563 hvs=56.172 psnr=— ssim=— xpsnr=—  (112.6s)
+    librav1e       -qp  90 →    274.1 KiB  vmaf=97.725 hvs=54.270 psnr=— ssim=— xpsnr=—  (110.5s)
+    librav1e       -qp 110 →    232.5 KiB  vmaf=95.838 hvs=51.603 psnr=— ssim=— xpsnr=—  (108.7s)
+    librav1e       -qp 130 →    186.1 KiB  vmaf=93.402 hvs=48.513 psnr=— ssim=— xpsnr=—  (107.6s)
+    librav1e       -qp 155 →    134.2 KiB  vmaf=87.775 hvs=43.389 psnr=— ssim=— xpsnr=—  (104.3s)
+    librav1e       -qp 180 →     96.2 KiB  vmaf=79.564 hvs=37.685 psnr=— ssim=— xpsnr=—  (102.2s)
+    librav1e       -qp 210 →     54.9 KiB  vmaf=55.908 hvs=31.008 psnr=— ssim=— xpsnr=—  ( 97.0s)
+  [librav1e] a=7.853209120313396 b=-103.36107089747205 resid=9.622985551879367 dVMAF=0.584339540422917 model=linear mono=0.0
+
+══ 素材 natgeo_grass_40s.mp4 ══
+  prep: prep.mp4  5122.0 KiB  md5=27017175d1d3ee1092502a5b48c6cae5  frames=148  fps=25.00  hdr=False
+    libx264        -crf  18 →   1966.5 KiB  vmaf=97.269 hvs=49.018 psnr=— ssim=— xpsnr=—  (  2.9s)
+    libx264        -crf  21 →   1426.7 KiB  vmaf=96.410 hvs=47.010 psnr=— ssim=— xpsnr=—  (  2.8s)
+    libx264        -crf  24 →   1043.9 KiB  vmaf=95.063 hvs=44.849 psnr=— ssim=— xpsnr=—  (  2.6s)
+    libx264        -crf  27 →    754.3 KiB  vmaf=92.112 hvs=41.975 psnr=— ssim=— xpsnr=—  (  2.3s)
+    libx264        -crf  30 →    527.2 KiB  vmaf=87.544 hvs=38.895 psnr=— ssim=— xpsnr=—  (  2.3s)
+    librav1e       -qp  10 →   6069.1 KiB  vmaf=98.253 hvs=52.732 psnr=— ssim=— xpsnr=—  (432.0s)
+    librav1e       -qp  30 →   2319.1 KiB  vmaf=97.286 hvs=48.679 psnr=— ssim=— xpsnr=—  (302.9s)
+    librav1e       -qp  50 →   1412.3 KiB  vmaf=96.033 hvs=46.053 psnr=— ssim=— xpsnr=—  (242.7s)
+    librav1e       -qp  70 →    998.4 KiB  vmaf=94.584 hvs=43.954 psnr=— ssim=— xpsnr=—  (208.3s)
+    librav1e       -qp  90 →    755.2 KiB  vmaf=92.984 hvs=42.219 psnr=— ssim=— xpsnr=—  (184.6s)
+    librav1e       -qp 110 →    515.3 KiB  vmaf=89.904 hvs=39.871 psnr=— ssim=— xpsnr=—  (158.3s)
+    librav1e       -qp 130 →    344.8 KiB  vmaf=85.193 hvs=37.357 psnr=— ssim=— xpsnr=—  (139.3s)
+    librav1e       -qp 155 →    203.5 KiB  vmaf=75.750 hvs=34.169 psnr=— ssim=— xpsnr=—  (120.1s)
+    librav1e       -qp 180 →    118.0 KiB  vmaf=62.486 hvs=30.965 psnr=— ssim=— xpsnr=—  (106.8s)
+    librav1e       -qp 210 →     61.1 KiB  vmaf=43.268 hvs=27.304 psnr=— ssim=— xpsnr=—  ( 94.9s)
+  [librav1e] a=7.706595132582468 b=-114.29583025264638 resid=7.277405607239139 dVMAF=0.7343389689231259 model=linear mono=0.0
+
+── 跨素材聚合（a=池化最小二乘，b=各素材中位数）──
+  librav1e       a=7.9421 b=-96.300  区间=[0,255]  b_m范围=[-118.77, -81.43]  crf21→70.48
+
+报告: /mnt/d/Workspace_Python/VidUtils/temp/eqq_calib/m2_7src_6s_rav1e/report.json
+候选 QUALITY_MAP（等质量，软编）；rav1e@10 请另存 _EQQUAL_SPEED_OVERRIDE：
+    'librav1e': (7.9421, -96.2996, 0, 255),
+--- rc=0（speed=native）---
+---档位 librav1e --rav1e-speed 10（tag=m2_7src_6s_rav1e_s10）---
+ffmpeg: ffmpeg version 8.0.1-+vmaf Copyright (c) 2000-2025 the FFmpeg developers
+根: /mnt/d/Workspace_Python/VidUtils
+工作目录: /mnt/d/Workspace_Python/VidUtils/temp/eqq_calib/m2_7src_6s_rav1e_s10
+档位: ['librav1e@10']
+
+══ 素材 new5_raw.mp4 ══
+  prep: prep.mp4  14637.6 KiB  md5=0209b9e62a8b740031b4a890dc88cbb5  frames=180  fps=30.00  hdr=False
+    libx264        -crf  18 →   4240.7 KiB  vmaf=99.795 hvs=45.169 psnr=— ssim=— xpsnr=—  (  4.9s)
+    libx264        -crf  21 →   2800.9 KiB  vmaf=99.135 hvs=42.807 psnr=— ssim=— xpsnr=—  (  4.5s)
+    libx264        -crf  24 →   1899.1 KiB  vmaf=96.979 hvs=40.327 psnr=— ssim=— xpsnr=—  (  4.1s)
+    libx264        -crf  27 →   1317.9 KiB  vmaf=92.880 hvs=37.778 psnr=— ssim=— xpsnr=—  (  4.0s)
+    libx264        -crf  30 →    930.8 KiB  vmaf=86.721 hvs=35.216 psnr=— ssim=— xpsnr=—  (  3.6s)
+    librav1e@10    -qp  10 →  21961.5 KiB  vmaf=99.983 hvs=51.379 psnr=— ssim=— xpsnr=—  (196.7s)
+    librav1e@10    -qp  30 →   8186.9 KiB  vmaf=99.967 hvs=47.362 psnr=— ssim=— xpsnr=—  (133.6s)
+    librav1e@10    -qp  50 →   4722.4 KiB  vmaf=99.810 hvs=44.924 psnr=— ssim=— xpsnr=—  (114.4s)
+    librav1e@10    -qp  70 →   3196.8 KiB  vmaf=99.300 hvs=43.076 psnr=— ssim=— xpsnr=—  (105.4s)
+    librav1e@10    -qp  90 →   2372.5 KiB  vmaf=98.323 hvs=41.447 psnr=— ssim=— xpsnr=—  ( 96.8s)
+    librav1e@10    -qp 110 →   1604.4 KiB  vmaf=95.686 hvs=39.199 psnr=— ssim=— xpsnr=—  ( 89.4s)
+    librav1e@10    -qp 130 →   1044.9 KiB  vmaf=91.004 hvs=36.678 psnr=— ssim=— xpsnr=—  ( 82.9s)
+    librav1e@10    -qp 155 →    582.3 KiB  vmaf=81.481 hvs=33.462 psnr=— ssim=— xpsnr=—  ( 75.6s)
+    librav1e@10    -qp 180 →    316.1 KiB  vmaf=67.075 hvs=30.309 psnr=— ssim=— xpsnr=—  ( 70.3s)
+    librav1e@10    -qp 210 →    156.0 KiB  vmaf=45.572 hvs=26.739 psnr=— ssim=— xpsnr=—  ( 63.8s)
+  [librav1e@10] a=7.6650949783762545 b=-86.48767776874145 resid=2.7187437222768978 dVMAF=0.8455305396244484 model=linear mono=0.0
+
+══ 素材 new4_raw.mp4 ══
+  prep: prep.mp4  12198.4 KiB  md5=2c4c656d95902f885fc4af280183f0c4  frames=180  fps=30.00  hdr=True
+    libx264        -crf  18 →   4184.5 KiB  vmaf=99.762 hvs=45.591 psnr=— ssim=— xpsnr=—  (  4.7s)
+    libx264        -crf  21 →   2861.1 KiB  vmaf=99.304 hvs=43.162 psnr=— ssim=— xpsnr=—  (  4.3s)
+    libx264        -crf  24 →   1984.3 KiB  vmaf=98.107 hvs=40.530 psnr=— ssim=— xpsnr=—  (  4.0s)
+    libx264        -crf  27 →   1395.7 KiB  vmaf=95.434 hvs=37.798 psnr=— ssim=— xpsnr=—  (  3.7s)
+    libx264        -crf  30 →    997.4 KiB  vmaf=90.098 hvs=35.058 psnr=— ssim=— xpsnr=—  (  3.4s)
+    librav1e@10    -qp  10 →  19983.9 KiB  vmaf=99.983 hvs=51.708 psnr=— ssim=— xpsnr=—  (184.8s)
+    librav1e@10    -qp  30 →   8041.0 KiB  vmaf=99.943 hvs=47.900 psnr=— ssim=— xpsnr=—  (128.6s)
+    librav1e@10    -qp  50 →   4896.3 KiB  vmaf=99.757 hvs=45.278 psnr=— ssim=— xpsnr=—  (111.1s)
+    librav1e@10    -qp  70 →   3435.7 KiB  vmaf=99.364 hvs=43.248 psnr=— ssim=— xpsnr=—  (100.9s)
+    librav1e@10    -qp  90 →   2636.4 KiB  vmaf=98.718 hvs=41.470 psnr=— ssim=— xpsnr=—  ( 95.6s)
+    librav1e@10    -qp 110 →   1825.6 KiB  vmaf=97.050 hvs=38.964 psnr=— ssim=— xpsnr=—  ( 87.7s)
+    librav1e@10    -qp 130 →   1237.0 KiB  vmaf=93.166 hvs=36.275 psnr=— ssim=— xpsnr=—  ( 82.1s)
+    librav1e@10    -qp 155 →    710.6 KiB  vmaf=83.788 hvs=32.698 psnr=— ssim=— xpsnr=—  ( 75.7s)
+    librav1e@10    -qp 180 →    387.5 KiB  vmaf=69.763 hvs=29.219 psnr=— ssim=— xpsnr=—  ( 69.7s)
+    librav1e@10    -qp 210 →    183.3 KiB  vmaf=48.155 hvs=25.333 psnr=— ssim=— xpsnr=—  ( 63.7s)
+  [librav1e@10] a=7.460856103835247 b=-84.02528843893234 resid=2.2961951960255362 dVMAF=0.6085558899490593 model=linear mono=0.0
+
+══ 素材 cc_anim_300s.mkv ══
+  prep: prep.mp4  5996.2 KiB  md5=f66f20eaf6bebd9e087681ef9882655a  frames=144  fps=24.00  hdr=False
+    libx264        -crf  18 →   2307.9 KiB  vmaf=99.400 hvs=48.453 psnr=— ssim=— xpsnr=—  (  3.6s)
+    libx264        -crf  21 →   1674.2 KiB  vmaf=99.044 hvs=46.602 psnr=— ssim=— xpsnr=—  (  3.3s)
+    libx264        -crf  24 →   1239.4 KiB  vmaf=98.275 hvs=44.637 psnr=— ssim=— xpsnr=—  (  3.1s)
+    libx264        -crf  27 →    947.6 KiB  vmaf=96.675 hvs=42.584 psnr=— ssim=— xpsnr=—  (  2.9s)
+    libx264        -crf  30 →    739.5 KiB  vmaf=93.020 hvs=40.359 psnr=— ssim=— xpsnr=—  (  2.8s)
+    librav1e@10    -qp  10 →   6536.2 KiB  vmaf=99.651 hvs=51.600 psnr=— ssim=— xpsnr=—  (102.9s)
+    librav1e@10    -qp  30 →   2740.1 KiB  vmaf=99.510 hvs=48.699 psnr=— ssim=— xpsnr=—  ( 81.5s)
+    librav1e@10    -qp  50 →   1764.7 KiB  vmaf=99.276 hvs=46.999 psnr=— ssim=— xpsnr=—  ( 75.0s)
+    librav1e@10    -qp  70 →   1319.2 KiB  vmaf=98.904 hvs=45.710 psnr=— ssim=— xpsnr=—  ( 72.1s)
+    librav1e@10    -qp  90 →   1060.1 KiB  vmaf=98.446 hvs=44.587 psnr=— ssim=— xpsnr=—  ( 70.2s)
+    librav1e@10    -qp 110 →    802.4 KiB  vmaf=97.382 hvs=42.932 psnr=— ssim=— xpsnr=—  ( 67.3s)
+    librav1e@10    -qp 130 →    596.2 KiB  vmaf=95.164 hvs=41.016 psnr=— ssim=— xpsnr=—  ( 66.3s)
+    librav1e@10    -qp 155 →    403.4 KiB  vmaf=89.561 hvs=38.383 psnr=— ssim=— xpsnr=—  ( 60.9s)
+    librav1e@10    -qp 180 →    269.6 KiB  vmaf=79.982 hvs=35.479 psnr=— ssim=— xpsnr=—  ( 59.7s)
+    librav1e@10    -qp 210 →    165.0 KiB  vmaf=63.245 hvs=31.926 psnr=— ssim=— xpsnr=—  ( 53.4s)
+  [librav1e@10] a=8.474475269719637 b=-113.1808921690679 resid=3.008645137035714 dVMAF=0.3332708368962187 model=linear mono=0.0
+
+══ 素材 cc_subs_105s.mp4 ══
+  prep: prep.mp4  6887.1 KiB  md5=35320453f11b17bc52e2994a53f732bf  frames=144  fps=24.00  hdr=False
+    libx264        -crf  18 →   2536.6 KiB  vmaf=98.607 hvs=47.773 psnr=— ssim=— xpsnr=—  (  3.2s)
+    libx264        -crf  21 →   1737.3 KiB  vmaf=98.000 hvs=45.754 psnr=— ssim=— xpsnr=—  (  3.0s)
+    libx264        -crf  24 →   1203.2 KiB  vmaf=96.854 hvs=43.670 psnr=— ssim=— xpsnr=—  (  2.7s)
+    libx264        -crf  27 →    831.4 KiB  vmaf=94.695 hvs=41.457 psnr=— ssim=— xpsnr=—  (  2.4s)
+    libx264        -crf  30 →    580.0 KiB  vmaf=91.382 hvs=39.212 psnr=— ssim=— xpsnr=—  (  2.4s)
+    librav1e@10    -qp  10 →   8658.2 KiB  vmaf=99.226 hvs=51.063 psnr=— ssim=— xpsnr=—  (103.7s)
+    librav1e@10    -qp  30 →   3445.3 KiB  vmaf=98.739 hvs=47.745 psnr=— ssim=— xpsnr=—  ( 76.3s)
+    librav1e@10    -qp  50 →   2097.1 KiB  vmaf=98.067 hvs=45.552 psnr=— ssim=— xpsnr=—  ( 68.2s)
+    librav1e@10    -qp  70 →   1497.8 KiB  vmaf=97.305 hvs=43.949 psnr=— ssim=— xpsnr=—  ( 64.3s)
+    librav1e@10    -qp  90 →   1159.8 KiB  vmaf=96.345 hvs=42.551 psnr=— ssim=— xpsnr=—  ( 61.8s)
+    librav1e@10    -qp 110 →    839.0 KiB  vmaf=94.286 hvs=40.721 psnr=— ssim=— xpsnr=—  ( 58.2s)
+    librav1e@10    -qp 130 →    572.8 KiB  vmaf=90.983 hvs=38.610 psnr=— ssim=— xpsnr=—  ( 55.2s)
+    librav1e@10    -qp 155 →    352.5 KiB  vmaf=84.764 hvs=35.996 psnr=— ssim=— xpsnr=—  ( 52.0s)
+    librav1e@10    -qp 180 →    210.4 KiB  vmaf=74.983 hvs=33.031 psnr=— ssim=— xpsnr=—  ( 48.5s)
+    librav1e@10    -qp 210 →    114.3 KiB  vmaf=59.148 hvs=29.484 psnr=— ssim=— xpsnr=—  ( 45.9s)
+  [librav1e@10] a=8.052874522947961 b=-113.53245448492746 resid=3.8189243091741787 dVMAF=0.2191194219560657 model=linear mono=0.0
+
+══ 素材 earth_dark_80s.mp4 ══
+  prep: prep.mp4  9042.2 KiB  md5=eabb1d7cdc6e1c3d01d53a2fdda955a1  frames=284  fps=47.95  hdr=False
+    libx264        -crf  18 →   3626.6 KiB  vmaf=95.408 hvs=47.309 psnr=— ssim=— xpsnr=—  (  4.8s)
+    libx264        -crf  21 →   2545.0 KiB  vmaf=93.501 hvs=45.049 psnr=— ssim=— xpsnr=—  (  4.3s)
+    libx264        -crf  24 →   1786.3 KiB  vmaf=90.541 hvs=42.783 psnr=— ssim=— xpsnr=—  (  4.0s)
+    libx264        -crf  27 →   1248.6 KiB  vmaf=86.224 hvs=40.454 psnr=— ssim=— xpsnr=—  (  3.8s)
+    libx264        -crf  30 →    865.8 KiB  vmaf=80.216 hvs=38.095 psnr=— ssim=— xpsnr=—  (  3.4s)
+    librav1e@10    -qp  10 →  15090.7 KiB  vmaf=97.990 hvs=51.485 psnr=— ssim=— xpsnr=—  (171.9s)
+    librav1e@10    -qp  30 →   7080.2 KiB  vmaf=97.048 hvs=48.485 psnr=— ssim=— xpsnr=—  (128.1s)
+    librav1e@10    -qp  50 →   4642.4 KiB  vmaf=95.761 hvs=46.593 psnr=— ssim=— xpsnr=—  (116.1s)
+    librav1e@10    -qp  70 →   3427.7 KiB  vmaf=94.342 hvs=45.118 psnr=— ssim=— xpsnr=—  (110.8s)
+    librav1e@10    -qp  90 →   2674.4 KiB  vmaf=92.925 hvs=43.872 psnr=— ssim=— xpsnr=—  (105.7s)
+    librav1e@10    -qp 110 →   1936.1 KiB  vmaf=90.350 hvs=42.130 psnr=— ssim=— xpsnr=—  (101.1s)
+    librav1e@10    -qp 130 →   1329.8 KiB  vmaf=86.411 hvs=40.030 psnr=— ssim=— xpsnr=—  ( 98.1s)
+    librav1e@10    -qp 155 →    790.1 KiB  vmaf=78.805 hvs=37.209 psnr=— ssim=— xpsnr=—  ( 91.9s)
+    librav1e@10    -qp 180 →    437.6 KiB  vmaf=66.944 hvs=34.171 psnr=— ssim=— xpsnr=—  ( 89.4s)
+    librav1e@10    -qp 210 →    200.0 KiB  vmaf=48.152 hvs=30.489 psnr=— ssim=— xpsnr=—  ( 83.0s)
+  [librav1e@10] a=7.9837475117349195 b=-86.34126538477011 resid=3.2528578813945614 dVMAF=0.8546048376247484 model=linear mono=0.0
+
+══ 素材 ui_screen_10s.mp4 ══
+  prep: prep.mp4  569.3 KiB  md5=7fbe5b67f1be4194a017625917152345  frames=180  fps=30.00  hdr=False
+    libx264        -crf  18 →    355.5 KiB  vmaf=99.164 hvs=58.320 psnr=— ssim=— xpsnr=—  (  1.2s)
+    libx264        -crf  21 →    294.6 KiB  vmaf=98.514 hvs=56.067 psnr=— ssim=— xpsnr=—  (  1.3s)
+    libx264        -crf  24 →    245.1 KiB  vmaf=97.754 hvs=53.336 psnr=— ssim=— xpsnr=—  (  1.4s)
+    libx264        -crf  27 →    202.5 KiB  vmaf=96.165 hvs=50.172 psnr=— ssim=— xpsnr=—  (  1.4s)
+    libx264        -crf  30 →    166.0 KiB  vmaf=93.483 hvs=46.393 psnr=— ssim=— xpsnr=—  (  1.3s)
+    librav1e@10    -qp  10 →   1635.4 KiB  vmaf=99.495 hvs=60.093 psnr=— ssim=— xpsnr=—  ( 59.2s)
+    librav1e@10    -qp  30 →   1099.7 KiB  vmaf=98.856 hvs=55.804 psnr=— ssim=— xpsnr=—  ( 53.4s)
+    librav1e@10    -qp  50 →    852.7 KiB  vmaf=98.007 hvs=53.188 psnr=— ssim=— xpsnr=—  ( 52.0s)
+    librav1e@10    -qp  70 →    699.2 KiB  vmaf=97.228 hvs=51.513 psnr=— ssim=— xpsnr=—  ( 50.7s)
+    librav1e@10    -qp  90 →    601.2 KiB  vmaf=96.313 hvs=49.817 psnr=— ssim=— xpsnr=—  ( 50.0s)
+    librav1e@10    -qp 110 →    478.2 KiB  vmaf=94.543 hvs=47.336 psnr=— ssim=— xpsnr=—  ( 48.6s)
+    librav1e@10    -qp 130 →    364.9 KiB  vmaf=91.616 hvs=44.505 psnr=— ssim=— xpsnr=—  ( 47.3s)
+    librav1e@10    -qp 155 →    243.5 KiB  vmaf=85.686 hvs=40.452 psnr=— ssim=— xpsnr=—  ( 46.4s)
+    librav1e@10    -qp 180 →    147.9 KiB  vmaf=74.807 hvs=35.714 psnr=— ssim=— xpsnr=—  ( 46.5s)
+    librav1e@10    -qp 210 →     70.8 KiB  vmaf=52.514 hvs=30.184 psnr=— ssim=— xpsnr=—  ( 45.9s)
+  [librav1e@10] a=8.246551784415686 b=-133.15145253808308 resid=8.261635945242041 dVMAF=0.4387635586182057 model=linear mono=0.0
+
+══ 素材 natgeo_grass_40s.mp4 ══
+  prep: prep.mp4  5122.0 KiB  md5=27017175d1d3ee1092502a5b48c6cae5  frames=148  fps=25.00  hdr=False
+    libx264        -crf  18 →   1966.5 KiB  vmaf=97.269 hvs=49.018 psnr=— ssim=— xpsnr=—  (  3.0s)
+    libx264        -crf  21 →   1426.7 KiB  vmaf=96.410 hvs=47.010 psnr=— ssim=— xpsnr=—  (  2.8s)
+    libx264        -crf  24 →   1043.9 KiB  vmaf=95.063 hvs=44.849 psnr=— ssim=— xpsnr=—  (  2.6s)
+    libx264        -crf  27 →    754.3 KiB  vmaf=92.112 hvs=41.975 psnr=— ssim=— xpsnr=—  (  2.4s)
+    libx264        -crf  30 →    527.2 KiB  vmaf=87.544 hvs=38.895 psnr=— ssim=— xpsnr=—  (  2.2s)
+    librav1e@10    -qp  10 →   8790.1 KiB  vmaf=98.257 hvs=51.700 psnr=— ssim=— xpsnr=—  (114.8s)
+    librav1e@10    -qp  30 →   3271.6 KiB  vmaf=97.327 hvs=48.015 psnr=— ssim=— xpsnr=—  ( 81.1s)
+    librav1e@10    -qp  50 →   1887.3 KiB  vmaf=96.040 hvs=45.423 psnr=— ssim=— xpsnr=—  ( 69.3s)
+    librav1e@10    -qp  70 →   1284.3 KiB  vmaf=94.489 hvs=43.438 psnr=— ssim=— xpsnr=—  ( 62.7s)
+    librav1e@10    -qp  90 →    959.0 KiB  vmaf=92.829 hvs=41.797 psnr=— ssim=— xpsnr=—  ( 58.6s)
+    librav1e@10    -qp 110 →    646.9 KiB  vmaf=89.674 hvs=39.518 psnr=— ssim=— xpsnr=—  ( 54.8s)
+    librav1e@10    -qp 130 →    427.7 KiB  vmaf=84.747 hvs=37.031 psnr=— ssim=— xpsnr=—  ( 51.0s)
+    librav1e@10    -qp 155 →    246.7 KiB  vmaf=74.954 hvs=33.825 psnr=— ssim=— xpsnr=—  ( 49.1s)
+    librav1e@10    -qp 180 →    140.6 KiB  vmaf=60.727 hvs=30.550 psnr=— ssim=— xpsnr=—  ( 45.1s)
+    librav1e@10    -qp 210 →     72.1 KiB  vmaf=40.177 hvs=26.806 psnr=— ssim=— xpsnr=—  ( 41.9s)
+  [librav1e@10] a=7.526567308179339 b=-110.45110324095373 resid=7.591415588217828 dVMAF=0.813049843919984 model=linear mono=0.0
+
+── 跨素材聚合（a=池化最小二乘，b=各素材中位数）──
+  librav1e@10    a=7.9157 b=-97.906  区间=[0,255]  b_m范围=[-122.13, -84.36]  crf21→68.32
+
+报告: /mnt/d/Workspace_Python/VidUtils/temp/eqq_calib/m2_7src_6s_rav1e_s10/report.json
+候选 QUALITY_MAP（等质量，软编）；rav1e@10 请另存 _EQQUAL_SPEED_OVERRIDE：
+    'librav1e@10': (7.9157, -97.9059, 0, 255),
+--- rc=0（speed=10）---
+########## [2026-10-02 05:46] VU rav1e 标定结束 ##########

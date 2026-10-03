@@ -1,0 +1,1127 @@
+{
+ "new5_raw.mp4|libx264|18": {
+  "m": {
+   "vmaf": 99.438414,
+   "psnr_hvs": 45.398557,
+   "vif_scale0": 0.755538,
+   "adm2": 0.987252,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 5424.744,
+   "bytes": 6785497
+  },
+  "sec": 8.83,
+  "material_md5": "b935972ad19f4892a8c0bb5b5399b902"
+ },
+ "new5_raw.mp4|libx264|22": {
+  "m": {
+   "vmaf": 98.053521,
+   "psnr_hvs": 42.359445,
+   "vif_scale0": 0.678063,
+   "adm2": 0.980476,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 3091.755,
+   "bytes": 3869213
+  },
+  "sec": 7.49,
+  "material_md5": "b935972ad19f4892a8c0bb5b5399b902"
+ },
+ "new5_raw.mp4|libx264|26": {
+  "m": {
+   "vmaf": 94.073569,
+   "psnr_hvs": 39.105453,
+   "vif_scale0": 0.589313,
+   "adm2": 0.969847,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 1846.658,
+   "bytes": 2312825
+  },
+  "sec": 6.72,
+  "material_md5": "b935972ad19f4892a8c0bb5b5399b902"
+ },
+ "new5_raw.mp4|libx264|30": {
+  "m": {
+   "vmaf": 86.952847,
+   "psnr_hvs": 35.769943,
+   "vif_scale0": 0.492517,
+   "adm2": 0.953229,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 1152.218,
+   "bytes": 1444760
+  },
+  "sec": 5.64,
+  "material_md5": "b935972ad19f4892a8c0bb5b5399b902"
+ },
+ "new5_raw.mp4|libx264|34": {
+  "m": {
+   "vmaf": 75.893945,
+   "psnr_hvs": 32.513947,
+   "vif_scale0": 0.396051,
+   "adm2": 0.92763,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 746.536,
+   "bytes": 937641
+  },
+  "sec": 5.05,
+  "material_md5": "b935972ad19f4892a8c0bb5b5399b902"
+ },
+ "new5_raw.mp4|librav1e|10": {
+  "m": {
+   "vmaf": 99.979958,
+   "psnr_hvs": 51.839618,
+   "vif_scale0": 0.917335,
+   "adm2": 0.997767,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 23431.178,
+   "bytes": 29291250
+  },
+  "sec": 1407.11,
+  "material_md5": "b935972ad19f4892a8c0bb5b5399b902"
+ },
+ "new5_raw.mp4|librav1e|30": {
+  "m": {
+   "vmaf": 99.793444,
+   "psnr_hvs": 47.586654,
+   "vif_scale0": 0.818771,
+   "adm2": 0.99265,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 7759.61,
+   "bytes": 9701670
+  },
+  "sec": 996.54,
+  "material_md5": "b935972ad19f4892a8c0bb5b5399b902"
+ },
+ "new5_raw.mp4|librav1e|50": {
+  "m": {
+   "vmaf": 99.421573,
+   "psnr_hvs": 45.240632,
+   "vif_scale0": 0.756699,
+   "adm2": 0.98783,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 4216.908,
+   "bytes": 5273252
+  },
+  "sec": 1148.86,
+  "material_md5": "b935972ad19f4892a8c0bb5b5399b902"
+ },
+ "new5_raw.mp4|librav1e|70": {
+  "m": {
+   "vmaf": 98.795657,
+   "psnr_hvs": 43.469546,
+   "vif_scale0": 0.709728,
+   "adm2": 0.983622,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 2792.612,
+   "bytes": 3492851
+  },
+  "sec": 769.85,
+  "material_md5": "b935972ad19f4892a8c0bb5b5399b902"
+ },
+ "new5_raw.mp4|librav1e|90": {
+  "m": {
+   "vmaf": 97.634622,
+   "psnr_hvs": 41.893962,
+   "vif_scale0": 0.666168,
+   "adm2": 0.978941,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 2028.958,
+   "bytes": 2538267
+  },
+  "sec": 586.73,
+  "material_md5": "b935972ad19f4892a8c0bb5b5399b902"
+ },
+ "new5_raw.mp4|librav1e|110": {
+  "m": {
+   "vmaf": 95.184156,
+   "psnr_hvs": 39.848245,
+   "vif_scale0": 0.609713,
+   "adm2": 0.972298,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 1395.135,
+   "bytes": 1745972
+  },
+  "sec": 612.45,
+  "material_md5": "b935972ad19f4892a8c0bb5b5399b902"
+ },
+ "new5_raw.mp4|librav1e|130": {
+  "m": {
+   "vmaf": 90.867607,
+   "psnr_hvs": 37.446962,
+   "vif_scale0": 0.541228,
+   "adm2": 0.962009,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 917.237,
+   "bytes": 1148600
+  },
+  "sec": 463.59,
+  "material_md5": "b935972ad19f4892a8c0bb5b5399b902"
+ },
+ "new5_raw.mp4|librav1e|155": {
+  "m": {
+   "vmaf": 82.545757,
+   "psnr_hvs": 34.381661,
+   "vif_scale0": 0.452224,
+   "adm2": 0.942774,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 538.005,
+   "bytes": 674544
+  },
+  "sec": 477.49,
+  "material_md5": "b935972ad19f4892a8c0bb5b5399b902"
+ },
+ "new5_raw.mp4|librav1e|180": {
+  "m": {
+   "vmaf": 69.548519,
+   "psnr_hvs": 31.270121,
+   "vif_scale0": 0.361095,
+   "adm2": 0.912064,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 306.03,
+   "bytes": 384575
+  },
+  "sec": 398.57,
+  "material_md5": "b935972ad19f4892a8c0bb5b5399b902"
+ },
+ "new5_raw.mp4|librav1e|210": {
+  "m": {
+   "vmaf": 48.577598,
+   "psnr_hvs": 27.808894,
+   "vif_scale0": 0.264953,
+   "adm2": 0.850685,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 158.353,
+   "bytes": 199979
+  },
+  "sec": 305.31,
+  "material_md5": "b935972ad19f4892a8c0bb5b5399b902"
+ },
+ "word_world_2.mp4|libx264|18": {
+  "m": {
+   "vmaf": 96.640254,
+   "psnr_hvs": 47.919109,
+   "vif_scale0": 0.862366,
+   "adm2": 0.99135,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 2768.583,
+   "bytes": 3464665
+  },
+  "sec": 6.28,
+  "material_md5": "0707898b012a6d26b419e26f933f5e14"
+ },
+ "word_world_2.mp4|libx264|22": {
+  "m": {
+   "vmaf": 94.662877,
+   "psnr_hvs": 45.061152,
+   "vif_scale0": 0.806525,
+   "adm2": 0.985101,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 1656.015,
+   "bytes": 2073923
+  },
+  "sec": 6.57,
+  "material_md5": "0707898b012a6d26b419e26f933f5e14"
+ },
+ "word_world_2.mp4|libx264|26": {
+  "m": {
+   "vmaf": 91.326901,
+   "psnr_hvs": 42.153793,
+   "vif_scale0": 0.740933,
+   "adm2": 0.975516,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 969.177,
+   "bytes": 1215375
+  },
+  "sec": 4.12,
+  "material_md5": "0707898b012a6d26b419e26f933f5e14"
+ },
+ "word_world_2.mp4|libx264|30": {
+  "m": {
+   "vmaf": 85.969929,
+   "psnr_hvs": 39.210296,
+   "vif_scale0": 0.666236,
+   "adm2": 0.961051,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 569.616,
+   "bytes": 715909
+  },
+  "sec": 3.5,
+  "material_md5": "0707898b012a6d26b419e26f933f5e14"
+ },
+ "word_world_2.mp4|libx264|34": {
+  "m": {
+   "vmaf": 78.094044,
+   "psnr_hvs": 36.437128,
+   "vif_scale0": 0.589065,
+   "adm2": 0.940711,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 354.607,
+   "bytes": 447147
+  },
+  "sec": 3.1,
+  "material_md5": "0707898b012a6d26b419e26f933f5e14"
+ },
+ "word_world_2.mp4|librav1e|10": {
+  "m": {
+   "vmaf": 98.259858,
+   "psnr_hvs": 52.168034,
+   "vif_scale0": 0.941671,
+   "adm2": 0.997572,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 6773.375,
+   "bytes": 8468696
+  },
+  "sec": 622.17,
+  "material_md5": "0707898b012a6d26b419e26f933f5e14"
+ },
+ "word_world_2.mp4|librav1e|30": {
+  "m": {
+   "vmaf": 97.09573,
+   "psnr_hvs": 48.168297,
+   "vif_scale0": 0.877515,
+   "adm2": 0.993421,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 2821.779,
+   "bytes": 3529121
+  },
+  "sec": 420.63,
+  "material_md5": "0707898b012a6d26b419e26f933f5e14"
+ },
+ "word_world_2.mp4|librav1e|50": {
+  "m": {
+   "vmaf": 95.750425,
+   "psnr_hvs": 45.928656,
+   "vif_scale0": 0.832314,
+   "adm2": 0.989055,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 1765.881,
+   "bytes": 2209233
+  },
+  "sec": 340.93,
+  "material_md5": "0707898b012a6d26b419e26f933f5e14"
+ },
+ "word_world_2.mp4|librav1e|70": {
+  "m": {
+   "vmaf": 94.154611,
+   "psnr_hvs": 44.26419,
+   "vif_scale0": 0.796153,
+   "adm2": 0.984198,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 1283.988,
+   "bytes": 1606851
+  },
+  "sec": 298.32,
+  "material_md5": "0707898b012a6d26b419e26f933f5e14"
+ },
+ "word_world_2.mp4|librav1e|90": {
+  "m": {
+   "vmaf": 92.693041,
+   "psnr_hvs": 42.919918,
+   "vif_scale0": 0.765748,
+   "adm2": 0.980018,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 997.344,
+   "bytes": 1248545
+  },
+  "sec": 270.95,
+  "material_md5": "0707898b012a6d26b419e26f933f5e14"
+ },
+ "word_world_2.mp4|librav1e|110": {
+  "m": {
+   "vmaf": 90.136719,
+   "psnr_hvs": 41.239459,
+   "vif_scale0": 0.724672,
+   "adm2": 0.973093,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 729.075,
+   "bytes": 913193
+  },
+  "sec": 242.67,
+  "material_md5": "0707898b012a6d26b419e26f933f5e14"
+ },
+ "word_world_2.mp4|librav1e|130": {
+  "m": {
+   "vmaf": 86.197148,
+   "psnr_hvs": 39.407162,
+   "vif_scale0": 0.675614,
+   "adm2": 0.962631,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 512.003,
+   "bytes": 641853
+  },
+  "sec": 223.78,
+  "material_md5": "0707898b012a6d26b419e26f933f5e14"
+ },
+ "word_world_2.mp4|librav1e|155": {
+  "m": {
+   "vmaf": 79.225096,
+   "psnr_hvs": 37.054228,
+   "vif_scale0": 0.610591,
+   "adm2": 0.944239,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 328.034,
+   "bytes": 411892
+  },
+  "sec": 204.06,
+  "material_md5": "0707898b012a6d26b419e26f933f5e14"
+ },
+ "word_world_2.mp4|librav1e|180": {
+  "m": {
+   "vmaf": 69.457371,
+   "psnr_hvs": 34.564219,
+   "vif_scale0": 0.535111,
+   "adm2": 0.918733,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 208.159,
+   "bytes": 262048
+  },
+  "sec": 191.61,
+  "material_md5": "0707898b012a6d26b419e26f933f5e14"
+ },
+ "word_world_2.mp4|librav1e|210": {
+  "m": {
+   "vmaf": 52.367303,
+   "psnr_hvs": 31.402221,
+   "vif_scale0": 0.440657,
+   "adm2": 0.867711,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 120.406,
+   "bytes": 152357
+  },
+  "sec": 175.59,
+  "material_md5": "0707898b012a6d26b419e26f933f5e14"
+ },
+ "S01E01._The_New_Stall.mp4|libx264|18": {
+  "m": {
+   "vmaf": 97.012665,
+   "psnr_hvs": 47.436386,
+   "vif_scale0": 0.805416,
+   "adm2": 0.994003,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 3701.538,
+   "bytes": 4631458
+  },
+  "sec": 7.34,
+  "material_md5": "09112c94dd876122f9aec53d3760700e"
+ },
+ "S01E01._The_New_Stall.mp4|libx264|22": {
+  "m": {
+   "vmaf": 95.4002,
+   "psnr_hvs": 44.123639,
+   "vif_scale0": 0.730814,
+   "adm2": 0.990065,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 2163.908,
+   "bytes": 2709388
+  },
+  "sec": 7.23,
+  "material_md5": "09112c94dd876122f9aec53d3760700e"
+ },
+ "S01E01._The_New_Stall.mp4|libx264|26": {
+  "m": {
+   "vmaf": 92.447403,
+   "psnr_hvs": 40.645189,
+   "vif_scale0": 0.643019,
+   "adm2": 0.98382,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 1253.776,
+   "bytes": 1571707
+  },
+  "sec": 5.22,
+  "material_md5": "09112c94dd876122f9aec53d3760700e"
+ },
+ "S01E01._The_New_Stall.mp4|libx264|30": {
+  "m": {
+   "vmaf": 87.175392,
+   "psnr_hvs": 37.166513,
+   "vif_scale0": 0.548555,
+   "adm2": 0.972968,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 731.76,
+   "bytes": 919172
+  },
+  "sec": 4.33,
+  "material_md5": "09112c94dd876122f9aec53d3760700e"
+ },
+ "S01E01._The_New_Stall.mp4|libx264|34": {
+  "m": {
+   "vmaf": 78.957919,
+   "psnr_hvs": 33.821826,
+   "vif_scale0": 0.45563,
+   "adm2": 0.956658,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 429.904,
+   "bytes": 541852
+  },
+  "sec": 3.74,
+  "material_md5": "09112c94dd876122f9aec53d3760700e"
+ },
+ "S01E01._The_New_Stall.mp4|librav1e|10": {
+  "m": {
+   "vmaf": 98.572781,
+   "psnr_hvs": 52.836307,
+   "vif_scale0": 0.934308,
+   "adm2": 0.998845,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 13082.603,
+   "bytes": 16355428
+  },
+  "sec": 890.98,
+  "material_md5": "09112c94dd876122f9aec53d3760700e"
+ },
+ "S01E01._The_New_Stall.mp4|librav1e|30": {
+  "m": {
+   "vmaf": 97.697336,
+   "psnr_hvs": 48.554811,
+   "vif_scale0": 0.850165,
+   "adm2": 0.996084,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 4798.655,
+   "bytes": 6000421
+  },
+  "sec": 2298.6,
+  "material_md5": "09112c94dd876122f9aec53d3760700e"
+ },
+ "S01E01._The_New_Stall.mp4|librav1e|50": {
+  "m": {
+   "vmaf": 96.664366,
+   "psnr_hvs": 45.994919,
+   "vif_scale0": 0.789369,
+   "adm2": 0.993397,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 2733.62,
+   "bytes": 3419107
+  },
+  "sec": 544.38,
+  "material_md5": "09112c94dd876122f9aec53d3760700e"
+ },
+ "S01E01._The_New_Stall.mp4|librav1e|70": {
+  "m": {
+   "vmaf": 95.590439,
+   "psnr_hvs": 44.12809,
+   "vif_scale0": 0.7407,
+   "adm2": 0.990785,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 1864.701,
+   "bytes": 2332943
+  },
+  "sec": 480.86,
+  "material_md5": "09112c94dd876122f9aec53d3760700e"
+ },
+ "S01E01._The_New_Stall.mp4|librav1e|90": {
+  "m": {
+   "vmaf": 94.341256,
+   "psnr_hvs": 42.554676,
+   "vif_scale0": 0.696531,
+   "adm2": 0.987892,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 1382.254,
+   "bytes": 1729868
+  },
+  "sec": 430.63,
+  "material_md5": "09112c94dd876122f9aec53d3760700e"
+ },
+ "S01E01._The_New_Stall.mp4|librav1e|110": {
+  "m": {
+   "vmaf": 92.177912,
+   "psnr_hvs": 40.462821,
+   "vif_scale0": 0.63994,
+   "adm2": 0.983186,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 947.282,
+   "bytes": 1186153
+  },
+  "sec": 376.96,
+  "material_md5": "09112c94dd876122f9aec53d3760700e"
+ },
+ "S01E01._The_New_Stall.mp4|librav1e|130": {
+  "m": {
+   "vmaf": 88.646375,
+   "psnr_hvs": 38.023553,
+   "vif_scale0": 0.573206,
+   "adm2": 0.976312,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 608.645,
+   "bytes": 762841
+  },
+  "sec": 346.9,
+  "material_md5": "09112c94dd876122f9aec53d3760700e"
+ },
+ "S01E01._The_New_Stall.mp4|librav1e|155": {
+  "m": {
+   "vmaf": 81.552553,
+   "psnr_hvs": 34.867299,
+   "vif_scale0": 0.487303,
+   "adm2": 0.961651,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 340.415,
+   "bytes": 427553
+  },
+  "sec": 295.26,
+  "material_md5": "09112c94dd876122f9aec53d3760700e"
+ },
+ "S01E01._The_New_Stall.mp4|librav1e|180": {
+  "m": {
+   "vmaf": 70.9812,
+   "psnr_hvs": 31.694521,
+   "vif_scale0": 0.401894,
+   "adm2": 0.939579,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 181.458,
+   "bytes": 228857
+  },
+  "sec": 256.84,
+  "material_md5": "09112c94dd876122f9aec53d3760700e"
+ },
+ "S01E01._The_New_Stall.mp4|librav1e|210": {
+  "m": {
+   "vmaf": 53.650715,
+   "psnr_hvs": 28.107154,
+   "vif_scale0": 0.309697,
+   "adm2": 0.89367,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 85.714,
+   "bytes": 109177
+  },
+  "sec": 223.67,
+  "material_md5": "09112c94dd876122f9aec53d3760700e"
+ },
+ "S03E01._James_and_Alice.mp4|libx264|18": {
+  "m": {
+   "vmaf": 96.74726,
+   "psnr_hvs": 47.22935,
+   "vif_scale0": 0.797971,
+   "adm2": 0.993197,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 3728.399,
+   "bytes": 4665038
+  },
+  "sec": 7.54,
+  "material_md5": "de2cdfde60b23f24c73a841c81331a6b"
+ },
+ "S03E01._James_and_Alice.mp4|libx264|22": {
+  "m": {
+   "vmaf": 95.127049,
+   "psnr_hvs": 44.016181,
+   "vif_scale0": 0.723219,
+   "adm2": 0.989105,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 2151.056,
+   "bytes": 2693328
+  },
+  "sec": 6.8,
+  "material_md5": "de2cdfde60b23f24c73a841c81331a6b"
+ },
+ "S03E01._James_and_Alice.mp4|libx264|26": {
+  "m": {
+   "vmaf": 92.190414,
+   "psnr_hvs": 40.698258,
+   "vif_scale0": 0.636722,
+   "adm2": 0.982604,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 1229.523,
+   "bytes": 1541394
+  },
+  "sec": 5.62,
+  "material_md5": "de2cdfde60b23f24c73a841c81331a6b"
+ },
+ "S03E01._James_and_Alice.mp4|libx264|30": {
+  "m": {
+   "vmaf": 87.153146,
+   "psnr_hvs": 37.352543,
+   "vif_scale0": 0.544017,
+   "adm2": 0.972231,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 710.668,
+   "bytes": 892810
+  },
+  "sec": 4.92,
+  "material_md5": "de2cdfde60b23f24c73a841c81331a6b"
+ },
+ "S03E01._James_and_Alice.mp4|libx264|34": {
+  "m": {
+   "vmaf": 78.893068,
+   "psnr_hvs": 34.077146,
+   "vif_scale0": 0.452142,
+   "adm2": 0.955155,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 416.508,
+   "bytes": 525111
+  },
+  "sec": 4.41,
+  "material_md5": "de2cdfde60b23f24c73a841c81331a6b"
+ },
+ "S03E01._James_and_Alice.mp4|librav1e|10": {
+  "m": {
+   "vmaf": 98.571755,
+   "psnr_hvs": 52.745961,
+   "vif_scale0": 0.934739,
+   "adm2": 0.998843,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 13206.428,
+   "bytes": 16510246
+  },
+  "sec": 1012.33,
+  "material_md5": "de2cdfde60b23f24c73a841c81331a6b"
+ },
+ "S03E01._James_and_Alice.mp4|librav1e|30": {
+  "m": {
+   "vmaf": 97.578528,
+   "psnr_hvs": 48.452425,
+   "vif_scale0": 0.847102,
+   "adm2": 0.995819,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 4775.948,
+   "bytes": 5972054
+  },
+  "sec": 683.12,
+  "material_md5": "de2cdfde60b23f24c73a841c81331a6b"
+ },
+ "S03E01._James_and_Alice.mp4|librav1e|50": {
+  "m": {
+   "vmaf": 96.502358,
+   "psnr_hvs": 45.882029,
+   "vif_scale0": 0.783753,
+   "adm2": 0.992849,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 2666.1,
+   "bytes": 3334707
+  },
+  "sec": 538.32,
+  "material_md5": "de2cdfde60b23f24c73a841c81331a6b"
+ },
+ "S03E01._James_and_Alice.mp4|librav1e|70": {
+  "m": {
+   "vmaf": 95.364969,
+   "psnr_hvs": 44.060277,
+   "vif_scale0": 0.734079,
+   "adm2": 0.990015,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 1803.052,
+   "bytes": 2255881
+  },
+  "sec": 465.66,
+  "material_md5": "de2cdfde60b23f24c73a841c81331a6b"
+ },
+ "S03E01._James_and_Alice.mp4|librav1e|90": {
+  "m": {
+   "vmaf": 94.082177,
+   "psnr_hvs": 42.505479,
+   "vif_scale0": 0.6891,
+   "adm2": 0.986903,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 1318.22,
+   "bytes": 1649825
+  },
+  "sec": 429.6,
+  "material_md5": "de2cdfde60b23f24c73a841c81331a6b"
+ },
+ "S03E01._James_and_Alice.mp4|librav1e|110": {
+  "m": {
+   "vmaf": 91.814125,
+   "psnr_hvs": 40.451383,
+   "vif_scale0": 0.631543,
+   "adm2": 0.981828,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 890.73,
+   "bytes": 1115463
+  },
+  "sec": 363.22,
+  "material_md5": "de2cdfde60b23f24c73a841c81331a6b"
+ },
+ "S03E01._James_and_Alice.mp4|librav1e|130": {
+  "m": {
+   "vmaf": 88.219415,
+   "psnr_hvs": 38.049134,
+   "vif_scale0": 0.564212,
+   "adm2": 0.974623,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 559.708,
+   "bytes": 701670
+  },
+  "sec": 324.75,
+  "material_md5": "de2cdfde60b23f24c73a841c81331a6b"
+ },
+ "S03E01._James_and_Alice.mp4|librav1e|155": {
+  "m": {
+   "vmaf": 81.2176,
+   "psnr_hvs": 34.958005,
+   "vif_scale0": 0.479326,
+   "adm2": 0.95991,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 308.908,
+   "bytes": 388170
+  },
+  "sec": 275.14,
+  "material_md5": "de2cdfde60b23f24c73a841c81331a6b"
+ },
+ "S03E01._James_and_Alice.mp4|librav1e|180": {
+  "m": {
+   "vmaf": 70.457142,
+   "psnr_hvs": 31.859859,
+   "vif_scale0": 0.394767,
+   "adm2": 0.936842,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 163.656,
+   "bytes": 206604
+  },
+  "sec": 244.56,
+  "material_md5": "de2cdfde60b23f24c73a841c81331a6b"
+ },
+ "S03E01._James_and_Alice.mp4|librav1e|210": {
+  "m": {
+   "vmaf": 53.085893,
+   "psnr_hvs": 28.344605,
+   "vif_scale0": 0.304692,
+   "adm2": 0.889719,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 78.018,
+   "bytes": 99557
+  },
+  "sec": 215.12,
+  "material_md5": "de2cdfde60b23f24c73a841c81331a6b"
+ },
+ "S05E01._Forever_Friends.mp4|libx264|18": {
+  "m": {
+   "vmaf": 96.965664,
+   "psnr_hvs": 47.546516,
+   "vif_scale0": 0.80915,
+   "adm2": 0.994012,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 3624.272,
+   "bytes": 4534880
+  },
+  "sec": 6.53,
+  "material_md5": "f7ddb34c1cca937812201a62eae0b7d9"
+ },
+ "S05E01._Forever_Friends.mp4|libx264|22": {
+  "m": {
+   "vmaf": 95.428801,
+   "psnr_hvs": 44.357585,
+   "vif_scale0": 0.734296,
+   "adm2": 0.990169,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 2096.978,
+   "bytes": 2625730
+  },
+  "sec": 5.89,
+  "material_md5": "f7ddb34c1cca937812201a62eae0b7d9"
+ },
+ "S05E01._Forever_Friends.mp4|libx264|26": {
+  "m": {
+   "vmaf": 92.507809,
+   "psnr_hvs": 40.989601,
+   "vif_scale0": 0.645446,
+   "adm2": 0.983575,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 1202.3,
+   "bytes": 1507366
+  },
+  "sec": 5.33,
+  "material_md5": "f7ddb34c1cca937812201a62eae0b7d9"
+ },
+ "S05E01._Forever_Friends.mp4|libx264|30": {
+  "m": {
+   "vmaf": 87.489689,
+   "psnr_hvs": 37.583021,
+   "vif_scale0": 0.549289,
+   "adm2": 0.973175,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 694.371,
+   "bytes": 872439
+  },
+  "sec": 4.76,
+  "material_md5": "f7ddb34c1cca937812201a62eae0b7d9"
+ },
+ "S05E01._Forever_Friends.mp4|libx264|34": {
+  "m": {
+   "vmaf": 79.303737,
+   "psnr_hvs": 34.278928,
+   "vif_scale0": 0.454585,
+   "adm2": 0.956087,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 402.945,
+   "bytes": 508157
+  },
+  "sec": 4.27,
+  "material_md5": "f7ddb34c1cca937812201a62eae0b7d9"
+ },
+ "S05E01._Forever_Friends.mp4|librav1e|10": {
+  "m": {
+   "vmaf": 98.536748,
+   "psnr_hvs": 52.696025,
+   "vif_scale0": 0.936085,
+   "adm2": 0.998878,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 12161.716,
+   "bytes": 15204375
+  },
+  "sec": 946.4,
+  "material_md5": "f7ddb34c1cca937812201a62eae0b7d9"
+ },
+ "S05E01._Forever_Friends.mp4|librav1e|30": {
+  "m": {
+   "vmaf": 97.589376,
+   "psnr_hvs": 48.475918,
+   "vif_scale0": 0.852031,
+   "adm2": 0.996013,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 4334.628,
+   "bytes": 5420399
+  },
+  "sec": 635.24,
+  "material_md5": "f7ddb34c1cca937812201a62eae0b7d9"
+ },
+ "S05E01._Forever_Friends.mp4|librav1e|50": {
+  "m": {
+   "vmaf": 96.570721,
+   "psnr_hvs": 46.028481,
+   "vif_scale0": 0.79083,
+   "adm2": 0.993248,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 2435.603,
+   "bytes": 3046586
+  },
+  "sec": 510.06,
+  "material_md5": "f7ddb34c1cca937812201a62eae0b7d9"
+ },
+ "S05E01._Forever_Friends.mp4|librav1e|70": {
+  "m": {
+   "vmaf": 95.471098,
+   "psnr_hvs": 44.274566,
+   "vif_scale0": 0.742008,
+   "adm2": 0.990447,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 1655.466,
+   "bytes": 2071383
+  },
+  "sec": 442.47,
+  "material_md5": "f7ddb34c1cca937812201a62eae0b7d9"
+ },
+ "S05E01._Forever_Friends.mp4|librav1e|90": {
+  "m": {
+   "vmaf": 94.247413,
+   "psnr_hvs": 42.728654,
+   "vif_scale0": 0.697121,
+   "adm2": 0.987549,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 1213.248,
+   "bytes": 1518611
+  },
+  "sec": 400.07,
+  "material_md5": "f7ddb34c1cca937812201a62eae0b7d9"
+ },
+ "S05E01._Forever_Friends.mp4|librav1e|110": {
+  "m": {
+   "vmaf": 92.036101,
+   "psnr_hvs": 40.692345,
+   "vif_scale0": 0.638911,
+   "adm2": 0.982604,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 825.042,
+   "bytes": 1033337
+  },
+  "sec": 367.22,
+  "material_md5": "f7ddb34c1cca937812201a62eae0b7d9"
+ },
+ "S05E01._Forever_Friends.mp4|librav1e|130": {
+  "m": {
+   "vmaf": 88.546126,
+   "psnr_hvs": 38.313549,
+   "vif_scale0": 0.571613,
+   "adm2": 0.975475,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 530.675,
+   "bytes": 665378
+  },
+  "sec": 317.11,
+  "material_md5": "f7ddb34c1cca937812201a62eae0b7d9"
+ },
+ "S05E01._Forever_Friends.mp4|librav1e|155": {
+  "m": {
+   "vmaf": 81.445916,
+   "psnr_hvs": 35.238718,
+   "vif_scale0": 0.484378,
+   "adm2": 0.96015,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 296.736,
+   "bytes": 372954
+  },
+  "sec": 276.8,
+  "material_md5": "f7ddb34c1cca937812201a62eae0b7d9"
+ },
+ "S05E01._Forever_Friends.mp4|librav1e|180": {
+  "m": {
+   "vmaf": 70.702617,
+   "psnr_hvs": 32.120034,
+   "vif_scale0": 0.397859,
+   "adm2": 0.937271,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 157.368,
+   "bytes": 198744
+  },
+  "sec": 240.86,
+  "material_md5": "f7ddb34c1cca937812201a62eae0b7d9"
+ },
+ "S05E01._Forever_Friends.mp4|librav1e|210": {
+  "m": {
+   "vmaf": 53.588785,
+   "psnr_hvs": 28.619118,
+   "vif_scale0": 0.306748,
+   "adm2": 0.892112,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null,
+   "kbps": 73.863,
+   "bytes": 94363
+  },
+  "sec": 212.91,
+  "material_md5": "f7ddb34c1cca937812201a62eae0b7d9"
+ }
+}

@@ -1,0 +1,782 @@
+{
+ "S01E01._The_New_Stall.mp4|libx264|18": {
+  "m": {
+   "vmaf": 96.491091,
+   "psnr_hvs": 48.187996,
+   "vif_scale0": 0.822617,
+   "adm2": 0.993274,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 15.54
+ },
+ "S01E01._The_New_Stall.mp4|libx264|21": {
+  "m": {
+   "vmaf": 95.399645,
+   "psnr_hvs": 45.961347,
+   "vif_scale0": 0.772107,
+   "adm2": 0.990169,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 7.97
+ },
+ "S01E01._The_New_Stall.mp4|libx264|24": {
+  "m": {
+   "vmaf": 93.741371,
+   "psnr_hvs": 43.544912,
+   "vif_scale0": 0.711882,
+   "adm2": 0.985792,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 6.84
+ },
+ "S01E01._The_New_Stall.mp4|libx264|27": {
+  "m": {
+   "vmaf": 91.257212,
+   "psnr_hvs": 40.977162,
+   "vif_scale0": 0.64622,
+   "adm2": 0.979687,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 4.43
+ },
+ "S01E01._The_New_Stall.mp4|libx264|30": {
+  "m": {
+   "vmaf": 87.210735,
+   "psnr_hvs": 38.306858,
+   "vif_scale0": 0.57609,
+   "adm2": 0.969902,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 4.76
+ },
+ "S01E01._The_New_Stall.mp4|libx265|10": {
+  "m": {
+   "vmaf": 97.994707,
+   "psnr_hvs": 51.879907,
+   "vif_scale0": 0.919157,
+   "adm2": 0.998114,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 45.5
+ },
+ "S01E01._The_New_Stall.mp4|libx265|13": {
+  "m": {
+   "vmaf": 97.580456,
+   "psnr_hvs": 50.077624,
+   "vif_scale0": 0.887487,
+   "adm2": 0.996932,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 41.12
+ },
+ "S01E01._The_New_Stall.mp4|libx265|16": {
+  "m": {
+   "vmaf": 96.939294,
+   "psnr_hvs": 48.253038,
+   "vif_scale0": 0.850692,
+   "adm2": 0.995159,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 30.32
+ },
+ "S01E01._The_New_Stall.mp4|libx265|19": {
+  "m": {
+   "vmaf": 96.120904,
+   "psnr_hvs": 46.422008,
+   "vif_scale0": 0.809815,
+   "adm2": 0.992957,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 26.44
+ },
+ "S01E01._The_New_Stall.mp4|libx265|21": {
+  "m": {
+   "vmaf": 95.399268,
+   "psnr_hvs": 45.157272,
+   "vif_scale0": 0.779263,
+   "adm2": 0.991093,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 18.73
+ },
+ "S01E01._The_New_Stall.mp4|libx265|24": {
+  "m": {
+   "vmaf": 93.985327,
+   "psnr_hvs": 43.198404,
+   "vif_scale0": 0.727607,
+   "adm2": 0.987535,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 16.15
+ },
+ "S01E01._The_New_Stall.mp4|libx265|27": {
+  "m": {
+   "vmaf": 91.885015,
+   "psnr_hvs": 41.119825,
+   "vif_scale0": 0.668915,
+   "adm2": 0.982531,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 17.26
+ },
+ "S01E01._The_New_Stall.mp4|libx265|30": {
+  "m": {
+   "vmaf": 88.68719,
+   "psnr_hvs": 38.841389,
+   "vif_scale0": 0.604825,
+   "adm2": 0.975317,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 9.69
+ },
+ "S01E01._The_New_Stall.mp4|libx265|34": {
+  "m": {
+   "vmaf": 81.754485,
+   "psnr_hvs": 35.595396,
+   "vif_scale0": 0.513769,
+   "adm2": 0.960336,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 19.88
+ },
+ "S01E01._The_New_Stall.mp4|libx265|38": {
+  "m": {
+   "vmaf": 71.352849,
+   "psnr_hvs": 32.33756,
+   "vif_scale0": 0.425977,
+   "adm2": 0.937033,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 15.12
+ },
+ "S01E01._The_New_Stall.mp4|libvpx-vp9|10": {
+  "m": {
+   "vmaf": 97.774876,
+   "psnr_hvs": 49.677635,
+   "vif_scale0": 0.883255,
+   "adm2": 0.997353,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 73.3
+ },
+ "S01E01._The_New_Stall.mp4|libvpx-vp9|13": {
+  "m": {
+   "vmaf": 97.447461,
+   "psnr_hvs": 48.458536,
+   "vif_scale0": 0.858488,
+   "adm2": 0.996424,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 70.5
+ },
+ "S01E01._The_New_Stall.mp4|libvpx-vp9|16": {
+  "m": {
+   "vmaf": 97.101931,
+   "psnr_hvs": 47.380569,
+   "vif_scale0": 0.836285,
+   "adm2": 0.995505,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 59.4
+ },
+ "S01E01._The_New_Stall.mp4|libvpx-vp9|20": {
+  "m": {
+   "vmaf": 96.649316,
+   "psnr_hvs": 46.334939,
+   "vif_scale0": 0.811782,
+   "adm2": 0.994333,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 58.61
+ },
+ "S01E01._The_New_Stall.mp4|libvpx-vp9|23": {
+  "m": {
+   "vmaf": 96.309922,
+   "psnr_hvs": 45.645459,
+   "vif_scale0": 0.794588,
+   "adm2": 0.993468,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 67.21
+ },
+ "S01E01._The_New_Stall.mp4|libvpx-vp9|26": {
+  "m": {
+   "vmaf": 95.693894,
+   "psnr_hvs": 44.616494,
+   "vif_scale0": 0.768716,
+   "adm2": 0.991915,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 60.31
+ },
+ "S01E01._The_New_Stall.mp4|libvpx-vp9|30": {
+  "m": {
+   "vmaf": 94.709723,
+   "psnr_hvs": 43.246362,
+   "vif_scale0": 0.733563,
+   "adm2": 0.989592,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 51.8
+ },
+ "S01E01._The_New_Stall.mp4|libvpx-vp9|34": {
+  "m": {
+   "vmaf": 93.302633,
+   "psnr_hvs": 41.702517,
+   "vif_scale0": 0.691747,
+   "adm2": 0.986447,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 46.48
+ },
+ "S01E01._The_New_Stall.mp4|libvpx-vp9|38": {
+  "m": {
+   "vmaf": 91.329327,
+   "psnr_hvs": 40.041704,
+   "vif_scale0": 0.645007,
+   "adm2": 0.982143,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 45.57
+ },
+ "S01E01._The_New_Stall.mp4|libvpx-vp9|44": {
+  "m": {
+   "vmaf": 87.345743,
+   "psnr_hvs": 37.66649,
+   "vif_scale0": 0.577287,
+   "adm2": 0.973646,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 40.71
+ },
+ "S01E01._The_New_Stall.mp4|libaom-av1|10": {
+  "m": {
+   "vmaf": 97.511139,
+   "psnr_hvs": 49.324078,
+   "vif_scale0": 0.868456,
+   "adm2": 0.996945,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 207.46
+ },
+ "S01E01._The_New_Stall.mp4|libaom-av1|13": {
+  "m": {
+   "vmaf": 97.135265,
+   "psnr_hvs": 48.218675,
+   "vif_scale0": 0.845738,
+   "adm2": 0.995969,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 171.33
+ },
+ "S01E01._The_New_Stall.mp4|libaom-av1|16": {
+  "m": {
+   "vmaf": 96.781281,
+   "psnr_hvs": 47.303581,
+   "vif_scale0": 0.826616,
+   "adm2": 0.995068,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 146.78
+ },
+ "S01E01._The_New_Stall.mp4|libaom-av1|20": {
+  "m": {
+   "vmaf": 96.254881,
+   "psnr_hvs": 46.298428,
+   "vif_scale0": 0.805184,
+   "adm2": 0.993788,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 126.66
+ },
+ "S01E01._The_New_Stall.mp4|libaom-av1|23": {
+  "m": {
+   "vmaf": 95.973119,
+   "psnr_hvs": 45.772731,
+   "vif_scale0": 0.793003,
+   "adm2": 0.9931,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 121.75
+ },
+ "S01E01._The_New_Stall.mp4|libaom-av1|26": {
+  "m": {
+   "vmaf": 95.50393,
+   "psnr_hvs": 44.948682,
+   "vif_scale0": 0.774022,
+   "adm2": 0.991993,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 112.82
+ },
+ "S01E01._The_New_Stall.mp4|libaom-av1|30": {
+  "m": {
+   "vmaf": 94.84378,
+   "psnr_hvs": 43.935509,
+   "vif_scale0": 0.749947,
+   "adm2": 0.990436,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 102.42
+ },
+ "S01E01._The_New_Stall.mp4|libaom-av1|34": {
+  "m": {
+   "vmaf": 93.909775,
+   "psnr_hvs": 42.776672,
+   "vif_scale0": 0.721195,
+   "adm2": 0.98828,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 81.85
+ },
+ "S01E01._The_New_Stall.mp4|libaom-av1|38": {
+  "m": {
+   "vmaf": 92.864501,
+   "psnr_hvs": 41.69167,
+   "vif_scale0": 0.692383,
+   "adm2": 0.985843,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 71.93
+ },
+ "S01E01._The_New_Stall.mp4|libaom-av1|44": {
+  "m": {
+   "vmaf": 91.133666,
+   "psnr_hvs": 40.172397,
+   "vif_scale0": 0.650334,
+   "adm2": 0.981945,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 65.24
+ },
+ "S01E01._The_New_Stall.mp4|libsvtav1|10": {
+  "m": {
+   "vmaf": 97.372817,
+   "psnr_hvs": 48.615148,
+   "vif_scale0": 0.856958,
+   "adm2": 0.996113,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 9.3
+ },
+ "S01E01._The_New_Stall.mp4|libsvtav1|13": {
+  "m": {
+   "vmaf": 96.944086,
+   "psnr_hvs": 47.68383,
+   "vif_scale0": 0.834611,
+   "adm2": 0.994982,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 8.43
+ },
+ "S01E01._The_New_Stall.mp4|libsvtav1|16": {
+  "m": {
+   "vmaf": 96.617065,
+   "psnr_hvs": 46.987756,
+   "vif_scale0": 0.817803,
+   "adm2": 0.994119,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 10.81
+ },
+ "S01E01._The_New_Stall.mp4|libsvtav1|20": {
+  "m": {
+   "vmaf": 96.190663,
+   "psnr_hvs": 46.165382,
+   "vif_scale0": 0.79903,
+   "adm2": 0.993196,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 11.2
+ },
+ "S01E01._The_New_Stall.mp4|libsvtav1|23": {
+  "m": {
+   "vmaf": 95.92616,
+   "psnr_hvs": 45.714876,
+   "vif_scale0": 0.788283,
+   "adm2": 0.992669,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 11.58
+ },
+ "S01E01._The_New_Stall.mp4|libsvtav1|26": {
+  "m": {
+   "vmaf": 95.57334,
+   "psnr_hvs": 45.037586,
+   "vif_scale0": 0.771997,
+   "adm2": 0.991971,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 11.14
+ },
+ "S01E01._The_New_Stall.mp4|libsvtav1|30": {
+  "m": {
+   "vmaf": 95.029182,
+   "psnr_hvs": 44.069045,
+   "vif_scale0": 0.74964,
+   "adm2": 0.990976,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 10.83
+ },
+ "S01E01._The_New_Stall.mp4|libsvtav1|34": {
+  "m": {
+   "vmaf": 94.403479,
+   "psnr_hvs": 43.062784,
+   "vif_scale0": 0.725909,
+   "adm2": 0.989906,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 11.11
+ },
+ "S01E01._The_New_Stall.mp4|libsvtav1|38": {
+  "m": {
+   "vmaf": 93.791164,
+   "psnr_hvs": 42.113807,
+   "vif_scale0": 0.702663,
+   "adm2": 0.98898,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 11.08
+ },
+ "S01E01._The_New_Stall.mp4|libsvtav1|44": {
+  "m": {
+   "vmaf": 92.684679,
+   "psnr_hvs": 40.822162,
+   "vif_scale0": 0.671783,
+   "adm2": 0.987201,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 11.63
+ },
+ "S01E01._The_New_Stall.mp4|librav1e|10": {
+  "m": {
+   "vmaf": 98.145859,
+   "psnr_hvs": 52.532868,
+   "vif_scale0": 0.933831,
+   "adm2": 0.998475,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 650.71
+ },
+ "S01E01._The_New_Stall.mp4|librav1e|30": {
+  "m": {
+   "vmaf": 97.036031,
+   "psnr_hvs": 48.516908,
+   "vif_scale0": 0.853809,
+   "adm2": 0.995069,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 429.07
+ },
+ "S01E01._The_New_Stall.mp4|librav1e|50": {
+  "m": {
+   "vmaf": 95.940928,
+   "psnr_hvs": 46.162795,
+   "vif_scale0": 0.79621,
+   "adm2": 0.992021,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 350.28
+ },
+ "S01E01._The_New_Stall.mp4|librav1e|70": {
+  "m": {
+   "vmaf": 94.799711,
+   "psnr_hvs": 44.458529,
+   "vif_scale0": 0.749542,
+   "adm2": 0.988959,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 305.46
+ },
+ "S01E01._The_New_Stall.mp4|librav1e|90": {
+  "m": {
+   "vmaf": 93.493894,
+   "psnr_hvs": 42.956573,
+   "vif_scale0": 0.706319,
+   "adm2": 0.985679,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 273.92
+ },
+ "S01E01._The_New_Stall.mp4|librav1e|110": {
+  "m": {
+   "vmaf": 91.327639,
+   "psnr_hvs": 40.927434,
+   "vif_scale0": 0.651152,
+   "adm2": 0.980365,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 242.55
+ },
+ "S01E01._The_New_Stall.mp4|librav1e|130": {
+  "m": {
+   "vmaf": 87.730442,
+   "psnr_hvs": 38.485394,
+   "vif_scale0": 0.585791,
+   "adm2": 0.972502,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 221.18
+ },
+ "S01E01._The_New_Stall.mp4|librav1e|155": {
+  "m": {
+   "vmaf": 80.369467,
+   "psnr_hvs": 35.247361,
+   "vif_scale0": 0.501668,
+   "adm2": 0.955526,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 194.26
+ },
+ "S01E01._The_New_Stall.mp4|librav1e|180": {
+  "m": {
+   "vmaf": 69.622277,
+   "psnr_hvs": 31.981515,
+   "vif_scale0": 0.41906,
+   "adm2": 0.931092,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 179.49
+ },
+ "S01E01._The_New_Stall.mp4|librav1e|210": {
+  "m": {
+   "vmaf": 52.159625,
+   "psnr_hvs": 28.341652,
+   "vif_scale0": 0.330786,
+   "adm2": 0.882575,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 159.24
+ },
+ "S01E01._The_New_Stall.mp4|librav1e@10|10": {
+  "m": {
+   "vmaf": 98.160702,
+   "psnr_hvs": 51.349481,
+   "vif_scale0": 0.929659,
+   "adm2": 0.99854,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 167.37
+ },
+ "S01E01._The_New_Stall.mp4|librav1e@10|30": {
+  "m": {
+   "vmaf": 97.085317,
+   "psnr_hvs": 48.031306,
+   "vif_scale0": 0.850072,
+   "adm2": 0.995303,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 111.73
+ },
+ "S01E01._The_New_Stall.mp4|librav1e@10|50": {
+  "m": {
+   "vmaf": 95.951066,
+   "psnr_hvs": 45.85348,
+   "vif_scale0": 0.789802,
+   "adm2": 0.992074,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 97.48
+ },
+ "S01E01._The_New_Stall.mp4|librav1e@10|70": {
+  "m": {
+   "vmaf": 94.771743,
+   "psnr_hvs": 44.159891,
+   "vif_scale0": 0.74424,
+   "adm2": 0.988922,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 89.96
+ },
+ "S01E01._The_New_Stall.mp4|librav1e@10|90": {
+  "m": {
+   "vmaf": 93.574316,
+   "psnr_hvs": 42.724793,
+   "vif_scale0": 0.701563,
+   "adm2": 0.985803,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 92.63
+ },
+ "S01E01._The_New_Stall.mp4|librav1e@10|110": {
+  "m": {
+   "vmaf": 91.272543,
+   "psnr_hvs": 40.634561,
+   "vif_scale0": 0.639567,
+   "adm2": 0.979931,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 82.96
+ },
+ "S01E01._The_New_Stall.mp4|librav1e@10|130": {
+  "m": {
+   "vmaf": 87.200454,
+   "psnr_hvs": 38.09115,
+   "vif_scale0": 0.56718,
+   "adm2": 0.970117,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 91.25
+ },
+ "S01E01._The_New_Stall.mp4|librav1e@10|155": {
+  "m": {
+   "vmaf": 79.421633,
+   "psnr_hvs": 34.762371,
+   "vif_scale0": 0.478987,
+   "adm2": 0.952689,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 84.97
+ },
+ "S01E01._The_New_Stall.mp4|librav1e@10|180": {
+  "m": {
+   "vmaf": 67.92941,
+   "psnr_hvs": 31.409922,
+   "vif_scale0": 0.397001,
+   "adm2": 0.925618,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 66.22
+ },
+ "S01E01._The_New_Stall.mp4|librav1e@10|210": {
+  "m": {
+   "vmaf": 50.090755,
+   "psnr_hvs": 27.84855,
+   "vif_scale0": 0.316765,
+   "adm2": 0.87532,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 56.08
+ }
+}

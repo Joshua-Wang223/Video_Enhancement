@@ -1,0 +1,100 @@
+== word_world_2.mp4 -> /tmp/eqq_uni_6s/word_world_2 ==
+   已有 0 点；tiers=['libx265', 'libvpx-vp9', 'libaom-av1', 'libsvtav1', 'librav1e', 'librav1e@10']
+   prep 150 帧 md5=b36248afdd70
+   libx264           18 ->   2260.7 KiB  vmaf=96.625  (14.5s)
+   libx264           21 ->   1541.9 KiB  vmaf=95.057  (4.9s)
+   libx264           24 ->   1038.6 KiB  vmaf=92.663  (4.1s)
+   libx264           27 ->    695.6 KiB  vmaf=89.252  (3.9s)
+   libx264           30 ->    471.4 KiB  vmaf=84.667  (4.1s)
+   libx265           10 ->   5013.8 KiB  vmaf=98.167  (28.5s)
+   libx265           13 ->   3367.1 KiB  vmaf=97.625  (36.9s)
+   libx265           16 ->   2251.8 KiB  vmaf=96.839  (37.6s)
+   libx265           19 ->   1512.6 KiB  vmaf=95.649  (23.0s)
+   libx265           21 ->   1159.8 KiB  vmaf=94.608  (14.2s)
+   libx265           24 ->    782.9 KiB  vmaf=92.517  (14.3s)
+   libx265           27 ->    526.7 KiB  vmaf=89.596  (15.7s)
+   libx265           30 ->    361.5 KiB  vmaf=85.521  (18.3s)
+   libx265           34 ->    226.4 KiB  vmaf=78.076  (12.6s)
+   libx265           38 ->    144.5 KiB  vmaf=67.315  (12.4s)
+   -- libx265 完成，累计 15 点，用时 15.5 min
+   [skip] libx264 18
+   [skip] libx264 21
+   [skip] libx264 24
+   [skip] libx264 27
+   [skip] libx264 30
+   libvpx-vp9        10 ->   3594.6 KiB  vmaf=97.896  (47.8s)
+   libvpx-vp9        13 ->   2805.6 KiB  vmaf=97.479  (38.8s)
+   libvpx-vp9        16 ->   2269.4 KiB  vmaf=97.034  (62.6s)
+   libvpx-vp9        20 ->   1836.0 KiB  vmaf=96.474  (52.4s)
+   libvpx-vp9        23 ->   1593.8 KiB  vmaf=96.053  (37.6s)
+   libvpx-vp9        26 ->   1304.1 KiB  vmaf=95.291  (34.0s)
+   libvpx-vp9        30 ->   1007.3 KiB  vmaf=94.058  (46.2s)
+   libvpx-vp9        34 ->    759.3 KiB  vmaf=92.341  (54.5s)
+   libvpx-vp9        38 ->    565.7 KiB  vmaf=90.075  (40.7s)
+   libvpx-vp9        44 ->    371.5 KiB  vmaf=85.956  (33.3s)
+   -- libvpx-vp9 完成，累计 25 点，用时 31.1 min
+   [skip] libx264 18
+   [skip] libx264 21
+   [skip] libx264 24
+   [skip] libx264 27
+   [skip] libx264 30
+   libaom-av1        10 ->   2516.0 KiB  vmaf=97.717  (64.7s)
+   libaom-av1        13 ->   1959.3 KiB  vmaf=97.308  (51.0s)
+   libaom-av1        16 ->   1598.1 KiB  vmaf=96.834  (55.3s)
+   libaom-av1        20 ->   1260.5 KiB  vmaf=96.152  (44.6s)
+   libaom-av1        23 ->   1098.8 KiB  vmaf=95.736  (74.3s)
+   libaom-av1        26 ->    894.2 KiB  vmaf=95.027  (61.2s)
+   libaom-av1        30 ->    689.2 KiB  vmaf=93.899  (69.1s)
+   libaom-av1        34 ->    512.0 KiB  vmaf=92.265  (53.2s)
+   libaom-av1        38 ->    382.1 KiB  vmaf=90.406  (60.2s)
+   libaom-av1        44 ->    251.9 KiB  vmaf=87.186  (47.4s)
+   -- libaom-av1 完成，累计 35 点，用时 49.7 min
+   [skip] libx264 18
+   [skip] libx264 21
+   [skip] libx264 24
+   [skip] libx264 27
+   [skip] libx264 30
+   libsvtav1         10 ->   3022.4 KiB  vmaf=97.759  (13.8s)
+   libsvtav1         13 ->   2348.9 KiB  vmaf=97.433  (14.1s)
+   libsvtav1         16 ->   1937.8 KiB  vmaf=97.048  (12.3s)
+   libsvtav1         20 ->   1563.5 KiB  vmaf=96.561  (12.4s)
+   libsvtav1         23 ->   1373.9 KiB  vmaf=96.237  (10.0s)
+   libsvtav1         26 ->   1148.3 KiB  vmaf=95.692  (13.7s)
+   libsvtav1         30 ->    902.0 KiB  vmaf=94.835  (11.4s)
+   libsvtav1         34 ->    676.9 KiB  vmaf=93.508  (11.8s)
+   libsvtav1         38 ->    506.0 KiB  vmaf=91.879  (14.9s)
+   libsvtav1         44 ->    331.7 KiB  vmaf=89.002  (20.2s)
+   -- libsvtav1 完成，累计 45 点，用时 60.3 min
+   [skip] libx264 18
+   [skip] libx264 21
+   [skip] libx264 24
+   [skip] libx264 27
+   [skip] libx264 30
+   librav1e          10 ->   5738.0 KiB  vmaf=98.506  (713.4s)
+   librav1e          30 ->   2417.4 KiB  vmaf=97.344  (406.0s)
+   librav1e          50 ->   1509.9 KiB  vmaf=95.959  (305.2s)
+   librav1e          70 ->   1096.4 KiB  vmaf=94.288  (267.7s)
+   librav1e          90 ->    849.2 KiB  vmaf=92.765  (242.4s)
+   librav1e         110 ->    617.4 KiB  vmaf=90.064  (222.6s)
+   librav1e         130 ->    430.0 KiB  vmaf=86.003  (208.8s)
+   librav1e         155 ->    273.6 KiB  vmaf=78.696  (186.6s)
+   librav1e         180 ->    172.8 KiB  vmaf=68.475  (172.6s)
+   librav1e         210 ->    100.7 KiB  vmaf=51.634  (159.4s)
+   -- librav1e 完成，累计 55 点，用时 114.3 min
+   [skip] libx264 18
+   [skip] libx264 21
+   [skip] libx264 24
+   [skip] libx264 27
+   [skip] libx264 30
+   librav1e@10       10 ->   6823.1 KiB  vmaf=98.410  (134.7s)
+   librav1e@10       30 ->   2663.8 KiB  vmaf=97.348  (102.1s)
+   librav1e@10       50 ->   1664.6 KiB  vmaf=96.019  (90.5s)
+   librav1e@10       70 ->   1212.5 KiB  vmaf=94.393  (85.3s)
+   librav1e@10       90 ->    943.8 KiB  vmaf=92.907  (81.3s)
+   librav1e@10      110 ->    694.4 KiB  vmaf=90.243  (77.6s)
+   librav1e@10      130 ->    483.7 KiB  vmaf=85.940  (75.1s)
+   librav1e@10      155 ->    307.8 KiB  vmaf=78.597  (70.3s)
+   librav1e@10      180 ->    193.5 KiB  vmaf=67.910  (68.2s)
+   librav1e@10      210 ->    112.2 KiB  vmaf=51.019  (67.3s)
+   -- librav1e@10 完成，累计 65 点，用时 134.3 min
+== word_world_2.mp4 完成：65 点，用时 134.3 min

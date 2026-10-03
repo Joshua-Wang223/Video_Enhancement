@@ -1,0 +1,156 @@
+==============================================================================
+  Video_Enhancement · CRF/CQ 统一优化实测验证
+  项目根：/mnt/d/Workspace_Python/Video_Enhancement
+  时间：2026-10-02 23:18:30
+==============================================================================
+
+【G0】前置条件
+  ✅ [G0-1] Python 版本 ≥ 3.9 — 3.14.4
+  ✅ [G0-2] ffmpeg 可用 — /usr/bin/ffmpeg
+  ✅ [G0-3] ffprobe 可用 — /usr/bin/ffprobe
+  ✅ [G0-4] ffmpeg 编码器清单 — h264_nvenc, hevc_nvenc, libx264
+        · 共 227 个编码器
+  ⏭️  [G0-5] NVENC 真机可用 — 未启用 GPU 组（--quick / --no-gpu 或自动探测未命中）
+  ✅ [G0-6] quality_map 模块可导入 — src/utils/quality_map.py
+  ✅ [G0-7] libvmaf 滤镜可用（可选） — 可用，将额外采集 VMAF
+  ⏭️  [G0-8] torch 可用（决定 EMIT/GPU 组） — 不可用，EMIT 组将 SKIP
+
+【G1】换算表正确性
+  ✅ [G1-1] 单一真源：convert_crf.py 提供 SIZE_MAP/QUALITY_MAP — 5 个编码器条目
+        · quality_map 自 convert_crf.py 导入并 re-export
+  ✅ [G1-2] REF=21 等效映射与报告 §4.3 一致 — 全部命中
+        · libx264      -crf    21  
+        · libx265      -crf    21  
+        · h264_nvenc   -cq:v   26  -b:v 0
+        · hevc_nvenc   -cq:v   28  -b:v 0
+        · av1_nvenc    -cq:v   27  -b:v 0
+        · libsvtav1    -crf    24  
+        · …（另有 2 条，见报告）
+  ✅ [G1-3] 质量-数值单调性（正轴递增 / VideoToolbox 反向） — 单调
+  ✅ [G1-4] 基准轴往返一致（to∘from ≈ identity） — 往返误差 ≤0.6
+  ✅ [G1-5] 边界值 clamp 到各编码器合法量程 — 全部在量程内
+  ✅ [G1-6] 未知编码器不猜测（返回 None）
+  ✅ [G1-7] literal_range 与 SIZE_MAP 量程一致 — 全部一致
+  ✅ [G1-8] VAAPI 族只有 -qp（参数名/能力/量程同步） — 全部一致
+
+【G2】resolve_quality 判定顺序
+  ✅ [G2-1] 无输入 → 默认基准 21 换算 — hevc_nvenc {} → -cq:v 28 -b:v 0
+  ✅ [G2-2] crf_ref → 按基准轴换算 — hevc_nvenc {'crf_ref': 21} → -cq:v 28 -b:v 0
+  ✅ [G2-3] cq_ref → 经 h264_nvenc 归一再换算 — hevc_nvenc {'cq_ref': 21} → -cq:v 24 -b:v 0
+  ✅ [G2-4] crf 字面量·同族原样下发 — libx264 {'crf': 18} → -crf 18 
+  ✅ [G2-5] cq 字面量·同族原样下发 — h264_nvenc {'cq': 26} → -cq:v 26 -b:v 0
+  ✅ [G2-6] cq 字面量·跨族换算到软编 — libx264 {'cq': 26} → -crf 21 
+  ✅ [G2-7] crf 字面量·跨族换算到硬编 — h264_nvenc {'crf': 21} → -cq:v 26 -b:v 0
+  ✅ [G2-8] crf_ref=0 无损意图不套线性映射 — hevc_nvenc {'crf_ref': 0} → -cq:v 0 -b:v 0
+  ✅ [G2-9] cq_ref=0 无损意图 — libx265 {'cq_ref': 0} → -crf 0 
+  ✅ [G2-10] librav1e 用 -qp 而非 -crf — librav1e {} → -qp 66 
+  ✅ [G2-11] libvpx-vp9 必须配 -b:v 0 — libvpx-vp9 {} → -crf 28 -b:v 0
+  ✅ [G2-12] 未知编码器不抛异常（原样兜底） — → -crf 21
+        · 编码器 no_such_codec 无等效表，原样下发
+  ✅ [G2-13] VAAPI 任意质量输入归一到基准轴后走 -qp — 全部一致
+
+【G3】CONSTQP 轴换算
+  ✅ [G3-1] h264_nvenc：CQ 26 → QP 21（回到基准轴） — QP=21
+  ✅ [G3-2] hevc_nvenc：CQ 28 → QP ≈20 — QP=20（21↔28 往返的已知取整伪影，±1 内）
+  ✅ [G3-3] 未知编码器原样返回（不猜测）
+  ✅ [G3-4] 无损 QP=0 保持 0
+  ✅ [G3-5] CONSTQP_QP_OFFSET 为可调口且当前为 0 — CONSTQP_QP_OFFSET=0
+  ✅ [G3-6] CONSTQP 轴与 CQ 轴不混用（值不同） — cq=28 vs qp=20
+  ✅ [G3-7] av1_nvenc：CQ 27 → QP 63（AV1 qindex ≈3×，L40 实测确认） — QP=63（×3 倍率 L40 实测确认）
+        · [FIX-QP-SCALE] _QP_MAP_OVERRIDE['av1_nvenc'] = (3.0, 0.0, 0, 255)
+  ✅ [G3-8] librav1e：QP 80 → 80（QP 原生刻度，恒等透传） — QP=80
+
+【G4】CLI 契约 / 互斥 / 量程 / 优先级
+  ❌ [G4] CLI 契约组 执行中断 — ModuleNotFoundError: No module named 'cv2'
+        · ModuleNotFoundError: No module named 'cv2'
+
+【G5】代码落点静态核验
+  ✅ [G5-1] quality_map.py 对外契约完整 — 全部存在
+  ✅ [G5-11] 主入口接线 literal_range（[P0-FIX-QUALITY-RANGE]） — 已导入并在校验循环中调用
+  ✅ [G5-12] preset 能力为白名单且成员正确（[FIX-PRESET-WHITELIST]） — 白名单正确
+        · _PRESET_CODECS=['av1_nvenc', 'h264_nvenc', 'hevc_nvenc', 'libx264', 'libx265']
+  ✅ [G5-2] IFRNet 后端接入统一换算 — 全部命中
+  ✅ [G5-3] IFRNet FFmpeg 下发路径正确 — 全部命中
+  ✅ [G5-4] Real-ESRGAN 后端接入统一换算 — 全部命中
+  ✅ [G5-5] Real-ESRGAN FFmpeg 下发路径正确 — 全部命中
+  ✅ [G5-6] avgBitRate 天花板分辨率自适应（两侧同公式同常量） — 两侧一致且无旧式残留
+  ✅ [G5-7] JSON 默认 crf_ref/rate_mode/LA 两侧一致 — ifrnet=(21, 'vbr_hq', 8) esrgan=(21, 'vbr_hq', 8)
+  ✅ [G5-8] config_manager 内置默认与 JSON 一致
+  ✅ [G5-9] 全部改动 Python 文件编译通过 — OK
+  ✅ [G5-10] 两侧后端 NVENC RC 映射表语义一致 — ifrnet=[('cbr', 'cbr'), ('constqp', 'constqp'), ('qvbr', 'vbr_hq'), ('vbr', 'vbr'), ('vbr_hq', 'vbr_hq')] | esrgan=[('cbr', 'cbr'), ('constqp', 'constqp'), ('qvbr', 'vbr_hq'), ('vbr', 'vbr'), ('vbr_hq', 'vbr_hq')]
+
+【G6】下发命令捕获（ffmpeg 参数形状）
+  ⏭️  [G6-1] IFRNet h264_nvenc rc=vbr_hq → 命令形状 — 后端不可导入/需 GPU：ModuleNotFoundError: No module named 'numpy'
+  ⏭️  [G6-2] IFRNet h264_nvenc rc=constqp → 命令形状 — 后端不可导入/需 GPU：ModuleNotFoundError: No module named 'numpy'
+  ⏭️  [G6-3] IFRNet libx264 rc=vbr_hq → 命令形状 — 后端不可导入/需 GPU：ModuleNotFoundError: No module named 'numpy'
+  ⏭️  [G6-4] ESRGAN h264_nvenc rc=vbr_hq → 命令形状 — 后端不可导入/需 GPU：ModuleNotFoundError: No module named 'numpy'
+  ⏭️  [G6-5] ESRGAN h264_nvenc rc=constqp → 命令形状 — 后端不可导入/需 GPU：ModuleNotFoundError: No module named 'numpy'
+  ⏭️  [G6-6] ESRGAN libx265 rc=vbr_hq → 命令形状 — 后端不可导入/需 GPU：ModuleNotFoundError: No module named 'numpy'
+  ⏭️  [G6-7] IFRNet av1_nvenc rc=constqp → 命令形状 — 后端不可导入/需 GPU：ModuleNotFoundError: No module named 'numpy'
+  ⏭️  [G6-8] ESRGAN av1_nvenc rc=constqp → 命令形状 — 后端不可导入/需 GPU：ModuleNotFoundError: No module named 'numpy'
+  ⏭️  [G6-9] IFRNet av1_nvenc rc=vbr_hq → 命令形状 — 后端不可导入/需 GPU：ModuleNotFoundError: No module named 'numpy'
+  ⏭️  [G6-10] ESRGAN av1_nvenc rc=vbr_hq → 命令形状 — 后端不可导入/需 GPU：ModuleNotFoundError: No module named 'numpy'
+
+【G7】画质统一性实测（同一基准 → 不同编码器）
+  ⏭️  [G7-1] 画质统一性实测 — 未启用 GPU 组（--quick / 无 NVENC）
+  ⏭️  [G7-2] 画质统一性实测 — 未启用 GPU 组（--quick / 无 NVENC）
+  ⏭️  [G7-3] 画质统一性实测 — 未启用 GPU 组（--quick / 无 NVENC）
+  ⏭️  [G7-4] 画质统一性实测 — 未启用 GPU 组（--quick / 无 NVENC）
+  ⏭️  [G7-5] 画质统一性实测 — 未启用 GPU 组（--quick / 无 NVENC）
+  ⏭️  [G7-6] 画质统一性实测 — 未启用 GPU 组（--quick / 无 NVENC）
+  ⏭️  [G7-7] 画质统一性实测 — 未启用 GPU 组（--quick / 无 NVENC）
+  ⏭️  [G7-8] 画质统一性实测 — 未启用 GPU 组（--quick / 无 NVENC）
+
+【G8】avgBitRate 天花板（分辨率自适应）合理性
+  ✅ [G8-1] 钳制公式分档（镜像公式） — ≤1080p: [5M, 50M]，>1080p: 上限 100M
+        · 360p30    raw=   20.7M → clamp= 20.7M
+        · 480p30    raw=   36.9M → clamp= 36.9M
+        · 720p30    raw=   82.9M → clamp= 50.0M  【触发上限】
+        · 720p60    raw=  165.9M → clamp= 50.0M  【触发上限】
+        · 1080p30   raw=  186.6M → clamp= 50.0M  【触发上限】
+        · 1080p60   raw=  373.2M → clamp= 50.0M  【触发上限】
+        · …（另有 4 条，见报告）
+  ⏭️  [G8-2] nvenc_sdk 真实钳制实现与公式一致 — nvenc_sdk 不可导入（ModuleNotFoundError），已由 G5-6 静态核验覆盖
+  ✅ [G8-3] 低需求档位（≈480p30 及以下）天花板不生效 — raw ≤ 上限，钳制不改变取值
+  ✅ [G8-3b] 天花板分档触发边界（≤1080p 50M / >1080p 100M） — 分辨率自适应后，高分辨率获得更大头部空间，故 G8-4 的实测仍必要
+        · 720p: 上限 50M，触发阈值 fps > 18.1
+        · 1080p: 上限 50M，触发阈值 fps > 8.0
+        · 1440p: 上限 100M，触发阈值 fps > 9.0
+        · 2160p: 上限 100M，触发阈值 fps > 4.0
+  ⏭️  [G8-4] 高熵内容：钳制前后画质对比 — 未启用 GPU 组（--quick / 无 NVENC）
+  ⏭️  [G8-4H] >1080p 高档天花板绑定验证 — 未启用 GPU 组（--quick / 无 NVENC）
+  ⏭️  [G8-6] 证据：原样下发 raw 的 maxrate 为驱动非法值 — 未启用 GPU 组（--quick / 无 NVENC）
+
+【G9】原范围外项闭环核对（原 5 项 SKIP → 已修复）
+  ❌ [G9] 原范围外项闭环核对组 执行中断 — ModuleNotFoundError: No module named 'cv2'
+        · ModuleNotFoundError: No module named 'cv2'
+
+【G10】环节①/③ 契约（合并/归一化 codec-aware）
+  ❌ [G10] 环节①/③ 契约组 执行中断 — ModuleNotFoundError: No module named 'cv2'
+        · ModuleNotFoundError: No module named 'cv2'
+
+==============================================================================
+  验证汇总
+==============================================================================
+  PREREQ    共  8 项  ✅ 6  ❌ 0  ⚠️ 0  ⏭️ 2
+  TABLE     共  8 项  ✅ 8  ❌ 0  ⚠️ 0  ⏭️ 0
+  RESOLVE   共 13 项  ✅13  ❌ 0  ⚠️ 0  ⏭️ 0
+  CONSTQP   共  8 项  ✅ 8  ❌ 0  ⚠️ 0  ⏭️ 0
+  CLI       共  1 项  ✅ 0  ❌ 1  ⚠️ 0  ⏭️ 0
+  STATIC    共 12 项  ✅12  ❌ 0  ⚠️ 0  ⏭️ 0
+  EMIT      共 10 项  ✅ 0  ❌ 0  ⚠️ 0  ⏭️10
+  QUALITY   共  8 项  ✅ 0  ❌ 0  ⚠️ 0  ⏭️ 8
+  BITRATE   共  7 项  ✅ 3  ❌ 0  ⚠️ 0  ⏭️ 4
+  SCOPE     共  1 项  ✅ 0  ❌ 1  ⚠️ 0  ⏭️ 0
+  PIPE      共  1 项  ✅ 0  ❌ 1  ⚠️ 0  ⏭️ 0
+------------------------------------------------------------------------------
+  合计：PASS=50  FAIL=3  WARN=0  SKIP=24
+
+  ❌ 未通过项：
+     · [G4] CLI 契约组 执行中断 — ModuleNotFoundError: No module named 'cv2'
+     · [G9] 原范围外项闭环核对组 执行中断 — ModuleNotFoundError: No module named 'cv2'
+     · [G10] 环节①/③ 契约组 执行中断 — ModuleNotFoundError: No module named 'cv2'
+==============================================================================
+
+  报告：/mnt/d/Workspace_Python/Video_Enhancement/verification_report/CRF_CQ统一验证报告_20261002_231831.md
+  数据：/mnt/d/Workspace_Python/Video_Enhancement/verification_report/CRF_CQ统一验证结果_20261002_231831.json

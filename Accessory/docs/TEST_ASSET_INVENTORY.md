@@ -212,3 +212,22 @@ BEH-H2  参数组合无互斥冲突                        PASS
 - [ ] 复核 `segment_bitstream_verify_v4.py` / `_v5.py` 的 git 跟踪状态（§3.2）。
 - [ ] 按 §3.1 在 Linux 仓库侧执行换行符归一化（独立提交）。
 - [ ] 待定项（15 个）按引用矩阵逐个确认后再决定归档/删除，**不做批量清理**。
+
+## 7. 增补：等质量标定资产（2026-10-03）
+
+等质量标定（CRF→CQ 表）收尾时新增/归整，见 §1 判定规则：
+
+| 文件 | 位置 | 状态 | 依据 |
+|---|---|---|---|
+| `eqq_slice_prep.py` | `probe/` | 活跃·标定工具 | 原片→720p 切片 + manifest，复用 harness `make_prep` 保证口径一致 |
+| `eqq_calibrate_clip.py` | `probe/` | 活跃·标定工具 | 单素材 CRF/QP 扫描，断点续跑|
+| `eqq_calibrate_batch.py` | `probe/` | 活跃·标定工具 | manifest 驱动的批量并行（替代硬编码的 `run_gen.sh`/`run_ji.sh`） |
+| `eqq_pool_fit_table.py` | `probe/` | 活跃·门禁级 | 池化+拟合+LOO+顺序无关断言，逐位复现库内 `QUALITY_MAP` |
+| `eqq_watch_batch.py` | `probe/` | 活跃·运维 | 批量看护：进度/加权 ETA/异常重启（替代 `eqq_watch.sh` 等） |
+| `eqq_diag/`（54 个） | `archive/` | 历史·已收口诊断 | 标定过程一次性排查脚本，含各自 README 说明分组与替代工具 |
+| `eqq_calibration/` | `data/` | 活跃·数据 | 18 文件 / 1400 原始点 + 报告 + 日志 + 2 个作废数据集 |
+
+⚠ **`data/` 不在 `COVERAGE_ROOTS` 内**（只有 py 才进编译/调用点扫描），
+故新增 5 个 `eqq_*.py` 使 `COMPILE_TARGETS` 相应增加，已由 `BEH-E1`/`BEH-E2` 覆盖。
+门禁复跑（本机 2026-10-03）：**84 项 / 通过 75 / 失败 0 / 警告 4 / 跳过 5**，
+与增补前基线一致（警告/跳过均为环境性项）。

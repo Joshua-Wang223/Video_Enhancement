@@ -1,0 +1,108 @@
+########## [2026-10-01 20:37] native 补标：+3 实拍影视（共 5 素材）##########
+ffmpeg: ffmpeg version 8.0.1-+vmaf Copyright (c) 2000-2025 the FFmpeg developers
+根: /mnt/d/Workspace_Python/Video_Enhancement
+工作目录: /tmp/eqq2/1280x720_10s_n2
+档位: ['librav1e']
+
+══ 素材 new5_raw.mp4 ══
+  prep: prep.mp4  23160.8 KiB  md5=b935972ad19f4892a8c0bb5b5399b902  frames=300  fps=30.00  hdr=False
+    [skip] libx264        v= 18  vmaf=99.438
+    [skip] libx264        v= 22  vmaf=98.054
+    [skip] libx264        v= 26  vmaf=94.074
+    [skip] libx264        v= 30  vmaf=86.953
+    [skip] libx264        v= 34  vmaf=75.894
+    [skip] librav1e       v= 10  vmaf=99.980
+    [skip] librav1e       v= 30  vmaf=99.793
+    [skip] librav1e       v= 50  vmaf=99.422
+    [skip] librav1e       v= 70  vmaf=98.796
+    [skip] librav1e       v= 90  vmaf=97.635
+    [skip] librav1e       v=110  vmaf=95.184
+    [skip] librav1e       v=130  vmaf=90.868
+    [skip] librav1e       v=155  vmaf=82.546
+    [skip] librav1e       v=180  vmaf=69.549
+    [skip] librav1e       v=210  vmaf=48.578
+  [librav1e] a=7.409431539331985 b=-81.3293869815165 resid=3.8298840583548497 dVMAF=1.453933859794816 model=linear mono=0.0
+
+══ 素材 word_world_2.mp4 ══
+  prep: prep.mp4  8589.4 KiB  md5=0707898b012a6d26b419e26f933f5e14  frames=250  fps=25.00  hdr=False
+    [skip] libx264        v= 18  vmaf=96.640
+    [skip] libx264        v= 22  vmaf=94.663
+    [skip] libx264        v= 26  vmaf=91.327
+    [skip] libx264        v= 30  vmaf=85.970
+    [skip] libx264        v= 34  vmaf=78.094
+    [skip] librav1e       v= 10  vmaf=98.260
+    [skip] librav1e       v= 30  vmaf=97.096
+    [skip] librav1e       v= 50  vmaf=95.750
+    [skip] librav1e       v= 70  vmaf=94.155
+    [skip] librav1e       v= 90  vmaf=92.693
+    [skip] librav1e       v=110  vmaf=90.137
+    [skip] librav1e       v=130  vmaf=86.197
+    [skip] librav1e       v=155  vmaf=79.225
+    [skip] librav1e       v=180  vmaf=69.457
+    [skip] librav1e       v=210  vmaf=52.367
+  [librav1e] a=7.7357949361485385 b=-103.17080910496657 resid=3.386669977914373 dVMAF=0.7624092714680444 model=linear mono=0.0
+
+══ 素材 S01E01._The_New_Stall.mp4 ══
+  prep: prep.mp4  13272.1 KiB  md5=09112c94dd876122f9aec53d3760700e  frames=300  fps=30.00  hdr=False
+    libx264        -crf  18 →   4522.9 KiB  vmaf=97.013 hvs=47.436 psnr=— ssim=— xpsnr=—  (  7.3s)
+    libx264        -crf  22 →   2645.9 KiB  vmaf=95.400 hvs=44.124 psnr=— ssim=— xpsnr=—  (  7.2s)
+    libx264        -crf  26 →   1534.9 KiB  vmaf=92.447 hvs=40.645 psnr=— ssim=— xpsnr=—  (  5.2s)
+    libx264        -crf  30 →    897.6 KiB  vmaf=87.175 hvs=37.167 psnr=— ssim=— xpsnr=—  (  4.3s)
+    libx264        -crf  34 →    529.2 KiB  vmaf=78.958 hvs=33.822 psnr=— ssim=— xpsnr=—  (  3.7s)
+    librav1e       -qp  10 →  15972.1 KiB  vmaf=98.573 hvs=52.836 psnr=— ssim=— xpsnr=—  (891.0s)
+    librav1e       -qp  30 →   5859.8 KiB  vmaf=97.697 hvs=48.555 psnr=— ssim=— xpsnr=—  (2298.6s)
+    librav1e       -qp  50 →   3339.0 KiB  vmaf=96.664 hvs=45.995 psnr=— ssim=— xpsnr=—  (544.4s)
+    librav1e       -qp  70 →   2278.3 KiB  vmaf=95.590 hvs=44.128 psnr=— ssim=— xpsnr=—  (480.9s)
+    librav1e       -qp  90 →   1689.3 KiB  vmaf=94.341 hvs=42.555 psnr=— ssim=— xpsnr=—  (430.6s)
+    librav1e       -qp 110 →   1158.4 KiB  vmaf=92.178 hvs=40.463 psnr=— ssim=— xpsnr=—  (377.0s)
+    librav1e       -qp 130 →    745.0 KiB  vmaf=88.646 hvs=38.024 psnr=— ssim=— xpsnr=—  (346.9s)
+    librav1e       -qp 155 →    417.5 KiB  vmaf=81.553 hvs=34.867 psnr=— ssim=— xpsnr=—  (295.3s)
+    librav1e       -qp 180 →    223.5 KiB  vmaf=70.981 hvs=31.695 psnr=— ssim=— xpsnr=—  (256.8s)
+    librav1e       -qp 210 →    106.6 KiB  vmaf=53.651 hvs=28.107 psnr=— ssim=— xpsnr=—  (223.7s)
+  [librav1e] a=7.447437580761948 b=-89.60722234396536 resid=3.4824153097569592 dVMAF=1.04430284201095 model=linear mono=0.0
+
+══ 素材 S03E01._James_and_Alice.mp4 ══
+  prep: prep.mp4  13625.6 KiB  md5=de2cdfde60b23f24c73a841c81331a6b  frames=300  fps=30.00  hdr=False
+    libx264        -crf  18 →   4555.7 KiB  vmaf=96.747 hvs=47.229 psnr=— ssim=— xpsnr=—  (  7.5s)
+    libx264        -crf  22 →   2630.2 KiB  vmaf=95.127 hvs=44.016 psnr=— ssim=— xpsnr=—  (  6.8s)
+    libx264        -crf  26 →   1505.3 KiB  vmaf=92.190 hvs=40.698 psnr=— ssim=— xpsnr=—  (  5.6s)
+    libx264        -crf  30 →    871.9 KiB  vmaf=87.153 hvs=37.353 psnr=— ssim=— xpsnr=—  (  4.9s)
+    libx264        -crf  34 →    512.8 KiB  vmaf=78.893 hvs=34.077 psnr=— ssim=— xpsnr=—  (  4.4s)
+    librav1e       -qp  10 →  16123.3 KiB  vmaf=98.572 hvs=52.746 psnr=— ssim=— xpsnr=—  (1012.3s)
+    librav1e       -qp  30 →   5832.1 KiB  vmaf=97.579 hvs=48.452 psnr=— ssim=— xpsnr=—  (683.1s)
+    librav1e       -qp  50 →   3256.5 KiB  vmaf=96.502 hvs=45.882 psnr=— ssim=— xpsnr=—  (538.3s)
+    librav1e       -qp  70 →   2203.0 KiB  vmaf=95.365 hvs=44.060 psnr=— ssim=— xpsnr=—  (465.7s)
+    librav1e       -qp  90 →   1611.2 KiB  vmaf=94.082 hvs=42.505 psnr=— ssim=— xpsnr=—  (429.6s)
+    librav1e       -qp 110 →   1089.3 KiB  vmaf=91.814 hvs=40.451 psnr=— ssim=— xpsnr=—  (363.2s)
+    librav1e       -qp 130 →    685.2 KiB  vmaf=88.219 hvs=38.049 psnr=— ssim=— xpsnr=—  (324.7s)
+    librav1e       -qp 155 →    379.1 KiB  vmaf=81.218 hvs=34.958 psnr=— ssim=— xpsnr=—  (275.1s)
+    librav1e       -qp 180 →    201.8 KiB  vmaf=70.457 hvs=31.860 psnr=— ssim=— xpsnr=—  (244.6s)
+    librav1e       -qp 210 →     97.2 KiB  vmaf=53.086 hvs=28.345 psnr=— ssim=— xpsnr=—  (215.1s)
+  [librav1e] a=7.250042546558551 b=-84.491580620213 resid=2.6723053377293553 dVMAF=0.6926427311239678 model=linear mono=0.0
+
+══ 素材 S05E01._Forever_Friends.mp4 ══
+  prep: prep.mp4  12883.0 KiB  md5=f7ddb34c1cca937812201a62eae0b7d9  frames=300  fps=30.00  hdr=False
+    libx264        -crf  18 →   4428.6 KiB  vmaf=96.966 hvs=47.547 psnr=— ssim=— xpsnr=—  (  6.5s)
+    libx264        -crf  22 →   2564.2 KiB  vmaf=95.429 hvs=44.358 psnr=— ssim=— xpsnr=—  (  5.9s)
+    libx264        -crf  26 →   1472.0 KiB  vmaf=92.508 hvs=40.990 psnr=— ssim=— xpsnr=—  (  5.3s)
+    libx264        -crf  30 →    852.0 KiB  vmaf=87.490 hvs=37.583 psnr=— ssim=— xpsnr=—  (  4.8s)
+    libx264        -crf  34 →    496.2 KiB  vmaf=79.304 hvs=34.279 psnr=— ssim=— xpsnr=—  (  4.3s)
+    librav1e       -qp  10 →  14848.0 KiB  vmaf=98.537 hvs=52.696 psnr=— ssim=— xpsnr=—  (946.4s)
+    librav1e       -qp  30 →   5293.4 KiB  vmaf=97.589 hvs=48.476 psnr=— ssim=— xpsnr=—  (635.2s)
+    librav1e       -qp  50 →   2975.2 KiB  vmaf=96.571 hvs=46.028 psnr=— ssim=— xpsnr=—  (510.1s)
+    librav1e       -qp  70 →   2022.8 KiB  vmaf=95.471 hvs=44.275 psnr=— ssim=— xpsnr=—  (442.5s)
+    librav1e       -qp  90 →   1483.0 KiB  vmaf=94.247 hvs=42.729 psnr=— ssim=— xpsnr=—  (400.1s)
+    librav1e       -qp 110 →   1009.1 KiB  vmaf=92.036 hvs=40.692 psnr=— ssim=— xpsnr=—  (367.2s)
+    librav1e       -qp 130 →    649.8 KiB  vmaf=88.546 hvs=38.314 psnr=— ssim=— xpsnr=—  (317.1s)
+    librav1e       -qp 155 →    364.2 KiB  vmaf=81.446 hvs=35.239 psnr=— ssim=— xpsnr=—  (276.8s)
+    librav1e       -qp 180 →    194.1 KiB  vmaf=70.703 hvs=32.120 psnr=— ssim=— xpsnr=—  (240.9s)
+    librav1e       -qp 210 →     92.2 KiB  vmaf=53.589 hvs=28.619 psnr=— ssim=— xpsnr=—  (212.9s)
+  [librav1e] a=7.462667043840492 b=-91.55425520218213 resid=3.2585941478967015 dVMAF=0.9417598752434202 model=linear mono=0.0
+
+── 跨素材聚合（a=池化最小二乘，b=各素材中位数）──
+  librav1e       a=7.4611 b=-91.043  区间=[0,255]  b_m范围=[-95.78, -82.07]  crf21→65.64
+
+报告: /tmp/eqq2/1280x720_10s_n2/report.json
+候选 QUALITY_MAP（等质量，软编）；rav1e@10 请另存 _EQQUAL_SPEED_OVERRIDE：
+    'librav1e': (7.4611, -91.043, 0, 255),
+########## [2026-10-02 01:30] native 补标结束 rc=0 ##########

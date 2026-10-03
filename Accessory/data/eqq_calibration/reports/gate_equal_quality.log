@@ -1,0 +1,35 @@
+── 等质量回归判据 ──
+源: new5_raw.mp4  6s  锚点 libx264 CRF 21
+等质量表覆盖: ['libaom-av1', 'librav1e', 'libsvtav1', 'libvpx-vp9', 'libx265']
+prep: md5=0209b9e62a8b740031b4a890dc88cbb5  frames=180  hdr=False
+  锚点 libx264 crf 21: vmaf=99.135 psnr=42.393 hvs=42.807
+  ✓ ⚠ libx265     q=  21  vmaf=99.318  ΔVMAF=+0.183  ΔPSNR=+0.710  ΔPSNR-HVS=+0.412  (参考门限 0.3/0.5，不判红)
+  ✓ ⚠ libvpx-vp9  q=  27  vmaf=99.668  ΔVMAF=+0.532  ΔPSNR=+0.504  ΔPSNR-HVS=+0.023  (参考门限 0.3/0.5，不判红)
+  ✓ ⚠ libaom-av1  q=  27  vmaf=99.150  ΔVMAF=+0.015  ΔPSNR=-0.004  ΔPSNR-HVS=-0.713  (参考门限 0.3/0.5，不判红)
+  ✓ ⚠ libsvtav1   q=  29  vmaf=99.423  ΔVMAF=+0.287  ΔPSNR=+0.082  ΔPSNR-HVS=-0.545  (参考门限 0.3/0.5，不判红)
+Traceback (most recent call last):
+  File "/mnt/d/Workspace_Python/Video_Enhancement/Accessory/verify/verify_equal_quality.py", line 162, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/mnt/d/Workspace_Python/Video_Enhancement/Accessory/verify/verify_equal_quality.py", line 121, in main
+    C.encode(prep, codec, p, out)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/d/Workspace_Python/Video_Enhancement/Accessory/probe/calibrate_equal_quality.py", line 209, in encode
+    return out.stat().st_size, time.time() - t0
+           ~~~~~~~~^^
+  File "/usr/lib/python3.14/pathlib/__init__.py", line 655, in stat
+    return os.stat(self, follow_symlinks=follow_symlinks)
+           ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/mnt/d/Workspace_Python/Video_Enhancement/temp/verify_equal_quality/librav1e_63.mp4'
+), '-frames:v', str(nframes),
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+         '-lavfi', filt, '-f', 'null', '-'])
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/d/Workspace_Python/Video_Enhancement/Accessory/probe/calibrate_equal_quality.py", line 143, in run
+    raise RuntimeError(' '.join(map(str, cmd)) + '\n' + (p.stderr or '')[-3000:])
+RuntimeError: ffmpeg -nostdin -y -hide_banner -loglevel error -i /mnt/d/Workspace_Python/Video_Enhancement/temp/verify_equal_quality/librav1e_63.mp4 -i /mnt/d/Workspace_Python/Video_Enhancement/temp/verify_equal_quality/prep.mp4 -frames:v 180 -lavfi libvmaf=feature=name=psnr_hvs:model=version=vmaf_v0.6.1:log_fmt=json:log_path=/mnt/d/Workspace_Python/Video_Enhancement/temp/verify_equal_quality/vmaf.json -f null -
+[mov,mp4,m4a,3gp,3g2,mj2 @ 0x5859f75cdc40] moov atom not found
+[in#0 @ 0x5859f75cd400] Error opening input: Invalid data found when processing input
+Error opening input file /mnt/d/Workspace_Python/Video_Enhancement/temp/verify_equal_quality/librav1e_63.mp4.
+Error opening input files: Invalid data found when processing input
+

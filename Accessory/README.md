@@ -13,7 +13,8 @@
 | `verify/` | 验收·门禁：码流完整性、优化方案落地、修复效果校验 | `plan_implementation_gate.py` 门禁全套 |
 | `infra/` | 测试基建：注入/包装工具（不改生产代码） | `sitecustomize.py` libcuda 调用日志、故障注入包装器 |
 | `docs/` | 结论与记录（非脚本）：md / txt / log | 实测结论、诊断日志、资产清单 |
-| `archive/` | 历史备份件（`*.bak*`） | 门禁脚本旧版、码流验收旧版 |
+| `archive/` | 历史备份件（`*.bak*`）与已退役的一次性诊断脚本 | 门禁脚本旧版、等质量标定排查脚本（`eqq_diag/`） |
+| `data/` | 标定/测量产出的**数据**（非脚本）：实测点集、报告、日志 | 等质量标定点集 `eqq_calibration/` |
 | `video_check/` | 视频质量检查工具与配置（整体搬迁，内部结构未动） | GPU 视频质检 |
 
 根级保留两项**必须**在测试树根的资产：
@@ -47,7 +48,7 @@
 |---|---|
 | `benchmark_ifrnet_versions.py` / `_v2` / `_v3` | `ifrnet_versions_benchmark.py` / `_v2` / `_v3` |
 
-### probe/（31）
+### probe/（39）
 | 旧名 | 新名 |
 |---|---|
 | `probe_cuda_context.py` | `cuda_context_probe.py` |
@@ -76,6 +77,25 @@
 | `test_rate_mode_upgrade.sh` | `nvenc_rate_mode_upgrade_check.sh` |
 | `test_segmentation_pipeline.sh` | `segmentation_pipeline_e2e.sh` |
 
+#### 等质量标定工具链（`eqq_`前缀，5 个）
+
+CRF→CQ 等质量换算表（`src/utils/quality_map.py` 的 `QUALITY_MAP`）的标定与复核工具。
+配套素材库 `input_videos/eqq_calib/`、数据归档 `data/eqq_calibration/`（各带 `MANIFEST.md`）。
+
+| 文件 | 作用 |
+|---|---|
+| `calibrate_equal_quality.py` | 核心 harness：编码 / VMAF 度量 / PAVA 保序/ 分段拟合 / `calibrate_tier()`。所有工具都调它 |
+| `eqq_slice_prep.py` | 原片 → 720p 切片 + manifest（复用 harness `make_prep`，口径逐字一致；切片短于口径即报错） |
+| `eqq_calibrate_clip.py` | 单素材测量器：CRF/QP 扫描 → `points.json`，断点续跑。复核库内数据须加 `--src-is-prep` |
+| `eqq_calibrate_batch.py` | 批量测量器：manifest 驱动、每素材独立 workdir、并行 |
+| `eqq_pool_fit_table.py` | 落表器：池化 + 拟合 + LOO 门禁 + 顺序无关断言，逐位复现库内 `QUALITY_MAP` |
+| `eqq_watch_batch.py` | 批量看护：进度 / ETA（按tier 加权）/ 异常诊断 / 按 resume 语义重启 |
+| `loo_equal_quality.py` / `convert_points_cache.py` | LOO 交叉验证（旧独立版）/ points 缓存格式转换 |
+
+⚠ **两条硬约束**（违反即数据不可比）：
+①同 workdir 并行会互删 `prep.mp4` / 丢点⇒ 必须每素材独立目录；
+② VMAF 必须 `subsample=1`（>1 偏置 1.9~3.0，历史踩坑数据已归入 `superseded/`）。
+
 ### test/（7，名称不变）
 `test_chroma_false_positive.py`、`test_esrgan_apply_sps_pps_equivalence.py`、
 `test_frame_count_probe.py`、`test_prescan_cache_persistence.py`、
@@ -102,8 +122,15 @@
 | `_faultinj_wrap.py` | `fault_injection_wrapper.py` |
 | `_pipe_deadlock_test.py` | `pipe_deadlock_repro.py` |
 
-### docs/（13）/ archive/（3）/ video_check/（整体搬迁）
-均为原名搬入，未改名。
+### docs/（13）/ video_check/（整体搬迁）
+
+### archive/（3 + `eqq_diag/`）
+`*.bak*` 历史备份件（门禁旧版、码流验收旧版）+ `eqq_diag/`（等质量标定的 54 个
+一次性诊断脚本，含各自 `README.md` 说明分组与替代工具）。
+
+### data/（`eqq_calibration/`）
+标定产出的**数据**而非脚本：实测点集（18 文件 / 1400 点）、门禁与验证日志、
+逐素材采集日志、已作废数据集（`superseded/`，仅 2 个）。见其 `MANIFEST.md`。
 
 ## 迁移时同步修正的引用
 

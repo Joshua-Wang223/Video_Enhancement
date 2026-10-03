@@ -1,0 +1,254 @@
+{
+ "new5_raw.mp4|libx264|22": {
+  "m": {
+   "vmaf": 98.652132,
+   "psnr_hvs": 41.998414,
+   "vif_scale0": 0.665439,
+   "adm2": 0.979364,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 4.48
+ },
+ "new5_raw.mp4|libx264|26": {
+  "m": {
+   "vmaf": 94.458066,
+   "psnr_hvs": 38.629911,
+   "vif_scale0": 0.573437,
+   "adm2": 0.967956,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 4.94
+ },
+ "new5_raw.mp4|libx264|34": {
+  "m": {
+   "vmaf": 74.845297,
+   "psnr_hvs": 31.915877,
+   "vif_scale0": 0.37573,
+   "adm2": 0.922522,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 3.59
+ },
+ "new4_raw.mp4|libx264|22": {
+  "m": {
+   "vmaf": 99.018658,
+   "psnr_hvs": 42.30193,
+   "vif_scale0": 0.708963,
+   "adm2": 0.980814,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 4.71
+ },
+ "new4_raw.mp4|libx264|26": {
+  "m": {
+   "vmaf": 96.641691,
+   "psnr_hvs": 38.719737,
+   "vif_scale0": 0.626862,
+   "adm2": 0.970317,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 4.09
+ },
+ "new4_raw.mp4|libx264|34": {
+  "m": {
+   "vmaf": 79.459579,
+   "psnr_hvs": 31.497154,
+   "vif_scale0": 0.446322,
+   "adm2": 0.92846,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 3.58
+ },
+ "cc_anim_300s.mkv|libx264|22": {
+  "m": {
+   "vmaf": 98.85962,
+   "psnr_hvs": 45.950548,
+   "vif_scale0": 0.843978,
+   "adm2": 0.981075,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 3.56
+ },
+ "cc_anim_300s.mkv|libx264|26": {
+  "m": {
+   "vmaf": 97.311394,
+   "psnr_hvs": 43.270144,
+   "vif_scale0": 0.79636,
+   "adm2": 0.969301,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 3.28
+ },
+ "cc_anim_300s.mkv|libx264|34": {
+  "m": {
+   "vmaf": 85.256897,
+   "psnr_hvs": 37.37512,
+   "vif_scale0": 0.678183,
+   "adm2": 0.931099,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 2.78
+ },
+ "cc_subs_105s.mp4|libx264|22": {
+  "m": {
+   "vmaf": 97.750935,
+   "psnr_hvs": 45.072794,
+   "vif_scale0": 0.799847,
+   "adm2": 0.991677,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 3.09
+ },
+ "cc_subs_105s.mp4|libx264|26": {
+  "m": {
+   "vmaf": 95.54112,
+   "psnr_hvs": 42.199989,
+   "vif_scale0": 0.735212,
+   "adm2": 0.986183,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 2.7
+ },
+ "cc_subs_105s.mp4|libx264|34": {
+  "m": {
+   "vmaf": 85.295074,
+   "psnr_hvs": 36.283725,
+   "vif_scale0": 0.582106,
+   "adm2": 0.965227,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 2.3
+ },
+ "earth_dark_80s.mp4|libx264|22": {
+  "m": {
+   "vmaf": 92.655846,
+   "psnr_hvs": 44.297909,
+   "vif_scale0": 0.764499,
+   "adm2": 0.982484,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 4.65
+ },
+ "earth_dark_80s.mp4|libx264|26": {
+  "m": {
+   "vmaf": 87.870879,
+   "psnr_hvs": 41.22405,
+   "vif_scale0": 0.698233,
+   "adm2": 0.970234,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 4.46
+ },
+ "earth_dark_80s.mp4|libx264|34": {
+  "m": {
+   "vmaf": 68.824992,
+   "psnr_hvs": 34.932326,
+   "vif_scale0": 0.553833,
+   "adm2": 0.923729,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 3.37
+ },
+ "ui_screen_10s.mp4|libx264|22": {
+  "m": {
+   "vmaf": 98.245902,
+   "psnr_hvs": 55.04205,
+   "vif_scale0": 0.886754,
+   "adm2": 0.99416,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.29
+ },
+ "ui_screen_10s.mp4|libx264|26": {
+  "m": {
+   "vmaf": 96.972382,
+   "psnr_hvs": 51.365303,
+   "vif_scale0": 0.823595,
+   "adm2": 0.990085,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.37
+ },
+ "ui_screen_10s.mp4|libx264|34": {
+  "m": {
+   "vmaf": 87.118053,
+   "psnr_hvs": 41.056133,
+   "vif_scale0": 0.653051,
+   "adm2": 0.962109,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.3
+ },
+ "natgeo_grass_40s.mp4|libx264|22": {
+  "m": {
+   "vmaf": 95.991822,
+   "psnr_hvs": 46.331374,
+   "vif_scale0": 0.794201,
+   "adm2": 0.992079,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 2.92
+ },
+ "natgeo_grass_40s.mp4|libx264|26": {
+  "m": {
+   "vmaf": 93.275952,
+   "psnr_hvs": 42.983769,
+   "vif_scale0": 0.717914,
+   "adm2": 0.985763,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 2.88
+ },
+ "natgeo_grass_40s.mp4|libx264|34": {
+  "m": {
+   "vmaf": 78.863971,
+   "psnr_hvs": 35.111491,
+   "vif_scale0": 0.498022,
+   "adm2": 0.954822,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 2.21
+ }
+}

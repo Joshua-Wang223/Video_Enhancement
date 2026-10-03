@@ -1,0 +1,782 @@
+{
+ "S03E01._James_and_Alice.mp4|libx264|18": {
+  "m": {
+   "vmaf": 96.12266,
+   "psnr_hvs": 47.698525,
+   "vif_scale0": 0.80747,
+   "adm2": 0.992078,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 12.47
+ },
+ "S03E01._James_and_Alice.mp4|libx264|21": {
+  "m": {
+   "vmaf": 95.027274,
+   "psnr_hvs": 45.51136,
+   "vif_scale0": 0.75619,
+   "adm2": 0.988942,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 9.7
+ },
+ "S03E01._James_and_Alice.mp4|libx264|24": {
+  "m": {
+   "vmaf": 93.413954,
+   "psnr_hvs": 43.218999,
+   "vif_scale0": 0.696626,
+   "adm2": 0.984718,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 9.48
+ },
+ "S03E01._James_and_Alice.mp4|libx264|27": {
+  "m": {
+   "vmaf": 90.874264,
+   "psnr_hvs": 40.777949,
+   "vif_scale0": 0.631686,
+   "adm2": 0.978222,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 6.49
+ },
+ "S03E01._James_and_Alice.mp4|libx264|30": {
+  "m": {
+   "vmaf": 87.108461,
+   "psnr_hvs": 38.256308,
+   "vif_scale0": 0.562931,
+   "adm2": 0.969184,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 5.96
+ },
+ "S03E01._James_and_Alice.mp4|libx265|10": {
+  "m": {
+   "vmaf": 97.906233,
+   "psnr_hvs": 51.677727,
+   "vif_scale0": 0.91357,
+   "adm2": 0.99784,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 50.22
+ },
+ "S03E01._James_and_Alice.mp4|libx265|13": {
+  "m": {
+   "vmaf": 97.450896,
+   "psnr_hvs": 49.831011,
+   "vif_scale0": 0.879627,
+   "adm2": 0.996498,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 43.64
+ },
+ "S03E01._James_and_Alice.mp4|libx265|16": {
+  "m": {
+   "vmaf": 96.753821,
+   "psnr_hvs": 47.973334,
+   "vif_scale0": 0.840088,
+   "adm2": 0.994497,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 31.87
+ },
+ "S03E01._James_and_Alice.mp4|libx265|19": {
+  "m": {
+   "vmaf": 95.841967,
+   "psnr_hvs": 46.097317,
+   "vif_scale0": 0.796841,
+   "adm2": 0.991952,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 23.22
+ },
+ "S03E01._James_and_Alice.mp4|libx265|21": {
+  "m": {
+   "vmaf": 95.089213,
+   "psnr_hvs": 44.838413,
+   "vif_scale0": 0.764873,
+   "adm2": 0.989933,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 24.14
+ },
+ "S03E01._James_and_Alice.mp4|libx265|24": {
+  "m": {
+   "vmaf": 93.606274,
+   "psnr_hvs": 42.910095,
+   "vif_scale0": 0.711938,
+   "adm2": 0.986099,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 18.65
+ },
+ "S03E01._James_and_Alice.mp4|libx265|27": {
+  "m": {
+   "vmaf": 91.4387,
+   "psnr_hvs": 40.857843,
+   "vif_scale0": 0.65217,
+   "adm2": 0.980817,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 13.86
+ },
+ "S03E01._James_and_Alice.mp4|libx265|30": {
+  "m": {
+   "vmaf": 88.194749,
+   "psnr_hvs": 38.639051,
+   "vif_scale0": 0.588003,
+   "adm2": 0.973405,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 11.85
+ },
+ "S03E01._James_and_Alice.mp4|libx265|34": {
+  "m": {
+   "vmaf": 81.252533,
+   "psnr_hvs": 35.46472,
+   "vif_scale0": 0.498395,
+   "adm2": 0.958043,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 15.86
+ },
+ "S03E01._James_and_Alice.mp4|libx265|38": {
+  "m": {
+   "vmaf": 70.33309,
+   "psnr_hvs": 32.213752,
+   "vif_scale0": 0.412273,
+   "adm2": 0.932271,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 13.56
+ },
+ "S03E01._James_and_Alice.mp4|libvpx-vp9|10": {
+  "m": {
+   "vmaf": 97.728601,
+   "psnr_hvs": 49.513034,
+   "vif_scale0": 0.878891,
+   "adm2": 0.997254,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 79.98
+ },
+ "S03E01._James_and_Alice.mp4|libvpx-vp9|13": {
+  "m": {
+   "vmaf": 97.388645,
+   "psnr_hvs": 48.284682,
+   "vif_scale0": 0.85252,
+   "adm2": 0.996254,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 67.5
+ },
+ "S03E01._James_and_Alice.mp4|libvpx-vp9|16": {
+  "m": {
+   "vmaf": 97.010044,
+   "psnr_hvs": 47.216708,
+   "vif_scale0": 0.828887,
+   "adm2": 0.995194,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 67.01
+ },
+ "S03E01._James_and_Alice.mp4|libvpx-vp9|20": {
+  "m": {
+   "vmaf": 96.553761,
+   "psnr_hvs": 46.161068,
+   "vif_scale0": 0.803099,
+   "adm2": 0.993969,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 61.57
+ },
+ "S03E01._James_and_Alice.mp4|libvpx-vp9|23": {
+  "m": {
+   "vmaf": 96.165719,
+   "psnr_hvs": 45.465763,
+   "vif_scale0": 0.784838,
+   "adm2": 0.992926,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 68.51
+ },
+ "S03E01._James_and_Alice.mp4|libvpx-vp9|26": {
+  "m": {
+   "vmaf": 95.552033,
+   "psnr_hvs": 44.434312,
+   "vif_scale0": 0.758009,
+   "adm2": 0.991371,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 54.63
+ },
+ "S03E01._James_and_Alice.mp4|libvpx-vp9|30": {
+  "m": {
+   "vmaf": 94.510206,
+   "psnr_hvs": 43.088074,
+   "vif_scale0": 0.721319,
+   "adm2": 0.988781,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 55.9
+ },
+ "S03E01._James_and_Alice.mp4|libvpx-vp9|34": {
+  "m": {
+   "vmaf": 93.050613,
+   "psnr_hvs": 41.566807,
+   "vif_scale0": 0.678824,
+   "adm2": 0.985419,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 43.93
+ },
+ "S03E01._James_and_Alice.mp4|libvpx-vp9|38": {
+  "m": {
+   "vmaf": 91.065907,
+   "psnr_hvs": 39.936749,
+   "vif_scale0": 0.632036,
+   "adm2": 0.981056,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 49.46
+ },
+ "S03E01._James_and_Alice.mp4|libvpx-vp9|44": {
+  "m": {
+   "vmaf": 87.089417,
+   "psnr_hvs": 37.601615,
+   "vif_scale0": 0.563395,
+   "adm2": 0.972755,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 32.8
+ },
+ "S03E01._James_and_Alice.mp4|libaom-av1|10": {
+  "m": {
+   "vmaf": 97.43859,
+   "psnr_hvs": 49.128649,
+   "vif_scale0": 0.861266,
+   "adm2": 0.996655,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 226.7
+ },
+ "S03E01._James_and_Alice.mp4|libaom-av1|13": {
+  "m": {
+   "vmaf": 97.033236,
+   "psnr_hvs": 48.034282,
+   "vif_scale0": 0.83716,
+   "adm2": 0.995517,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 189.6
+ },
+ "S03E01._James_and_Alice.mp4|libaom-av1|16": {
+  "m": {
+   "vmaf": 96.635125,
+   "psnr_hvs": 47.062392,
+   "vif_scale0": 0.815742,
+   "adm2": 0.994484,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 165.23
+ },
+ "S03E01._James_and_Alice.mp4|libaom-av1|20": {
+  "m": {
+   "vmaf": 96.054233,
+   "psnr_hvs": 45.987445,
+   "vif_scale0": 0.790951,
+   "adm2": 0.992976,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 131.25
+ },
+ "S03E01._James_and_Alice.mp4|libaom-av1|23": {
+  "m": {
+   "vmaf": 95.737808,
+   "psnr_hvs": 45.452888,
+   "vif_scale0": 0.777974,
+   "adm2": 0.992157,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 134.81
+ },
+ "S03E01._James_and_Alice.mp4|libaom-av1|26": {
+  "m": {
+   "vmaf": 95.209345,
+   "psnr_hvs": 44.630076,
+   "vif_scale0": 0.757991,
+   "adm2": 0.990844,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 125.21
+ },
+ "S03E01._James_and_Alice.mp4|libaom-av1|30": {
+  "m": {
+   "vmaf": 94.482439,
+   "psnr_hvs": 43.625332,
+   "vif_scale0": 0.732634,
+   "adm2": 0.98909,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 99.81
+ },
+ "S03E01._James_and_Alice.mp4|libaom-av1|34": {
+  "m": {
+   "vmaf": 93.51483,
+   "psnr_hvs": 42.466907,
+   "vif_scale0": 0.703186,
+   "adm2": 0.986738,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 91.3
+ },
+ "S03E01._James_and_Alice.mp4|libaom-av1|38": {
+  "m": {
+   "vmaf": 92.411173,
+   "psnr_hvs": 41.390126,
+   "vif_scale0": 0.673622,
+   "adm2": 0.984165,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 78.11
+ },
+ "S03E01._James_and_Alice.mp4|libaom-av1|44": {
+  "m": {
+   "vmaf": 90.536876,
+   "psnr_hvs": 39.831257,
+   "vif_scale0": 0.630708,
+   "adm2": 0.979985,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 46.85
+ },
+ "S03E01._James_and_Alice.mp4|libsvtav1|10": {
+  "m": {
+   "vmaf": 97.328108,
+   "psnr_hvs": 48.444376,
+   "vif_scale0": 0.850008,
+   "adm2": 0.99591,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 13.76
+ },
+ "S03E01._James_and_Alice.mp4|libsvtav1|13": {
+  "m": {
+   "vmaf": 96.911037,
+   "psnr_hvs": 47.500265,
+   "vif_scale0": 0.825696,
+   "adm2": 0.994762,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 12.0
+ },
+ "S03E01._James_and_Alice.mp4|libsvtav1|16": {
+  "m": {
+   "vmaf": 96.503196,
+   "psnr_hvs": 46.752273,
+   "vif_scale0": 0.806676,
+   "adm2": 0.993697,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 11.97
+ },
+ "S03E01._James_and_Alice.mp4|libsvtav1|20": {
+  "m": {
+   "vmaf": 96.048851,
+   "psnr_hvs": 45.931359,
+   "vif_scale0": 0.786457,
+   "adm2": 0.992671,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 11.48
+ },
+ "S03E01._James_and_Alice.mp4|libsvtav1|23": {
+  "m": {
+   "vmaf": 95.741699,
+   "psnr_hvs": 45.45123,
+   "vif_scale0": 0.774233,
+   "adm2": 0.991987,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 9.94
+ },
+ "S03E01._James_and_Alice.mp4|libsvtav1|26": {
+  "m": {
+   "vmaf": 95.362499,
+   "psnr_hvs": 44.706659,
+   "vif_scale0": 0.755884,
+   "adm2": 0.991204,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 10.24
+ },
+ "S03E01._James_and_Alice.mp4|libsvtav1|30": {
+  "m": {
+   "vmaf": 94.756976,
+   "psnr_hvs": 43.776718,
+   "vif_scale0": 0.733004,
+   "adm2": 0.98999,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 10.18
+ },
+ "S03E01._James_and_Alice.mp4|libsvtav1|34": {
+  "m": {
+   "vmaf": 93.990525,
+   "psnr_hvs": 42.71718,
+   "vif_scale0": 0.706987,
+   "adm2": 0.988438,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 9.88
+ },
+ "S03E01._James_and_Alice.mp4|libsvtav1|38": {
+  "m": {
+   "vmaf": 93.248743,
+   "psnr_hvs": 41.781271,
+   "vif_scale0": 0.683726,
+   "adm2": 0.987157,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 8.89
+ },
+ "S03E01._James_and_Alice.mp4|libsvtav1|44": {
+  "m": {
+   "vmaf": 92.132911,
+   "psnr_hvs": 40.565811,
+   "vif_scale0": 0.653096,
+   "adm2": 0.985255,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 9.88
+ },
+ "S03E01._James_and_Alice.mp4|librav1e|10": {
+  "m": {
+   "vmaf": 98.152114,
+   "psnr_hvs": 52.388795,
+   "vif_scale0": 0.934046,
+   "adm2": 0.998508,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 667.77
+ },
+ "S03E01._James_and_Alice.mp4|librav1e|30": {
+  "m": {
+   "vmaf": 96.959,
+   "psnr_hvs": 48.350705,
+   "vif_scale0": 0.847682,
+   "adm2": 0.994774,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 451.43
+ },
+ "S03E01._James_and_Alice.mp4|librav1e|50": {
+  "m": {
+   "vmaf": 95.786655,
+   "psnr_hvs": 45.993176,
+   "vif_scale0": 0.786568,
+   "adm2": 0.991357,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 359.63
+ },
+ "S03E01._James_and_Alice.mp4|librav1e|70": {
+  "m": {
+   "vmaf": 94.589369,
+   "psnr_hvs": 44.295579,
+   "vif_scale0": 0.737793,
+   "adm2": 0.988099,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 307.88
+ },
+ "S03E01._James_and_Alice.mp4|librav1e|90": {
+  "m": {
+   "vmaf": 93.283395,
+   "psnr_hvs": 42.823291,
+   "vif_scale0": 0.693662,
+   "adm2": 0.984671,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 279.78
+ },
+ "S03E01._James_and_Alice.mp4|librav1e|110": {
+  "m": {
+   "vmaf": 90.987387,
+   "psnr_hvs": 40.808564,
+   "vif_scale0": 0.63741,
+   "adm2": 0.978954,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 246.62
+ },
+ "S03E01._James_and_Alice.mp4|librav1e|130": {
+  "m": {
+   "vmaf": 87.352134,
+   "psnr_hvs": 38.401268,
+   "vif_scale0": 0.571684,
+   "adm2": 0.970854,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 221.25
+ },
+ "S03E01._James_and_Alice.mp4|librav1e|155": {
+  "m": {
+   "vmaf": 80.121797,
+   "psnr_hvs": 35.241162,
+   "vif_scale0": 0.489828,
+   "adm2": 0.953953,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 195.19
+ },
+ "S03E01._James_and_Alice.mp4|librav1e|180": {
+  "m": {
+   "vmaf": 69.353106,
+   "psnr_hvs": 32.056704,
+   "vif_scale0": 0.409876,
+   "adm2": 0.928891,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 176.37
+ },
+ "S03E01._James_and_Alice.mp4|librav1e|210": {
+  "m": {
+   "vmaf": 51.716981,
+   "psnr_hvs": 28.44925,
+   "vif_scale0": 0.323263,
+   "adm2": 0.878684,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 153.77
+ },
+ "S03E01._James_and_Alice.mp4|librav1e@10|10": {
+  "m": {
+   "vmaf": 98.143809,
+   "psnr_hvs": 51.197481,
+   "vif_scale0": 0.928098,
+   "adm2": 0.998493,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 163.76
+ },
+ "S03E01._James_and_Alice.mp4|librav1e@10|30": {
+  "m": {
+   "vmaf": 97.011194,
+   "psnr_hvs": 47.889937,
+   "vif_scale0": 0.843032,
+   "adm2": 0.995011,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 116.16
+ },
+ "S03E01._James_and_Alice.mp4|librav1e@10|50": {
+  "m": {
+   "vmaf": 95.763149,
+   "psnr_hvs": 45.651732,
+   "vif_scale0": 0.778962,
+   "adm2": 0.991369,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 98.02
+ },
+ "S03E01._James_and_Alice.mp4|librav1e@10|70": {
+  "m": {
+   "vmaf": 94.511922,
+   "psnr_hvs": 43.997885,
+   "vif_scale0": 0.732369,
+   "adm2": 0.987948,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 98.56
+ },
+ "S03E01._James_and_Alice.mp4|librav1e@10|90": {
+  "m": {
+   "vmaf": 93.326318,
+   "psnr_hvs": 42.580154,
+   "vif_scale0": 0.689157,
+   "adm2": 0.984776,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 87.74
+ },
+ "S03E01._James_and_Alice.mp4|librav1e@10|110": {
+  "m": {
+   "vmaf": 91.006884,
+   "psnr_hvs": 40.55386,
+   "vif_scale0": 0.626071,
+   "adm2": 0.978863,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 88.62
+ },
+ "S03E01._James_and_Alice.mp4|librav1e@10|130": {
+  "m": {
+   "vmaf": 87.037876,
+   "psnr_hvs": 38.020883,
+   "vif_scale0": 0.553538,
+   "adm2": 0.969345,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 86.46
+ },
+ "S03E01._James_and_Alice.mp4|librav1e@10|155": {
+  "m": {
+   "vmaf": 79.064371,
+   "psnr_hvs": 34.730651,
+   "vif_scale0": 0.466193,
+   "adm2": 0.950584,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 66.1
+ },
+ "S03E01._James_and_Alice.mp4|librav1e@10|180": {
+  "m": {
+   "vmaf": 67.651624,
+   "psnr_hvs": 31.417163,
+   "vif_scale0": 0.387457,
+   "adm2": 0.922828,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 60.07
+ },
+ "S03E01._James_and_Alice.mp4|librav1e@10|210": {
+  "m": {
+   "vmaf": 49.871304,
+   "psnr_hvs": 27.91385,
+   "vif_scale0": 0.308335,
+   "adm2": 0.873499,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 48.14
+ }
+}
