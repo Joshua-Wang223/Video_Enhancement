@@ -1,12 +1,18 @@
 # Video_Enhancement 等质量换算表立项 Prompt
 
+> 🔴 **2026-10-03 现状：CPU 侧标定（M0~M3 + D1~D6）已全部完成并落表，
+> 下一步待办全是 GPU 侧 M4 等质量标定。**
+> 状态快照见 **§0.0**，成果位置索引见 **§0.5**，总览见
+> `Accessory/docs/EQQ_CALIBRATION_OVERVIEW.md`。
+
 > **姊妹文档（必须同步维护）**
-> * VidUtils 侧同项目：`VidUtils/Plan/PROMPT_等质量换算立项.md`
+> * VidUtils 侧同项目：`VidUtils/Plan/PROMPT_等质量换算立项.md`（已同步 2026-10-03）
 > * VidUtils 侧质量参数方案：`VidUtils/Plan/VidUtils_质量控制参数修复方案.md`
 >
 > **本仓相关**
 > * 既有质量参数方案：`Plan/Video_Enhancement_质量控制参数修复方案.md`（E0~E10 / A1~A12）
 > * 其中 **§6.11.3** 是本立项的直接依据（等体积 vs 等质量口径分工 + rav1e 实测证据）
+> * 标定实现与全部版本演进：`Plan/等质量换算表_实现与标定报告.md`
 >
 > **本文档只提需求与验收，不含实现结论；实现方案由执行者补。**
 
@@ -14,25 +20,59 @@
 
 ## 0. 关键点速查（执行者先读这一节）
 
-### 0.0 实施状态快照（2026-09-30 更新，执行者必读）
+### 0.0 实施状态快照（**2026-10-03 更新**，执行者必读）
 
-> **命名已按实现统一**（本文档早期提案名与实际落地不同，以本表为准）：
+> 🔴 **一句话现状：CPU 侧标定工作已全部完成并落表，下一步待办全是 GPU 侧任务。**
 
-| 本文档早期提案名 | **实际落地名（2026-09-30）** |
+#### 0.0.1 已完成（CPU 侧，无需 GPU）
+
+| 里程碑 | 状态 | 关键结果 |
+|---|---|---|
+| M0 口径自检 | ✅ | harness 两仓同源，`--selftest` 通过 |
+| M1 多素材标定 | ✅ | 4 软编档全部落表 |
+| M2 素材补齐 + LOO | ✅ | 素材池 **17 条**；LOO 全档达标 |
+| M3 rav1e speed 档 | ✅ | native + `-speed 10` 两行均已回填 |
+| D1~D6 落地 | ✅ | 含 D2b 软编 QP 行镜像 |
+| 资产归整 | ✅ | 素材切片化 + 数据归档 + 脚本泛化（见 **§0.5**） |
+
+**当前在库的第八版表值**（两仓逐条相等）：
+
+```
+libx265      (1.0979,  -2.3119,  0,  51)   LOO 4.24
+libvpx-vp9   (1.9716, -15.0929,  0,  63)   LOO 3.82
+libsvtav1    (2.3961, -21.3615,  0,  63)   LOO 4.88
+libaom-av1   (2.3219, -22.3927,  0,  63)   LOO 5.35
+librav1e     (7.9326,-102.2078,  0, 255)   LOO 5.76   ← native
+librav1e@10  (7.9173,-106.6317,  0, 255)   LOO 5.99   ← speed10，落 _EQQUAL_SPEED_OVERRIDE
+```
+
+数据源：**18 个 points 文件 / 1400 原始点/ ACC 1153 / 素材池 17 条**。
+✅ 已用 `eqq_pool_fit_table.py`验证**逐位复现**库内表值（rc=0）。
+
+#### 0.0.2 未完成 —— **全部需要 GPU**
+
+| 事项 | 最低硬件 | 说明 |
+|---|---|---|
+| **M4** `h264_nvenc` / `hevc_nvenc` 的 `-cq` 等质量标定 | **T4** | 等质量 `-cq` 轴未标，硬编当前回退 `SIZE_MAP` |
+| **M4** `av1_nvenc` 的 `-cq` 等质量标定 | **L40 / Ada** | ⚠ **T4 无 AV1 NVENC**，报 `No capable devices found` |
+| **D2b** NVENC QP 行（`to_constqp_qp` 的 constqp 轴） | h264/hevc **T4**；av1 **L40/Ada** | `av1_nvenc` QP 尺度 ×3 已由 L40 实测确认 |
+| 生产管线 GPU 实跑判据（G7/G8 等） | **T4 / L40** | 需真实素材 GPU 编码 |
+| M6 主观 AB（可选） | 人力 | ≥3 人双盲，ITU-R BT.500-13 |
+
+> ⚠⚠ **M4 之前的所有结论都不能外推到 NVENC**：CPU 标定容器无 CUDA，硬编必须换机；
+> 且 **T4 与 L40 不能互相替代**。
+
+#### 0.0.3 命名对照（沿用，早期提案名与落地不同）
+
+| 本文档早期提案名 | **实际落地名** |
 |---|---|
-| 等体积表 `QUALITY_MAP` | **`SIZE_MAP`**（改名，语义即「等体积/文件大小优先」） |
-| 等质量表 `QUALITY_MAP_QUALITY` | **`QUALITY_MAP`**（占用原名，语义即「等质量/画质优先」） |
+| 等体积表 `QUALITY_MAP` | **`SIZE_MAP`** |
+| 等质量表 `QUALITY_MAP_QUALITY` | **`QUALITY_MAP`**（占用原名） |
 | `--quality-mode volume\|quality` | `--quality-mode size\|quality` |
 | `--quality-table volume\|quality`（D6） | `--quality-mode size\|quality`（与上同一开关） |
 
 * **默认口径 = `quality`**（`convert_crf.py` / `quality_map.py` / 两个探针一致）；
   等体积路径完整保留，`--quality-mode size` 显式选择。
-* **已落地**：D1（标定脚本）、D2（`QUALITY_MAP` 软编 5 条 + 跨仓逐条相等）、
-  D3（回归判据）、D6（AC7 探针口径开关）、README 说明；VU 侧方案 §4.12 已记录。
-* **未完成**（按算力分类详见 **§7.1**）：M1 多素材、M2 留一交叉验证、M3 rav1e speed 档、
-  M4 硬编（**需 GPU**）、D2b constqp 轴、D4 VE 方案章节（本节即补）、D5 AGENTS.md。
-* ⚠ **本 Windows/WSL checkout 无 `ffmpeg`/`libvmaf`**：§3 的环境基线指 Linux 容器；
-  §7.1 中标注「CPU」的事项**仍须在带 ffmpeg+libvmaf 的 Linux 容器**执行。
 
 ### 0.1 为什么现在做（一条实测数据）
 
@@ -74,6 +114,106 @@ AC7 判据只测 crf 21 ⇒ 这个缺陷一直没被门禁暴露。**这就是�
   等体积路径**完整保留**，由 `--quality-mode size` 显式选择；判据脚本内**显式钉 `size`** ⇒
   G1~G6/G10 现有断言**数值不变地继续通过**；
 * 所有脚本**一律加 `< /dev/null`**（后台进程组 + tty stdin 下会被 SIGTTOU 整组停住）。
+
+### 0.5 已有成果的位置索引（**动手前先看这里，别重新造**）
+
+>📖 **完整总览**：`Accessory/docs/EQQ_CALIBRATION_OVERVIEW.md`
+> 含 17 条素材明细、5 个脚本的可复制命令行、7 条踩坑教训。
+> 本节只给地图。
+
+#### 0.5.1 素材 —— `input_videos/eqq_calib/`（仓库外，114MB）
+
+⚠ 该目录在**仓库外**（`/mnt/d/Workspace_Python/input_videos/`），**不入 git**。
+存的是**标定实际使用的 720p 切片**，不是原片（BBC 3 条整集各 536MB 在网络盘 `/mnt/f`）。
+
+```
+input_videos/eqq_calib/
+├── 6s/← 12 条   live_kids_play / live_kids_seated / live_kids_table
+│                        cganim_edu_wordworld / cganim_talking_tom / cganim_subs
+│                        tv_bbc_molly_s01e01 / s03e01 / s05e01
+│                        doc_dark_earth / doc_grassland / screen_ui_code
+├── 10s/            anim2d_forest / anim2d_subs_tobot / live_night_wolf
+│                   live_texture_frog / screen_ui_code
+├── manifest_6s.json / manifest_10s.json   机读：原片绝对路径/分辨率/fps/时长 + 切片 md5
+└── MANIFEST.md                            人类可读
+```
+
+命名规则 `<类别>_<题材>_src<原片宽>x<高>.mp4`，`src1920x1080` 指**原片**分辨率（文件本身都720p）。
+内容类别**目视关键帧逐条确认**，不靠文件名猜。覆盖 6 类内容（实拍/实拍剧集/三维动画/
+二维动画/实拍纪录片/屏幕录制）+ 3 条属性变体（暗场/高细节/带字幕）。
+
+>⚠ **6 类内容必须齐全**：实测只用 10s 侧 ⇒ svtav1 LOO 7.33 超门禁；只用 6s 侧 ⇒ vp9 6.85 超门禁。
+
+#### 0.5.2 脚本 —— `Accessory/probe/`（三步走 + 2 个辅助）
+
+| 脚本 | 作用 |
+|---|---|
+| `calibrate_equal_quality.py` | **核心 harness**：编码 / VMAF 度量 / PAVA 保序 / `calibrate_tier()`。所有工具都调它 |
+| `eqq_slice_prep.py` | 原片 → 切片 + manifest（复用 `make_prep`，口径逐字一致） |
+| `eqq_calibrate_clip.py` | 单素材测量器，断点续跑。**复核库内数据须加 `--src-is-prep`** |
+| `eqq_calibrate_batch.py` | 批量并行（manifest 驱动，替代硬编码的 `run_gen.sh`） |
+| `eqq_pool_fit_table.py` | 落表器：池化+ 拟合 + LOO 门禁 + 顺序无关断言 |
+| `eqq_watch_batch.py` | 批量看护：进度 / 加权 ETA / 异常诊断 / 按 resume 语义重启 |
+
+**三步走**（新增素材时的完整流程）：
+
+```bash
+# 1) 原片 → 切片 + manifest
+python3 Accessory/probe/eqq_slice_prep.py --spec clips.json --outdir input_videos/eqq_calib
+# 2) 切片 → points.json（--src-is-prep：切片已是参考片，必须加）
+python3 Accessory/probe/eqq_calibrate_batch.py \
+    --manifest input_videos/eqq_calib/manifest_6s.json \
+    --outroot /tmp/eqq_run --jobs 4 --src-is-prep
+# 3) points → QUALITY_MAP 候选 + 门禁
+python3 Accessory/probe/eqq_pool_fit_table.py --out /tmp/table.txt
+```
+
+**第3 步已验证逐位复现库内表值**（6 档 a/b/LOO 全等，rc=0）⇒ 可直接用作回归基线。
+
+#### 0.5.3 数据 —— `Accessory/data/eqq_calibration/`（2.2MB，入 git）
+
+```
+eqq_calibration/
+├── points/{6s,10s,legacy10s}/   18 个 points 文件 / 1400 原始点 / ACC 1153
+│   └── clip_name_mapping.json   points 的 key（原始文件名）↔ 切片语义名对照，17 条全覆盖
+├── superseded/                  仅 2 个真正作废（n3_subsample8 / 3s 冒烟）
+├── reports/                     门禁与验证日志、最终看板
+└── logs/                        逐素材采集日志、看护进度日志
+```
+
+- 落表真源仍是 `src/utils/quality_map.py`，**不要直接改这里的 points**；
+- ⚠ **`legacy10s/`（5 文件 337 点）是有效数据，不可剔除** —— 它是 12 条素材的 10s 侧观测。
+  历史曾被误判为「跨时长脏数据」舍弃，导致虚假改善的 LOO（详见 §K6）。
+
+#### 0.5.4 原始 `/tmp` 产物（**用户 2026-10-03 明确要求原地保留，供后期复核**）
+
+> 这是本轮工作的**一手现场**，入库的是整理后的形态；两者并存不冲突。
+
+| 路径 | 内容 |
+|---|---|
+| `/tmp/eqq_uni_6s/{new1,word_world_2,bbc_s01e01,bbc_s03e01,bbc_s05e01}/points.json` | 庚批 6s 侧5 条原始点集（各 65 点） |
+| `/tmp/eqq_uni_10s/{anim_10s,anim_subs_10s,dark_10s,texture_10s,ui_10s}/points.json` | 己批 10s 侧 5 条原始点集（各 65 点） |
+| `/tmp/eqq2/1280x720_10s_{n2,n4,anchorB,bbc_anchorB}/points.json` | 旧 10s 侧数据（`legacy10s/` 的源） |
+| `/tmp/eqq_calib/1280x720_10s_n3/points.json` | **作废**（`subsample=8` 偏置 VMAF 1.9~3.0） |
+| `/tmp/eqq_dashboard.md` | 标定过程看板（最终态） |
+| `/tmp/eqq_watch.log` / `/tmp/eqq_watch.out` | 看护进度日志 |
+| `/tmp/gate_*.log` | 四道门禁的运行日志 |
+| `/tmp/eqq_native_srcs/` | BBC 3 条的**符号链接** → `/mnt/f/...`（软链本身重启即失效） |
+| `/tmp/eqq*.py`、`/tmp/*.sh`（60 个脚本） | 一次性诊断脚本，已归档 `Accessory/archive/eqq_diag/` |
+
+⚠ **临时原片随时会丢**（重启即失效）：`VidUtils/temp/m2_srcs/*`、`/tmp/eqq_uni_10s/src/*`。
+需要长期保留原片时，复制到 `input_videos/` 并更新 manifest。
+
+#### 0.5.5 相关文档
+
+| 内容 | 位置 |
+|---|---|
+| 标定实现与全部版本演进（第一~八版） | `Plan/等质量换算表_实现与标定报告.md` |
+| 换算实现 + CPU 标定报告 | `Plan/Video_Enhancement_Crf_CQ统一优化_对比分析报告.md` |
+| 真机长视频验证（**GPU 侧待办**） | `Plan/Video_Enhancement_CRF_CQ统一优化_真机长视频验证与复测_Prompt.md` |
+| **总览与复用指南** | `Accessory/docs/EQQ_CALIBRATION_OVERVIEW.md` |
+| 素材清单 / 数据清单 | `input_videos/eqq_calib/MANIFEST.md`、`Accessory/data/eqq_calibration/MANIFEST.md` |
+| memory | `memory/equal-quality-anchor-unification.md`（标定决策全过程）、`memory/equal-quality-asset-consolidation.md`（资产归整） |
 
 ---
 
@@ -329,8 +469,16 @@ ffmpeg -hide_banner -v info -i "$DIST" -i "$SRC" -frames:v "$N" \
 |---|---|---|---|---|
 | **M0** | D1 骨架 + 口径自检 | 用 `word_world_2.mp4` 跑通 libx264/libx265/librav1e 三点；PSNR/VMAF 数值与手工命令**逐位一致** | **CPU** | ✅ 已完成（Linux 容器实跑通过；D1 harness 两仓同源，附 `--selftest` 19 项） |
 | **M1** | 3 条核心素材 × 4 软编编码器 | 单素材 ΔVMAF < 1.5、ΔPSNR < 0.3 dB | **CPU** | ✅ **已完成**：4 软编档全部落表（LOO 4.49~6.71），表值见 `convert_crf.QUALITY_MAP`（两仓逐条相等） |
-| **M2** | 补齐素材 + 留一交叉验证 | 留一法 ΔVMAF < 1.0、ΔPSNR < 0.3 dB | **CPU**（+ 素材采集含人力） | ⚠ **LOO 已跑，未达 1.0**。素材池扩至 **11 个(素材,口径)样本**（两仓 7+4 条 + BBC 实拍 3 条），锚点已**两仓统一到 `18/21/24/27/30`**（补测缺口后做同批素材可比 LOO，10 个对比全优）。根因＝**跨素材结构上限**，四条已排除。**2026-10-02 仓主裁定门禁按编码器分档：软编 ≤5.9 / rav1e ≤7.5**（依据 rav1e 训练内误差 0.78~2.99 vs 软编 0.03~2.44 = qp 刻度本质更差）。工具：`Accessory/probe/loo_equal_quality.py`（两仓同源）。**2026-10-02 第八版（当前生效）**：素材池重建为 **17 条、每条单一时长**（6s 侧 12 = 本仓/VU 7 + 庚新增 5；10s 侧 5 = 重新采集的 anim/anim_subs/dark/ui/texture）⇒ 每个 `(素材,档位,参数)` 只有**一个**观测，**顺序无关成为结构性保证**（不再依赖合并规则）。点数据每素材 65 点、两批 650 点。LOO **x265 3.37 / vp9 3.72 / aom 4.17 / svtav1 4.62 / rav1e@10 5.20 / rav1e native 5.98**，6 档中 5 档优于第七版。回归断言：3 seed 打乱文件顺序 × 6 档 = 18 个数值逐位一致 ⇒ PASS。⚠ 三条前置约束：① **clip 时长必须 ≥ 目标口径**（原 6s 素材源片本身只有 6s，物理上无法补到 10s，只能重新采集 ≈4.5 h；开跑前 `ffprobe` 核实 `--duration` 未被静默截断）；② **同素材跨时长的同名锚点 VMAF 不同**（时长效应，crf30 跨差 1.75）；③ 每素材单一时长才能天然消除同 key 冲突。 工具：`Accessory/probe/loo_equal_quality.py`（两仓同源） |
-| **M3** | rav1e 等质量 × speed 档 | 至少覆盖 `speed 0/10` 两档；给出"等质量 vs 等体积"差异量化 | **CPU** | ✅ **已完成**：VU 侧 7 素材 × 105 点 × 两档全部跑完（rc=0），LOO 首次可验证（native 7.41 / @10 7.15，按 rav1e 专用门禁 ≤7.5 **达标**）。native 进 `QUALITY_MAP`(7.9348,−96.0822)、`-speed 10` 进 `quality_map._EQQUAL_SPEED_OVERRIDE`(7.8373,−95.5520) |
+| **M2** | 补齐素材 + 留一交叉验证 | 留一法 ΔVMAF < 1.0、ΔPSNR < 0.3 dB | **CPU**（+ 素材采集含人力） | ⚠ **LOO 已跑，未达 1.0**（门禁按编码器分档放宽，见 §0.0）。**2026-10-02 第八版（当前生效）**：素材池 **17 条**（6s 侧 12 = 本仓/VU 7 + 庚新增 5；10s 侧 5 = 重新采集的 anim/anim_subs/dark/ui/texture），锚点**两仓统一到 `18/21/24/27/30`**。点数据每素材 65 点。**LOO：x265 4.24 / vp9 3.82 / aom 5.35 / svtav1 4.88 / rav1e@10 5.99 / rav1e native 5.76**（软编 ≤5.9 / rav1e ≤7.5 全档达标）。回归断言：3 seed 打乱文件顺序 × 6 档 = 18 个数值**逐位一致** ⇒ PASS。⚠ **三条前置约束**：① **clip 时长必须 ≥ 目标口径**（原 6s 素材源片本身只有 6s，物理上无法补到 10s，只能重新采集 ≈4.5 h；开跑前 `ffprobe` 核实 `--duration` 未被静默截断）；② **同素材跨时长的同名锚点 VMAF 不同**（时长效应，crf30 跨差 1.75）⇒ 合并规则用「同 key 取均值」；③ **素材名去重 ≠ 数据完整**（见 §K6）。工具：`Accessory/probe/loo_equal_quality.py`（两仓同源）、`eqq_pool_fit_table.py`（落表器，含 4 项完整性计数输出） |
+
+> 🔴 **勘误（2026-10-03）**：本行早期版本写的「每条素材单一时长⇒ **顺序无关成为结构性保证**」
+> 与 **LOO 3.37 / 4.24 之类"更低更好"的数值**，来自`cb59c14`，**已被 `eda957d` 判定作废** ——
+> 根因是**漏读VE侧 10s 历史数据 316 点**（因素材名与庚批 6s 数据相同，脚本误以为「已全覆盖」）。
+> 那316 点**不是该舍弃的脏数据，而是有效观测**；舍弃它们换来的更低 LOO 是
+> **样本覆盖变窄导致的虚假改善**，不是精度提升。**当前生效值是「全池版」**（18 文件 / 1400 点，
+> 12 条素材跨两个口径），见 §0.0.1。判据：池化前打印「文件数 / 逐文件点数 / ACC 总点数 /
+> 合并重复点数」四个数并与预期比对。
+| **M3** | rav1e 等质量 × speed 档 | 至少覆盖 `speed 0/10` 两档；给出"等质量 vs 等体积"差异量化 | **CPU** | ✅ **已完成**：7 素材 × 两档全部跑完（rc=0），LOO 首次可验证。**当前生效（第八版全池）**：native 进 `QUALITY_MAP`(7.9326,−102.2078) LOO 5.76、`-speed 10` 进 `quality_map._EQQUAL_SPEED_OVERRIDE`(7.9173,−106.6317) LOO 5.99，按 rav1e 专用门禁 ≤7.5 **达标**。⚠ 两档在代码里的落点：`_EQQUAL_SPEED_OVERRIDE` 的**键是编码器名 `'librav1e'`**（仅当 `RAV1E_SPEED > 0` 生效），只有标定数据里才叫 `librav1e@10` |
 | **M4** | 硬编覆盖（NVENC h264/hevc/av1） | B/C 组入表 | **GPU**：h264/hevc_nvenc **T4 即可**；`av1_nvenc` **必须 L40/Ada** | ❌ 未做（本容器无 GPU） |
 | **M5** | D2~D6 落地 + 双仓同步 + 门禁 | 见 §8 | CPU（+ M4 的 GPU 部分） | ✅ D1~D6 全落地（**D5 已于 2026-10-01 补**）；LOO 工具已抽出为两仓同源独立脚本 |
 | **M6**（可选） | 主观 AB 测试 | 主观与 VMAF 预测一致性 > 85% | **人力** | ❌ 未做 |
@@ -346,23 +494,25 @@ ffmpeg -hide_banner -v info -i "$DIST" -i "$SRC" -frames:v "$N" \
 > ⚠ 同时修掉一个判据漏洞：二次模型曾报「LOO 全 0.000✅」，实为**假通过**
 > （预测越界 ⇒ 回查 `None` ⇒ 0 评估点被当成 `worst=0`），现已在 LOO 脚本加断言。
 
-### 7.1 未完成事项按算力分类（2026-09-30，执行者按此排期）
+### 7.1 未完成事项按算力分类（**2026-10-03 更新**，执行者按此排期）
 
-**A. 仅需 CPU（软编 + 文档 + 逻辑断言）** —— 但须在带 `ffmpeg`+`libvmaf` 的 **Linux 容器**执行
-（本 Windows/WSL checkout 无 ffmpeg，跑不了）：
+**A. 仅需 CPU（软编 + 文档 + 逻辑断言）—— ✅ 已全部完成，本组清空**
 
-| 事项 | 归属 | 说明 |
+| 事项 | 归属 | 状态 |
 |---|---|---|
-| M0 口径自检 | M0 | 手工命令与脚本数值逐位比对 |
-| M1 多素材标定（3 核心素材 × 4 软编） | M1 | 复用 `calibrate_equal_quality.py --src A --src B …` |
-| M2 补齐素材 + 留一交叉验证 | M2 | 素材采集属人力；标定本身纯 CPU |
-| M3 rav1e 等质量 × speed 档 | M3 | 回填 `_EQQUAL_SPEED_OVERRIDE`（原生/speed10 两行） |
-| D2b 的**软编 QP 行**（libx265/libsvtav1/librav1e 的 `-qp`） | D2b | 镜像 `QUALITY_MAP` 即可，无需 GPU |
-| D4 方案章节 / D5 AGENTS.md / 命名文案一致性 | D4/D5 | 文档 |
-| "双重换算"针对性断言（§9） | 判据 | 纯逻辑 |
-| M5 的软编部分 + 双仓 ⑨ 组门禁 | M5 | 门禁需 ffmpeg（CPU） |
+| M0 口径自检 | M0 | ✅ 完成 |
+| M1 多素材标定（4 软编） | M1 | ✅ 完成 |
+| M2 补齐素材 + 留一交叉验证 | M2 | ✅ 完成（门禁放宽至软编 ≤5.9 / rav1e ≤7.5） |
+| M3 rav1e 等质量 × speed 档 | M3 | ✅ 完成（native + speed10 两行回填） |
+| D2b 的**软编 QP 行** | D2b | ✅ 完成（`QUALITY_MAP_QP` 镜像 4 行） |
+| D4 方案章节 / D5 AGENTS.md / 命名文案| D4/D5 | ✅ 完成 |
+| "双重换算"针对性断言 | 判据 | ✅ 完成 |
+| M5 的软编部分 + 双仓 ⑨ 组门禁 | M5 | ✅ 完成 |
+| **新增**：资产归整（素材切片化 / 数据归档 / 脚本泛化） | — | ✅ 完成（见 §0.5） |
 
-**B. 必须 GPU（NVENC 直连，T4 / L40 分档）**：
+> 若日后**扩充素材或换锚点**，才需回到 A 组 —— 用 §0.5.2 的三步走，全程纯 CPU。
+
+**B. 必须 GPU（NVENC 直连，T4 / L40 分档）—— 🔴 这就是下一步的全部待办**
 
 | 事项 | 最低硬件 | 说明 |
 |---|---|---|
@@ -376,8 +526,13 @@ ffmpeg -hide_banner -v info -i "$DIST" -i "$SRC" -frames:v "$N" \
 
 **D. 需人力**：M6 主观 AB（≥3 人双盲，ITU-R BT.500-13）。
 
-> ⚠ **M4 之前的所有结论都不能外推到 NVENC**：CPU 标定容器无 CUDA，硬编必须换机；
+>⚠ **M4 之前的所有结论都不能外推到 NVENC**：CPU 标定容器无 CUDA，硬编必须换机；
 > 且 **T4 与 L40 不能互相替代**（T4 无 AV1 NVENC）。
+>
+> **GPU 侧开工前的准备**：素材与数据都已就绪（§0.5.1/ §0.5.3），
+> 工具链可直接复用 —— `calibrate_equal_quality.py` 的 NVENC 档位需按
+> `§4.3` 的配套参数锁定表补`h264_nvenc` / `hevc_nvenc` / `av1_nvenc` 三行，
+> 并注意 §K3「配套参数必须与下发一致」与 §K5「禁止经中间编码器中转」。
 
 ---
 
@@ -420,32 +575,60 @@ ffmpeg -hide_banner -v info -i "$DIST" -i "$SRC" -frames:v "$N" \
 
 ---
 
-## 11. 立即可执行的第一步
+## 11. 立即可执行的第一步（**2026-10-03 更新**）
+
+> 🔴 **CPU 侧已收口**（M0~M3 + D1~D6 全完成，表值已落）。
+> 下一步是 **GPU 侧 M4** —— 见 §0.0.2 / §7.1 B组。
+> 下面保留原始 CPU 口径自检命令作为**工具链自检**（GPU 开工前建议先跑一遍确认度量管线正常）。
+
+### 11.1 工具链自检（GPU 开工前跑，确认度量管线正常）
 
 ```bash
 cd /workspace/Video_Enhancement
 
-# 0) 口径自检（M0 的核心：先证明度量管线正确，再谈标定）
-SRC=/workspace/input_videos/word_world_2.mp4
+# 0) 口径自检：先证明度量管线正确，再谈标定
+SRC=$(pwd)/../input_videos/eqq_calib/6s/cganim_edu_wordworld_src720x576.mp4
 N=$(ffprobe -v error -select_streams v:0 -show_entries stream=nb_frames -of csv=p=0 "$SRC")
 ffmpeg -nostdin -y -v error -i "$SRC" -c:v libx264 -preset medium -crf 21 -pix_fmt yuv420p /tmp/a.mp4
-# PSNR（唯一正确口径）
+# PSNR（唯一正确口径：-v info + 显式 [0:v][1:v]；见 §6.1）
 ffmpeg -hide_banner -v info -i /tmp/a.mp4 -i "$SRC" -frames:v "$N" \
        -lavfi "[0:v][1:v]psnr" -f null - 2>&1 | grep -oP 'average:\s*\K[0-9.]+' | tail -1
-# VMAF（注意选项名是 model=，默认已是 vmaf_v0.6.1；不要写 model_version=）
+# VMAF（选项名是 model=，默认已是 vmaf_v0.6.1；不要写 model_version=）
 ffmpeg -hide_banner -v info -i /tmp/a.mp4 -i "$SRC" -frames:v "$N" \
        -lavfi "libvmaf=log_fmt=json:log_path=/tmp/vmaf.json" -f null - 2>&1 | tail -2
 python3 -c "import json;print(json.load(open('/tmp/vmaf.json'))['pooled_metrics']['vmaf']['mean'])"
 
-# 1) 标定脚本已落地（D1）：Accessory/probe/calibrate_equal_quality.py
-#    ✅ 无缓存 + prep md5 审计 + VMAF 插值 + --quick/--resume + rav1e 分档
+# harness 自检（两仓同源，19 项）
+python3 Accessory/probe/calibrate_equal_quality.py --selftest
 
-# 2) 若要重跑/扩样（M1/M2/M3）——纯 CPU，需在带 ffmpeg+libvmaf 的 Linux 容器：
-#    python3 Accessory/probe/calibrate_equal_quality.py \
-#        --src <素材A> --src <素材B> --src <素材C> --duration 6 --resume
-#    librav1e 分档（M3）：--rav1e-speed native,10
-#    ⚠ 硬编（M4）本机无法跑，须换 T4（h264/hevc）或 L40/Ada（av1_nvenc）
+# ★ 复核现库表值（已验证逐位一致，rc=0）—— 改动表值前后的回归基线
+python3 Accessory/probe/eqq_pool_fit_table.py
 ```
+
+### 11.2 若要扩充素材或换锚点（纯 CPU，三步走）
+
+```bash
+# 1) 原片 → 切片 + manifest（复用 harness 的 make_prep，口径逐字一致）
+python3 Accessory/probe/eqq_slice_prep.py --spec clips.json --outdir ../input_videos/eqq_calib
+
+# 2) 切片 → points.json（--src-is-prep：切片已是参考片，必须加）
+python3 Accessory/probe/eqq_calibrate_batch.py \
+    --manifest ../input_videos/eqq_calib/manifest_6s.json \
+    --outroot /tmp/eqq_run --jobs 4 --src-is-prep
+
+# 3) points → QUALITY_MAP 候选 + 门禁（含顺序无关断言，不自行放水）
+python3 Accessory/probe/eqq_pool_fit_table.py --out /tmp/table.txt
+```
+
+⚠ 三条必守：素材实际时长 ≥ 口径（否则 ffmpeg 静默截断）；
+VMAF `subsample=1`（>1 偏置 1.9~3.0）；每素材独立 workdir（同目录并行会丢点）。
+详见 `Accessory/docs/EQQ_CALIBRATION_OVERVIEW.md` §6。
+
+### 11.3 GPU 侧（M4）—— 本机跑不了，须换机
+
+- h264_nvenc / hevc_nvenc → **T4**
+- av1_nvenc → **L40 / Ada**（T4 无 AV1 NVENC）
+- 素材与数据已就绪，直接用 §11.2 的三步走，只需把 NVENC 三档补进 harness 的配套参数表（§4.3）。
 
 ---
 
@@ -457,6 +640,10 @@ python3 -c "import json;print(json.load(open('/tmp/vmaf.json'))['pooled_metrics'
 * 无缓存标定实现：`VidUtils/probe/calibrate_soft_offsets_nocache.py`
 * AC7 探针（度量口径同源，可直接扩展）：`Accessory/probe/av1_vp9_quality_matrix.py`
 * 判据脚本（G7 组已有 GPU 实跑框架）：`Accessory/verify/crf_cq_unification_verify.py`
+* **等质量总览与复用指南**（素材/脚本/数据/踩坑一篇看完）：
+  `Accessory/docs/EQQ_CALIBRATION_OVERVIEW.md`
+* 等质量门禁：`Accessory/verify/verify_equal_quality.py`；VidUtils 侧映射校验：`VidUtils/verify/verify_quality_mapping.py`
+* 落表器（可作回归基线，已验证逐位复现库内表值）：`Accessory/probe/eqq_pool_fit_table.py`
 * Netflix VMAF：`libvmaf` 的 `filter=libvmaf` 选项（`model=` / `feature=` / `log_fmt=json`）
 * ITU-R BT.500-13 主观测试方法学（M6）
 

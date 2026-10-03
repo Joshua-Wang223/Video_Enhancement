@@ -49,6 +49,25 @@ type: project
 `src/utils/quality_map.py` 的 `QUALITY_MAP`，rc=0。首段强制打印四个完整性计数
 （文件数 18 / 逐文件求和 1400 / ACC 1153 / 合并重复 195），落实[[equal-quality-anchor-unification]] 教训③。
 
+## 入口文档
+
+`Accessory/docs/EQQ_CALIBRATION_OVERVIEW.md`（约 9k 字）—— **总览与复用指南**：
+这标定是干什么的、素材表、5 个脚本的工作流图 + 可复制命令行、数据目录、7 条踩坑、
+14 条路径速查、环境前提。要重跑标定或扩充素材，从这篇看起。
+`Accessory/README.md` 与本目录 `MANIFEST.md` 各有入口引用。
+
+⚠ 该文档核对时改掉一处会误导人的表述：rav1e 两档的**落点键不同**——
+`QUALITY_MAP['librav1e']` 是 native，而 speed10 的数值在 `_EQQUAL_SPEED_OVERRIDE`
+（键仍是**编码器名 `'librav1e'`**，按编码器索引、仅当 `RAV1E_SPEED > 0` 生效），
+只有**标定数据里**才叫 `librav1e@10`。照档位名去代码里找会找不到。
+
+## 用户对「归整方式」的两项裁定（2026-10-03）
+
+① **素材只存切片 + 溯源清单**，不复制原片（BBC 整集 1.6GB 不入库）；
+   ② **脚本分两类**：可复用主流程泛化功能并重命名后入库，一次性诊断脚本归档保留可追溯。
+⇒ 同类整理任务默认按这两条走：数据放 `data/`、工具放 `probe/`、历史脚本放 `archive/`，
+并在各自 README 里写明「这个旧脚本的现代替代物是什么」。
+
 ## ⚠ `/tmp` 与 `VidUtils/temp/` 下的原片是临时的
 
 `VidUtils/temp/m2_srcs/*`、`/tmp/eqq_uni_10s/src/*`、`/tmp/eqq_native_srcs/*`（软链到 `/mnt/f`）
