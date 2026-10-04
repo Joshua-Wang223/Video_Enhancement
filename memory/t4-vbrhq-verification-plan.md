@@ -35,6 +35,7 @@ FFmpeg 9.0.2（编译用 libffmpeg-nvenc-dev 12.1.14.0）移除 `-rc:v vbr_hq`�
 | **不动** | `config/default_config.json` / `config_manager` / `main.py` / `_NVENC_LEVEL1_RATE_MODE` / 缓存 key（内部名 `vbr_hq` 保留） |
 
 **验证**：`calibrate_equal_quality --selftest` ✅；`crf_cq_unification_verify --no-gpu --quick` 94/0/0；`plan_implementation_gate --skip-behavior` 50/48/0/2（同基线）；真实 FFmpegWriter 下发 `-rc:v vbr -tune hq -multipass fullres -cq:v 26 -b:v 0 -bf 0 -rc-lookahead 8` 出 30 帧有效 h264；生产 E2E hevc LA8 150→299 守恒。
+**证据/数据落点**：`Accessory/data/vbrhq_migration_2026-10-04/`（README + metrics.json + `quality_compare/` 的 §4 新旧产物 + `smoke/` E2E 输入输出 + `writer_e2e/` + `reports/`，含 md5）。⚠ 旧产物由本机备份 FFmpeg 6.1.1 生成，9.0 无法重造 ⇒ 已入库。
 **跨仓 handoff**：VU 侧 h264/hevc harness/生产/探针的 `-rc:v vbr_hq` 需同步改，否则 ⑨ 组红（本仓无法代改）。
 
 ## 关键陷阱（实测确认）

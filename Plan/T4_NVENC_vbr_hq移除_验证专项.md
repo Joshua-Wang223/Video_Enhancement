@@ -472,3 +472,8 @@ L40 方案（`PROMPT_L40_AV1等质量标定专项执行方案.md`）**不受影�
 
 **未做（Plan A 边界）**：内部 `rate_mode` 名 / config JSON / `config_manager` / `main.py` 默认参数 / 缓存 key / `nvenc_sdk` ctypes 行为。
 **跨仓 handoff**：VU 侧 h264/hevc 的 harness/生产/探针 `-rc:v vbr_hq` 需同步迁移，否则共享 `QUALITY_MAP` 的 ⑨ 组变红（本仓无法代改）。
+
+**证据与数据已入库**：`Accessory/data/vbrhq_migration_2026-10-04/`
+（`README.md` + `metrics.json` + `quality_compare/` 的 §4 对比产物 + `smoke/` E2E 输入输出 +
+`writer_e2e/` 真实 FFmpegWriter 产物 + `reports/` 验证报告；含 md5 指纹与复现命令）。
+⚠️ 旧产物 `old_*.mp4` 由本机备份 FFmpeg 6.1.1 生成（9.0 无法重造），故一并入库。

@@ -1,0 +1,61 @@
+{
+  "id": "vbrhq_migration_2026-10-04",
+  "title": "FFmpeg 9.0 vbr_hq/qvbr -> vbr -tune hq -multipass fullres 迁移验证证据",
+  "date": "2026-10-04",
+  "decision": "方案 A（仅迁移 CLI token；nvenc_sdk ctypes rc_ptr[1]=32 与内部 rate_mode 名不动）",
+  "landing_commit": "4a1123a",
+  "environment": {
+    "gpu": "Tesla T4",
+    "driver": "580.65.06",
+    "cuda": "13.0",
+    "ffmpeg": "9.0.2",
+    "nvencapi": "13.0 (apiVersion=0xd0)",
+    "nv_codec_headers": "13.0/13.1 (NV_ENC_PARAMS_RC_MODE 仅 CONSTQP/VBR/CBR；VBR_HQ/QVBR 已删)"
+  },
+  "quality_compare": {
+    "source": "input_vidiow/real_captured/test_video_640_360_real.mp4 (640x360@30), 前 6s = 183 帧",
+    "anchor_cq": 23,
+    "judgement": "ΔVMAF <= 0.3",
+    "h264_nvenc": {
+      "old_bytes": 1539271, "new_bytes": 1467218, "delta_psnr_db": -0.090,
+      "old_vmaf": 97.679, "new_vmaf": 97.631, "delta_vmaf": -0.048, "pass": true
+    },
+    "hevc_nvenc": {
+      "old_bytes": 1562355, "new_bytes": 1538863, "delta_psnr_db": -0.077,
+      "old_vmaf": 97.513, "new_vmaf": 97.383, "delta_vmaf": -0.130, "pass": true
+    },
+    "caveat": "旧产物由本机备份 FFmpeg 6.1.1 生成（9.0 已拒绝 vbr_hq）；存在 FFmpeg 版本混淆，ΔVMAF 仅作量级参考"
+  },
+  "la_linkage": {
+    "cli_lookahead_8_rc_ok": true,
+    "la8_vs_la0_output_differs": true,
+    "sdk_path_e2e_frames": { "in": 150, "out": 299, "decode_level_conserved": true }
+  },
+  "gate_baselines_no_planA_change": {
+    "plan_implementation_gate_static": { "total": 50, "pass": 48, "fail": 0, "warn": 0, "skip": 2 },
+    "plan_implementation_gate_behavior": { "total": 46, "pass": 46, "fail": 0 },
+    "plan_implementation_gate_merged": { "total": 96, "pass": 94, "fail": 0, "skip": 2 },
+    "crf_cq_unification_verify_no_gpu_quick": { "pass": 94, "fail": 0, "warn": 0, "skip": 11 },
+    "calibrate_equal_quality_selftest": "all pass"
+  },
+  "artifacts": [
+    { "path": "smoke/seg_src_5s.mp4", "bytes": 500279, "md5": "9cc9e08c7b5b2f40289a210a56c3ac2e" },
+    { "path": "smoke/seg_hevc_la8_vbrhq.mp4", "bytes": 1020149, "md5": "14b5dff0502a5440ecfa5a6fda6fdabf" },
+    { "path": "quality_compare/ref.mp4", "bytes": 1430497, "md5": "3de3a033479dd7bcfc6a3f3e208a6d7d" },
+    { "path": "quality_compare/old_h264_nvenc.mp4", "bytes": 1539271, "md5": "529d0fd694b69eadb5361d4e6faccebe" },
+    { "path": "quality_compare/new_h264_nvenc.mp4", "bytes": 1467218, "md5": "a97dff62bd2c10637ce03801a3bd5ba1" },
+    { "path": "quality_compare/old_hevc_nvenc.mp4", "bytes": 1562355, "md5": "f69f529cd1427870ba71173a77f7f15a" },
+    { "path": "quality_compare/new_hevc_nvenc.mp4", "bytes": 1538863, "md5": "ceda02b3991ec96d1cd882cd49e40eae" },
+    { "path": "quality_compare/la8.mp4", "bytes": 815834, "md5": "5821cbdb261f6bea75f3cc926e91468f" },
+    { "path": "quality_compare/la0.mp4", "bytes": 710046, "md5": "04c2cd66384df24ddd4c1830a7239bc1" },
+    { "path": "writer_e2e/planA_ifrnet.mp4", "bytes": 1229754, "md5": "b25eed522792e6dd87708ddf43803c56" }
+  ],
+  "related_docs": [
+    "Plan/T4_NVENC_vbr_hq移除_验证专项.md",
+    "Plan/FFmpeg9.0-移除-vbr_hq-速率控制模式.md",
+    "Plan/PROMPT_T4_NVENC等质量标定专项执行方案.md",
+    "Plan/PROMPT_L40_AV1等质量标定专项执行方案.md",
+    "memory/t4-vbrhq-verification-plan.md"
+  ],
+  "cross_repo_handoff": "VU 侧 h264/hevc 的 harness/生产/探针仍下发 -rc:v vbr_hq，需同步迁移为 vbr -tune hq -multipass fullres，否则共享 QUALITY_MAP 的 ⑨ 组变红"
+}
