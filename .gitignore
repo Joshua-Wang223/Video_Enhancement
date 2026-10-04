@@ -29,8 +29,10 @@ _bak*
 /output/
 /temp/
 tests/
-verification_report/
+# [2026-10-04] 实际目录名为 input_vidiow/（含真实素材，不入库）；input_videos/ 为正名占位。
+# 两者都忽略：并行会话曾把规则改成 input_videos/，导致实际目录 input_vidiow/ 暴露为未跟踪。
 input_vidiow/
+input_videos/
 output*.txt
 Video_Enhancement_github_token.txt
 
