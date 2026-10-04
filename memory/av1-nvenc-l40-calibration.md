@@ -58,3 +58,57 @@ type: project
   · **不依赖 GPU、可提前做**：增强 `MemWatcher`（记录进程数 `n` + 每采样 top-N RSS 并落盘）+ 静态审阅
     constqp/vbr 路径的缓冲差异，把下次上机压缩成「一条命令 + 读结论」。
 
+**S8 静态审阅结论（2026-10-04，纯 CPU 完成）——排除性结论比候选更重要**
+审阅对象是**生产链路** `external/ifrnet_video/{pipeline,nvenc_sdk,ffmpeg_io}.py` +
+`external/realesrgan_video/` 同构件（历史 `external/IFRNet/process_video_v6_4_*` 仅供对照）。
+1. **「constqp vs vbr 的差异只有 LA 与 `-b:v`」只在 CLI writer 成立，在本次冒烟里根本不适用**：
+   AV1 走 **SDK 直通**（Level 1/2），`ffmpeg_io` 的 `quality_args` 只在 fallback 路径生效，
+   ffmpeg 只做 muxer ⇒ **ffmpeg 命令形状（`-rc-lookahead` / `-b:v 0`）排除为累积源**。
+2. **两次跑的真正差异是「两条不同代码路径」，不是同一个 encoder 的两种 RC 配置**：
+   `main.py:1842-1843` 对 constqp 强制 `_level1_la=0`，vbr 保留配置 LA（8）
+   ⇒ constqp 走 `encode_frames_batch_ce_pipeline`（per-batch），vbr 走 `_encode_chunk`
+   → `encode_frames_stream`（`_acc_nv12` 分块累积）。**S8 斜率差异应按「路径差异」而非「RC 参数差异」解读。**
+3. **已确认有界（排除）**：`_strm_slot_pending` / `_slot_pending`（constqp 的 ce_pipeline 从不填，
+   append 点只在 `encode_frames_stream`）、`_cached_sps_pps`（单值覆盖）、每批 `results`、
+   `_slots`（段级 `_destroy_all_slots`）、`_la_pinned_pool`（形状键 + 取模，vbr 侧）。
+4. **跨段累积被结构性排除**：AV1/HEVC **每段强制新建编码器**（`main.py:1155-1157` `_force_new`）
+   ⇒ 任何挂在 encoder 实例上的容器都活不过一段。
+5. **头号候选被证伪**：per-frame CUDA event（LA=0 专属，`nvenc_sdk.py:3079-3081` 建、
+   `:2973/:3161` 销）在 `cuEventSynchronize` 失败时 `raise` 前**跳过销毁**看似泄漏；
+   但该 `raise` 会让编码线程置 `error` ⇒ **rc≠0**，而实测 S1 rc=0 ⇒ **这条路径从未触发**。
+   ⚠ 这类「只在异常路径泄漏」的机制，**用 rc=0 就能排除**，不必上机。
+6. **剩余存疑（需上机打点）**：`_stderr_lines`（ifrnet `nvenc_sdk.py:4290` / esrgan `:3911`
+   纯 append **无裁剪**，而同仓 `esrgan ffmpeg_io.py:425` 有 `>400 删前 200` ⇒ 两处不一致）；
+   `self.timing`（esrgan `pipeline.py`）。二者量级估都远小于 150 MB/min，**仅作排除用**。
+7. **未解释的部分要如实说**：以上都是「排除」，**没有任何一条能正面解释 +150 MB/min**。
+   ⇒ 下次上机的价值在于**用增强后的采样直接定位归属**（主进程 vs ffmpeg 子进程 vs GPU 侧），
+   而不是继续静态猜。若分组斜率显示增长在 `ffmpeg` 标签 ⇒ 是子进程（读帧器/分段 muxer）；
+   若在 `main` ⇒ 看 `pss` 是否同步涨（真泄漏）还是只有 RSS 涨（CUDA 上下文/共享页虚高）。
+
+**S8 准备项已落地（2026-10-04，`Accessory/verify/av1_pipeline_smoke.py`）**
+- `[FIX-S8-ATTRIB]` MemWatcher 不再只存 `(t, rss, gpu)`：**保留并落盘进程数 `n`**，新增
+  主进程 / 子进程**分组 RSS 与 PSS**（PSS 取 `/proc/<pid>/smaps_rollup`，避免共享页在多进程里重复计数），
+  逐进程明细（pid/rss/pss/角色）经 `--mem-dump-dir` 落 `<rate_mode>.mem.tsv`（可离线重分析，不必再上机）。
+  显存改为 **`--query-compute-apps=pid` 按 pid 归属**统计（`_gpu_mem_by_pid`），
+  整卡 `memory.used` 只作参考 —— 共享 GPU 主机上整卡值会把他人的任务算进来（本仓已有实证）。
+- `[FIX-S8-CRITERIA]` 判据扩为三项：**斜率（口径与历史完全一致，未改，保证与 +149.5/−21.4 可比）
+  + 峰值上界（`--mem-peak-mb` 默认 12000，短跑里 OLS 斜率对进段时机/段内台阶敏感，峰值是独立第二道判据）
+  + 样本充分性（`--mem-min-samples` 默认 8，不足报 SKIP 而非给假 PASS/FAIL）**。
+  斜率超阈值时 detail 直接附**主/子分组斜率**，报告里即可读出归属，不必再跑一轮。
+- **自测（无 GPU，已做）**：合成泄漏子进程（每 0.5 s 追加 20 MB）被正确检出
+  斜率 +1887.9 MB/min，且分组斜率 `main +1888.0 / child −0.1` 精确归因；
+  静止进程组 slope 0.36 MB/min（噪声量级）⇒ 无误报。`plan_implementation_gate` 无失败。
+- ⚠ 本容器 `nvidia-smi --query-compute-apps` 返回空（无 GPU 挂载）⇒ 显存字段为 0，
+  **显存归属判定须在 L40 上复验**（这是本次准备唯一未被 CPU 自测覆盖的点）。
+
+**下次上机待办（2026-10-04 定稿，权威版在方案 §9.5）**
+- **A｜S8 定位（最高优先）**：一条命令跑完读 S8 detail 的 `主 x / 子 y MB/min` 即可得归属，**无需二次跑**。
+- **B｜显存归属口径复验**：随 A 同一次跑批覆盖；判据 = `.mem.tsv` 的 `gpu_tree_mib` 列非 0 且能与整卡对账。
+- **C｜S8 峰值上界校准**：`--mem-peak-mb` 默认 12000 是估值；据 A 的实测峰值调，或记为「宽裕上界·不敏感」。
+- **D｜constqp 能否在 T4 复现（降本）**：T4 用 `h264_nvenc`+constqp 跑同一冒烟。复现 ⇒ 与 AV1 无关，
+  **修复可在 T4 开发验证**（远低于等 L40）；不复现 ⇒ 回 L40 查 AV1 特有因素。
+- **E｜顺带**：① `av1_vp9_quality_matrix` 退出码口径（1 vs 0）② L40-6（AV1 Level 1 `code=12`）。
+- ⚠ **只跑 constqp 不足以判读**，必须 `constqp,vbr` 同素材对照，才能区分「constqp 特有」与「长跑时间相关项」。
+- 读数判读表（方案 §9.5 有完整版）：子正主零=ffmpeg 子进程累积；主+子同正且 PSS 同步涨=主进程真泄漏；
+  主正但 PSS 不涨=CUDA 上下文/共享页虚高（**降级判据，别急着改管线**）；两者≈0 但峰值超上界=段切换清理问题。
+

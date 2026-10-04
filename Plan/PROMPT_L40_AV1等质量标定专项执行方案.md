@@ -10,7 +10,8 @@
 > **姊妹方案**：`Plan/Video_Enhancement_质量控制参数修复方案.md`（§7 AC1~AC7 / §8 L40 收口 / §9.6）
 > **总览指南**：`Accessory/docs/EQQ_CALIBRATION_OVERVIEW.md`
 >
-> 状态（2026-10-04 **执行完毕并落表**）：本容器已具备 L40（Ada）硬件，§1~§7 全部走完。
+> 状态（2026-10-04 **执行完毕并落表；S8 遗留项的无 GPU 准备已完成**）：本容器已具备 L40（Ada）硬件，
+> §1~§7 全部走完。**唯一遗留 = S8（constqp 内存斜率）**，其定位工具已就绪，待下次上机读结论。
 >
 > **落表结果（已提交 `b64c1d2` / `20b9e81`）**
 > - `QUALITY_MAP['av1_nvenc'] = (1.4566, 1.2165, 0, 63)`（VE 规范化池 `points/gpu_l40_cq`，17 素材；
@@ -39,6 +40,35 @@
 > - ❌ **S8（constqp）复现 FAIL**：空闲机斜率 **+149.5 MB/min**（vbr −21.4 通过）⇒ 非并发污染，
 >   疑 constqp 路径真实增长。`MemWatcher` 为进程树 RSS 求和且未落盘进程数 ⇒ 待增强采样定位。
 >   **与本专项换算正确性无关**（未改管线代码），作为**遗留项**单列。
+>
+> **S8 的无 GPU 准备项（2026-10-04 已完成，静态审阅 + 采样增强）**
+> - **静态审阅（排除性结论）**：① AV1 走 **SDK 直通**，ffmpeg 只做 muxer ⇒ CLI 的
+>   `-rc-lookahead`/`-b:v 0` 差异**排除**为累积源；② 两次跑的真正差异是
+>   **两条不同代码路径**（constqp→LA=0→`encode_frames_batch_ce_pipeline` per-batch；
+>   vbr→LA=8→`encode_frames_stream` 分块累积），**不是同一 encoder 的两种 RC 配置**；
+>   ③ `_strm_slot_pending`/`_slot_pending`/`_cached_sps_pps`/`results`/`_slots`/`_la_pinned_pool`
+>   **均确认有界**；④ AV1/HEVC **每段强制新建编码器** ⇒ 跨段累积结构性排除；
+>   ⑤ 头号候选（per-frame CUDA event 在 `cuEventSynchronize` 失败 raise 前跳过销毁）
+>   **被 rc=0 证伪**（该 raise 会置编码线程 error ⇒ rc≠0，而实测 S1 rc=0 ⇒ 从未触发）。
+>   ⚠ **没有任何一条能正面解释 +150 MB/min** —— 下次上机的价值是用增强采样**直接定位归属**，
+>   不是继续静态猜。详见 `memory/av1-nvenc-l40-calibration.md`。
+> - **采样增强已落地**（`Accessory/verify/av1_pipeline_smoke.py`）：
+>   `[FIX-S8-ATTRIB]` 保留并落盘**进程数 `n`** + **主进程/子进程分组 RSS 与 PSS** +
+>   逐进程明细（`--mem-dump-dir` → `<rate_mode>.mem.tsv`，可离线重分析）；
+>   显存改 `--query-compute-apps=pid` **按 pid 归属**（整卡值在共享主机上会污染）。
+>   `[FIX-S8-CRITERIA]` 判据 = **斜率（口径不变，与 +149.5/−21.4 可比）+ 峰值上界
+>   （`--mem-peak-mb` 默认 12000）+ 样本充分性（`--mem-min-samples` 默认 8，不足报 SKIP）**；
+>   斜率超阈值时 detail 直接附主/子分组斜率。
+> - **CPU 自测已过**：合成泄漏子进程被检出 +1887.9 MB/min 且分组归因精确
+>   （`main +1888.0 / child −0.1`）；静止进程组 0.36 MB/min（噪声量级）⇒ 无误报；
+>   `plan_implementation_gate` 84 项 **0 失败**。
+>   ⚠ 唯一未被 CPU 覆盖的点：`--query-compute-apps` 在本容器无 GPU 时返回空（显存记 0），
+>   **显存归属判定须在 L40 复验**。
+> - **下次上机的一条命令**（读 detail 即得归属，无需二次跑）：
+>   ```bash
+>   python3 Accessory/verify/av1_pipeline_smoke.py --src <330s+真实素材> \
+>       --rate-modes constqp --mem-interval 5 --mem-dump-dir /tmp/s8_mem < /dev/null
+>   ```
 >
 > **未做（本方案范围外/条件未触发）**：AC5（av1_qsv/amf，需 Intel/AMD）；L40-6（AV1 Level 1 `code=12`，可选）；
 > AV1 `-tune/-multipass` 同 T4 走显式 opt-in（AV1 本就 plain `vbr`，无附加项）。
@@ -217,11 +247,17 @@ python3 Accessory/verify/crf_cq_unification_verify.py --gpu \
 # ── AV1 长视频冒烟（P3 完整跑批，S1/S2/S3/S8 需 GPU）─────────
 python3 Accessory/verify/av1_pipeline_smoke.py --src <330s真实素材> \
     --rate-modes constqp,vbr --segment-duration 30 \
+    --mem-interval 5 --mem-dump-dir /tmp/s8_mem \
     --report verification_report/av1_smoke_L40_$(date +%F).md < /dev/null
 # 退出码：0 无 FAIL / 1 有 FAIL / 2 环境前置不成立
 # 采样判据：S1 退出码 / S2 段级 decoded==expected / S3 产物帧数=各段之和
 #          / S4 解码级验证 / S5 segment_bitstream_verify_v5 --skip-chroma
-#          / S6 QA sidecar / S7 产物编码器确为 av1 / S8 泄漏斜率 ≤ +50 MB/min
+#          / S6 QA sidecar / S7 产物编码器确为 av1
+#          / S8 泄漏：后半程 RSS 斜率 ≤ +50 MB/min【口径未变】+ 峰值 ≤ --mem-peak-mb
+#             （默认 12000）+ 采样点 ≥ --mem-min-samples（默认 8，不足报 SKIP）
+#          S8 判读：detail 里的「主 x / 子 y MB/min」直接给出泄漏归属
+#                 （main ⇒ 主进程；ffmpeg ⇒ 读帧器/分段 muxer）；PSS 同步涨=真泄漏
+#          逐进程明细：/tmp/s8_mem/<rate_mode>.mem.tsv（可离线重算，不必二次上机）
 ```
 
 ### 5.5 入池 → LOO → 落表候选
@@ -298,6 +334,43 @@ python3 Accessory/probe/eqq_pool_fit_table.py \
 
 ---
 
+## 9.5 下次上机待办（T4 / L40 通用，按优先级）
+
+> 背景：§1~§7 已收口，**唯一遗留是 S8**（constqp 后半程 RSS 斜率 +149.5 MB/min，
+> vbr −21.4 通过，两次复现）。定位工具已就绪（见 §0「S8 的无 GPU 准备项」），下机只需跑一条命令读结论。
+
+| # | 待办 | 卡在哪 | 上机怎么做 | 完成判据 |
+|---|---|---|---|---|
+| **A** | **S8 定位（最高优先）** | 需真实 NVENC 负载 | 见下方「A 的命令」 | S8 detail 给出 `主 x / 子 y MB/min` 归属，读数即结论；**无需二次跑** |
+| **B** | **显存归属口径复验** | 本容器无 GPU，`--query-compute-apps` 返回空（显存恒 0） | 随 A 的同一次跑批自动覆盖 | `/tmp/s8_mem/*.mem.tsv` 的 `gpu_tree_mib` 列**非 0** 且与 `nvidia-smi` 整卡值可对账 |
+| **C** | **S8 判据峰值上界校准** | 默认 12000 MB 是**估值**，非实测推导 | 读 A 的 `RSS 峰值`，若 vbr 与 constqp 峰值差 >2× 则据实调 `--mem-peak-mb` | 阈值有实测依据，或明确记为「宽裕上界·不敏感」 |
+| **D** | **constqp 路径可在 T4 复现（降本验证）** | 未验证 | T4 上 `h264_nvenc`/`hevc_nvenc` + `--rate-mode-* constqp` 跑同一冒烟 | 若 T4 也出正斜率 ⇒ 与 AV1 无关，**修复可在 T4 开发验证**（成本远低于等 L40）；若不复现 ⇒ 回 L40 查 AV1 特有因素 |
+| **E** | 顺带复核项（非阻塞） | — | ①`av1_vp9_quality_matrix` 退出码口径（§0 遗留的 1 vs 0）；②L40-6（AV1 Level 1 `code=12`）若仍想做 | 有结论或明确记为不做 |
+
+**A 的命令**（一条跑完，读 `S8` 的 detail 即可）：
+
+```bash
+cd /workspace/Video_Enhancement
+python3 Accessory/verify/av1_pipeline_smoke.py --src <≥330s 真实素材> \
+    --rate-modes constqp,vbr --segment-duration 30 \
+    --mem-interval 5 --mem-dump-dir /tmp/s8_mem \
+    --report verification_report/av1_smoke_$(date +%F).md < /dev/null
+```
+
+**读数判读表**（直接对应 S8 detail 的「主 x / 子 y MB/min」）：
+
+| 观测 | 结论 | 下一步 |
+|---|---|---|
+| `子` 为正、`主` ≈ 0 | **ffmpeg 子进程累积**（读帧器 / 分段 muxer），主进程无辜 | 查 reader 帧队列与分段 muxer 的 `_stderr_lines` |
+| `主` 与 `子` 同为正、PSS 同步涨 | **主进程真泄漏**（不是共享页虚高） | 按 `/tmp/s8_mem/*.mem.tsv` 里 top RSS 的 pid 定位到具体对象 |
+| `主` 正、**PSS 不涨** | 多为 CUDA 上下文 / 共享页虚高，非真泄漏 | 降级判据（考虑改用 PSS 作主判据），别急着改管线 |
+| 两者都 ≈ 0 但**峰值超上界** | 是峰值台阶而非单调泄漏（如某段累积后释放） | 查段切换的清理路径（`main.py:1155-1157` 每段新建编码器） |
+
+⚠ **只跑 `constqp` 不足以判读**：必须 `constqp,vbr` 同素材对照，才能区分「constqp 特有」
+与「长跑本身的时间相关项」。
+
+---
+
 ## 10. 复现命令汇总
 
 ```bash
@@ -314,7 +387,8 @@ python3 Accessory/probe/eqq_pool_fit_table.py --sides 6s,10s,legacy10s,gpu_l40 <
 # 3 AV1 端到端复验
 python3 Accessory/probe/av1_vp9_quality_matrix.py --src /workspace/input_videos/word_world_2.mp4 --only av1_nvenc < /dev/null
 python3 Accessory/verify/crf_cq_unification_verify.py --gpu --source /workspace/input_videos/word_world_2.mp4 --bitrate-source /workspace/input_videos/new4_raw.mp4 < /dev/null
-python3 Accessory/verify/av1_pipeline_smoke.py --src <330s素材> --rate-modes constqp,vbr < /dev/null
+python3 Accessory/verify/av1_pipeline_smoke.py --src <330s素材> --rate-modes constqp,vbr \
+    --mem-interval 5 --mem-dump-dir /tmp/s8_mem < /dev/null
 # 4 门禁
 python3 Accessory/verify/plan_implementation_gate.py < /dev/null
 cd /workspace/VidUtils && python3 verify/verify_quality_mapping.py < /dev/null
@@ -335,7 +409,8 @@ cd /workspace/VidUtils && python3 verify/verify_quality_mapping.py < /dev/null
 | AC7 | AV1/VP9 软编族 | ✅ 完成（T4 重编构建） | 不在本专项（无硬件依赖） |
 
 > **但「换算正确 ≠ 管线能跑」**：AV1 端到端能力由 P3 冒烟（§8.5）+ 三处修复（§8.6）保障，
-> 本专项的 **L40-5** 是它首次在 GPU 上的完整回归。
+> 本专项的 **L40-5** 是它首次在 GPU 上的完整回归。**S8 是唯一未闭环项**，定位工具已就绪，
+> 待办与读数判读表见 **§9.5**。
 >
 > **2026-10-04 口径变更对 AC 的影响**：门禁口径已迁 **quality**（B1）且 `to_constqp_qp(0)=0` 双口径，
 > 但 **AV1 的 `-cq`/`-qp` 数值在两口径相同**（`-qp 63`、`-cq` 表值不变）⇒ **AC1~AC4 的判据与期望值不变**，
