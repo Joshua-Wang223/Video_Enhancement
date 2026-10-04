@@ -180,7 +180,7 @@ REF21_EXPECTED: Dict[str, Tuple[str, int]] = {
     "h264_nvenc": ("-cq:v", 26),
     # [B1] quality 口径值：hevc 26（size 28）/ svtav1 29（24）/ vp9 26（28）/ rav1e 64（66）
     "hevc_nvenc": ("-cq:v", 26),
-    "av1_nvenc":  ("-cq:v", 27),
+    "av1_nvenc":  ("-cq:v", 32),   # L40 落表后 quality 口径：1.4573×21+1.1022≈31.7→32
     "libsvtav1":  ("-crf", 29),
     "libvpx-vp9": ("-crf", 26),
     "librav1e":   ("-qp", 64),
@@ -1052,13 +1052,16 @@ def group_constqp(ctx: Ctx, v: Verifier) -> None:
           detail=f"cq={cq_val} vs qp={q2}")
 
     # G3-7 [FIX-QP-SCALE] AV1 的 -qp 是 qindex（0~255），与 -cq 的 0~63 不同刻度。
-    #   L40 上实测确认 QP 尺度为 3×：基准 21 → QP 63，而非推断的 84（×4）。
-    #   VidUtils/probe/verify_nvenc_quality_gpu.py C 组扫 -qp {21,63,84,105}。
-    q_av1 = Q.to_constqp_qp("av1_nvenc", 27)
-    v.add("G3-7", "CONSTQP", "av1_nvenc：CQ 27 → QP 63（AV1 qindex ≈3×，L40 实测确认）",
-          Status.PASS if q_av1 == 63 else Status.FAIL,
-          detail=f"QP={q_av1}（×3 倍率 L40 实测确认）",
-          evidence=["[FIX-QP-SCALE] _QP_MAP_OVERRIDE['av1_nvenc'] = (3.0, 0.0, 0, 255)"])
+    #   2026-10-04 L40 17 素材标定：quality 口径 QP 轴为**仿射** (7.9338, −97.5136)，
+    #   取代早期仅在 ref21 验证的 ×3 近似。输入取 av1 在 ref21 的 **CQ 表值 32**
+    #   （与 G3-1/G3-2 同约定：传表在 ref21 产出的 CQ 值），回基准轴≈21.2 → QP 71。
+    #   ⚠ VU 侧仍为 `_QP_SCALE=3`（仅 ref21 验证）⇒ 跨仓 CR-4 handoff 待同步。
+    _av1_cq = Q.resolve_quality("av1_nvenc", crf_ref=21)[1]
+    q_av1 = Q.to_constqp_qp("av1_nvenc", _av1_cq)
+    v.add("G3-7", "CONSTQP", f"av1_nvenc：CQ {_av1_cq} → QP 71（L40 仿射标定，非 ×3）",
+          Status.PASS if q_av1 == 71 else Status.FAIL,
+          detail=f"QP={q_av1}（L40 17 素材仿射标定 QUALITY_MAP_QP['av1_nvenc']）",
+          evidence=["[L40-QP-CALIB] QUALITY_MAP_QP['av1_nvenc'] = (7.9338, -97.5136, 0, 255)"])
 
     # G3-8 [FIX-QP-SCALE] librav1e 的质量参数本身就落在 QP 刻度上，
     #   to_constqp_qp 对它是**恒等透传**（不套任何倍率/截距），
@@ -1562,28 +1565,29 @@ def group_emit(ctx: Ctx, v: Verifier) -> None:
         ("G6-6", "ESRGAN", "realesrgan_video", "libx265", 24, "vbr_hq", 8,
          [("-crf", "24")], [("-cq:v", None)]),
         # G6-7 [FIX-QP-SCALE] AV1 的 constqp 必须发 qindex（0~255），不是 CQ 轴值：
-        #   crf=27 是 av1_nvenc 在基准 21 上的 -cq 值，切 constqp 后应换算成 63（×3，L40 实测）。
+        #   crf=32 是 av1_nvenc 在基准 21 上的 -cq 表值（L40 落表后；旧值 27 为 SIZE_MAP 回退），
+        #   切 constqp 后应换算成 71（L40 17 素材仿射标定，取代早期 ×3 的 63）。
         #   需 Ada(L40) 才能真正跑起来；T4 / 本机无 AV1 NVENC ⇒ 该格 SKIP。
-        ("G6-7", "IFRNet", "ifrnet_video", "av1_nvenc", 27, "constqp", 0,
-         [("-rc:v", "constqp"), ("-qp", "63")],
+        ("G6-7", "IFRNet", "ifrnet_video", "av1_nvenc", 32, "constqp", 0,
+         [("-rc:v", "constqp"), ("-qp", "71")],
          [("-cq:v", None), ("-b:v", None)]),
         # G6-8~G6-10 [FIX-AV1-NVENC / FIX-AV1-RC] 2026-09-30 L40 长视频冒烟暴露的
         #   三处 AV1 缺陷的命令形状回归（详见方案 §8.6）。三者都**不需要 AV1 硬件**：
         #   写入器只拼命令串，Popen 被替身捕获。
         #   ② ESRGAN 侧原先用精确元组 ('h264_nvenc','hevc_nvenc') 判 NVENC，
         #      av1_nvenc 落到 else 的 libx264 分支 → 静默发 `-crf 27`（把 CQ 当 CRF）。
-        ("G6-8", "ESRGAN", "realesrgan_video", "av1_nvenc", 27, "constqp", 0,
+        ("G6-8", "ESRGAN", "realesrgan_video", "av1_nvenc", 32, "constqp", 0,
          [("-vcodec", "av1_nvenc"), ("-preset", "p4"),
-          ("-rc:v", "constqp"), ("-qp", "63")],
+          ("-rc:v", "constqp"), ("-qp", "71")],
          [("-crf", None), ("-cq:v", None)]),
         #   ③ av1_nvenc 的 `-rc` 只接受 constqp/vbr/cbr；`vbr_hq` 会让 ffmpeg
         #      报 `Undefined constant or missing '(' in 'vbr_hq'` 并整条命令失败。
-        ("G6-9", "IFRNet", "ifrnet_video", "av1_nvenc", 27, "vbr_hq", 8,
-         [("-vcodec", "av1_nvenc"), ("-rc:v", "vbr"), ("-cq:v", "27"),
+        ("G6-9", "IFRNet", "ifrnet_video", "av1_nvenc", 32, "vbr_hq", 8,
+         [("-vcodec", "av1_nvenc"), ("-rc:v", "vbr"), ("-cq:v", "32"),
           ("-b:v", "0"), ("-rc-lookahead", "8")],
          [("-rc:v", "vbr_hq")]),
-        ("G6-10", "ESRGAN", "realesrgan_video", "av1_nvenc", 27, "vbr_hq", 8,
-         [("-vcodec", "av1_nvenc"), ("-rc:v", "vbr"), ("-cq:v", "27"),
+        ("G6-10", "ESRGAN", "realesrgan_video", "av1_nvenc", 32, "vbr_hq", 8,
+         [("-vcodec", "av1_nvenc"), ("-rc:v", "vbr"), ("-cq:v", "32"),
           ("-b:v", "0")],
          [("-rc:v", "vbr_hq"), ("-crf", None)]),
         # ── [NVENC-TUNING] 显式 opt-in / 自动 multipass / 目标码率（第 10 元素 = opts）──

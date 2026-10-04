@@ -165,9 +165,9 @@ _EQQUAL_SPEED_OVERRIDE: Dict[str, tuple] = {
 # 本仓走 ``external/*/nvenc_sdk.py`` 的 ctypes 直连 SDK，``to_constqp_qp()`` 需要
 # **QP 轴**上的等质量值，而 ``QUALITY_MAP`` 是 CQ/CRF 轴的表。
 #   · 软编（libx265/libsvtav1/librav1e）的 ``-qp`` 本身就落在 QP 刻度上 ⇒ 镜像 D2a；
-#   · ⚠ NVENC 的 QP 行已于 2026-10-04 在 T4 上机标定并落表（见下方 h264/hevc 行）；
-#     未覆盖的 av1_nvenc（需 L40/Ada）仍由 ``_QP_MAP_OVERRIDE`` 先行命中
-#     （h264/hevc 基准轴直取、av1 ×3），行为与标定前一致。
+#   · ⚠ NVENC 的 QP 行已于 2026-10-04 上机标定并落表：h264/hevc 于 **T4**，
+#     av1 于 **L40（需 Ada）**（见下方各行）。quality 口径下本表优先于
+#     ``_QP_MAP_OVERRIDE`` 命中；``_QP_MAP_OVERRIDE`` 仅服务 size 口径与未标定编码器。
 QUALITY_MAP_QP: Dict[str, tuple] = {
     # 软编行镜像 QUALITY_MAP 的 2026-10-02 **第八版**标定值（统一锚点 18/21/24/27/30，
     # 17 条素材 + 同 key 取均值，720p prep，n_subsample=1；软编门禁 ≤5.9，实测
@@ -189,6 +189,17 @@ QUALITY_MAP_QP: Dict[str, tuple] = {
     #   crf_cq_unification_verify 的 G3/G6/G7）。
     'h264_nvenc':  (0.9704, 1.4767, 0, 51),
     'hevc_nvenc':  (1.1083, -2.9183, 0, 51),
+    # ---------- 硬件编码器（NVENC QP 轴 AV1，**L40 实测 2026-10-04**）----------
+    # 口径：锚点 18/21/24/27/30 + n_subsample=1 + 720p prep + `-rc:v constqp -qp`
+    #   （CR-1 preset p4）。素材池 = eqq_calib 17 条（12×6s + 5×10s 切片，含
+    #   10s `screen_ui_code` 的 `_10s` 去重）。池化 a=最小二乘 / b=中位数；LOO 3.64。
+    # ⚠ 与 `_QP_MAP_OVERRIDE` 的 **×3（3.0, 0.0）显著不同**：实测为**仿射带大负截距**
+    #   （crf18→45 / 21→69 / 24→93 / 27→117 / 30→141），×3 仅在 crf≈21 附近成立
+    #   （crf30 处 ×3 给 90 而实测等质需 141，残差 −51）。故 quality 口径以本行为准。
+    # ⚠ **跨仓契约 CR-4 handoff**：VU 侧 `_QP_SCALE['av1_nvenc']=3`（仅 ref21 验证过），
+    #   与本行分叉 ⇒ 需通知 VU 重新核对（或同步本仿射模型）。VE 生产默认 quality 口径。
+    # 指纹：NVIDIA L40 / 驱动 580.65.06 / ffmpeg 9.0.2（换构建须重标）。
+    'av1_nvenc':   (7.9338, -97.5136, 0, 255),
     # ⚠ rav1e 分档：native 进 QUALITY_MAP，speed10 进 _EQQUAL_SPEED_OVERRIDE，
     #   本表不重复登记 librav1e（避免与档位语义冲突）。
 }
@@ -338,17 +349,20 @@ def _finish(codec: str, value: float, note: str) -> Tuple[str, int, List[str], s
 #   · NVENC H.264/HEVC 的 -cq:v 相对基准轴有 +5 / +7.5 偏移，而 -qp 没有
 #     ⇒ 截距清零（26→21、28→20）；
 #   · **AV1 的 -qp 是 qindex（0~255）**，与 -cq 的 0~63 完全是两条刻度
-#     ⇒ 倍率 3（基准 21 → QP 63，L40 实测确认；原注释写的 ×4/84 是早期推断，已废弃）。
+#     ⇒ quality 口径以实测标定行 ``QUALITY_MAP_QP['av1_nvenc']`` 为准
+#     （仿射 (7.9338, −97.5136)，L40 17 素材标定；crf21→69、crf30→141）；
+#     下方 ``_QP_MAP_OVERRIDE`` 保留的 ×3 仅作 **size 口径** 与未标定回退，
+#     实测它在 crf≈21 附近近似可用、crf≥24 起显著偏离（crf30 −51）。
 #     原实现拿 CQ 轴值直发，21 落在 0~255 上等于近无损；
 #   · librav1e / libsvtav1 / libx265 的"质量参数"本身就落在 QP 刻度上，
 #     直接沿用其 SIZE_MAP 行（含各自截距，如 rav1e 的 4·ref−4、svtav1 的 ref+6）。
-# ⚠ av1_nvenc 的 QP 尺度在 L40 上实测确认为 3×（非推断的 4×）。
-#   VidUtils/probe/verify_nvenc_quality_gpu.py 的 C 组扫 -qp {21,63,84,105}。
+# ⚠ AV1 的 ×3 是**早期仅在 ref21 验证**的近似（VidUtils C 组扫 -qp {21,63,84,105}），
+#   17 素材全轴标定后由仿射表取代（见上）。
 #   T4 无 AV1 NVENC，故 T4 生产与 h264/hevc 路径均为恒等，不受影响。
 _QP_MAP_OVERRIDE = {
     'h264_nvenc': (1.0, 0.0, 0, 51),
     'hevc_nvenc': (1.0, 0.0, 0, 51),
-    'av1_nvenc':  (3.0, 0.0, 0, 255),   # [L40 实测确认：QP 尺度 3×]
+    'av1_nvenc':  (3.0, 0.0, 0, 255),   # size 口径 / 回退用；quality 口径走 QUALITY_MAP_QP 仿射行
     'h264_vaapi': (1.0, 0.0, 0, 52),
     'hevc_vaapi': (1.0, 0.0, 0, 52),
 }
@@ -372,12 +386,12 @@ def _qp_model(codec: str, table=None):
       · **quality 口径**：``QUALITY_MAP_QP`` 是 M4/D2b 的落点，标定后必须优先命中，
         否则 NVENC 行会被 ``_QP_MAP_OVERRIDE`` **永久遮蔽**（标了也不生效）；
       · **size 口径**：判据 ``crf_cq_unification_verify.py`` 显式钉 ``size``
-        （G3/G6 的期望值按等体积口径写成），故 size 分支必须逐字不变，
-        保证「零侵入」——`G3-1`（h264 26→21）/`G3-7`（av1 27→63）不受影响。
+        （G3-9 的期望值按等体积口径写成），故 size 分支必须逐字不变，
+        保证「零侵入」——`G3-9`（h264 26→21 / hevc 28→20 / av1 27→63）不受影响。
 
-    ⚠ **当前表下本改造是恒等变换**：``QUALITY_MAP_QP`` 尚无 NVENC 行 ⇒ quality 口径的
-    NVENC 仍回退 ``_QP_MAP_OVERRIDE``，与改造前逐字一致（已用旧/新模块矩阵对比验证）。
-    仅当 M4 标定把 NVENC 行写入 ``QUALITY_MAP_QP`` 后，quality 口径才切换到标定值。
+    ⚠ **标定行已就位**（2026-10-04）：``QUALITY_MAP_QP`` 已有 h264/hevc（T4）与
+    av1（L40）三行 ⇒ **quality 口径切换为标定值**，size 口径仍走 ``_QP_MAP_OVERRIDE``。
+    两口径的对照断言见 ``crf_cq_unification_verify.py`` 的 G3-9（size）与 G3-1/2/7（quality）。
     """
     c = str(codec).lower()
     if get_quality_mode() == 'quality':

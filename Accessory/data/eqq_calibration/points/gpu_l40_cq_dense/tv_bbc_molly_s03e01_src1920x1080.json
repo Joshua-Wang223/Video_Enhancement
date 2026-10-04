@@ -1,0 +1,266 @@
+{
+ "tv_bbc_molly_s03e01_src1920x1080.mp4|libx264|18": {
+  "m": {
+   "vmaf": 96.118895,
+   "psnr_hvs": 47.705281,
+   "vif_scale0": 0.807527,
+   "adm2": 0.992066,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 3.91
+ },
+ "tv_bbc_molly_s03e01_src1920x1080.mp4|libx264|21": {
+  "m": {
+   "vmaf": 95.049049,
+   "psnr_hvs": 45.515362,
+   "vif_scale0": 0.756245,
+   "adm2": 0.989049,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.97
+ },
+ "tv_bbc_molly_s03e01_src1920x1080.mp4|libx264|24": {
+  "m": {
+   "vmaf": 93.429474,
+   "psnr_hvs": 43.223192,
+   "vif_scale0": 0.697032,
+   "adm2": 0.984811,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.7
+ },
+ "tv_bbc_molly_s03e01_src1920x1080.mp4|libx264|27": {
+  "m": {
+   "vmaf": 90.870937,
+   "psnr_hvs": 40.778003,
+   "vif_scale0": 0.631838,
+   "adm2": 0.978247,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.68
+ },
+ "tv_bbc_molly_s03e01_src1920x1080.mp4|libx264|30": {
+  "m": {
+   "vmaf": 86.901135,
+   "psnr_hvs": 38.245915,
+   "vif_scale0": 0.563073,
+   "adm2": 0.968432,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.64
+ },
+ "tv_bbc_molly_s03e01_src1920x1080.mp4|av1_nvenc|12": {
+  "m": {
+   "vmaf": 98.236818,
+   "psnr_hvs": 51.256684,
+   "vif_scale0": 0.934641,
+   "adm2": 0.99893,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.77
+ },
+ "tv_bbc_molly_s03e01_src1920x1080.mp4|av1_nvenc|18": {
+  "m": {
+   "vmaf": 97.865302,
+   "psnr_hvs": 49.517385,
+   "vif_scale0": 0.899337,
+   "adm2": 0.997831,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.19
+ },
+ "tv_bbc_molly_s03e01_src1920x1080.mp4|av1_nvenc|23": {
+  "m": {
+   "vmaf": 97.30255,
+   "psnr_hvs": 48.009828,
+   "vif_scale0": 0.861259,
+   "adm2": 0.996166,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.83
+ },
+ "tv_bbc_molly_s03e01_src1920x1080.mp4|av1_nvenc|27": {
+  "m": {
+   "vmaf": 96.588007,
+   "psnr_hvs": 46.503279,
+   "vif_scale0": 0.820388,
+   "adm2": 0.994155,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.82
+ },
+ "tv_bbc_molly_s03e01_src1920x1080.mp4|av1_nvenc|31": {
+  "m": {
+   "vmaf": 95.608406,
+   "psnr_hvs": 44.839705,
+   "vif_scale0": 0.773297,
+   "adm2": 0.9915,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.81
+ },
+ "tv_bbc_molly_s03e01_src1920x1080.mp4|av1_nvenc|36": {
+  "m": {
+   "vmaf": 93.829962,
+   "psnr_hvs": 42.623079,
+   "vif_scale0": 0.707468,
+   "adm2": 0.9871,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.76
+ },
+ "tv_bbc_molly_s03e01_src1920x1080.mp4|av1_nvenc|41": {
+  "m": {
+   "vmaf": 91.084681,
+   "psnr_hvs": 40.17359,
+   "vif_scale0": 0.633326,
+   "adm2": 0.980771,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.84
+ },
+ "tv_bbc_molly_s03e01_src1920x1080.mp4|av1_nvenc|47": {
+  "m": {
+   "vmaf": 86.457025,
+   "psnr_hvs": 37.507093,
+   "vif_scale0": 0.553635,
+   "adm2": 0.970192,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.83
+ },
+ "tv_bbc_molly_s03e01_src1920x1080.mp4|av1_nvenc|54": {
+  "m": {
+   "vmaf": 76.700402,
+   "psnr_hvs": 33.839758,
+   "vif_scale0": 0.451574,
+   "adm2": 0.948618,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.77
+ },
+ "tv_bbc_molly_s03e01_src1920x1080.mp4|av1_nvenc|63": {
+  "m": {
+   "vmaf": 56.68699,
+   "psnr_hvs": 29.310437,
+   "vif_scale0": 0.336593,
+   "adm2": 0.896367,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.75
+ },
+ "tv_bbc_molly_s03e01_src1920x1080.mp4|av1_nvenc|38": {
+  "m": {
+   "vmaf": 92.889205,
+   "psnr_hvs": 41.634239,
+   "vif_scale0": 0.677476,
+   "adm2": 0.98492,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.78
+ },
+ "tv_bbc_molly_s03e01_src1920x1080.mp4|av1_nvenc|40": {
+  "m": {
+   "vmaf": 91.71441,
+   "psnr_hvs": 40.654075,
+   "vif_scale0": 0.648129,
+   "adm2": 0.982282,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.75
+ },
+ "tv_bbc_molly_s03e01_src1920x1080.mp4|av1_nvenc|42": {
+  "m": {
+   "vmaf": 90.397055,
+   "psnr_hvs": 39.64854,
+   "vif_scale0": 0.617405,
+   "adm2": 0.979324,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.9
+ },
+ "tv_bbc_molly_s03e01_src1920x1080.mp4|av1_nvenc|44": {
+  "m": {
+   "vmaf": 89.246381,
+   "psnr_hvs": 38.947538,
+   "vif_scale0": 0.596545,
+   "adm2": 0.976544,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.99
+ },
+ "tv_bbc_molly_s03e01_src1920x1080.mp4|av1_nvenc|46": {
+  "m": {
+   "vmaf": 87.498741,
+   "psnr_hvs": 38.022256,
+   "vif_scale0": 0.568809,
+   "adm2": 0.972674,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.97
+ },
+ "tv_bbc_molly_s03e01_src1920x1080.mp4|av1_nvenc|48": {
+  "m": {
+   "vmaf": 85.25289,
+   "psnr_hvs": 36.951482,
+   "vif_scale0": 0.538202,
+   "adm2": 0.967416,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.93
+ },
+ "tv_bbc_molly_s03e01_src1920x1080.mp4|av1_nvenc|50": {
+  "m": {
+   "vmaf": 82.867142,
+   "psnr_hvs": 35.937603,
+   "vif_scale0": 0.508807,
+   "adm2": 0.962416,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.26
+ }
+}

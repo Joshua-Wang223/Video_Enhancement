@@ -235,8 +235,14 @@ def run_one(ffmpeg: str, ffprobe: str, src: Path, out: Path, rate_mode: str,
             return rec
 
     # ② 段级解码级守恒（管线自己的门禁日志）
-    seg_ok = re.findall(r"解码级验收通过: decoded=(\d+) expected=(\d+)", log_text)
-    seg_bad = len(re.findall(r"解码级验收失败", log_text))
+    # ⚠ [FIX-S3-STAGE-DEDUP] 两阶段管线（Step 1/2 IFRNet + Step 2/2 ESRGAN）**各校验一次**
+    #   同一批分段 ⇒ 全量 findall 会把每段计两次（S3 得到 2×产物帧的假 FAIL）。
+    #   只取**最后一个阶段**（Step 2/2，即最终产物来源）的分段验收行；单阶段管线无该标记
+    #   ⇒ 退回全量（逐字节等价）。
+    _s2 = log_text.rfind("Step 2/2")
+    seg_region = log_text[_s2:] if _s2 >= 0 else log_text
+    seg_ok = re.findall(r"解码级验收通过: decoded=(\d+) expected=(\d+)", seg_region)
+    seg_bad = len(re.findall(r"解码级验收失败", seg_region))
     seg_sum = sum(int(a) for a, _ in seg_ok)
     if not seg_ok:
         check("S2", "段级解码级门禁（decoded==expected）", None,
