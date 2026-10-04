@@ -51,12 +51,16 @@ def _preset_supported(codec: str) -> bool:
 
 def _resolve_quality_args(codec: str, *, crf=None, cq=None,
                           crf_ref=None, cq_ref=None,
-                          preset=None) -> Tuple[List[str], str]:
+                          preset=None, bitrate=None) -> Tuple[List[str], str]:
     """[QUALITY-UNIFY] 统一构造"编码质量参数"片段（所有重编码路径共用）。
 
       软编 → ``-crf N`` / VP9 → ``-crf N -b:v 0`` / 硬编 → ``-cq:v N -b:v 0`` /
       librav1e → ``-qp N``；四键均未给时按 libx264 CRF 基准 21 换算。
       ``preset`` 仅在编码器支持 -preset 时发射（见 ``_preset_supported``）。
+
+      [NVENC-TUNING] ``bitrate`` 给了目标码率时**优先**：改为目标码率 VBR
+      （NVENC → ``-rc:v vbr -multipass fullres -b:v X``；软编 → ``-b:v X``），
+      并**去掉** crf/cq 质量参数（二者语义互斥）。``bitrate=None`` 时行为逐字不变。
 
     Returns:
         (args, note) —— args 含 ``-preset``（如适用）+ 质量参数 + 配套参数。
@@ -74,6 +78,14 @@ def _resolve_quality_args(codec: str, *, crf=None, cq=None,
         # 不静默丢弃：档位为何没下发要能在日志/返回说明里看到
         _note = (f'{_note}；编码器 {codec} 不接受 x264 风格 -preset，'
                  f'已省略 --preset {preset}')
+    # [NVENC-TUNING] 目标码率优先（与 crf/cq 互斥）
+    if bitrate:
+        if 'nvenc' in str(codec).lower():
+            # CBR / 受限码率场景才有意义：自动补 -multipass fullres（提升码率命中精度）
+            args += ['-rc:v', 'vbr', '-multipass', 'fullres', '-b:v', str(bitrate)]
+        else:
+            args += ['-b:v', str(bitrate)]
+        return args, f'目标码率 VBR {bitrate}'
     args += [_p, str(_val)] + list(_extra)
     return args, _note
 
@@ -1114,15 +1126,17 @@ def add_audio_to_video(video_path: str, audio_path: str,
                 video_codec,
                 crf=config.get('crf'), cq=config.get('cq'),
                 crf_ref=config.get('crf_ref'), cq_ref=config.get('cq_ref'),
-                preset=config.get('preset', 'medium'))
+                preset=config.get('preset', 'medium'),
+                bitrate=config.get('video_bitrate'))
             logger.info(f"[add_audio] 质量参数解析: {_q_note} → {' '.join(_q_args)}")
             cmd.extend(['-c:v', video_codec] + _q_args + ['-pix_fmt', pix_fmt])
 
         else:
             # 默认设置：复制视频
+            # [FIX-FFMPEG9-VSYNC] FFmpeg 9.0 移除 `-vsync` ⇒ 用等价 `-fps_mode passthrough`
             cmd.extend([
                 '-c:v', 'copy',
-                '-vsync', 'passthrough'
+                '-fps_mode', 'passthrough'
             ])
         
         cmd.extend([
@@ -2540,7 +2554,9 @@ def normalize_video_timeline(input_video: Union[str, Path],
                              # [QUALITY-UNIFY] 环节① 质量输入（与合并/分段同语义）
                              cq: Optional[int] = None,
                              crf_ref: Optional[int] = None,
-                             cq_ref: Optional[int] = None) -> bool:
+                             cq_ref: Optional[int] = None,
+                             # [NVENC-TUNING] 目标码率（None = 用质量参数）
+                             bitrate: Optional[str] = None) -> bool:
     """[P3-FIX-NORM] 把源时间轴归一化为均匀 CFR：按帧号重编号 pts。
 
     必须"重编号 + passthrough"组合，实测三种写法只有这一种正确：
@@ -2555,7 +2571,8 @@ def normalize_video_timeline(input_video: Union[str, Path],
     Note: -vf 意味着一路软编解码，代价是一次重编码；仅在源确实异常时使用。
     """
     _q_args, _q_note = _resolve_quality_args(
-        encoder, crf=crf, cq=cq, crf_ref=crf_ref, cq_ref=cq_ref, preset=preset)
+        encoder, crf=crf, cq=cq, crf_ref=crf_ref, cq_ref=cq_ref, preset=preset,
+        bitrate=bitrate)
     logger.info(f"[normalize] 质量参数解析: {_q_note} → {' '.join(_q_args)}")
     cmd = [ffmpeg_bin, '-hide_banner', '-loglevel', 'error', '-y',
            '-i', str(input_video),
@@ -2888,7 +2905,8 @@ def merge_videos(
             config['codec'],
             crf=config.get('crf'), cq=config.get('cq'),
             crf_ref=config.get('crf_ref'), cq_ref=config.get('cq_ref'),
-            preset=config.get('preset', 'medium'))
+            preset=config.get('preset', 'medium'),
+            bitrate=config.get('video_bitrate'))
         logger.info(f"[merge_videos] 质量参数解析: {_q_note} → {' '.join(_q_args)}")
         cmd.extend(['-c:v', config['codec']] + _q_args + ['-pix_fmt', config['pix_fmt']])
         
@@ -3494,6 +3512,8 @@ def merge_videos_by_codec(
         'pix_fmt': 'yuv420p',
         'audio_codec': 'copy',      # 默认直接复制音频流
         'audio_bitrate': '192k',
+        # [NVENC-TUNING] 视频目标码率（None = 用质量参数）；NVENC 自动补 -multipass fullres
+        'video_bitrate': None,
         'extra_args': []
     }
 
@@ -3614,7 +3634,7 @@ def merge_videos_by_codec(
             _eff_codec,
             crf=params.get('crf'), cq=params.get('cq'),
             crf_ref=params.get('crf_ref'), cq_ref=params.get('cq_ref'),
-            preset=params.get('preset'))
+            preset=params.get('preset'), bitrate=params.get('video_bitrate'))
         logger.info(f"[merge] 质量参数解析: {_q_note} → {' '.join(_q_args)}")
 
         ffmpeg_cmd += ['-c:v', _eff_codec] + _q_args
@@ -3788,7 +3808,8 @@ def encode_video(input_path: str, output_path: str,
                 codec: str = 'libx264', crf: Optional[int] = None,
                 preset: str = 'medium', pix_fmt: str = 'yuv420p',
                 cq: Optional[int] = None, crf_ref: Optional[int] = None,
-                cq_ref: Optional[int] = None) -> bool:
+                cq_ref: Optional[int] = None,
+                bitrate: Optional[str] = None) -> bool:
     """
     编码视频
 
@@ -3806,7 +3827,8 @@ def encode_video(input_path: str, output_path: str,
     """
     try:
         _q_args, _q_note = _resolve_quality_args(
-            codec, crf=crf, cq=cq, crf_ref=crf_ref, cq_ref=cq_ref, preset=preset)
+            codec, crf=crf, cq=cq, crf_ref=crf_ref, cq_ref=cq_ref, preset=preset,
+            bitrate=bitrate)
         logger.info(f"[encode_video] 质量参数解析: {_q_note} → {' '.join(_q_args)}")
         cmd = [
             'ffmpeg', '-i', input_path,

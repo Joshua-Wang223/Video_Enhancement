@@ -16,7 +16,9 @@
         "validate_mode": "thread",
         "validate_gpu_workers": null,
         "auto_parallel": true,
-        "max_parallel_workers": 0
+        "max_parallel_workers": 0,
+        "// quality_mode_note": "质量换算口径（对齐 VidUtils 的 --quality-mode）：size=等体积（SIZE_MAP，目标同文件大小）| quality=等质量（QUALITY_MAP，目标同 VMAF）。默认 quality；可用 --quality-mode 覆盖。",
+        "quality_mode": "quality"
     },
     "paths": {
         "// base_dir_note": [
@@ -97,6 +99,12 @@
             "rate_mode": "vbr_hq",
             "// lookahead_depth_note": "NVENC 前向帧预看深度: 0=禁用 | 8=低延迟 | 16=平衡(推荐) | 32=最高质量。注意：LA 仅在 VBR_HQ/QVBR 模式下生效；CONSTQP 下硬件静默禁用。NVENC SDK 严格遵守帧数守恒 (Output==Input)，LA 跨编码会话不可复用。两侧统一默认 8",
             "lookahead_depth": 8,
+            "// nvenc_tune_note": "NVENC -tune 档: hq(ffmpeg 默认值,写不写一样) | ll | ull | lossless | uhq(仅 hevc_nvenc/av1_nvenc)。null=不发（默认，保持裸默认命令）",
+            "nvenc_tune": null,
+            "// nvenc_multipass_note": "NVENC -multipass 档: disabled | qres | fullres。null=默认不发（固定 CQ 下实测不升 VMAF）；rc-mode=cbr 或给了 bitrate 时自动补 fullres，显式值优先",
+            "nvenc_multipass": null,
+            "// bitrate_note": "IFRNet 目标码率（如 8M/8000k）：改为 -rc:v vbr -b:v X 并去掉 -cq:v。null=用质量参数",
+            "bitrate": null,
             "// ---- v5 性能报告（null 表示不输出）----": "",
             "report_json": null,
             "hevc_la_disable": false,
@@ -171,6 +179,12 @@
             "rate_mode": "vbr_hq",
             "// lookahead_depth_note": "NVENC 前向帧预看深度: 0=禁用 | 8=低延迟 | 16=平衡(推荐) | 32=最高质量。两侧统一默认 8",
             "lookahead_depth": 8,
+            "// nvenc_tune_note": "NVENC -tune 档: hq(ffmpeg 默认值,写不写一样) | ll | ull | lossless | uhq(仅 hevc_nvenc/av1_nvenc)。null=不发（默认，保持裸默认命令）",
+            "nvenc_tune": null,
+            "// nvenc_multipass_note": "NVENC -multipass 档: disabled | qres | fullres。null=默认不发（固定 CQ 下实测不升 VMAF）；rc-mode=cbr 或给了 bitrate 时自动补 fullres，显式值优先",
+            "nvenc_multipass": null,
+            "// bitrate_note": "ESRGAN 目标码率（如 8M/8000k）：改为 -rc:v vbr -b:v X 并去掉 -cq:v。null=用质量参数",
+            "bitrate": null,
             "// ---- v6.4.6 流水线队列与延迟解析 ----": "",
             "// frame_queue_size_note": "读帧→检测 队列深度（批）；SR 为瓶颈时队列常年全满，过深只增内存压力",
             "frame_queue_size": 8,
@@ -217,7 +231,9 @@
         "// audio_bitrate_note": "audio_codec 非 copy 时的目标码率",
         "audio_bitrate": "192k",
         "// bitrate_note": "video_utils.extract_audio() 内部读取此键名；与 audio_bitrate 保持一致",
-        "bitrate": "192k"
+        "bitrate": "192k",
+        "// video_bitrate_note": "[NVENC-TUNING] 最终合并**视频**目标码率（如 8M/8000k）：改为目标码率 VBR（NVENC 自动补 -multipass fullres；软编发 -b:v 去掉 -crf）。null=用质量参数。⚠ 与上面的音频 bitrate 区分",
+        "video_bitrate": null
     },
     "split": {
         "// section_note": "[QUALITY-UNIFY] 环节① 源时间轴归一化（--normalize-source）重编码质量；仅在检测到时间戳异常并启用归一化时使用。默认分段切割为 -c copy，不重编码。",
@@ -229,7 +245,9 @@
         "crf": null,
         "cq": null,
         "crf_ref": null,
-        "cq_ref": null
+        "cq_ref": null,
+        "// video_bitrate_note": "[NVENC-TUNING] 归一化**视频**目标码率（如 8M/8000k）；null=用质量参数",
+        "video_bitrate": null
     },
     "temp_files": {
         "segment_prefix": "segment_",

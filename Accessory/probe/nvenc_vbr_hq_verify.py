@@ -118,8 +118,9 @@ if __name__ == "__main__":
     print(f"\n--- 结论 ---")
     if sdk_accepts_vbr_hq:
         print("P0 范围：仅 CLI 映射（方案 A）")
-        print("  - ffmpeg_io.py: _NVENC_RC_MAP['vbr_hq'] → 'vbr'")
-        print("  - ffmpeg_io.py: vbr 路径追加 -tune hq -multipass fullres")
+        print("  - ffmpeg_io.py: _NVENC_RC_MAP['vbr_hq'] → 'vbr'（默认**裸命令**）")
+        print("  - ffmpeg_io.py: -tune/-multipass 改为显式 opt-in（--nvenc-tune/--nvenc-multipass；"
+              "cbr/bitrate 时自动 -multipass fullres）")
         print("  - nvenc_sdk.py: 不动")
     else:
         print("P0 范围：CLI + ctypes 双迁移（方案 B）")

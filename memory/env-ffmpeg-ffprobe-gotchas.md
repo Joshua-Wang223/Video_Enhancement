@@ -1,6 +1,6 @@
 ---
 name: 本容器 ffmpeg/ffprobe 的环境坑（非代码缺陷）+ 长时门禁自伤四坑
-description: ffmpeg 因 stdin 是后台终端会被 SIGTTOU 停住（必须重定向 /dev/null）；本build 的 ffprobe 无 -hwaccel 选项；另含长时门禁连崩两次的四个自伤坑（自己并发抢 CPU / 预删 workdir 删掉自建 prep / `$?` 取到 tail 的 rc / 日志 0 行≠卡死）与「grep -c、pgrep -cf 会数出不存在的进程」
+description: ffmpeg 因 stdin 是后台终端会被 SIGTTOU 停住（必须重定向 /dev/null）；本build 的 ffprobe 无 -hwaccel 选项；FFmpeg 9.0 移除 -vsync（用 -fps_mode passthrough，静默降级会跳过判据）；另含长时门禁连崩两次的四个自伤坑（自己并发抢 CPU / 预删 workdir 删掉自建 prep / `$?` 取到 tail 的 rc / 日志 0 行≠卡死）与「grep -c、pgrep -cf 会数出不存在的进程」
 type: project
 ---
 
@@ -168,3 +168,22 @@ svtav1 q=29 **+0.287** / **rav1e q=64 +0.482**；退出码 0。
 ⚠ 与已有「共享 GPU 主机并发污染性能测量」是同族经验（都是**别信单一信号**），
 但这条更基础：**先证明判据本身没骗你**。详细案例见
 `verify-gate-concurrent-workdir-race.md` 的「已闭合」节。
+
+## 3. FFmpeg 9.0 移除了 `-vsync`（2026-10-04）
+
+`ffmpeg ... -vsync 0 ...` 在 FFmpeg 9.0 直接 **rc=8 `Unrecognized option 'vsync'`**，
+命令整条失败（`-vsync` 是 5.0 起弃用、9.0 移除；等价替换 = **`-fps_mode passthrough`**）。
+
+- 危害模式：若调用方对 ffmpeg 失败**静默降级**（如 `segment_bitstream_verify_v5.check_chroma_corruption`
+  解码失败 `return None` → 调用方"不判失败"），则**验证被静默跳过**，表现为"验收通过"但实际没检。
+- 实测症状：`Accessory/test/test_chroma_false_positive.py` 两例"返回 None"→ FAIL（根因即 `n_shards=1`
+  走单流 `-vsync 0`；分片路径恰好不含该选项，故门禁默认跑分片时**未暴露**）。
+- 已修（ACTIVE 路径）：`Accessory/verify/segment_bitstream_verify_v{4,5}.py`（`_showinfo_flags` +
+  chroma 单流/回退共 3 处，v4/v5 逐字节同步）、`src/utils/video_utils.py`（add_audio copy 分支）。
+- ⚠ **仍有未清的 `-vsync`**（历史/诊断，未纳入本次修复）：`Accessory/analyze/video_pipeline_analyzer_v3.py`
+  （574/583/731）、`scene_cut_ghost_analyzer.py`、`interp_ghost_analyzer.py`、
+  `segment_bitstream_verify_v2/v3.py`、`external/IFRENet/process_video_v*.py` 单文件历史版、
+  `external/Real-ESRGAN/*` vendored。凡要跑它们，先按本坑替换。
+- 判别口诀：**「ffmpeg 静默失败 + 判据变 None/空 → 当失败处理」**；遇到"验收忽然全 OK 但没看到解码耗时"
+  先 grep 该命令是否含 `-vsync`。
+

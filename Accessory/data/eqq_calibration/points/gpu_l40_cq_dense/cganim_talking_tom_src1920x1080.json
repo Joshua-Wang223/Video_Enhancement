@@ -1,0 +1,266 @@
+{
+ "cganim_talking_tom_src1920x1080.mp4|libx264|18": {
+  "m": {
+   "vmaf": 99.394042,
+   "psnr_hvs": 48.468868,
+   "vif_scale0": 0.883184,
+   "adm2": 0.9885,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 3.75
+ },
+ "cganim_talking_tom_src1920x1080.mp4|libx264|21": {
+  "m": {
+   "vmaf": 99.037879,
+   "psnr_hvs": 46.596721,
+   "vif_scale0": 0.854442,
+   "adm2": 0.983141,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.02
+ },
+ "cganim_talking_tom_src1920x1080.mp4|libx264|24": {
+  "m": {
+   "vmaf": 98.301087,
+   "psnr_hvs": 44.633832,
+   "vif_scale0": 0.821376,
+   "adm2": 0.975939,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.81
+ },
+ "cganim_talking_tom_src1920x1080.mp4|libx264|27": {
+  "m": {
+   "vmaf": 96.649369,
+   "psnr_hvs": 42.57322,
+   "vif_scale0": 0.782894,
+   "adm2": 0.966123,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.84
+ },
+ "cganim_talking_tom_src1920x1080.mp4|libx264|30": {
+  "m": {
+   "vmaf": 93.028468,
+   "psnr_hvs": 40.372485,
+   "vif_scale0": 0.740195,
+   "adm2": 0.953328,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 2.11
+ },
+ "cganim_talking_tom_src1920x1080.mp4|av1_nvenc|12": {
+  "m": {
+   "vmaf": 99.671547,
+   "psnr_hvs": 52.148971,
+   "vif_scale0": 0.959177,
+   "adm2": 0.99776,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.99
+ },
+ "cganim_talking_tom_src1920x1080.mp4|av1_nvenc|18": {
+  "m": {
+   "vmaf": 99.637053,
+   "psnr_hvs": 50.493115,
+   "vif_scale0": 0.940811,
+   "adm2": 0.99612,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.03
+ },
+ "cganim_talking_tom_src1920x1080.mp4|av1_nvenc|23": {
+  "m": {
+   "vmaf": 99.571891,
+   "psnr_hvs": 49.138232,
+   "vif_scale0": 0.921446,
+   "adm2": 0.994124,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.06
+ },
+ "cganim_talking_tom_src1920x1080.mp4|av1_nvenc|27": {
+  "m": {
+   "vmaf": 99.462966,
+   "psnr_hvs": 47.8692,
+   "vif_scale0": 0.902181,
+   "adm2": 0.991793,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.74
+ },
+ "cganim_talking_tom_src1920x1080.mp4|av1_nvenc|31": {
+  "m": {
+   "vmaf": 99.264848,
+   "psnr_hvs": 46.536789,
+   "vif_scale0": 0.879705,
+   "adm2": 0.98858,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.89
+ },
+ "cganim_talking_tom_src1920x1080.mp4|av1_nvenc|36": {
+  "m": {
+   "vmaf": 98.613837,
+   "psnr_hvs": 44.549019,
+   "vif_scale0": 0.84294,
+   "adm2": 0.982517,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.75
+ },
+ "cganim_talking_tom_src1920x1080.mp4|av1_nvenc|41": {
+  "m": {
+   "vmaf": 97.263181,
+   "psnr_hvs": 42.299951,
+   "vif_scale0": 0.799295,
+   "adm2": 0.974003,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.05
+ },
+ "cganim_talking_tom_src1920x1080.mp4|av1_nvenc|47": {
+  "m": {
+   "vmaf": 93.116091,
+   "psnr_hvs": 39.289512,
+   "vif_scale0": 0.736388,
+   "adm2": 0.958289,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.79
+ },
+ "cganim_talking_tom_src1920x1080.mp4|av1_nvenc|54": {
+  "m": {
+   "vmaf": 80.521265,
+   "psnr_hvs": 35.22541,
+   "vif_scale0": 0.641306,
+   "adm2": 0.925009,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.82
+ },
+ "cganim_talking_tom_src1920x1080.mp4|av1_nvenc|63": {
+  "m": {
+   "vmaf": 55.283873,
+   "psnr_hvs": 30.248539,
+   "vif_scale0": 0.520524,
+   "adm2": 0.85462,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.76
+ },
+ "cganim_talking_tom_src1920x1080.mp4|av1_nvenc|38": {
+  "m": {
+   "vmaf": 98.153311,
+   "psnr_hvs": 43.651498,
+   "vif_scale0": 0.826024,
+   "adm2": 0.979262,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.52
+ },
+ "cganim_talking_tom_src1920x1080.mp4|av1_nvenc|40": {
+  "m": {
+   "vmaf": 97.600815,
+   "psnr_hvs": 42.759975,
+   "vif_scale0": 0.808589,
+   "adm2": 0.975816,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.73
+ },
+ "cganim_talking_tom_src1920x1080.mp4|av1_nvenc|42": {
+  "m": {
+   "vmaf": 96.848952,
+   "psnr_hvs": 41.787805,
+   "vif_scale0": 0.78911,
+   "adm2": 0.971937,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.51
+ },
+ "cganim_talking_tom_src1920x1080.mp4|av1_nvenc|44": {
+  "m": {
+   "vmaf": 95.808722,
+   "psnr_hvs": 40.883343,
+   "vif_scale0": 0.770283,
+   "adm2": 0.967351,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.52
+ },
+ "cganim_talking_tom_src1920x1080.mp4|av1_nvenc|46": {
+  "m": {
+   "vmaf": 94.201454,
+   "psnr_hvs": 39.83859,
+   "vif_scale0": 0.747894,
+   "adm2": 0.96145,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.51
+ },
+ "cganim_talking_tom_src1920x1080.mp4|av1_nvenc|48": {
+  "m": {
+   "vmaf": 91.98323,
+   "psnr_hvs": 38.747094,
+   "vif_scale0": 0.724151,
+   "adm2": 0.954893,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.78
+ },
+ "cganim_talking_tom_src1920x1080.mp4|av1_nvenc|50": {
+  "m": {
+   "vmaf": 88.771361,
+   "psnr_hvs": 37.552352,
+   "vif_scale0": 0.696134,
+   "adm2": 0.946552,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.76
+ }
+}

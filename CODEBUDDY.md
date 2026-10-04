@@ -26,6 +26,7 @@ Also: `python run.py -i input.mp4 -o output.mp4`
 - `--batch-mode` — batch process files in input directory
 - `--dry-run` — validate config without running
 - `--mode upscale_then_interpolate` — swap processing order
+- `--quality-mode {size,quality}` — quality-conversion basis (`quality`=equal-VMAF default; `size`=equal-filesize). Overrides `processing.quality_mode`. Also per-stage NVENC opt-ins: `--nvenc-tune-ifrnet/-esrgan`, `--nvenc-multipass-ifrnet/-esrgan`, `--bitrate-ifrnet/-esrgan`, `--output-bitrate`, `--split-bitrate`
 
 **Setup & dependencies:**
 ```bash

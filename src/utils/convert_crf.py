@@ -182,8 +182,8 @@ QUALITY_MAP = {
     #   标定与判据必须**同参、同时长**。**本表全部数据均以 subsample=1 产出**
     #   （⚠ 早期 workdir `/tmp/eqq_calib/1280x720_10s_n3` 是 subsample=8 的作废数据，
     #   **不参与**本表任何计算）。
-    # ⚠ NVENC（h264/hevc）已于 2026-10-04 上机标定并落表（见下，与 VidUtils 逐字同源）；
-    #   av1_nvenc（需 L40/Ada）与 QSV/AMF/VideoToolbox 仍未覆盖 ⇒ 自动回退 SIZE_MAP。
+    # ⚠ NVENC（h264/hevc 于 T4、av1 于 L40）已于 2026-10-04 上机标定并落表（见下，与 VidUtils 逐字同源）；
+    #   QSV/AMF/VideoToolbox 仍未覆盖 ⇒ 自动回退 SIZE_MAP。
     'libx265':     (1.0979, -2.3119, 0, 51),
     'libvpx-vp9':  (1.9716, -15.0929, 0, 63),
     'libaom-av1':  (2.3219, -22.3927, 0, 63),
@@ -198,6 +198,18 @@ QUALITY_MAP = {
     # **结构性上限**，按**分档门禁 ≤5.9**（CPU 先例）判达标。指纹：T4 / 580.65.06 / ffmpeg 9.0.2。
     'h264_nvenc':  (0.9295, 6.2523, 0, 51),
     'hevc_nvenc':  (1.1116, 2.1606, 0, 51),
+    # ---------- 硬件编码器（AV1 NVENC，**L40 实测 2026-10-04**）----------
+    # 口径与 T4/软编同源：锚点 18/21/24/27/30 + n_subsample=1 + 720p prep + `-cq` 轴
+    # （`-b:v 0 -preset p4 -rc vbr`，CR-1/CR-2）。素材池 = eqq_calib 17 条（12×6s + 5×10s，
+    # ⚠ 10s `screen_ui_code` 以 `_10s` 去重，**不是** 16 条）。池化 a=最小二乘 / b=各素材中位数。
+    # LOO：判据锚点口径 [0,27] → **3.13 ✅**；全锚点（含 crf30）6.21 仅作**监控**（依据见
+    # `Accessory/probe/eqq_pool_fit_table.py` 的 `GATE_ANCHORS`：8/8 编码器 worst 都来自 crf30，
+    # 属门禁边界锚点等权的系统偏差）。指纹：NVIDIA L40 / 驱动 580.65.06 / ffmpeg 9.0.2。
+    # ⚠ `(lo,hi)=(0,63)` 是 **CQ 轴**（AV1 qindex 0~63）；`-qp` 轴（0~255）走 `QUALITY_MAP_QP`
+    # 的仿射行（7.9338, −97.5136），**非** `_QP_MAP_OVERRIDE` 的 ×3。
+    # ⚠ 跨仓 ⑨：本行须与 VidUtils 逐字相等（VE 侧为规范化产出；见
+    # `VidUtils/Plan/CR-4_av1_QP轴_handoff_VE_to_VU_20261004.md`）。
+    'av1_nvenc':   (1.4566, 1.2165, 0, 63),
 }
 # 当前生效表 + 口径（由 set_quality_mode 维护）；默认 'quality'
 _QUALITY_MODE = 'quality'

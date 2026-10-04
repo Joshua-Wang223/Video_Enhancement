@@ -18,7 +18,7 @@ AV1 路径缺陷（方案 §8.6）：cv2 验收层把完好 AV1 产物判成损�
 |---|---|
 | 前置 | `av1_nvenc` **实跑一帧**（不是 `-h encoder=`）；不可用 ⇒ exit 2（环境前置不成立） |
 | 跑批 | 对每个 rate_mode 调 `src/main_video_optimized.py`，两侧 `--codec-* av1_nvenc` |
-| 采样 | 整棵进程树 RSS + `nvidia-smi` 显存（判泄漏：后半程斜率） |
+| 采样 | 整棵进程树 RSS/PSS + **主进程 vs 子进程分组斜率** + 按 pid 归属的 GPU 显存（判泄漏：后半程斜率 + 峰值上界）|
 | 验收 | ① 退出码 ② 段级日志 `decoded == expected` ③ 产物 `ffprobe -count_frames` 帧数守恒 ④ `validate_decodable_video(count_mode='decode')` ⑤ `segment_bitstream_verify_v5 --skip-chroma` 硬指标 ⑥ QA sidecar 字段完整 |
 
 ⚠ **必须 `< /dev/null`**：这些脚本在「后台进程组 + tty stdin」下会被 SIGTTOU 整组停住。
@@ -111,15 +111,94 @@ def source_frame_count(ffprobe: str, path: Path) -> int:
 
 
 # ── 内存采样（判泄漏）────────────────────────────────────────────────────────
-class MemWatcher:
-    """盯住匹配 `--match` 的进程树，周期采样 RSS 与 GPU 显存。"""
+def _read_pss_kb(pid: int) -> int:
+    """Pss（smaps_rollup）比 RSS 更适合跨进程求和：RSS 把共享页（libcuda 等）
+    在每个进程里各算一份，进程数越多越虚高。读不到（非 Linux/无权限）返回 0。"""
+    try:
+        with open(f"/proc/{pid}/smaps_rollup", "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("Pss:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
 
-    def __init__(self, match: str, interval: int = 10):
+
+def _gpu_mem_by_pid() -> Dict[int, float]:
+    """本机各进程占用的显存（MiB）。整卡 `memory.used` 在共享 GPU 主机上会被
+    其他会话污染（本仓 memory 有实证），必须按 pid 归属后再由调用方筛进程树。"""
+    for field in ("used_gpu_memory", "used_memory"):      # 不同 driver/版本字段名不同
+        try:
+            p = subprocess.run(
+                ["nvidia-smi", f"--query-compute-apps=pid,{field}",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=30)
+            out = (p.stdout or "").strip()
+            if p.returncode != 0 or not out:
+                continue
+            got: Dict[int, float] = {}
+            for line in out.splitlines():
+                parts = [x.strip() for x in line.split(",")]
+                if len(parts) < 2:
+                    continue
+                try:
+                    got[int(parts[0])] = float(parts[1])
+                except ValueError:
+                    continue
+            if got:
+                return got
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            continue
+    return {}
+
+
+def _gpu_total_mib() -> float:
+    """整卡已用显存（MiB）——只作参考，不作判据（见 _gpu_mem_by_pid 注释）。"""
+    try:
+        q = subprocess.run(["nvidia-smi", "--query-gpu=memory.used",
+                            "--format=csv,noheader,nounits"],
+                           capture_output=True, text=True, timeout=30).stdout.strip()
+        return float(q.splitlines()[0])
+    except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
+        return 0.0
+
+
+class MemWatcher:
+    """盯住匹配 `--match` 的进程树，周期采样内存/显存。
+
+    [FIX-S8-ATTRIB] 原实现只累加进程树 RSS 求和后存 `(t, rss, gpu)`，
+    **算出来的进程数 `n` 直接丢弃** ⇒ 上机复现出斜率后无法判读是「主进程泄漏」
+    还是「子进程（ffmpeg 读帧器/muxer）累积」。本版每次采样额外记录：
+      · `n`：进程树进程数（判断子进程是否随时间增加）；
+      · 主进程 / 子进程**分组** RSS 与 PSS（泄漏归属，一眼可分）；
+      · 每进程明细（top-N RSS + 全量 pid/rss/pss/tag）落盘成 JSONL，
+        事后可离线重分析，不必再花一次 GPU 上机；
+      · 显存按 **pid 归属**统计（`_gpu_mem_by_pid`），整卡值仅作参考
+        ——共享 GPU 主机上整卡值会把他人的任务算进来。
+    PSS 用 `/proc/<pid>/smaps_rollup`，读不到则为 0（不影响 RSS 判据）。
+    """
+
+    #: 进程角色分类：主进程 = 跑 main_video_optimized.py 的那个 python；
+    #: ffmpeg = 读帧器 / muxer 子进程；其余归 other。
+    @staticmethod
+    def _tag(args: str, main_marker: str) -> str:
+        base = args.split()[0] if args.split() else ""
+        if main_marker in args:
+            return "main"
+        if "ffmpeg" in base or "ffmpeg" in args.split()[0:2]:
+            return "ffmpeg"
+        if base.endswith("ffprobe"):
+            return "ffprobe"
+        return "other"
+
+    def __init__(self, match: str, interval: int = 10, dump_path: Optional[Path] = None):
         self.match = match
         self.interval = interval
-        self.rows: List[Tuple[float, float, float]] = []
+        self.dump_path = Path(dump_path) if dump_path else None
+        self.rows: List[Dict[str, Any]] = []
+        self._dump_fh = None
 
-    def _sample(self) -> Tuple[float, float, int]:
+    def _sample(self) -> Dict[str, Any]:
         out = subprocess.run(["ps", "-eo", "pid,ppid,rss,args", "--no-headers"],
                              capture_output=True, text=True).stdout
         kids: Dict[int, List[int]] = {}
@@ -134,7 +213,8 @@ class MemWatcher:
             rss[pid] = r
             args[pid] = p[3]
         roots = [p for p, a in args.items() if self.match in a and "ps -eo" not in a]
-        seen, total, n = set(), 0, 0
+        seen: set = set()
+        procs: List[Dict[str, Any]] = []
         for root in roots:
             stack = [root]
             while stack:
@@ -142,52 +222,106 @@ class MemWatcher:
                 if x in seen:
                     continue
                 seen.add(x)
-                n += 1
-                total += rss.get(x, 0)
+                procs.append({
+                    "pid": x,
+                    "rss_mb": rss.get(x, 0) / 1024.0,
+                    "pss_mb": _read_pss_kb(x) / 1024.0,
+                    "tag": self._tag(args.get(x, ""), self.match),
+                })
                 stack += kids.get(x, [])
-        gpu = 0.0
-        try:
-            q = subprocess.run(["nvidia-smi", "--query-gpu=memory.used",
-                                "--format=csv,noheader,nounits"],
-                               capture_output=True, text=True).stdout.strip()
-            gpu = float(q.splitlines()[0])
-        except Exception:  # noqa: BLE001
-            pass
-        return total / 1024.0, gpu, n
+        procs.sort(key=lambda d: d["rss_mb"], reverse=True)
+
+        def _grp(tag: str, key: str = "rss_mb") -> float:
+            return sum(d[key] for d in procs if d["tag"] == tag)
+
+        gpu_by_pid = _gpu_mem_by_pid()
+        gpu_tree = sum(gpu_by_pid.get(d["pid"], 0.0) for d in procs)
+        return {
+            "n": len(procs),
+            "rss_mb": sum(d["rss_mb"] for d in procs),
+            "pss_mb": sum(d["pss_mb"] for d in procs),
+            "rss_main_mb": _grp("main"),
+            "rss_child_mb": sum(d["rss_mb"] for d in procs if d["tag"] != "main"),
+            "pss_main_mb": _grp("main", "pss_mb"),
+            "pss_child_mb": sum(d["pss_mb"] for d in procs if d["tag"] != "main"),
+            "gpu_tree_mib": gpu_tree,
+            "gpu_total_mib": _gpu_total_mib(),
+            "procs": procs,
+        }
 
     def run(self, proc: subprocess.Popen) -> None:
+        if self.dump_path:
+            self.dump_path.parent.mkdir(parents=True, exist_ok=True)
+            self._dump_fh = self.dump_path.open("w", encoding="utf-8")
+            self._dump_fh.write("# t_s\tn_proc\trss_mb\tpss_mb\trss_main_mb\t"
+                                "rss_child_mb\tgpu_tree_mib\tprocs_json\n")
         t0 = time.time()
-        while proc.poll() is None:
-            rss, gpu, n = self._sample()
-            if n:
-                self.rows.append((time.time() - t0, rss, gpu))
-            time.sleep(self.interval)
+        try:
+            while proc.poll() is None:
+                s = self._sample()
+                if s["n"]:
+                    t = time.time() - t0
+                    self.rows.append({"t": t, **{k: v for k, v in s.items() if k != "procs"}})
+                    if self._dump_fh:
+                        import json as _json
+                        self._dump_fh.write(
+                            f"{t:.1f}\t{s['n']}\t{s['rss_mb']:.1f}\t{s['pss_mb']:.1f}\t"
+                            f"{s['rss_main_mb']:.1f}\t{s['rss_child_mb']:.1f}\t"
+                            f"{s['gpu_tree_mib']:.1f}\t"
+                            f"{_json.dumps(s['procs'], ensure_ascii=False)}\n")
+                        self._dump_fh.flush()
+                time.sleep(self.interval)
+        finally:
+            if self._dump_fh:
+                self._dump_fh.close()
+                self._dump_fh = None
 
-    def slope_mb_per_min(self) -> Optional[float]:
-        """后半程 RSS 线性斜率（MB/min）；负值/接近 0 ⇒ 无单调泄漏。"""
-        if len(self.rows) < 8:
+    @staticmethod
+    def _slope(rows: List[Dict[str, Any]], key: str) -> Optional[float]:
+        """后半程线性斜率（MB/min）；样本不足 8 或 x 无方差时返回 None。"""
+        if len(rows) < 8:
             return None
-        half = self.rows[len(self.rows) // 2:]
-        xs = [r[0] for r in half]
-        ys = [r[1] for r in half]
-        n = len(xs)
-        mx, my = sum(xs) / n, sum(ys) / n
+        half = rows[len(rows) // 2:]
+        xs = [r["t"] for r in half]
+        ys = [r[key] for r in half]
+        m = len(xs)
+        mx, my = sum(xs) / m, sum(ys) / m
         den = sum((x - mx) ** 2 for x in xs)
         if den <= 0:
             return None
         return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / den * 60.0
 
+    def slope_mb_per_min(self) -> Optional[float]:
+        """后半程 **RSS** 斜率（MB/min）——S8 判据口径（与历史记录可比，不改）。"""
+        return self._slope(self.rows, "rss_mb")
+
+    def slope_breakdown(self) -> Dict[str, Optional[float]]:
+        """泄漏归属：主进程 / 子进程 / PSS 各自的斜率（诊断列，不作判据）。"""
+        return {
+            "rss_main": self._slope(self.rows, "rss_main_mb"),
+            "rss_child": self._slope(self.rows, "rss_child_mb"),
+            "pss_all": self._slope(self.rows, "pss_mb"),
+        }
+
     def peak(self) -> Tuple[float, float]:
+        """(RSS 峰值 MB, 本进程树显存峰值 MiB)。"""
         if not self.rows:
             return 0.0, 0.0
-        return (max(r[1] for r in self.rows), max(r[2] for r in self.rows))
+        return (max(r["rss_mb"] for r in self.rows),
+                max(r["gpu_tree_mib"] for r in self.rows))
+
+    def n_range(self) -> Tuple[int, int]:
+        if not self.rows:
+            return 0, 0
+        return min(r["n"] for r in self.rows), max(r["n"] for r in self.rows)
 
 
 # ── 单轮冒烟 ─────────────────────────────────────────────────────────────────
 def run_one(ffmpeg: str, ffprobe: str, src: Path, out: Path, rate_mode: str,
             seg_dur: int, extra: List[str], keep: bool,
             mem_interval: int, checks_only: bool = False,
-            log_text: str = "") -> Dict[str, Any]:
+            log_text: str = "", mem_dump: Optional[Path] = None,
+            mem_peak_mb: float = 0.0, mem_min_samples: int = 8) -> Dict[str, Any]:
     rec: Dict[str, Any] = {"rate_mode": rate_mode, "out": str(out), "checks": []}
     watcher: Optional[MemWatcher] = None
     if checks_only:
@@ -211,7 +345,8 @@ def run_one(ffmpeg: str, ffprobe: str, src: Path, out: Path, rate_mode: str,
         with open(log_path, "w", encoding="utf-8") as log:
             proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=log,
                                     stderr=subprocess.STDOUT)
-            watcher = MemWatcher(match=str(MAIN), interval=mem_interval)
+            watcher = MemWatcher(match=str(MAIN), interval=mem_interval,
+                                 dump_path=mem_dump)
             watcher.run(proc)
             rc = proc.wait()
         rec["rc"] = rc
@@ -235,8 +370,14 @@ def run_one(ffmpeg: str, ffprobe: str, src: Path, out: Path, rate_mode: str,
             return rec
 
     # ② 段级解码级守恒（管线自己的门禁日志）
-    seg_ok = re.findall(r"解码级验收通过: decoded=(\d+) expected=(\d+)", log_text)
-    seg_bad = len(re.findall(r"解码级验收失败", log_text))
+    # ⚠ [FIX-S3-STAGE-DEDUP] 两阶段管线（Step 1/2 IFRNet + Step 2/2 ESRGAN）**各校验一次**
+    #   同一批分段 ⇒ 全量 findall 会把每段计两次（S3 得到 2×产物帧的假 FAIL）。
+    #   只取**最后一个阶段**（Step 2/2，即最终产物来源）的分段验收行；单阶段管线无该标记
+    #   ⇒ 退回全量（逐字节等价）。
+    _s2 = log_text.rfind("Step 2/2")
+    seg_region = log_text[_s2:] if _s2 >= 0 else log_text
+    seg_ok = re.findall(r"解码级验收通过: decoded=(\d+) expected=(\d+)", seg_region)
+    seg_bad = len(re.findall(r"解码级验收失败", seg_region))
     seg_sum = sum(int(a) for a, _ in seg_ok)
     if not seg_ok:
         check("S2", "段级解码级门禁（decoded==expected）", None,
@@ -300,16 +441,54 @@ def run_one(ffmpeg: str, ffprobe: str, src: Path, out: Path, rate_mode: str,
           f"codec={codec}；音轨={'有' if has_audio(ffprobe, out) else '无'}")
 
     # ⑧ 内存
+    # [FIX-S8-CRITERIA] 判据从「单一斜率」扩为「斜率 + 峰值上界 + 样本充分性」三项：
+    #   · 斜率（后半程 RSS OLS，≤ +50 MB/min）——**口径与历史记录一致，未改**，
+    #     保证与 2026-09-30 的 +149.5 / −21.4 直接可比；
+    #   · 峰值上界（默认 12 GB，可用 --mem-peak-mb 调）——短跑（11 min）里
+    #     OLS 斜率对「何时进段 / 段内缓存台阶 / 平台噪声」敏感，峰值是独立
+    #     的第二道判据：斜率勉强过线但峰值失控仍应暴露；
+    #   · 样本充分性（≥ mem_min_samples 个采样点，默认 8）——样本太少时
+    #     斜率不可信，明确报 SKIP 而不是给一个假 PASS/FAIL。
+    #   斜率超阈值时 detail 附**主进程 / 子进程分组斜率**（[FIX-S8-ATTRIB]），
+    #   使「主进程泄漏 vs ffmpeg 子进程累积」在报告里就能直接读出，无需再上机。
     if watcher is not None and watcher.rows:
         rss_peak, gpu_peak = watcher.peak()
         slope = watcher.slope_mb_per_min()
+        br = watcher.slope_breakdown()
+        n_lo, n_hi = watcher.n_range()
         rec["rss_peak_mb"] = round(rss_peak, 1)
         rec["gpu_peak_mib"] = round(gpu_peak, 1)
         rec["rss_slope_mb_per_min"] = None if slope is None else round(slope, 1)
-        check("S8", "无内存泄漏（后半程 RSS 斜率 ≤ +50 MB/min）",
-              None if slope is None else (slope <= 50.0),
-              f"RSS 峰值 {rss_peak:.0f} MB，斜率 {slope:+.1f} MB/min，显存峰值 {gpu_peak:.0f} MiB"
-              if slope is not None else f"样本不足（RSS 峰值 {rss_peak:.0f} MB）")
+        rec["rss_slope_main_mb_per_min"] = (None if br["rss_main"] is None
+                                            else round(br["rss_main"], 1))
+        rec["rss_slope_child_mb_per_min"] = (None if br["rss_child"] is None
+                                             else round(br["rss_child"], 1))
+        rec["pss_slope_mb_per_min"] = (None if br["pss_all"] is None
+                                       else round(br["pss_all"], 1))
+        rec["proc_count_range"] = [n_lo, n_hi]
+        rec["mem_samples"] = len(watcher.rows)
+        if mem_dump:
+            rec["mem_dump"] = str(mem_dump)
+
+        n_s = len(watcher.rows)
+        if slope is None or n_s < mem_min_samples:
+            check("S8", "无内存泄漏（后半程 RSS 斜率 ≤ +50 MB/min）", None,
+                  f"样本不足（{n_s} 点 < 门槛 {mem_min_samples}，"
+                  f"RSS 峰值 {rss_peak:.0f} MB）——提高 --mem-interval 采样密度或延长素材")
+        else:
+            attrib = (f"主 {br['rss_main']:+.1f} / 子 {br['rss_child']:+.1f} MB/min"
+                      if br["rss_main"] is not None and br["rss_child"] is not None
+                      else "分组斜率不可用")
+            peak_ok = rss_peak <= mem_peak_mb if mem_peak_mb > 0 else True
+            peak_note = ("" if mem_peak_mb <= 0 else
+                         f"，峰值 {rss_peak:.0f}/{mem_peak_mb:.0f} MB "
+                         f"{'✓' if peak_ok else '✗ 超上界'}")
+            check("S8", "无内存泄漏（后半程 RSS 斜率 ≤ +50 MB/min）",
+                  bool(slope <= 50.0 and peak_ok),
+                  f"RSS 峰值 {rss_peak:.0f} MB，斜率 {slope:+.1f} MB/min"
+                  f"（{attrib}；PSS {br['pss_all']:+.1f}），显存峰值 {gpu_peak:.0f} MiB，"
+                  f"进程数 {n_lo}~{n_hi}，样本 {n_s}{peak_note}；"
+                  f"明细 {rec.get('mem_dump', '未落盘')}")
     else:
         check("S8", "无内存泄漏（后半程 RSS 斜率 ≤ +50 MB/min）", None, "未采样（--checks-only）")
 
@@ -338,6 +517,16 @@ def render_md(result: Dict[str, Any]) -> str:
         for c in rec["checks"]:
             L.append(f"| {c['id']} {c['name']} | {c['status']} | {c['detail']} |")
         L.append("")
+        if rec.get("mem_samples"):
+            L += [f"- 内存采样：{rec['mem_samples']} 点，进程数 "
+                  f"{rec.get('proc_count_range', ['?', '?'])[0]}~"
+                  f"{rec.get('proc_count_range', ['?', '?'])[1]}，"
+                  f"RSS 峰值 {rec.get('rss_peak_mb')} MB，"
+                  f"本进程树显存峰值 {rec.get('gpu_peak_mib')} MiB",
+                  f"- 斜率（全树 / 主进程 / 子进程 / PSS）："
+                  f"{rec.get('rss_slope_mb_per_min')} / {rec.get('rss_slope_main_mb_per_min')} / "
+                  f"{rec.get('rss_slope_child_mb_per_min')} / {rec.get('pss_slope_mb_per_min')} MB/min",
+                  f"- 逐进程明细：`{rec.get('mem_dump', '未落盘')}`", ""]
     L += ["> 色度检查（segment_bitstream_verify_v5 检查 4）在真实素材上是**内容相关假阳性**",
           "> （方案 §8.5：AV1 长片 113 簇，源片段自身 40 簇）⇒ 硬指标一律 `--skip-chroma`。", ""]
     return "\n".join(L)
@@ -352,6 +541,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--segment-duration", type=int, default=30, help="分段秒数（默认 30）")
     ap.add_argument("--timeout", type=int, default=7200, help="单轮超时秒（默认 7200）")
     ap.add_argument("--mem-interval", type=int, default=10, help="内存采样间隔秒（默认 10）")
+    ap.add_argument("--mem-peak-mb", type=float, default=12000.0,
+                    help="S8 RSS 峰值上界 MB（默认 12000；0 = 不判峰值只看斜率）")
+    ap.add_argument("--mem-min-samples", type=int, default=8,
+                    help="S8 斜率所需最少采样点（默认 8，不足则报 SKIP）")
+    ap.add_argument("--mem-dump-dir",
+                    help="内存采样明细落盘目录（每轮一个 <rate_mode>.mem.tsv，含逐进程明细）")
     ap.add_argument("--keep", action="store_true", help="保留产物（默认跑完删除视频）")
     ap.add_argument("--checks-only", metavar="VIDEO", default="",
                     help="只对既有 AV1 产物跑验收项（不跑批、不需要 GPU）")
@@ -398,8 +593,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         runs = []
         for rate in [r.strip() for r in args.rate_modes.split(",") if r.strip()]:
             out = out_dir / f"av1_{rate}{src.suffix or '.mp4'}"
+            dump = (Path(args.mem_dump_dir) / f"{rate}.mem.tsv"
+                    if args.mem_dump_dir else None)
             rec = run_one(ffmpeg, ffprobe, src, out, rate, args.segment_duration,
-                          list(args.extra), args.keep, args.mem_interval)
+                          list(args.extra), args.keep, args.mem_interval,
+                          mem_dump=dump, mem_peak_mb=args.mem_peak_mb,
+                          mem_min_samples=args.mem_min_samples)
             runs.append(rec)
             for c in rec["checks"]:
                 mark = {"PASS": "✅", "FAIL": "❌", "SKIP": "⏭️"}[c["status"]]

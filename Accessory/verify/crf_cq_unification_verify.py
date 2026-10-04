@@ -155,10 +155,13 @@ CHANGED_FILES = [
     "external/realesrgan_video/nvenc_sdk.py",
 ]
 
-# 基准轴参考值（原报告 §4.3 的统一默认）：libx264 CRF 21 的等效映射。
-# ⚠ 本表是**独立期望**（人为审定），不随 convert_crf.SIZE_MAP 自动更新；
-#   每次改动共享真源（SIZE_MAP 的 a/b）都必须同步复核此表。
-#   2026-09-29：软编四项按「真实素材·等体积」重标定同步更新
+# 基准轴参考值（报告 §4.3 的统一默认）：libx264 CRF 21 的等效映射。
+# [QUALITY-MODE][B1] 2026-10-04 起**口径改为 quality（等质量）**——与 VE 生产默认口径一致
+#   （`convert_crf._QUALITY_MODE='quality'`，可用 `--quality-mode size` 切回）。
+#   故下列值随 `QUALITY_MAP`（G1-2 中 hevc 28→26、svtav1 24→29、vp9 28→26、rav1e 66→64）。
+#   ⚠ 本表是**独立期望**（人为审定），不随 convert_crf 自动更新；改共享真源必须同步复核。
+#   size（等体积）口径的对照见 G3-9。
+#   历史（size 口径）记录（2026-09-29）：软编四项按「真实素材·等体积」重标定同步更新
 #   （libx265 0.9155/1.6385→0.9272/1.3360、libsvtav1 1.9450/−15.62→2.1445/−21.3547、
 #    libvpx-vp9 1.6198/−5.7553→1.6381/−6.2289、libaom-av1 1.0/4.0→2.0071/−21.3464），
 #   值均为 round(a×21+b)。
@@ -175,11 +178,12 @@ REF21_EXPECTED: Dict[str, Tuple[str, int]] = {
     "libx264":    ("-crf", 21),
     "libx265":    ("-crf", 21),
     "h264_nvenc": ("-cq:v", 26),
-    "hevc_nvenc": ("-cq:v", 28),
-    "av1_nvenc":  ("-cq:v", 27),
-    "libsvtav1":  ("-crf", 24),
-    "libvpx-vp9": ("-crf", 28),
-    "librav1e":   ("-qp", 66),
+    # [B1] quality 口径值：hevc 26（size 28）/ svtav1 29（24）/ vp9 26（28）/ rav1e 64（66）
+    "hevc_nvenc": ("-cq:v", 26),
+    "av1_nvenc":  ("-cq:v", 32),   # L40 落表后 quality 口径：1.4573×21+1.1022≈31.7→32
+    "libsvtav1":  ("-crf", 29),
+    "libvpx-vp9": ("-crf", 26),
+    "librav1e":   ("-qp", 64),
 }
 
 # avgBitRate 天花板（两侧 nvenc_sdk.py 必须一致）
@@ -507,10 +511,11 @@ def load_quality_map(ctx: Ctx):
                 sys.path.insert(0, p)
         import importlib
         ctx.quality_map = importlib.import_module("quality_map")
-        # 本判据的期望值（G1-2「报告 §4.3」等）全部按**等体积**口径写成；而 convert_crf 的
-        # 默认口径已改为 'quality'（2026-09-30）⇒ 这里显式钉 size，避免默认口径把判据染红。
-        # 等质量口径的专项断言见 Accessory/verify/verify_equal_quality.py。
-        ctx.quality_map.set_quality_mode("size")
+        # [QUALITY-MODE][B1] 本判据统一钉 **quality（等质量）** 口径——与 VE 生产默认口径一致
+        # （`convert_crf._QUALITY_MODE` 默认 'quality'）⇒ 门禁口径 == 生产默认口径，
+        # G1-2/G2/G3/G6/G7 的期望值均按 quality 写成。size（等体积）口径的对照见 G3-9。
+        # 专项等质量实测见 Accessory/verify/verify_equal_quality.py。
+        ctx.quality_map.set_quality_mode("quality")
     return ctx.quality_map
 
 
@@ -603,38 +608,51 @@ def enc_soft(ctx: Ctx, src: Path, out: Path, crf: int, preset: str = "medium",
 def enc_nvenc(ctx: Ctx, src: Path, out: Path, codec: str, rc_mode: str,
               value: int, preset: str = "p4",
               avg_br: Optional[int] = None,
-              timeout: Optional[int] = None) -> Path:
+              timeout: Optional[int] = None,
+              *, tune: Optional[str] = None,
+              multipass: Optional[str] = None,
+              bitrate: Optional[str] = None) -> Path:
     """按 Level 2（FFmpeg CLI）形状编码。
 
     ⚠ FFmpeg 9.0 起 CLI **移除** vbr_hq/qvbr（`-rc` 只剩 constqp/vbr/cbr，传 vbr_hq 报
-    `Unable to parse "rc" option value`，rc=234）⇒ vbr_hq/qvbr 迁移为官方建议的
-    `vbr -tune hq -multipass fullres`（与 ffmpeg_io 的 [FIX-FFMPEG9-VBRHQ] 同口径）。
-    rc_mode='vbr_hq'  → -rc:v vbr -tune hq -multipass fullres -cq:v <value> -b:v <avg_br or 0>
-    rc_mode='constqp' → -rc:v constqp -qp <value>
-    avg_br 非 None 时用于模拟 SDK Level 1 的 averageBitRate 字段（天花板测试）。
+    `Unable to parse "rc" option value`，rc=234）⇒ 统一映射为 `vbr`。
+    **默认裸命令** `-rc:v vbr -cq:v <value> -b:v 0`：`-tune hq` 是 ffmpeg 默认值、
+    固定 CQ 下 multipass 不升 VMAF ⇒ 二者改为显式 opt-in（见
+    Plan/ffmpeg_nvenc_knowledge.md §5.1/§5.2）。
+      rc_mode='vbr_hq'/'qvbr' → `-rc:v vbr`；constqp → `-rc:v constqp -qp <value>`
+      tune/multipass/bitrate：显式 opt-in；给 bitrate 时改发 `-b:v X` 并去掉 `-cq:v`。
+      avg_br 非 None 时模拟 SDK Level 1 的 averageBitRate 天花板（该臂保留 `-multipass fullres`）。
 
-    ⚠ AV1 NVENC 仅支持 constqp / vbr / cbr 三种 RC 模式（无 vbr_hq / qvbr），且不追加
-    HQ 附加项；遇到 av1_nvenc 的 vbr_hq/qvbr 降级为 plain vbr。
+    ⚠ AV1 NVENC 仅支持 constqp / vbr / cbr 三种 RC 模式（无 vbr_hq / qvbr），遇到
+    av1_nvenc 的 vbr_hq/qvbr 降级为 plain vbr。
     """
-    # [FIX-FFMPEG9-VBRHQ] vbr_hq/qvbr → vbr（+ HQ 附加项）；av1 不追加附加项
-    _hq = rc_mode in ("vbr_hq", "qvbr")
-    effective_rc = "vbr" if _hq else rc_mode
-
+    _mp = multipass
     cmd = [ctx.ffmpeg, "-y", "-v", "error", "-i", str(src),
            "-c:v", codec, "-preset", preset]
     if rc_mode == "constqp":
         cmd += ["-rc:v", "constqp", "-qp", str(value)]
+        if tune:                                   # -tune 与 RC 正交，constqp 下也可下发
+            cmd += ["-tune", tune]
     else:
+        effective_rc = "vbr" if rc_mode in ("vbr_hq", "qvbr") else rc_mode
         cmd += ["-rc:v", effective_rc]
-        if _hq and codec != "av1_nvenc":
-            cmd += ["-tune", "hq", "-multipass", "fullres"]
-        cmd += ["-cq:v", str(value)]
-        if avg_br is None:
-            cmd += ["-b:v", "0"]
+        if tune:
+            cmd += ["-tune", tune]
+        # 自动 multipass：CBR / 受限码率（avg_br 模拟 SDK 天花板）/ 目标码率才有意义
+        if _mp is None and (rc_mode == "cbr" or avg_br is not None or bitrate is not None):
+            _mp = "fullres"
+        if _mp is not None:
+            cmd += ["-multipass", _mp]
+        if bitrate is not None:
+            cmd += ["-b:v", str(bitrate)]
         else:
-            # 模拟 SDK Level 1：averageBitRate=avg_br，maxBitRate=avg_br*2
-            cmd += ["-b:v", str(avg_br), "-maxrate", str(avg_br * 2),
-                    "-bufsize", str(avg_br * 2)]
+            cmd += ["-cq:v", str(value)]
+            if avg_br is None:
+                cmd += ["-b:v", "0"]
+            else:
+                # 模拟 SDK Level 1：averageBitRate=avg_br，maxBitRate=avg_br*2
+                cmd += ["-b:v", str(avg_br), "-maxrate", str(avg_br * 2),
+                        "-bufsize", str(avg_br * 2)]
     cmd += ["-bf", "0", "-pix_fmt", "yuv420p", str(out)]
     rc, _, err = ctx.run(cmd, timeout)
     if rc != 0:
@@ -923,10 +941,10 @@ def group_resolve(ctx: Ctx, v: Verifier) -> None:
               detail=f"{codec} {kwargs} → {p} {val} {' '.join(ex)}"
                      + ("" if ok else f"（期望 {param} {value} {extra}）"))
 
-    expect("G2-1", "无输入 → 默认基准 21 换算", "hevc_nvenc", {}, "-cq:v", 28)
-    expect("G2-2", "crf_ref → 按基准轴换算", "hevc_nvenc", {"crf_ref": 21}, "-cq:v", 28)
+    expect("G2-1", "无输入 → 默认基准 21 换算", "hevc_nvenc", {}, "-cq:v", 26)
+    expect("G2-2", "crf_ref → 按基准轴换算", "hevc_nvenc", {"crf_ref": 21}, "-cq:v", 26)
     expect("G2-3", "cq_ref → 经 h264_nvenc 归一再换算", "hevc_nvenc",
-           {"cq_ref": 21}, "-cq:v", 24, ["-b:v", "0"])
+           {"cq_ref": 21}, "-cq:v", 20, ["-b:v", "0"])
     expect("G2-4", "crf 字面量·同族原样下发", "libx264", {"crf": 18}, "-crf", 18)
     expect("G2-5", "cq 字面量·同族原样下发", "h264_nvenc", {"cq": 26},
            "-cq:v", 26, ["-b:v", "0"])
@@ -936,12 +954,12 @@ def group_resolve(ctx: Ctx, v: Verifier) -> None:
     expect("G2-8", "crf_ref=0 无损意图不套线性映射", "hevc_nvenc",
            {"crf_ref": 0}, "-cq:v", 0, ["-b:v", "0"])
     expect("G2-9", "cq_ref=0 无损意图", "libx265", {"cq_ref": 0}, "-crf", 0)
-    # 期望 66：librav1e 在**原生 speed 档**下的等体积重标值。
-    # 默认**不下发** -speed：实测 -speed 10 虽快 4.6×，但同码率下多掉 ~1.9 dB
-    # （等体积解 ΔPSNR ≈ −2.7 dB 会让 AC7 FAIL），详见 REF21_EXPECTED 与方案 §6.11。
-    expect("G2-10", "librav1e 用 -qp 而非 -crf", "librav1e", {}, "-qp", 66)
+    # [B1] 期望 64：librav1e 原生档下 **quality（等质量）** 口径值（size 口径为 66）。
+    # 默认**不下发** -speed：实测 -speed 10 虽快 4.6×，但同码率下多掉 ~1.9 dB，
+    # 详见 REF21_EXPECTED 与方案 §6.11。
+    expect("G2-10", "librav1e 用 -qp 而非 -crf", "librav1e", {}, "-qp", 64)
     expect("G2-11", "libvpx-vp9 必须配 -b:v 0", "libvpx-vp9", {},
-           "-crf", 28, ["-b:v", "0"])
+           "-crf", 26, ["-b:v", "0"])
 
     # 未知编码器：不猜测，原样下发（不抛异常）
     try:
@@ -979,23 +997,50 @@ def group_constqp(ctx: Ctx, v: Verifier) -> None:
     Q = load_quality_map(ctx)
 
     q1 = Q.to_constqp_qp("h264_nvenc", 26)
-    v.add("G3-1", "CONSTQP", "h264_nvenc：CQ 26 → QP 21（回到基准轴）",
-          Status.PASS if q1 == 21 else Status.FAIL, detail=f"QP={q1}", )
+    v.add("G3-1", "CONSTQP", "h264_nvenc：CQ 26 → QP 22（quality 口径，回基准轴）",
+          Status.PASS if q1 == 22 else Status.FAIL, detail=f"QP={q1}", )
 
     q2 = Q.to_constqp_qp("hevc_nvenc", 28)
-    # 已知取整伪影：21 → 28 → 20.5 → 银行家取整 20；±1 内接受
-    if q2 == 20:
-        st, det = Status.PASS, "QP=20（21↔28 往返的已知取整伪影，±1 内）"
-    elif q2 in (19, 21):
-        st, det = Status.WARN, f"QP={q2}（期望 20，偏差 1）"
+    # [B1] quality 口径：hevc QUALITY_MAP_QP=(1.1083,−2.9183) ⇒ CQ28 归一后过模型 → 23；±1 内接受
+    if q2 == 23:
+        st, det = Status.PASS, "QP=23（quality 口径）"
+    elif q2 in (22, 24):
+        st, det = Status.WARN, f"QP={q2}（期望 23，偏差 1）"
     else:
-        st, det = Status.FAIL, f"QP={q2}（期望 20）"
-    v.add("G3-2", "CONSTQP", "hevc_nvenc：CQ 28 → QP ≈20", st, detail=det)
+        st, det = Status.FAIL, f"QP={q2}（期望 23）"
+    v.add("G3-2", "CONSTQP", "hevc_nvenc：CQ 28 → QP 23（quality 口径）", st, detail=det)
 
     v.add("G3-3", "CONSTQP", "未知编码器原样返回（不猜测）",
           Status.PASS if Q.to_constqp_qp("no_such_codec", 26) == 26 else Status.FAIL)
-    v.add("G3-4", "CONSTQP", "无损 QP=0 保持 0",
-          Status.PASS if Q.to_constqp_qp("h264_nvenc", 0) == 0 else Status.FAIL)
+    # [FIX-QP-LOSSLESS] 无损语义优先：value==0 ⇒ QP=0，size/quality 两口径一致
+    #   （生产无损另由 writer 的 crf==0 分支硬编码 `-rc constqp -qp 0`，见 G6-18/19）。
+    _q0q = Q.to_constqp_qp("h264_nvenc", 0)
+    _prev0 = Q.get_quality_mode()
+    try:
+        Q.set_quality_mode("size")
+        _q0s = Q.to_constqp_qp("h264_nvenc", 0)
+    finally:
+        Q.set_quality_mode(_prev0)
+    v.add("G3-4", "CONSTQP", "无损 QP=0 恒等保持 0（size 与 quality 两口径一致）",
+          Status.PASS if (_q0q == 0 and _q0s == 0) else Status.FAIL,
+          detail=f"quality={_q0q} size={_q0s}（均应为 0）",
+          evidence=["[FIX-QP-LOSSLESS] to_constqp_qp 对 value==0 短路返回 0"])
+    # [QUALITY-MODE][B1] size（等体积，**非默认**）口径的对照——本门禁默认 quality，
+    #   此处临时切 size 校验另一口径（生产可用 --quality-mode 自由切换），再复位。
+    _prev_qm = Q.get_quality_mode()
+    try:
+        Q.set_quality_mode("size")
+        _s_h = Q.to_constqp_qp("h264_nvenc", 26)
+        _s_e = Q.to_constqp_qp("hevc_nvenc", 28)
+        _s_a = Q.to_constqp_qp("av1_nvenc", 27)
+        _s_ok = (_s_h == 21 and _s_e == 20 and _s_a == 63)
+        v.add("G3-9", "CONSTQP",
+              "size 口径对照（非默认，--quality-mode size）：h264 CQ26→QP21 / hevc CQ28→QP20 / av1→63",
+              Status.PASS if _s_ok else Status.FAIL,
+              detail=f"h264={_s_h} hevc={_s_e} av1={_s_a}（期望 21/20/63）",
+              evidence=["[QUALITY-MODE] _QP_MAP_OVERRIDE h264/hevc=(1.0,0.0) ⇒ size=基准轴直取"])
+    finally:
+        Q.set_quality_mode(_prev_qm)   # 复位到本门禁既定口径（quality）
     v.add("G3-5", "CONSTQP", "CONSTQP_QP_OFFSET 为可调口且当前为 0",
           Status.PASS if getattr(Q, "CONSTQP_QP_OFFSET", None) == 0 else Status.WARN,
           detail=f"CONSTQP_QP_OFFSET={getattr(Q, 'CONSTQP_QP_OFFSET', 'N/A')}")
@@ -1007,13 +1052,16 @@ def group_constqp(ctx: Ctx, v: Verifier) -> None:
           detail=f"cq={cq_val} vs qp={q2}")
 
     # G3-7 [FIX-QP-SCALE] AV1 的 -qp 是 qindex（0~255），与 -cq 的 0~63 不同刻度。
-    #   L40 上实测确认 QP 尺度为 3×：基准 21 → QP 63，而非推断的 84（×4）。
-    #   VidUtils/probe/verify_nvenc_quality_gpu.py C 组扫 -qp {21,63,84,105}。
-    q_av1 = Q.to_constqp_qp("av1_nvenc", 27)
-    v.add("G3-7", "CONSTQP", "av1_nvenc：CQ 27 → QP 63（AV1 qindex ≈3×，L40 实测确认）",
-          Status.PASS if q_av1 == 63 else Status.FAIL,
-          detail=f"QP={q_av1}（×3 倍率 L40 实测确认）",
-          evidence=["[FIX-QP-SCALE] _QP_MAP_OVERRIDE['av1_nvenc'] = (3.0, 0.0, 0, 255)"])
+    #   2026-10-04 L40 17 素材标定：quality 口径 QP 轴为**仿射** (7.9338, −97.5136)，
+    #   取代早期仅在 ref21 验证的 ×3 近似。输入取 av1 在 ref21 的 **CQ 表值 32**
+    #   （与 G3-1/G3-2 同约定：传表在 ref21 产出的 CQ 值），回基准轴≈21.13 → QP 70。
+    #   ⚠ VU 侧仍为 `_QP_SCALE=3`（仅 ref21 验证）⇒ 跨仓 CR-4 handoff 待同步。
+    _av1_cq = Q.resolve_quality("av1_nvenc", crf_ref=21)[1]
+    q_av1 = Q.to_constqp_qp("av1_nvenc", _av1_cq)
+    v.add("G3-7", "CONSTQP", f"av1_nvenc：CQ {_av1_cq} → QP 70（L40 仿射标定，非 ×3）",
+          Status.PASS if q_av1 == 70 else Status.FAIL,
+          detail=f"QP={q_av1}（L40 17 素材仿射标定 QUALITY_MAP_QP['av1_nvenc']）",
+          evidence=["[L40-QP-CALIB] QUALITY_MAP_QP['av1_nvenc'] = (7.9338, -97.5136, 0, 255)"])
 
     # G3-8 [FIX-QP-SCALE] librav1e 的质量参数本身就落在 QP 刻度上，
     #   to_constqp_qp 对它是**恒等透传**（不套任何倍率/截距），
@@ -1279,10 +1327,10 @@ def group_static(ctx: Ctx, v: Verifier) -> None:
     checks = [
         (r"'_?constqp'\s*:\s*'constqp'", "constqp 不再被错映射为 vbr"),
         (r"'-rc:v',\s*'constqp',\s*'-qp',\s*str\(\s*_nvenc_qp\s*\)", "CONSTQP 发 -qp"),
-        # [FIX-FFMPEG9-VBRHQ] vbr_hq/qvbr 迁移动 `vbr -tune hq -multipass fullres`
-        # 后，`_rc_v` 与 `-cq:v` 之间多一个 `*_hq_extra`（h264/hevc 才有），正则需放行。
-        (r"'-rc:v',\s*_rc_v,\s*(?:\*_hq_extra,\s*)?'-cq:v',\s*str\(\s*crf\s*\),\s*'-b:v',\s*'0'",
-         "VBR 发 -cq:v + -b:v 0"),
+        # [NVENC-TUNING] 默认**裸命令**：质量段（-cq:v/-b:v 0、tune/multipass、bitrate）
+        # 统一交给 nvenc_tuning.resolve_nvenc_tokens，不再硬编码 `-tune hq -multipass fullres`。
+        (r"from nvenc_tuning import", "引入 nvenc_tuning 唯一真源"),
+        (r"'-rc:v',\s*_rc_v,\s*\*resolve_nvenc_tokens\(", "VBR 质量段走 resolve_nvenc_tokens"),
         (r"_nvenc_qp\s*=\s*to_constqp_qp\(\s*codec\s*,\s*crf\s*\)", "constqp 轴换算调用"),
     ]
     bad = [d for pat, d in checks if not has(ifio, pat, re.S)]
@@ -1310,6 +1358,9 @@ def group_static(ctx: Ctx, v: Verifier) -> None:
         (r"nvenc_rc\s*==\s*'constqp'", "constqp 分支存在"),
         (r"'-rc:v',\s*'constqp',\s*'-qp',\s*str\(\s*_nvenc_qp\s*\)", "CONSTQP 发 -qp"),
         (r"'-rc',\s*'constqp',\s*\n\s*'-qp',\s*'0'", "无损分支显式 -rc constqp"),
+        # [NVENC-TUNING] 与 ifrnet 侧同源：质量段走 nvenc_tuning（默认裸命令）
+        (r"from nvenc_tuning import", "引入 nvenc_tuning 唯一真源"),
+        (r"'-rc:v',\s*nvenc_rc,\s*\*resolve_nvenc_tokens\(", "VBR 质量段走 resolve_nvenc_tokens"),
     ]
     bad = [d for pat, d in checks if not has(efio, pat)]
     v.add("G5-5", "STATIC", "Real-ESRGAN FFmpeg 下发路径正确",
@@ -1431,13 +1482,18 @@ class _FakePopen:
 
 
 def _capture_writer(ctx: Ctx, pkg: str, codec: str, crf: int, rc_mode: str,
-                    lookahead: Optional[int]) -> Optional[List[str]]:
+                    lookahead: Optional[int],
+                    tune: Optional[str] = None,
+                    multipass: Optional[str] = None,
+                    bitrate: Optional[str] = None) -> Optional[List[str]]:
     """构造后端 FFmpegWriter 并捕获其将执行的 ffmpeg 命令（不真正拉起进程）。
 
     两个后端的 FFmpegWriter 构造签名不同：IFRNet 为位置参数 + codec/crf/rc_mode，
     Real-ESRGAN 为 (args_namespace, audio, h, w, path, fps)。此处分别适配。
     同时把 HardwareCapability.best_encoder 临时替换为恒等函数，确保捕获的是
     "传入该 codec 时的命令形状"，而不是自动升降级之后的结果。
+
+    [NVENC-TUNING] tune/multipass/bitrate 为显式 opt-in（默认 None = 裸命令）。
     """
     for p in (str(UTILS_DIR), str(EXTERNAL_DIR)):
         if p not in sys.path:
@@ -1460,11 +1516,14 @@ def _capture_writer(ctx: Ctx, pkg: str, codec: str, crf: int, rc_mode: str,
         if pkg == "ifrnet_video":
             w = fio.FFmpegWriter(str(ctx.tmp / "emit.mp4"), 320, 240, 30.0,
                                  codec=codec, crf=crf, rc_mode=rc_mode,
-                                 lookahead_depth=lookahead, quiet=True)
+                                 lookahead_depth=lookahead, quiet=True,
+                                 nvenc_tune=tune, nvenc_multipass=multipass,
+                                 bitrate=bitrate)
         else:
             ns = types.SimpleNamespace(
                 codec=codec, crf=crf, rate_mode=rc_mode,
                 lookahead_depth=lookahead, encode_preset="medium",
+                nvenc_tune=tune, nvenc_multipass=multipass, bitrate=bitrate,
                 ffmpeg_bin="ffmpeg", quiet=True)
             w = fio.FFmpegWriter(ns, None, 240, 320, str(ctx.tmp / "emit.mp4"), 30.0)
         with contextlib.suppress(Exception):
@@ -1489,53 +1548,91 @@ def group_emit(ctx: Ctx, v: Verifier) -> None:
     print("\n【G6】下发命令捕获（ffmpeg 参数形状）")
 
     cases = [
+        # [NVENC-TUNING] 默认**裸命令**：不含 -tune / -multipass（二者为显式 opt-in）。
         ("G6-1", "IFRNet", "ifrnet_video", "h264_nvenc", 26, "vbr_hq", 8,
-         [("-rc:v", "vbr"), ("-tune", "hq"), ("-multipass", "fullres"),
-          ("-cq:v", "26"), ("-b:v", "0"), ("-rc-lookahead", "8")],
-         [("-rc:v", "vbr_hq"), ("-qp", None)]),
+         [("-rc:v", "vbr"), ("-cq:v", "26"), ("-b:v", "0"), ("-rc-lookahead", "8")],
+         [("-rc:v", "vbr_hq"), ("-tune", None), ("-multipass", None), ("-qp", None)]),
         ("G6-2", "IFRNet", "ifrnet_video", "h264_nvenc", 26, "constqp", 8,
-         [("-rc:v", "constqp"), ("-qp", "21")],
+         [("-rc:v", "constqp"), ("-qp", "22")],
          [("-cq:v", None), ("-b:v", None)]),
         ("G6-3", "IFRNet", "ifrnet_video", "libx264", 21, "vbr_hq", 8,
          [("-crf", "21")], [("-cq:v", None)]),
         ("G6-4", "ESRGAN", "realesrgan_video", "h264_nvenc", 26, "vbr_hq", 8,
-         [("-rc:v", "vbr"), ("-tune", "hq"), ("-multipass", "fullres"),
-          ("-cq:v", "26"), ("-b:v", "0")], [("-rc:v", "vbr_hq")]),
+         [("-rc:v", "vbr"), ("-cq:v", "26"), ("-b:v", "0")],
+         [("-rc:v", "vbr_hq"), ("-tune", None), ("-multipass", None)]),
         ("G6-5", "ESRGAN", "realesrgan_video", "h264_nvenc", 26, "constqp", 0,
-         [("-rc:v", "constqp"), ("-qp", "21")], [("-cq:v", None)]),
+         [("-rc:v", "constqp"), ("-qp", "22")], [("-cq:v", None)]),
         ("G6-6", "ESRGAN", "realesrgan_video", "libx265", 24, "vbr_hq", 8,
          [("-crf", "24")], [("-cq:v", None)]),
         # G6-7 [FIX-QP-SCALE] AV1 的 constqp 必须发 qindex（0~255），不是 CQ 轴值：
-        #   crf=27 是 av1_nvenc 在基准 21 上的 -cq 值，切 constqp 后应换算成 63（×3，L40 实测）。
+        #   crf=32 是 av1_nvenc 在基准 21 上的 -cq 表值（L40 落表后；旧值 27 为 SIZE_MAP 回退），
+        #   切 constqp 后应换算成 70（L40 17 素材仿射标定，取代早期 ×3 的 63）。
         #   需 Ada(L40) 才能真正跑起来；T4 / 本机无 AV1 NVENC ⇒ 该格 SKIP。
-        ("G6-7", "IFRNet", "ifrnet_video", "av1_nvenc", 27, "constqp", 0,
-         [("-rc:v", "constqp"), ("-qp", "63")],
+        ("G6-7", "IFRNet", "ifrnet_video", "av1_nvenc", 32, "constqp", 0,
+         [("-rc:v", "constqp"), ("-qp", "70")],
          [("-cq:v", None), ("-b:v", None)]),
         # G6-8~G6-10 [FIX-AV1-NVENC / FIX-AV1-RC] 2026-09-30 L40 长视频冒烟暴露的
         #   三处 AV1 缺陷的命令形状回归（详见方案 §8.6）。三者都**不需要 AV1 硬件**：
         #   写入器只拼命令串，Popen 被替身捕获。
         #   ② ESRGAN 侧原先用精确元组 ('h264_nvenc','hevc_nvenc') 判 NVENC，
         #      av1_nvenc 落到 else 的 libx264 分支 → 静默发 `-crf 27`（把 CQ 当 CRF）。
-        ("G6-8", "ESRGAN", "realesrgan_video", "av1_nvenc", 27, "constqp", 0,
+        ("G6-8", "ESRGAN", "realesrgan_video", "av1_nvenc", 32, "constqp", 0,
          [("-vcodec", "av1_nvenc"), ("-preset", "p4"),
-          ("-rc:v", "constqp"), ("-qp", "63")],
+          ("-rc:v", "constqp"), ("-qp", "70")],
          [("-crf", None), ("-cq:v", None)]),
         #   ③ av1_nvenc 的 `-rc` 只接受 constqp/vbr/cbr；`vbr_hq` 会让 ffmpeg
         #      报 `Undefined constant or missing '(' in 'vbr_hq'` 并整条命令失败。
-        ("G6-9", "IFRNet", "ifrnet_video", "av1_nvenc", 27, "vbr_hq", 8,
-         [("-vcodec", "av1_nvenc"), ("-rc:v", "vbr"), ("-cq:v", "27"),
+        ("G6-9", "IFRNet", "ifrnet_video", "av1_nvenc", 32, "vbr_hq", 8,
+         [("-vcodec", "av1_nvenc"), ("-rc:v", "vbr"), ("-cq:v", "32"),
           ("-b:v", "0"), ("-rc-lookahead", "8")],
          [("-rc:v", "vbr_hq")]),
-        ("G6-10", "ESRGAN", "realesrgan_video", "av1_nvenc", 27, "vbr_hq", 8,
-         [("-vcodec", "av1_nvenc"), ("-rc:v", "vbr"), ("-cq:v", "27"),
+        ("G6-10", "ESRGAN", "realesrgan_video", "av1_nvenc", 32, "vbr_hq", 8,
+         [("-vcodec", "av1_nvenc"), ("-rc:v", "vbr"), ("-cq:v", "32"),
           ("-b:v", "0")],
          [("-rc:v", "vbr_hq"), ("-crf", None)]),
+        # ── [NVENC-TUNING] 显式 opt-in / 自动 multipass / 目标码率（第 10 元素 = opts）──
+        ("G6-11", "IFRNet", "ifrnet_video", "h264_nvenc", 26, "vbr_hq", 8,
+         [("-tune", "ll"), ("-multipass", "qres"), ("-cq:v", "26"), ("-b:v", "0")],
+         [("-tune", "hq")],
+         {"tune": "ll", "multipass": "qres"}),
+        ("G6-12", "IFRNet", "ifrnet_video", "h264_nvenc", 26, "vbr_hq", 8,
+         [("-multipass", "disabled"), ("-cq:v", "26"), ("-b:v", "0")],
+         [("-multipass", "fullres")],
+         {"multipass": "disabled"}),
+        ("G6-13", "IFRNet", "ifrnet_video", "h264_nvenc", 26, "cbr", 8,
+         [("-rc:v", "cbr"), ("-multipass", "fullres"), ("-cq:v", "26"), ("-b:v", "0")],
+         [], {}),
+        ("G6-14", "IFRNet", "ifrnet_video", "h264_nvenc", 26, "vbr_hq", 8,
+         [("-rc:v", "vbr"), ("-multipass", "fullres"), ("-b:v", "8M")],
+         [("-cq:v", None)],
+         {"bitrate": "8M"}),
+        ("G6-15", "IFRNet", "ifrnet_video", "hevc_nvenc", 26, "vbr_hq", 8,
+         [("-tune", "uhq"), ("-cq:v", "26"), ("-b:v", "0")], [],
+         {"tune": "uhq"}),
+        # h264_nvenc 无 uhq 档 ⇒ writer 忽略并告知（命令里不得出现 -tune uhq）
+        ("G6-16", "IFRNet", "ifrnet_video", "h264_nvenc", 26, "vbr_hq", 8,
+         [("-cq:v", "26"), ("-b:v", "0")],
+         [("-tune", "uhq"), ("-tune", "hq")],
+         {"tune": "uhq"}),
+        # constqp：multipass 忽略（无码率目标），tune 仍可下发
+        ("G6-17", "IFRNet", "ifrnet_video", "h264_nvenc", 26, "constqp", 0,
+         [("-rc:v", "constqp"), ("-qp", "22"), ("-tune", "ll")],
+         [("-multipass", None), ("-cq:v", None)],
+         {"tune": "ll", "multipass": "fullres"}),
+        # [B1] 生产**无损**（crf==0）走 writer 的独立分支，硬编码 `-rc constqp -qp 0`
+        #   （`to_constqp_qp` 对 value==0 也短路返回 0，见 G3-4；本两条是 writer 侧守卫）。
+        ("G6-18", "IFRNet", "ifrnet_video", "h264_nvenc", 0, "vbr_hq", 0,
+         [("-rc", "constqp"), ("-qp", "0")], [("-cq:v", None)], {}),
+        ("G6-19", "ESRGAN", "realesrgan_video", "h264_nvenc", 0, "vbr_hq", 0,
+         [("-rc", "constqp"), ("-qp", "0")], [("-cq:v", None)], {}),
     ]
 
-    for cid, stage, pkg, codec, crf, rc, la, want, forbid in cases:
+    for case in cases:
+        cid, stage, pkg, codec, crf, rc, la, want, forbid = case[:9]
+        opts = case[9] if len(case) > 9 else {}
         title = f"{stage} {codec} rc={rc} → 命令形状"
         try:
-            cmd = _capture_writer(ctx, pkg, codec, crf, rc, la)
+            cmd = _capture_writer(ctx, pkg, codec, crf, rc, la, **opts)
         except Exception as exc:  # noqa: BLE001
             v.add(cid, "EMIT", title, Status.SKIP,
                   detail=f"后端不可导入/需 GPU：{type(exc).__name__}: {exc}")

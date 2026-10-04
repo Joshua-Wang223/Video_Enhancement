@@ -127,6 +127,10 @@ class IFRNetProcessor:
         # 与 realesrgan 段统一：vbr_hq(CQ 质量优先) + LA=8
         self.rate_mode       = config.get("models", "ifrnet", "rate_mode",       default="vbr_hq")
         self.lookahead_depth = config.get("models", "ifrnet", "lookahead_depth", default=8)
+        # [NVENC-TUNING] 显式调优轴 + 目标码率（None = 默认不发，保持裸默认命令）
+        self.nvenc_tune      = config.get("models", "ifrnet", "nvenc_tune",      default=None)
+        self.nvenc_multipass = config.get("models", "ifrnet", "nvenc_multipass", default=None)
+        self.bitrate         = config.get("models", "ifrnet", "bitrate",         default=None)
         # [P0/P1] 综合修复安全开关：HEVC+LA 自动规避；H2D 预取事件同步默认开启。
         # [FIX-HEVC-LA-SOFT-RETIRED] hevc_la_disable 软退役：已由 FIX-HEVC-COUNTED/EOS 保障，不再改写 LA
         self.hevc_la_disable     = bool(config.get(
@@ -670,6 +674,9 @@ class IFRNetProcessor:
             encode_preset  = self.encode_preset,
             rate_mode      = self.rate_mode,
             lookahead_depth = self.lookahead_depth,
+            nvenc_tune      = self.nvenc_tune,
+            nvenc_multipass = self.nvenc_multipass,
+            bitrate         = self.bitrate,
             hevc_la_disable    = getattr(self, "hevc_la_disable", True),
             prefetch_event_sync = getattr(self, "prefetch_event_sync", True),
             keep_audio     = self.keep_audio,

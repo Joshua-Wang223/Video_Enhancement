@@ -6,6 +6,17 @@ type: project
 
 ## 推送入口
 
+⚠ **推送前先查远程是否已有该内容**（2026-10-04 教训）。提交/推送 memory 等文件前，先
+`git ls-remote origin refs/heads/main`（或 `git log origin/main`）确认远程**没有**更新的版本，
+再决定是否 commit + push。
+**Why**：并发会话可能已推送更新，本地基于旧 base 的提交会制造冲突甚至覆盖远程更新。实例：本地提交了
+`memory/t4-vbrhq-verification-plan.md` 的旧版（Gate 0 初期结果），push 被拒；fetch 后发现远程已有
+更完整版本（`e9ed1d1`，含 T4 实测 V8–V15 全结果），本地提交完全冗余。
+**How to apply**：① 先 `ls-remote` 对比本地 HEAD 与远程；② 若远程已有更新，先 `fetch` + `rebase`
+（或本地提交确属冗余/过期时直接 `reset --hard origin/main`）；③ 特别提醒：`memory/MEMORY.md` 索引
+与具体 memory 文件要**一同**检查，索引易与文件不同步。本机网络拉取极慢（2–8 KiB，300 对象 ≈ 1h+），
+**先确认是否真的需要拉取**再 fetch。
+
 工作区 `/workspace/Video_Enhancement` **本身就是一个普通 git 仓库**（origin 已配好 SSH），日常直接 `git commit` + `git push origin main` 即可（2026-09-23 实测可用）。仓库根另有 `force_push_github.sh`，用于「拿某个环境的**完整工作区内容**全量覆盖远程」这条路（会 `read-tree --empty` 重建索引，见下方治理文件一节）：
 
 ```bash
@@ -284,3 +295,104 @@ WSL 侧（`/mnt/d/Workspace_Python/Video_Enhancement`，与 Windows `D:\...` 是
 2. 推送 pack 过大（>2GiB）先查 `git rev-list --objects <base>..HEAD` 里的大 blob（本次元凶：`benchmark_output/*.mp4`），
    别急着 force；
 3. 被丢弃的旧提交仍在 reflog/objects（含 6.76GiB），确认无误后可 `git gc --prune=now` 回收。
+
+## 2026-10-04 补充：只推 `memory/` 时的「改动集合完整性 + 引用有效性」核实
+
+memory 增量是纯文档、无密钥/大文件风险，但**「看着只有4 个文件改了」不等于改动集合就是这 4 个** ——
+默认 `git status` 会漏掉被 ignore 的路径，漏了就永远不入库：
+
+```bash
+git status --short --untracked-files=all --ignored -- memory/ Plan/   # 未跟踪 + 被忽略都要看
+git ls-remote origin refs/heads/main; git rev-parse HEAD             # 期望相等 = 无分叉，可 fast-forward
+diff -r "$A" "$B" && echo "✅ 内容一致"                              # 文件集合一致也不够，见 memory-write-discipline
+comm -13 <(cd "$A" && ls -1|sort) <(cd "$B" && ls -1|sort)           # 仅 B 有（改名残留嫌疑）
+```
+
+**推送前还要核实「记忆里引用的路径真实存在」**——记忆最常见的腐化形式不是内容错、而是
+`file:line` / 文档路径指向已改名或从未入库的对象。2026-10-04 实测：一条记忆引用
+`Plan/PROMPT_L40_AV1等质量标定专项执行方案.md §9.5`，`ls` + `grep -n` 确认文件在库、章节确在 :337 行
+（`Plan/` 已跟踪 31 个文件）⇒ 该引用可入库；若不核实就推，下个会话会照着不存在的路径去找。
+同源纪律见 [写总览类文档要当轮核对](feedback_verify_doc_claims_before_writing.md)。
+
+**How to apply**：A/B 同步必须**先于** commit+push 完成（顺序：同步 → `diff -r` → commit → push → `ls-remote` 复核），
+否则推上去的版本与 B 侧不一致，下个会话读到过期记忆；这条与
+[多写入方纪律](memory-write-discipline.md) 的「同步后跑索引双向校验」配套。
+
+## 2026-10-04 实测补充：同步完成后到 commit 之间，改动集合仍会变（并行写入方的时间窗）
+
+上一节的核实清单在**同步之前**跑一次是不够的。本轮实测：连续 4 次 `git status` 都只报 4 个 `M`，
+A/B 同步完成、`diff -r` 一致之后，`git add` 的那一刻**冒出第 5 个文件**
+（`github-push-workflow-and-secrets.md`，mtime 比同步时刻晚约 1 分钟）—— 并行写入方恰好落在
+「同步 → commit」这个时间窗内。若照旧直接 commit，那份内容会被静默漏推（本次靠暂存区再次
+`git status` 才看出MEMORY.md 暂存 diff 也随之变化）。
+
+⇒ **纪律**：
+1. `git status` 的观测结果**只在观测那一刻成立**，不能跨步骤复用；**每次 `git add` 后都要再看一次
+   `git status --short`**，它同时暴露「已暂存」与「新增未暂存」两类，是检出时间窗内写入的最省事手段。
+2. 发现「计划外的新增文件」**先取证再处置**：`git diff -- <该文件>` 看内容，`ls -l --time-style=full-iso`
+   比 mtime 确认写入时刻晚于自己的同步动作；内容若属实（本例其引用的 `Plan/...§9.5` 在 :337 行经实测为真）
+   则一并纳入并**重新走一遍 A/B 同步**（本次同步后 B 侧又落后这 2 个文件），而不是回退。
+3. 反过来，这正是「禁止在 memory/ 上整文件 Write 覆盖」的又一理由：外部追加的内容无法预知，只能靠
+   定点 Edit + 提交前重新观测。
+
+## 2026-10-04 实测：WSL 下 `/mnt/d` 上组合 git 读命令会挂起（复核要拆小步）
+
+在 WSL 的 `/mnt/d/Workspace_Python/Video_Enhancement` 上，把
+`ls-remote` + `ls-tree` + `show --stat` + `status` 串成一条命令跑，前两行输出后**卡住 3 分钟无进展**
+（被自动转后台、最终 `TaskStop` 杀掉），拆成独立小步重跑每条都秒回。`git status` 单独跑时可见
+`Refresh index:100% (905/905), done.` —— 大概率是 DrvFS 上重复的索引刷新/属性同步开销被多命令叠加放大。
+
+⇒ **How to apply**：在 `/mnt/d` 上做推送后复核这类多步取证，**一条命令只做一件事**，
+用 `&&`/`;` 串联多个 git 子命令容易表现为"卡死"而非报错，容易被误判成远端不可达或推送失败。
+判据：命令跑得异常久 + 无输出 ⇒先 `TaskStop` 拆小步复跑确认，不要据此改判远端状态。
+
+## 2026-10-04 实测：「已同步」有三层含义，只报 SHA 相等会被用户追问第二次
+
+用户本轮**连续两次**问「检查本地/远程是否同步」。第一次我答「三方 SHA 一致 ✅」——**不完整**：
+`ls-remote` / `HEAD` / `origin/main` 全为 `66ebae2` 只证明**提交图**一致；同一时刻实测出
+A 侧工作区在提交之后（18:38 提交 vs 18:40 写入）又被并行写入方追加，且 A/B 镜像重新分歧，
+远端那份文件 319 行而A 侧已 347 行 ⇒ **提交号相同但内容并不相同**。
+
+⇒ **纪律**：回答「是否已同步」必须**分层给结论**，别把 SHA 相等当成整体同步：
+
+| 层 | 判据 | 命令 |
+|---|---|---|
+| ① 提交图 | remote == HEAD == origin/main | `git ls-remote origin refs/heads/main` + `git rev-parse HEAD` |
+| ② 工作区 vs 提交 | 无未提交 `M` | `git status --short -- <path>` |
+| ③ A/B 镜像 | 内容 **与文件集合**双向一致 | `diff -r "$A" "$B"` + `comm -13/-23` |
+
+层 ② ③会被并行写入方在**任意时刻**改变，**层 ① 通过不代表可以结束汇报**。
+
+**比提交号更硬的判据**：`git cat-file -p origin/main:<path> | wc -l` 直接读**远端实际内容**的 blob，
+与工作区行数 / `git diff origin/main -- <path>` 对照。2026-10-04 正是这样才发现 319 vs 347 的行差——
+只跑 `git log` + `git status` 的常规组合**不会**把「已提交」与「内容最新」区分开。
+⚠ 该命令同样受上一节的 `/mnt/d` 挂起影响，单独跑。
+
+### 行数只是初筛，最终用 md5 逐文件比对（2026-10-04 收口实测）
+
+`wc -l` 有**巧合相等**的可能（增删行数恰好抵消、或改动只改内容不改行数），它只能当探针。
+最终判据用 md5 逐文件比「远端 blob vs 工作区文件」：
+
+```bash
+for f in MEMORY.md <改动过的文件>; do
+  a=$(md5sum < "memory/$f" | cut -d' ' -f1)
+  b=$(git cat-file -p "origin/main:memory/$f" | md5sum | cut -d' ' -f1)
+  [ "$a" = "$b" ] && echo "  ✅ $f 一致" || echo "  ⚠️ $f 不一致 A=$a 远端=$b"
+done
+```
+
+**Why**：本轮推送收尾时用了这个判据，三个文件全绿才算收口；此前只报「SHA 三方相等」时被用户
+连续追问两次，那种报法无法排除「提交的是旧内容」。
+
+### 「时间窗」不是偶发 —— 本轮连续两轮命中，收尾必须从零观测
+
+同一轮会话里连做两轮「同步 → add → commit」，**两轮都在 `git add` 时被并行写入方追加**：
+第1 轮 18:38 提交、18:40 又被写；第 2 轮 18:53 再次被写（暂存量从 +28/+26 变成 +50/+45）。
+
+⇒ **纪律**：
+1. 任何一轮同步/提交的结论**不可跨轮复用**；下一轮开工第一步就是重新 `git status`（含
+   `--untracked-files=all --ignored`），而不是沿用上一轮报告的「已一致 ✅」。
+2. 汇报「已推送」时若紧跟着又观察到新写入，**要在汇报里显式说明观测时刻**，并把「下一轮需重新观测」
+   写进去，否则用户会基于已过期的结论继续往下走。
+3. 处置仍是「取证（`git diff` + `ls -l --time-style=full-iso` 比mtime）→ 属实则纳入 →
+   重新 A/B 同步 → 再提交」，**不回退**外部追加的内容。

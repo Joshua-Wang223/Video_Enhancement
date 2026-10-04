@@ -1,0 +1,85 @@
+{
+  "generated": "2026-10-04T08:14:40",
+  "src": "/workspace/input_videos/word_world_2.mp4",
+  "src_frames": 687,
+  "ref_crf": 21,
+  "soft": {
+    "kbps": 1424,
+    "psnr": 46.581226
+  },
+  "tolerances": {
+    "RATE_PASS": [
+      0.65,
+      1.5
+    ],
+    "RATE_WARN": [
+      0.55,
+      1.65
+    ],
+    "TOL_PSNR_DB": 1.5,
+    "TOL_PSNR_WARN": 3.0
+  },
+  "matrix": [
+    {
+      "codec": "av1_nvenc",
+      "param": "-cq:v",
+      "value": 32,
+      "naive": 21,
+      "note": "默认基准 CRF 21",
+      "extra_args": [
+        "-rc:v",
+        "vbr",
+        "-b:v",
+        "0"
+      ],
+      "psnr": 43.983563,
+      "kbps": 1102,
+      "ratio": 0.774,
+      "d_psnr": -2.598,
+      "verdict": "WARN",
+      "naive_ratio": 1.84
+    }
+  ],
+  "av1_qp_scan": [
+    {
+      "qp": 21,
+      "ok": true,
+      "psnr": 50.444667,
+      "ratio": 2.646105480618865,
+      "d_psnr": 3.8634410000000017,
+      "verdict": "FAIL"
+    },
+    {
+      "qp": 71,
+      "ok": true,
+      "psnr": 45.405305,
+      "ratio": 1.0587630987064731,
+      "d_psnr": -1.1759210000000024,
+      "verdict": "PASS"
+    },
+    {
+      "qp": 84,
+      "ok": true,
+      "psnr": 44.581383,
+      "ratio": 0.9327290180192137,
+      "d_psnr": -1.9998429999999985,
+      "verdict": "WARN"
+    },
+    {
+      "qp": 105,
+      "ok": true,
+      "psnr": 43.045707,
+      "ratio": 0.7390749607995556,
+      "d_psnr": -3.5355190000000007,
+      "verdict": "FAIL"
+    }
+  ],
+  "av1_qp_expected": 71,
+  "ac1_verdict": "表值 -qp 71 落带内 ⇒ AC1 PASS，`_QP_MAP_OVERRIDE['av1_nvenc']` 的 a=3.4 得到实测确认",
+  "summary": {
+    "pass": 0,
+    "warn": 1,
+    "fail": 2,
+    "skip": 0
+  }
+}

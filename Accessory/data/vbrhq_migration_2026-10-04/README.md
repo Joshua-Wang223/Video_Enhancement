@@ -1,5 +1,13 @@
 # vbr_hq → vbr 迁移验证证据（2026-10-04）
 
+> **⚠ 2026-10-04 二次校正（不改下文历史证据）**：本目录记录的是当时按方案 A 落地的
+> **旧口径**——CLI 追加 `-tune hq -multipass fullres`。后续 VU 侧 A/B
+> （`Plan/ffmpeg_nvenc_knowledge.md` §5.1）证明 `-tune hq` 是 ffmpeg 默认值、固定 CQ 下
+> `-multipass` **不升 VMAF**，故生产 CLI 默认已改回**裸 `-rc:v vbr -cq:v N -b:v 0 -preset p4`**，
+> 二者改为显式 opt-in（`--nvenc-tune-*` / `--nvenc-multipass-*`，唯一真源
+> `src/utils/nvenc_tuning.py`）。本目录内的命令行/产物**保持原样**作为历史证据；
+> 最新口径见 `Plan/T4_NVENC_vbr_hq移除_验证专项.md` §11。
+
 FFmpeg 9.0 移除 NVENC 的 `-rc:v vbr_hq`（及 `qvbr`）后，本项目按 **方案 A** 落地
 （只迁移 CLI token，`nvenc_sdk` 的 ctypes 路径 `rc_ptr[1]=32` 与内部 `rate_mode` 名不动）。
 本目录保存**该次落地的可复现证据与数据**，供后续方案待办（T4 标定主线 / L40 / 跨仓同步）继续利用。

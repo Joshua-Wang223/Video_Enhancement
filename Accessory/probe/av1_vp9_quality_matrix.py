@@ -100,15 +100,15 @@ _EXTRA_ARGS: Dict[str, List[str]] = {
 
 # NVENC 的**生产 rc 口径**（跨仓契约 CR-2）——探针必须与生产/harness 一致，
 # 否则 A 组的 `-cq` 结论不代表生产实际等效点：
-#   · h264/hevc → `vbr -tune hq -multipass fullres`（VE 生产 SDK 走 RC_VBR_HQ；
-#     ⚠ FFmpeg 9.0 CLI 已移除 `vbr_hq`/`qvbr`，CLI 侧迁移为官方建议的模块化组合）
-#   · av1_nvenc → plain `vbr`（VE 生产 av1 由 `vbr_hq` 降级为 `vbr`，不加 HQ 附加项）
+#   · h264/hevc → **裸 `vbr`**（FFmpeg 9.0 CLI 移除 `vbr_hq`/`qvbr` ⇒ 统一映射为 vbr；
+#     `-tune hq` 是 ffmpeg 默认值、固定 CQ 下 multipass 不升 VMAF ⇒ 均不下发）
+#   · av1_nvenc → plain `vbr`（VE 生产 av1 由 `vbr_hq` 降级为 `vbr`）
 # ⚠ 与 `Accessory/probe/calibrate_equal_quality.BASE_LOCK`、`ffmpeg_io` writer 的
-#   `_rc_v_map`/[FIX-FFMPEG9-VBRHQ] 同源；软编不用 `-rc`，qsv/amf 不在 VE 生产路径故不猜。
-# ⚠ VU 侧待同步（跨仓 CR-2 handoff）：VU 若仍下发 `-rc:v vbr_hq` 会被 FFmpeg 9.0 拒绝。
+#   `_rc_v_map` 同源；软编不用 `-rc`，qsv/amf 不在 VE 生产路径故不猜。
+# ⚠ VU 侧同步（跨仓 CR-2 handoff）：VU 若仍下发 `-rc:v vbr_hq` 会被 FFmpeg 9.0 拒绝。
 _PROD_RC: Dict[str, List[str]] = {
-    "h264_nvenc": ["-rc:v", "vbr", "-tune", "hq", "-multipass", "fullres"],
-    "hevc_nvenc": ["-rc:v", "vbr", "-tune", "hq", "-multipass", "fullres"],
+    "h264_nvenc": ["-rc:v", "vbr"],
+    "hevc_nvenc": ["-rc:v", "vbr"],
     "av1_nvenc":  ["-rc:v", "vbr"],
 }
 
@@ -470,8 +470,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         all_fail = bool(qp_rows) and all(
             x.get("ok") and x["verdict"] == "FAIL" for x in qp_rows)
         if hit:
-            ac1 = (f"表值 -qp {exp_qp} 落带内 ⇒ AC1 PASS，`_QP_MAP_OVERRIDE['av1_nvenc']` "
-                   f"的 a={exp_qp / args.ref_crf:.1f} 得到实测确认")
+            ac1 = (f"表值 -qp {exp_qp} 落带内 ⇒ AC1 PASS。该值由 quality 口径的 "
+                   f"`QUALITY_MAP_QP['av1_nvenc']`（L40 17 素材仿射标定）换算得到"
+                   f"（旧 ×3 近似已由标定表取代）")
         elif all_fail:
             ac1 = ("所有扫描点全出带 ⇒ AV1 的 -qp 与基准轴非线性，应记为「不支持」，"
                    "生产改走 -cq/VBR")
@@ -481,9 +482,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                       and x["d_psnr"] is not None and x["d_psnr"] >= -TOL_PSNR_DB]
             if inband:
                 best = min(inband, key=lambda x: abs(x["qp"] - args.ref_crf))
-                ac1 = (f"表值 -qp {exp_qp} 未落带内，落带点为 {best['qp']} ⇒ 改 "
-                       f"`_QP_MAP_OVERRIDE['av1_nvenc']` 的 a = "
-                       f"{best['qp'] / args.ref_crf:.1f}，并同步判据 G3-7 / G6-7")
+                ac1 = (f"表值 -qp {exp_qp} 未落带内，落带点为 {best['qp']} ⇒ 应更新 "
+                       f"`QUALITY_MAP_QP['av1_nvenc']`（quality 口径 QP 轴），"
+                       f"并同步判据 G3-7 / G6-7")
             else:
                 ac1 = (f"表值 -qp {exp_qp} 未落带内且无落带点 ⇒ 重扫更密的 QP 网格，"
                        f"再决定 a（不要凭单调性外推）")

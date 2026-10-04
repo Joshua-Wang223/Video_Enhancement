@@ -9,8 +9,8 @@
 `QUALITY_MAP_QP`（D2b），会被 override **永久遮蔽**——标了也不生效。
 
 改造（2026-10-04）按口径分流：
-  * **size 口径**：`_QP_MAP_OVERRIDE` → 活动表（**完全保持改造前行为**，判据 G3/G6 钉 size，
-    期望值不变 ⇒ 零侵入）；
+  * **size 口径**：`_QP_MAP_OVERRIDE` → 活动表（保持改造前行为）；
+    ⚠ 判据 `crf_cq` 的口径 2026-10-04 已由 size **迁移到 quality**（见 G3-9 仍锁 size 对照）；
   * **quality 口径**：`QUALITY_MAP_QP`（标定表）优先 → `_QP_MAP_OVERRIDE`（未标定回退）→ 活动表。
 
 本测试锁四件事（纯 CPU，不需 GPU）：

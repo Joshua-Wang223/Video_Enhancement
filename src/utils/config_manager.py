@@ -31,6 +31,9 @@ class Config:
             "validate_gpu_workers": None,
             "auto_parallel":        True,
             "max_parallel_workers": 0,
+            # [QUALITY-MODE] 全局质量换算口径（对齐 VidUtils 的 --quality-mode）：
+            #   size=等体积（SIZE_MAP，目标同文件大小）| quality=等质量（QUALITY_MAP，目标同 VMAF，默认）
+            "quality_mode":         "quality",
         },
         "paths": {
             "base_dir":    "",
@@ -68,6 +71,10 @@ class Config:
                 # v5 NVENC 码率控制（与 realesrgan 段保持一致的 vbr_hq / 8）
                 "rate_mode":       "vbr_hq",
                 "lookahead_depth": 8,
+                # [NVENC-TUNING] 显式调优轴（None = 默认不发，保持裸默认命令）
+                "nvenc_tune":      None,
+                "nvenc_multipass": None,
+                "bitrate":         None,
                 # 性能报告
                 "report_json":    None,
             },
@@ -108,6 +115,10 @@ class Config:
                 # v6 NVENC 码率控制（与 ifrnet 段保持一致的 vbr_hq / 8）
                 "rate_mode":       "vbr_hq",
                 "lookahead_depth": 8,
+                # [NVENC-TUNING] 显式调优轴（None = 默认不发，保持裸默认命令）
+                "nvenc_tune":      None,
+                "nvenc_multipass": None,
+                "bitrate":         None,
                 # v6 预览与报告
                 "preview":         False,
                 "preview_interval": 30,
@@ -132,6 +143,9 @@ class Config:
             "audio_bitrate": "192k",
             # extract_audio() 内部读取 config.get('bitrate')，与 audio_bitrate 保持一致
             "bitrate":       "192k",
+            # [NVENC-TUNING] 最终合并**视频**目标码率（None = 用质量参数）。⚠ 与上面的
+            # 音频 bitrate 区分开，故另起 video_bitrate 键。
+            "video_bitrate": None,
         },
         # [QUALITY-UNIFY] 环节① 源时间轴归一化（--normalize-source）的重编码质量
         "split": {
@@ -141,6 +155,8 @@ class Config:
             "cq":      None,
             "crf_ref": None,   # None → resolve_quality 使用默认基准 21
             "cq_ref":  None,
+            # [NVENC-TUNING] 归一化**视频**目标码率（None = 用质量参数）
+            "video_bitrate": None,
         },
         "temp_files": {
             "segment_prefix":    "segment_",
@@ -213,6 +229,10 @@ class Config:
         # 验证分段时长
         if self.config["processing"]["segment_duration"] <= 0:
             raise ValueError("分段时长必须大于0")
+        # [QUALITY-MODE] 质量换算口径
+        _qm = self.config["processing"].get("quality_mode", "quality")
+        if _qm not in ("size", "quality"):
+            raise ValueError(f"processing.quality_mode 必须是 'size' 或 'quality'（当前 {_qm!r}）")
     
     def _setup_paths(self):
         """设置和创建必要的路径"""

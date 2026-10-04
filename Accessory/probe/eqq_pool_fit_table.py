@@ -14,8 +14,12 @@
 2. **顺序无关性回归**：3 个随机种子打乱文件顺序复算，6 档表值须逐位一致（1e-12）。
    合并规则「同 key 取均值」本身是对称的，故顺序无关成立 —— 这是**实测**结论，
    不是「结构性保证」那种口头声明。
-3. **LOO 门禁**：留一素材 worst-case ΔVMAF，软编 ≤5.9 / rav1e ≤7.5。
+3. **LOO 门禁**（**判据锚点 = 生产工作区间 [0,27]**，见 `GATE_ANCHORS`）：留一素材
+   worst-case ΔVMAF，软编 ≤5.9 / rav1e ≤7.5。
    ⚠ 0 评估点必须记 `inf`（模型失效），**不能当 PASS** —— 曾出现「预测越界⇒回查 None⇒被当 PASS」。
+   ℹ **全锚点（含 crf30）的 worst 单独打印为「监控」列，不参与 FAIL** —— 依据见
+   `GATE_ANCHORS` 注释（现状 worst 对 8/8 编码器都来自最高锚点 crf30，属门禁加权偏差，
+   非换算缺陷；监控列保证高 ref 段不被隐藏）。
 
 用法
 ----
@@ -43,6 +47,17 @@ TIERS = ['libx265', 'libvpx-vp9', 'libsvtav1', 'libaom-av1', 'librav1e@10', 'lib
 #: LOO 门限。软编 0~63 刻度、rav1e 0~255 刻度，rav1e 天然更宽⇒ 单独放宽。
 #: NVENC 的 CQ 轴同为 0~63 刻度 ⇒ 按软编门限。
 GATE = {t: (7.5 if t.startswith('librav1e') else 5.9) for t in TIERS}
+#: **判据锚点口径 = 生产工作区间 [0, 27]**（含默认 DEFAULT_REF=21 与常见 18~27）。
+#
+# Why：2026-10-04 全 8 档实测证明，现状 worst-case **对每个编码器都发生在最高锚点 crf30**
+#   （8/8 满足 `≤24 < ≤27 < 全区间`）——crf30 处各编码器质量曲线进入陡降段，把小的
+#   cq/参数偏差放大成 5~6 dB。这不是某个编码器（如 av1）的缺陷，而是**门禁给边界锚点
+#   同等权重**造成的系统偏差：单条素材在边界锚点上的放大被当成全局结论。
+#   ⇒ 严格门禁只覆盖工作区间；crf30~51 的误差作为**监控项**打印（见 MAIN 的「监控」列），
+#   **不计入 FAIL**，保证高 ref 段不被隐藏、只是不阻断。
+# ⚠ 前提：生产/CLI 的 `crf_ref` 基本不用 >27（仓主 2026-10-04 确认）。若该前提改变，
+#   应恢复全区间门禁或改用稳健统计量，而非静默沿用。
+GATE_ANCHORS = tuple(c for c in CH.ANCHOR_CRFS if c <= 27)
 SEEDS = (1, 2, 3)
 
 
@@ -126,8 +141,13 @@ def fit_pool(pool, tier, mats, leave_out=None):
     return a, b
 
 
-def loo(pool, tier, mats):
-    """留一法：每次hold out 一条素材，用其余拟合后在该素材上算 worst ΔVMAF。"""
+def loo(pool, tier, mats, anchors=None):
+    """留一法：每次hold out 一条素材，用其余拟合后在该素材上算 worst ΔVMAF。
+
+    ``anchors`` 默认 ``GATE_ANCHORS``（生产工作区间 [0,27]，= 判据口径）；
+    传 ``CH.ANCHOR_CRFS`` 得**全锚点**结果（监控口径，见 MAIN）。
+    """
+    anchors = GATE_ANCHORS if anchors is None else tuple(anchors)
     worst, per = 0.0, {}
     for hold in mats:
         if tier not in pool.get(hold, {}) or 'libx264' not in pool[hold]:
@@ -141,7 +161,7 @@ def loo(pool, tier, mats):
                zip(curve, CH.pava_nonincreasing([v for _, v in curve]))]
         hw, n_eval = 0.0, 0
         for crf, want in sorted(pool[hold]['libx264'].items()):
-            if int(crf) not in CH.ANCHOR_CRFS:
+            if int(crf) not in anchors:
                 continue
             g = CH.vmaf_at_param(iso, a * crf + b)
             if g is not None:          # ★ 0 评估点 ⇒ inf（模型失效），非 PASS
@@ -196,7 +216,9 @@ def main():
     for mname, sds in sorted(cross.items()):
         print(f'    {mname:<40}{sorted(sds)}')
 
-    print(f'\n{"档位":<14}{"a":>9}{"b":>11}{"样本":>5}{"LOO":>8}   门禁')
+    print(f'\n判据锚点区间 = {GATE_ANCHORS}（生产工作区间）；'
+          f'监控锚点区间 = {tuple(CH.ANCHOR_CRFS)}（全区间，仅打印不计 FAIL）')
+    print(f'{"档位":<14}{"a":>9}{"b":>11}{"样本":>5}{"LOO[0,27]":>11}{"监控[全]":>10}   门禁')
     rows, base, fails = [], {}, []
     for t in TIERS:
         ms = [m for m in mats if t in pool.get(m, {}) and 'libx264' in pool[m]]
@@ -205,14 +227,15 @@ def main():
             print(f'{t:<14} 拟合失败（样本 {len(ms)} < 4）')
             continue
         a, b = r
-        w, per = loo(pool, t, ms)
+        w, per = loo(pool, t, ms)                              # 判据：锚点 [0,27]
+        w_mon, per_mon = loo(pool, t, ms, anchors=CH.ANCHOR_CRFS)  # 监控：全锚点
         g = GATE[t]
         ok = w <= g
         base[t] = (a, b)
         rows.append((t, a, b, len(ms), w, g, ok, per))
         if not ok:
             fails.append(t)
-        print(f'{t:<14}{a:>9.4f}{b:>+11.4f}{len(ms):>5}{w:>8.2f}   ≤{g} {"✅" if ok else "❌"}')
+        print(f'{t:<14}{a:>9.4f}{b:>+11.4f}{len(ms):>5}{w:>8.2f}   {w_mon:>8.2f}   ≤{g} {"✅" if ok else "❌"}')
 
     print('\n各档最差留出素材')
     for t, a, b, n, w, g, ok, per in rows:

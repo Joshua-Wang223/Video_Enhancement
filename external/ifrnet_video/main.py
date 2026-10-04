@@ -545,6 +545,11 @@ class IFRNetVideoProcessor(TensorRTAccelMixin):
         encode_preset:    str  = 'medium',
         rate_mode:        str  = _NVENC_LEVEL1_RATE_MODE,
         lookahead_depth:  int  = _NVENC_LEVEL1_LOOKAHEAD,
+        # [NVENC-TUNING] 显式调优轴 + 目标码率（None = 默认不发，保持裸默认命令；
+        # 仅作用于 ffmpeg_io 回退路径，SDK Level 1 直通路径不读这三项）。
+        nvenc_tune:       Optional[str] = None,
+        nvenc_multipass:  Optional[str] = None,
+        bitrate:          Optional[str] = None,
         hevc_la_disable:  bool = True,
         prefetch_event_sync: bool = True,
         keep_audio:       bool = True,
@@ -577,6 +582,10 @@ class IFRNetVideoProcessor(TensorRTAccelMixin):
         self.encode_preset   = encode_preset
         self._rate_mode      = rate_mode          # 实例级 rate_mode（可被 processor 层覆盖模块常量）
         self._la_depth       = lookahead_depth    # 实例级 lookahead 深度
+        # [NVENC-TUNING] 透传给 FFmpegWriter（回退路径）
+        self._nvenc_tune      = nvenc_tune
+        self._nvenc_multipass = nvenc_multipass
+        self._bitrate         = bitrate
         # [P0/P1] 安全修复开关透传。
         self.hevc_la_disable     = hevc_la_disable
         self.prefetch_event_sync = prefetch_event_sync
@@ -1422,6 +1431,10 @@ class IFRNetVideoProcessor(TensorRTAccelMixin):
                 # 旧实现 Level 2 恒用模块常量 _NVENC_LOOKAHEAD_VBR，
                 # --lookahead-depth-ifrnet 只对 SDK Level 1 生效（两侧不一致）。
                 lookahead_depth  = getattr(self, '_la_depth', None),
+                # [NVENC-TUNING] 显式调优轴 + 目标码率（仅回退路径生效）
+                nvenc_tune       = getattr(self, '_nvenc_tune', None),
+                nvenc_multipass  = getattr(self, '_nvenc_multipass', None),
+                bitrate          = getattr(self, '_bitrate', None),
             )
         # [FIX-NVENC-AWARE] 保存实际使用的编码器，供段后诊断代码使用
         self._last_used_codec = use_codec

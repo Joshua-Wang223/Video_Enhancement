@@ -16,8 +16,9 @@
 > - **QP 轴（T4-3/4）**：17 素材 `--axis qp` 标定 → `QUALITY_MAP_QP['h264_nvenc']=(0.9704, 1.4767)`
 >   LOO 3.47、`['hevc_nvenc']=(1.1083, -2.9183)` LOO 3.72（仅 VE，D2b）。
 > **CR-1/CR-2 均已收口**；CR-2 因 FFmpeg 9.0 移除 `vbr_hq`/`qvbr` **二次修订**为 CLI/harness
-> `vbr -tune hq -multipass fullres`（SDK 路径不动）——见 §4.1/§12.5 与
-> `Plan/T4_NVENC_vbr_hq移除_验证专项.md`。VU 侧已重新同步。
+> **裸 `vbr`**（`-tune hq` 是默认值、固定 CQ 下 multipass 不升 VMAF ⇒ 二者改为显式 opt-in；
+> SDK 路径不动）——见 §4.1/§12.5 与
+> `Plan/T4_NVENC_vbr_hq移除_验证专项.md`（§11 二次校正）。VU 侧已重新同步。
 
 ---
 
@@ -135,15 +136,15 @@ BASE_LOCK = {
     ...
     # ✅ CR-1（preset）已收口：统一 **p4**（以 VE 的 E5 为准）。
     # ✅ CR-2（rate control）已裁定（路线 B；2026-10-04 因 FFmpeg 9.0 更新）：
-    #   · h264/hevc → **`-rc:v vbr -tune hq -multipass fullres`**
-    #     ⚠ FFmpeg 9.0 CLI 移除 `vbr_hq`/`qvbr`（-rc 只剩 constqp/vbr/cbr；传 vbr_hq 报
-    #       `Unable to parse "rc" option value`，rc=234）。旧口径 `-rc:v vbr_hq` 作废。
+    #   · h264/hevc → **裸 `-rc:v vbr`**（FFmpeg 9.0 移除 vbr_hq/qvbr；`-tune hq` 是默认值
+    #     写了等于没写、固定 CQ 下 multipass 不升 VMAF ⇒ 均**不下发**，见 knowledge §5.1）。
+    #     ⚠ 2026-10-04 二次校正（原为 `vbr -tune hq -multipass fullres`）；
+    #       `-tune`/`-multipass` 改为显式 opt-in（`--nvenc-tune-*`/`--nvenc-multipass-*`）。
     #       VE SDK 侧内部仍走 RC_VBR_HQ(32)——T4 实测驱动 13.0 仍接受，故仅 CLI/harness 迁移。
     #   · av1_nvenc 的 `-rc` 只接受 constqp/vbr/cbr ⇒ **plain `vbr`**（与 VE 生产降级口径一致）。
-    #   ⚠ VU 侧待同步（handoff）：VU 生产/harness/探针若仍下发 `-rc:v vbr_hq` 会被 FFmpeg 9.0
-    #     拒绝 ⇒ 需同步改 `vbr -tune hq -multipass fullres`，否则共享 QUALITY_MAP 的 ⑨ 组变红。
-    'h264_nvenc': ['-rc:v', 'vbr', '-tune', 'hq', '-multipass', 'fullres', '-b:v', '0', '-preset', 'p4'],
-    'hevc_nvenc': ['-rc:v', 'vbr', '-tune', 'hq', '-multipass', 'fullres', '-b:v', '0', '-preset', 'p4'],
+    #   ⚠ VU 侧同步（handoff）：VU harness/探针应保持裸 `-rc:v vbr`，否则 ⑨ 组变红。
+    'h264_nvenc': ['-rc:v', 'vbr', '-b:v', '0', '-preset', 'p4'],
+    'hevc_nvenc': ['-rc:v', 'vbr', '-b:v', '0', '-preset', 'p4'],
     'av1_nvenc':  ['-rc:v', 'vbr',    '-b:v', '0', '-preset', 'p4'],
 }
 QUALITY_FLAG = {..., 'h264_nvenc': '-cq:v', 'hevc_nvenc': '-cq:v', 'av1_nvenc': '-cq:v'}
@@ -220,12 +221,11 @@ def _qp_model(codec, table=None):
 > 的三分支形式 —— 那会让 **size 口径的软编也读 `QUALITY_MAP_QP`**，破坏判据 G3/G6 的
 > 「零侵入」。**以本节为准**。
 
-**为什么安全（已实测验证）**：`crf_cq_unification_verify.py:513` 显式 `set_quality_mode("size")`
-⇒ G3-1/G3-2/G3-7 仍走 `_QP_MAP_OVERRIDE`、**期望值不变**；生产默认 `quality` 口径用标定值。
-**当前表下该改造是恒等变换**（`QUALITY_MAP_QP` 尚无 NVENC 行）——已用「旧模块(HEAD) vs 新模块」
-全矩阵对比验证：`2 模式 × 20 编码器 × 17 值 = 680 组` **逐位一致**；并验证前向兼容
-（注入 NVENC 行后 quality 生效、size 不变）。回归测试：
-`Accessory/test/test_quality_map_qp_mode.py`（4 例）。
+**为什么安全（已实测验证）**：`_qp_model()` 按口径分流后，size 口径仍走 `_QP_MAP_OVERRIDE`
+（不受 `QUALITY_MAP_QP` 影响），quality 口径走标定表。⚠ 判据口径已于 2026-10-04 由 size
+**迁移到 quality**（见 §13.3 后续注），故 G3 期望值随之更新为 quality 值。
+（历史：迁移前该改造是**恒等变换**，已用「旧模块(HEAD) vs 新模块」全矩阵对比 `2 模式 × 20
+编码器 × 17 值 = 680 组`逐位一致验证。）回归测试：`Accessory/test/test_quality_map_qp_mode.py`。
 
 ⚠ **同步复核独立期望值**：若标定后 `QUALITY_MAP_QP['h264_nvenc']` 在基准轴 21 处
 不等于 21（即 a≠1.0 或 b≠0），须同步：
@@ -537,7 +537,8 @@ harness `BASE_LOCK`、探针 `NVENC_PRESET='p4'`、README/基线同步）。残�
 **CR-2 二次更新（2026-10-04，FFmpeg 9.0 实测后）**：FFmpeg 9.0.2 **CLI 移除 `vbr_hq` 与
 `qvbr`**（`-rc` 只剩 constqp/vbr/cbr；传 vbr_hq 报 `Unable to parse "rc" option value`，rc=234）
 ⇒ 上面「harness `-rc:v vbr_hq`」口径在 FFmpeg 9.0 上不可运行，必须迁移：
-- **VE CLI/harness/探针**：h264/hevc 改 **`-rc:v vbr -tune hq -multipass fullres`**
+- **VE CLI/harness/探针**：h264/hevc 改 **裸 `-rc:v vbr`**（2026-10-04 二次校正；
+  `-tune`/`-multipass` 改为显式 opt-in，见 `Plan/ffmpeg_nvenc_knowledge.md` §5.2）
   （`calibrate_equal_quality.BASE_LOCK`、`av1_vp9_quality_matrix._PROD_RC`、
   `crf_cq_unification_verify` 的 `enc_nvenc`/G6 期望）；av1 保持 plain `vbr`。
   生产 writer `ffmpeg_io` 的 `_rc_v_map`/`_NVENC_RC_MAP` 同步（[FIX-FFMPEG9-VBRHQ]）。
@@ -545,7 +546,7 @@ harness `BASE_LOCK`、探针 `NVENC_PRESET='p4'`、README/基线同步）。残�
   钳制（vbr_hq/constqp/qvbr 输出互异）⇒ 生产快路径逐字节不变（见
   `Plan/T4_NVENC_vbr_hq移除_验证专项.md`）。
 - **VU 必须重新同步**：VU 生产/harness/探针/`t4_acceptance` A4 的 `-rc:v vbr_hq` 同样会被
-  FFmpeg 9.0 拒绝 ⇒ 需同步改 `vbr -tune hq -multipass fullres`，否则共享 `QUALITY_MAP` 的
+  FFmpeg 9.0 拒绝 ⇒ 需同步改**裸 `vbr`**，否则共享 `QUALITY_MAP` 的
   ⑨ 组跨仓一致性变红（handoff，本仓无法代改）。
 
 ---
@@ -570,7 +571,8 @@ FFmpeg 9.0.2。Gate 0：`h264_nvenc` rc=0、`hevc_nvenc` rc=0、`av1_nvenc` rc=1
 
 ### 13.3 标定结果（17 素材，锚点 18/21/24/27/30，`n_subsample=1`，720p prep）
 
-**CQ 轴**（`-rc:v vbr -tune hq -multipass fullres -cq:v`，落 `QUALITY_MAP`）：
+**CQ 轴**（`-rc:v vbr -cq:v`，落 `QUALITY_MAP`；标定时命令带 `-tune hq -multipass fullres`，
+⚠ 2026-10-04 二次校正后默认改为裸命令，Δ≤0.11 VMAF 在 LOO 噪声内 ⇒ **不重标**）：
 
 | 档位 | a | b | 样本 | LOO | 门禁 |
 |---|---|---|---|---|---|
@@ -585,8 +587,11 @@ FFmpeg 9.0.2。Gate 0：`h264_nvenc` rc=0、`hevc_nvenc` rc=0、`av1_nvenc` rc=1
 | `hevc_nvenc` | 1.1083 | -2.9183 | 17 | 3.72 | ≤5.9 ✅ |
 
 > 两轴**非同一刻度**（QP 轴 a≠1、b≠0）⇒ 落表后 `to_constqp_qp` 的 **quality 口径**输出改变
-> （h264 CQ26→QP22、hevc CQ28→QP23、h264 QP0→1）。判据 G3/G6/G7 均**钉 size 口径**
-> （`load_quality_map` 内 `set_quality_mode("size")`）⇒ 期望值不变、零回归。
+> （h264 CQ26→QP22、hevc CQ28→QP23、h264 QP0→**0**〔无损短路，两口径一致〕）。
+> ⚠ **2026-10-04 B1 迁移**：判据 `crf_cq_unification_verify` 的口径由 size **改为 quality**
+> （`load_quality_map` 内 `set_quality_mode("quality")`），使**门禁口径 == 生产默认口径**；
+> 相应更新 G1-2/G2/G3/G6 期望值（并新增 G6-18/19 锁"生产无损硬编码 `-qp 0`"、G3-9 反向锁 size 对照）。
+> 迁移前是「判据钉 size ⇒ 期望值不变」；迁移后条数 104（CPU）/113（GPU）全绿。
 
 ### 13.4 门禁与验证（全绿）
 

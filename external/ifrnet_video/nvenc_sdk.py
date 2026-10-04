@@ -1044,7 +1044,8 @@ class NVENCEncoder:
         else:
             # ⚠ 未知 rate_mode 会**静默落 CONSTQP**（本分支即兜底）。
             # [PLAN-B-CANDIDATE] FFmpeg 9.0 CLI 已移除 vbr_hq/qvbr（见 ffmpeg_io.py 的
-            #   [FIX-FFMPEG9-VBRHQ]）。CLI 侧已迁移为 `vbr -tune hq -multipass fullres`；
+            #   [FIX-FFMPEG9-VBRHQ]）。CLI 侧默认已迁移为**裸 `vbr`**
+            #   （`-tune hq`/`-multipass` 是显式 opt-in，见 Plan/ffmpeg_nvenc_knowledge.md §5.2）；
             #   SDK 侧仍写 rc_ptr[1]=32（NV_ENC_PARAMS_RC_VBR_HQ）——T4 实测驱动 13.0
             #   仍接受该值且行为非静默钳制（vbr_hq/constqp/qvbr 三者输出互异），
             #   故**方案 A 不改本文件**。
