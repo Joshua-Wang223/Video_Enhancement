@@ -29,3 +29,28 @@ type: project
   4. 删除用**字节级操作**（`open(...,'rb')` + 按行号删 ASCII 标记行），不经 shell 管道处理中文；写后校验 UTF-8 严格解码成功、`\ufffd` 计数为 0、无 `?{2,}` 串。
   5. 覆盖后 `diff -r` 必须报逐字节一致，并核对两侧文件数相等（本例 116/116）。
 - ⚠️ 结论：**「上次同步过」不代表现在同步**；批量改 memory 后一律按上面 5 步走，别无条件 `cp -a A/. B/`。
+
+## 2026-10-04 补充：`cp -a A/. B/` 的风险范围比上面写的更窄（澄清一条会误伤的规则）
+
+上面第19 行写「别无条件 `cp -a A/. B/`」。本轮实测把这条**收窄**，避免它被当成"任何情况下都不能用"：
+
+- **`cp -a A/. B/` 不会删除 B 侧任何文件** —— 它只覆盖**同名**文件。B 独有的文件会原样存活。
+  ⇒ 「仅 B 有」的文件**不会**被 `cp -a` 抹掉，先合并的义务只针对**同名且内容分叉**的文件。
+- 判别命令（`rsync` 未装时用）：`comm -13 <(cd A && ls -1|sort) <(cd B && ls -1|sort)` 得仅 B 有，
+  `comm -23 ...` 得仅 A 有；**再对同名文件跑 `diff -rq`** 才知道有无内容分叉（本轮`diff -rq` 报的3 个差异全是"仅 B 有"的文件，**不是**同名分叉）。
+- 本轮实测量：A仅 9 个 / B 仅 3 个；处置 = 先只同步自己改的那个文件并 `diff` 确认逐字节一致，
+  再 `cp -a "$A/." "$B/"` 补齐 A 侧全部（**不删 B 侧**），最后把"B 仍独有的 3 个文件"列给用户裁定。
+  ⚠️ 这 3 个是别处写入未回流到仓库的记忆（其中 `ffmpeg9-vbrhq-removal-impact.md` 与 A 侧
+  `ffmpeg9-vbr_hq-removal-impact.md` **疑似改名前后两名**，内容不同）——**改名残留**判定见
+  [GitHub 推送流程](github-push-workflow-and-secrets.md)一节，**别单凭"内容不同"就断定谁废弃**。
+
+### 本容器（WSL/开发侧）的 A/B 实际路径与文档不一致
+
+文档里写的 A=`/workspace/Video_Enhancement/memory`、B=`/root/.codebuddy/projects/workspace-Video_Enhancement/memory`
+在本容器**都不存在**。实测本容器是：
+
+- **A（canonical，仓库内）** = `/mnt/d/Workspace_Python/Video_Enhancement/memory`
+- **B（会话侧镜像）** = `/home/administrator/.codebuddy/projects/mnt-d-Workspace_Python-Video_Enhancement/memory`
+
+⇒ **动手前先 `ls -d` 确认两侧真实存在**，别照抄文档路径（照抄会误判成"镜像丢了"）。
+判定纪律不变：**以 A 为准、双侧逐字节复核**。

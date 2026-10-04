@@ -6,6 +6,17 @@ type: project
 
 ## 推送入口
 
+⚠ **推送前先查远程是否已有该内容**（2026-10-04 教训）。提交/推送 memory 等文件前，先
+`git ls-remote origin refs/heads/main`（或 `git log origin/main`）确认远程**没有**更新的版本，
+再决定是否 commit + push。
+**Why**：并发会话可能已推送更新，本地基于旧 base 的提交会制造冲突甚至覆盖远程更新。实例：本地提交了
+`memory/t4-vbrhq-verification-plan.md` 的旧版（Gate 0 初期结果），push 被拒；fetch 后发现远程已有
+更完整版本（`e9ed1d1`，含 T4 实测 V8–V15 全结果），本地提交完全冗余。
+**How to apply**：① 先 `ls-remote` 对比本地 HEAD 与远程；② 若远程已有更新，先 `fetch` + `rebase`
+（或本地提交确属冗余/过期时直接 `reset --hard origin/main`）；③ 特别提醒：`memory/MEMORY.md` 索引
+与具体 memory 文件要**一同**检查，索引易与文件不同步。本机网络拉取极慢（2–8 KiB，300 对象 ≈ 1h+），
+**先确认是否真的需要拉取**再 fetch。
+
 工作区 `/workspace/Video_Enhancement` **本身就是一个普通 git 仓库**（origin 已配好 SSH），日常直接 `git commit` + `git push origin main` 即可（2026-09-23 实测可用）。仓库根另有 `force_push_github.sh`，用于「拿某个环境的**完整工作区内容**全量覆盖远程」这条路（会 `read-tree --empty` 重建索引，见下方治理文件一节）：
 
 ```bash

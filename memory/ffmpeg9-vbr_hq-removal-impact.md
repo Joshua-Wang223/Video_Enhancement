@@ -8,6 +8,11 @@ type: project
 
 FFmpeg 9.0 移除 `vbr_hq` 速率控制模式（NVIDIA SDK 10.0+ 已废弃 `NV_ENC_PARAMS_RC_VBR_HQ` mode=32）。迁移路径：`-rc vbr -tune hq -multipass fullres`。
 
+⚠ **环境细节**（2026-10-03 记录，曾使「头文件是否还留着枚举」这一判断易被搞错）：本项目 FFmpeg **9.0.2**
+是用 `libffmpeg-nvenc-dev 12.1.14.0` 编译的 ⇒ 头文件里的 VBR_HQ 常量（32/0x20）与实际驱动行为
+**不是同一层**。V12 实测已定性：头文件删枚举（13.0/13.1）但**驱动运行时仍接受 32** ⇒ 判定必须
+分「头文件层」与「驱动层」两处分别实测，不能由其中一处推断另一处。
+
 项目有**两条编码路径**依赖 `vbr_hq`：
 - **Level 2 FFmpeg CLI**（`ffmpeg_io.py`）：下发 `-rc:v vbr_hq` → FFmpeg 9.0 直接报错 `Specified rc mode is deprecated`
 - **Level 1 SDK ctypes**（`nvenc_sdk.py`）：`rc_ptr[1] = 32` → 取决于驱动/SDK版本，可能仍接受但已 deprecated
