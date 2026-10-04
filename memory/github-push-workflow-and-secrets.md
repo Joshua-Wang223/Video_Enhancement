@@ -295,3 +295,25 @@ WSL 侧（`/mnt/d/Workspace_Python/Video_Enhancement`，与 Windows `D:\...` 是
 2. 推送 pack 过大（>2GiB）先查 `git rev-list --objects <base>..HEAD` 里的大 blob（本次元凶：`benchmark_output/*.mp4`），
    别急着 force；
 3. 被丢弃的旧提交仍在 reflog/objects（含 6.76GiB），确认无误后可 `git gc --prune=now` 回收。
+
+## 2026-10-04 补充：只推 `memory/` 时的「改动集合完整性 + 引用有效性」核实
+
+memory 增量是纯文档、无密钥/大文件风险，但**「看着只有4 个文件改了」不等于改动集合就是这 4 个** ——
+默认 `git status` 会漏掉被 ignore 的路径，漏了就永远不入库：
+
+```bash
+git status --short --untracked-files=all --ignored -- memory/ Plan/   # 未跟踪 + 被忽略都要看
+git ls-remote origin refs/heads/main; git rev-parse HEAD             # 期望相等 = 无分叉，可 fast-forward
+diff -r "$A" "$B" && echo "✅ 内容一致"                              # 文件集合一致也不够，见 memory-write-discipline
+comm -13 <(cd "$A" && ls -1|sort) <(cd "$B" && ls -1|sort)           # 仅 B 有（改名残留嫌疑）
+```
+
+**推送前还要核实「记忆里引用的路径真实存在」**——记忆最常见的腐化形式不是内容错、而是
+`file:line` / 文档路径指向已改名或从未入库的对象。2026-10-04 实测：一条记忆引用
+`Plan/PROMPT_L40_AV1等质量标定专项执行方案.md §9.5`，`ls` + `grep -n` 确认文件在库、章节确在 :337 行
+（`Plan/` 已跟踪 31 个文件）⇒ 该引用可入库；若不核实就推，下个会话会照着不存在的路径去找。
+同源纪律见 [写总览类文档要当轮核对](feedback_verify_doc_claims_before_writing.md)。
+
+**How to apply**：A/B 同步必须**先于** commit+push 完成（顺序：同步 → `diff -r` → commit → push → `ls-remote` 复核），
+否则推上去的版本与 B 侧不一致，下个会话读到过期记忆；这条与
+[多写入方纪律](memory-write-discipline.md) 的「同步后跑索引双向校验」配套。

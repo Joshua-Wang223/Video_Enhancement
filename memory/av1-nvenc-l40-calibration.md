@@ -111,4 +111,13 @@ type: project
 - ⚠ **只跑 constqp 不足以判读**，必须 `constqp,vbr` 同素材对照，才能区分「constqp 特有」与「长跑时间相关项」。
 - 读数判读表（方案 §9.5 有完整版）：子正主零=ffmpeg 子进程累积；主+子同正且 PSS 同步涨=主进程真泄漏；
   主正但 PSS 不涨=CUDA 上下文/共享页虚高（**降级判据，别急着改管线**）；两者≈0 但峰值超上界=段切换清理问题。
+- **方案文档已定稿待办章节**：`Plan/PROMPT_L40_AV1等质量标定专项执行方案.md` **§9.5**
+  「下次上机待办（T4/L40 通用，按优先级）」含A~E 清单 + 一条命令 + 上述判读表；
+  §0 状态已改为「执行完毕并落表；S8 遗留的无 GPU 准备已完成」，§5.4/§10 命令已带
+  `--mem-interval 5 --mem-dump-dir /tmp/s8_mem`。
+- **本专项的验证基线（别当回归）**：本容器（无 GPU 无 cv2）实测
+  `plan_implementation_gate` **84 项/ 0 失败**（4 WARN / 5 SKIP 为环境性）、
+  `crf_cq_unification_verify --quick --no-gpu` **PASS=51 / FAIL=3**，
+  那 3 个 FAIL 全部是 `ModuleNotFoundError: No module named 'cv2'` ⇒ **缺 cv2 的既有环境问题**，
+  与改动无关；已用 `git stash` 对比确认与改动前逐项一致。
 
