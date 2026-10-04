@@ -9,7 +9,7 @@ type: project
 **事实（已落地）**
 - **CQ 轴**：`QUALITY_MAP['av1_nvenc'] = (1.4566, 1.2165, 0, 63)`（**本会话按 VE 规范化池
   `points/gpu_l40_cq` 落表**；此前为并行会话/VU 的 `(1.4573, 1.1022)`，无法由任何 VE 池复现）
-  → crf21 = `-cq:v 32`（与旧值相同，功能无差异）。⚠ 该行需 VU 同步恢复 ⑨（handoff §1）。
+  → crf21 = `-cq:v 32`（与旧值相同，功能无差异）。✅ VU 已同步（VU `ee3bfd9`），⑨ 恢复。
 - **QP 轴**：本会话落 `QUALITY_MAP_QP['av1_nvenc'] = (7.9338, -97.5136, 0, 255)`（LOO 3.64）→ crf21→69、crf30→141。**取代** `_QP_MAP_OVERRIDE` 的 ×3。
 - **门禁同步**（`Accessory/verify/crf_cq_unification_verify.py`）：G1-2 av1 `-cq:v 32`；G3-7 → CQ32→QP70；G6-7/G6-8 `-qp 70`；G6-9/G6-10 `-cq:v 32`；G3-9（size 口径）仍 63 不变。探针 AC1 结论文案改指 `QUALITY_MAP_QP`。
   ⚠ **CQ 行的 b 会经 `to_x264_crf` 往返影响 QP 期望**：旧 b(1.1022)→71、新 b(1.2165)→70。
@@ -22,8 +22,9 @@ type: project
 - "增加素材"（bootstrap n=4..16，中位 6.30→6.21 **平台**）与"改模型形态"（仿射 6.41 / 二次 **6.80 更差** / 幂 6.18）**均无效**。
 - 属 memory `equal-quality-loo-model-form-failure.md` 同类结构性上限。
 
-**跨仓（CR-4）**
-- CQ 行两仓同源 ✅；**QP 轴分叉**：VU 用 `_QP_SCALE['av1_nvenc']=3`（仅 ref21 验证），VE 用仿射表。
+**跨仓（CR-4）· 已闭环（2026-10-04）**
+- VU 已全套对齐：CQ 行 → `(1.4566,1.2165)`（`ee3bfd9`）；quality 口径 QP 改仿射 `_QP_AFFINE_QUALITY['av1_nvenc']=(7.9338,-97.5136)`（`e32d71c`）；LOO 门禁锚点钉 `[0,27]`（`2e9f50d`）。
+- 两仓共享行**逐条相等**（含 SIZE_MAP / QUALITY_MAP native / h264,hevc,av1 CQ / h264,hevc,av1 QP 仿射）；VU 侧有 CR-4 相等性断言。
 - 高 ref 差异：×3 残差 crf24 −20 / crf27 −37 / crf30 −51。已写 handoff：`VidUtils/Plan/CR-4_av1_QP轴_handoff_VE_to_VU_20261004.md`。
 
 **执行坑（本轮新踩，复用时必看）**
