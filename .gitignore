@@ -8,6 +8,7 @@ __pycache__/
 .idea/
 .trt_cache/
 .t2_cache/
+.workbuddy/
 _bak*
 *.bak*
 *_bak*
