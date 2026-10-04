@@ -1012,13 +1012,19 @@ def group_constqp(ctx: Ctx, v: Verifier) -> None:
 
     v.add("G3-3", "CONSTQP", "未知编码器原样返回（不猜测）",
           Status.PASS if Q.to_constqp_qp("no_such_codec", 26) == 26 else Status.FAIL)
-    # [B1] quality 口径：仿射模型 a·ref+b 不过原点 ⇒ QP=0 输入映射为 1（size 口径为 0）。
-    #   生产**无损**不走此函数，而走 writer 的 crf==0 独立分支硬编码 `-rc constqp -qp 0`
-    #   （行为断言见 G6-18/G6-19）——故此处只锁"函数行为"，真契约由那两条守。
-    _q0 = Q.to_constqp_qp("h264_nvenc", 0)
-    v.add("G3-4", "CONSTQP",
-          "quality 口径 QP=0→1（仿射不过原点；生产无损由 crf==0 分支硬编码，见 G6-18/19）",
-          Status.PASS if _q0 == 1 else Status.FAIL, detail=f"QP={_q0}（期望 1）")
+    # [FIX-QP-LOSSLESS] 无损语义优先：value==0 ⇒ QP=0，size/quality 两口径一致
+    #   （生产无损另由 writer 的 crf==0 分支硬编码 `-rc constqp -qp 0`，见 G6-18/19）。
+    _q0q = Q.to_constqp_qp("h264_nvenc", 0)
+    _prev0 = Q.get_quality_mode()
+    try:
+        Q.set_quality_mode("size")
+        _q0s = Q.to_constqp_qp("h264_nvenc", 0)
+    finally:
+        Q.set_quality_mode(_prev0)
+    v.add("G3-4", "CONSTQP", "无损 QP=0 恒等保持 0（size 与 quality 两口径一致）",
+          Status.PASS if (_q0q == 0 and _q0s == 0) else Status.FAIL,
+          detail=f"quality={_q0q} size={_q0s}（均应为 0）",
+          evidence=["[FIX-QP-LOSSLESS] to_constqp_qp 对 value==0 短路返回 0"])
     # [QUALITY-MODE][B1] size（等体积，**非默认**）口径的对照——本门禁默认 quality，
     #   此处临时切 size 校验另一口径（生产可用 --quality-mode 自由切换），再复位。
     _prev_qm = Q.get_quality_mode()
@@ -1609,8 +1615,8 @@ def group_emit(ctx: Ctx, v: Verifier) -> None:
          [("-rc:v", "constqp"), ("-qp", "22"), ("-tune", "ll")],
          [("-multipass", None), ("-cq:v", None)],
          {"tune": "ll", "multipass": "fullres"}),
-        # [B1] 生产**无损**（crf==0）走 writer 的独立分支，硬编码 `-rc constqp -qp 0`，
-        #   不经 to_constqp_qp（故 quality 口径的 QP=0→1 不影响生产无损）。这两条即该契约的守卫。
+        # [B1] 生产**无损**（crf==0）走 writer 的独立分支，硬编码 `-rc constqp -qp 0`
+        #   （`to_constqp_qp` 对 value==0 也短路返回 0，见 G3-4；本两条是 writer 侧守卫）。
         ("G6-18", "IFRNet", "ifrnet_video", "h264_nvenc", 0, "vbr_hq", 0,
          [("-rc", "constqp"), ("-qp", "0")], [("-cq:v", None)], {}),
         ("G6-19", "ESRGAN", "realesrgan_video", "h264_nvenc", 0, "vbr_hq", 0,

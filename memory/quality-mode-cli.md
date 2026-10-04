@@ -25,8 +25,9 @@ VE 生产（`src/main_video_optimized.py`）2026-10-04 新增 `--quality-mode {s
   G3-1 21→22、G3-2 20→23、G6-2/5/17 `-qp 21`→22）。`verify_equal_quality` 本就用 quality。
 - **覆盖闭环**：G6-1x 锁命令**形状**（口径无关）+ G3-1/G3-2 锁 quality 数值；
   **G3-9** 反向锁 **size 对照**（h264 CQ26→21 / hevc CQ28→20 / av1→63，临时切 size 后复位）。
-- ⚠ `to_constqp_qp(codec, 0)` 在 quality 口径返回 **1**（仿射模型不过原点）⇒ 原 G3-4「QP=0 保持 0」
-  已改为「quality 下 QP=0→1」，**生产无损契约改由新断言 G6-18/19 守**（writer 的 `crf==0` 分支
-  硬编码 `-rc constqp -qp 0`，不经该函数）。G6-18/19 已反向校验（扰动无损分支 → FAIL）。
+- ✅ **无损语义优先（`[FIX-QP-LOSSLESS]`）**：`to_constqp_qp(codec, 0)` 在 **size 与 quality 两口径
+  均恒返回 0**（函数对 `value==0` 短路，不受仿射模型 `a·ref+b` 不过原点影响）⇒ G3-4 断言
+  「quality=0 size=0」。生产无损另由 writer 的 `crf==0` 分支硬编码 `-rc constqp -qp 0`（**不经该函数**），
+  由 **G6-18/19** 守卫（已反向校验：扰动无损分支 → FAIL）。
 - 顺带修掉 `quality_map.py` 里"默认 `size`"的过期注释（真源 `convert_crf._QUALITY_MODE='quality'`）；
   `--quality-mode` 可随时在两口径间切换（生产默认仍 quality）。

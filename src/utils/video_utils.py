@@ -1133,9 +1133,10 @@ def add_audio_to_video(video_path: str, audio_path: str,
 
         else:
             # 默认设置：复制视频
+            # [FIX-FFMPEG9-VSYNC] FFmpeg 9.0 移除 `-vsync` ⇒ 用等价 `-fps_mode passthrough`
             cmd.extend([
                 '-c:v', 'copy',
-                '-vsync', 'passthrough'
+                '-fps_mode', 'passthrough'
             ])
         
         cmd.extend([

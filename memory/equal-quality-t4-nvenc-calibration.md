@@ -21,9 +21,10 @@ type: project
 - ⚠ **口径与门禁（B1，2026-10-04 迁移）**：`crf_cq_unification_verify.load_quality_map()` 现钉
   **`set_quality_mode("quality")`**（原为 size）⇒ **门禁口径 == 生产默认口径**；相应更新
   G1-2/G2/G3/G6 期望（hevc 28→26、svtav1 24→29、vp9 28→26、rav1e 66→64；G3-1 21→22、G3-2 20→23、
-  G6-2/5/17 `-qp 21`→22）。quality 口径 `to_constqp_qp`：h264 CQ26→22、hevc CQ28→23、QP0→1。
-  新增 **G6-18/19** 锁"生产无损（crf==0）硬编码 `-rc constqp -qp 0`"（因 quality 下函数 QP0→1，
-  契约改由真分支守）；**G3-9** 反向锁 size 对照（21/20/63）。实测 `--no-gpu --quick` 104/0/11、GPU 113/0/2。
+  G6-2/5/17 `-qp 21`→22）。quality 口径 `to_constqp_qp`：h264 CQ26→22、hevc CQ28→23；
+  **QP0→0（`[FIX-QP-LOSSLESS]` 无损短路，size/quality 一致）**。
+  新增 **G6-18/19** 锁"生产无损（crf==0）硬编码 `-rc constqp -qp 0`"；**G3-9** 反向锁 size 对照（21/20/63）。
+  实测 `--no-gpu --quick` 104/0/11、GPU 113/0/2。
 - 数据落点：`Accessory/data/eqq_calibration/points/gpu_t4_cq`（3 文件 442 点）、`gpu_t4_qp`（17 文件 459 点）；
   素材在**仓库外** `/workspace/input_videos/eqq_calib/`，用 symlink 按「素材名」接入后 `--src <link>`。
 - 顺带修复 `Accessory/probe/eqq_calibrate_batch.py` 两个 latent bug：`load()` 是生成器却 `len(items)`

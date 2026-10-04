@@ -406,8 +406,16 @@ def to_constqp_qp(codec: str, value: int, *, table=None) -> int:
     （H.264/HEVC = 基准轴直取；AV1 = ×3 的 qindex 尺度，L40 实测）与活动表。
 
     未知编码器原样返回（不做猜测）。
+
+    ⚠ **无损语义优先**：``value == 0``（无损/最高质档）恒返回 ``0``，size / quality
+    两口径一致 —— 仿射模型 ``a·ref+b`` 不过原点（quality 口径下 0 会外推为 1），
+    会破坏「无损 = QP0」契约，故在此显式短路。生产无损另由 writer 的 ``crf==0``
+    分支硬编码 ``-rc constqp -qp 0``（不经本函数），两处共同保证。
     """
     c = str(codec).lower()
+    # [FIX-QP-LOSSLESS] 无损（value==0）⇒ QP=0，两口径一致，不受口径/模型影响。
+    if value == 0:
+        return 0
     # value 位于 CQ 轴，可能已包含 CQ_OFFSET；先扣除再回溯基准轴，保证与
     # resolve_quality 的偏移语义一致（CQ_OFFSET 默认 0 时此处为恒等）。
     _v = float(value) - (CQ_OFFSET.get(c, 0) if c in _CQ_CODECS else 0)

@@ -587,7 +587,7 @@ FFmpeg 9.0.2。Gate 0：`h264_nvenc` rc=0、`hevc_nvenc` rc=0、`av1_nvenc` rc=1
 | `hevc_nvenc` | 1.1083 | -2.9183 | 17 | 3.72 | ≤5.9 ✅ |
 
 > 两轴**非同一刻度**（QP 轴 a≠1、b≠0）⇒ 落表后 `to_constqp_qp` 的 **quality 口径**输出改变
-> （h264 CQ26→QP22、hevc CQ28→QP23、h264 QP0→1）。
+> （h264 CQ26→QP22、hevc CQ28→QP23、h264 QP0→**0**〔无损短路，两口径一致〕）。
 > ⚠ **2026-10-04 B1 迁移**：判据 `crf_cq_unification_verify` 的口径由 size **改为 quality**
 > （`load_quality_map` 内 `set_quality_mode("quality")`），使**门禁口径 == 生产默认口径**；
 > 相应更新 G1-2/G2/G3/G6 期望值（并新增 G6-18/19 锁"生产无损硬编码 `-qp 0`"、G3-9 反向锁 size 对照）。

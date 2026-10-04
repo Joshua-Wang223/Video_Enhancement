@@ -1285,7 +1285,9 @@ def _check_decode_integrity_v4(path, hwaccel='off'):
     # dup/drop/backward 异常（对齐 analyze_video_pipeline_v3 与 verify_segment
     # _bitstream_v2）。旧版用 'pts_anomaly' 关键字在 ffmpeg stderr 里查找，但该串
     # 是自定义日志格式，ffmpeg 从不输出 → pts 检查恒空转 OK（与 v3 矛盾）。
-    _showinfo_flags = ['-vsync', '0', '-vf', 'showinfo']
+    # [FIX-FFMPEG9-VSYNC] FFmpeg 9.0 移除了 `-vsync`（rc=8 Unrecognized option）⇒
+    #   改用等价的 `-fps_mode passthrough`（≥5.0；旧 `-vsync 0` 只作 <5 回退，本仓基线 9.0）。
+    _showinfo_flags = ['-fps_mode', 'passthrough', '-vf', 'showinfo']
     hw_flags = None
     if hwaccel == 'cuda':
         hw_flags = ['-hwaccel', 'cuda']
@@ -3022,7 +3024,7 @@ def check_chroma_corruption(path, hwaccel=False, n_shards=1, shard_plan=None,
     cmd = ['ffmpeg', '-v', 'error']
     if hwaccel:
         cmd += ['-hwaccel', 'cuda']
-    cmd += ['-i', str(path), '-an', '-vsync', '0',
+    cmd += ['-i', str(path), '-an', '-fps_mode', 'passthrough',
             '-pix_fmt', 'yuv420p', '-f', 'rawvideo', 'pipe:1']
     chunk_bytes = frame_size * _CHROMA_CHUNK_FRAMES
 
@@ -3130,7 +3132,7 @@ def check_chroma_corruption(path, hwaccel=False, n_shards=1, shard_plan=None,
     if (not us) and hwaccel:
         try:
             us, vs = _stream_uv_std(['ffmpeg', '-v', 'error', '-i', str(path),
-                                     '-an', '-vsync', '0', '-pix_fmt', 'yuv420p',
+                                     '-an', '-fps_mode', 'passthrough', '-pix_fmt', 'yuv420p',
                                      '-f', 'rawvideo', 'pipe:1'],
                                     progress=progress, total=total_frames)
         except Exception:
