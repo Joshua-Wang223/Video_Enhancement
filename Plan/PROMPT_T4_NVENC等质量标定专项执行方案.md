@@ -9,12 +9,15 @@
 > **标定报告**：`Plan/等质量换算表_实现与标定报告.md`（第八版全池表值 / LOO / 门禁分档）
 > **总览指南**：`Accessory/docs/EQQ_CALIBRATION_OVERVIEW.md`
 >
-> 状态（2026-10-04 更新）：**harness/口径改动已落地；标定主体（T4-1~T4-4）待跑**。
-> 本容器现有 Tesla T4（`nvidia-smi` 可用），`h264_nvenc`/`hevc_nvenc` 实跑 rc=0。
+> 状态（2026-10-04 更新）：**T4-1~T4-9 已全部执行完毕，门禁全绿**（执行记录见 §13）。
+> 本容器有 Tesla T4（`nvidia-smi` 可用），`h264_nvenc`/`hevc_nvenc` 实跑 rc=0。
+> - **CQ 轴（T4-1/2）**：17 素材 GPU 标定 → `QUALITY_MAP['h264_nvenc']=(0.9295, 6.2523)`
+>   LOO 3.98、`['hevc_nvenc']=(1.1116, 2.1606)` LOO 5.81。已并入 `8f0a605`，与 VidUtils 逐字相等（⑨ 组 14/14）。
+> - **QP 轴（T4-3/4）**：17 素材 `--axis qp` 标定 → `QUALITY_MAP_QP['h264_nvenc']=(0.9704, 1.4767)`
+>   LOO 3.47、`['hevc_nvenc']=(1.1083, -2.9183)` LOO 3.72（仅 VE，D2b）。
 > **CR-1/CR-2 均已收口**；CR-2 因 FFmpeg 9.0 移除 `vbr_hq`/`qvbr` **二次修订**为 CLI/harness
 > `vbr -tune hq -multipass fullres`（SDK 路径不动）——见 §4.1/§12.5 与
-> `Plan/T4_NVENC_vbr_hq移除_验证专项.md`。**⚠ VU 侧待重新同步**（⑨ 组暂不可比），
-> 故正式标定前先完成 VU handoff。
+> `Plan/T4_NVENC_vbr_hq移除_验证专项.md`。VU 侧已重新同步。
 
 ---
 
@@ -544,3 +547,78 @@ harness `BASE_LOCK`、探针 `NVENC_PRESET='p4'`、README/基线同步）。残�
 - **VU 必须重新同步**：VU 生产/harness/探针/`t4_acceptance` A4 的 `-rc:v vbr_hq` 同样会被
   FFmpeg 9.0 拒绝 ⇒ 需同步改 `vbr -tune hq -multipass fullres`，否则共享 `QUALITY_MAP` 的
   ⑨ 组跨仓一致性变红（handoff，本仓无法代改）。
+
+---
+
+## 13. 执行记录（T4，2026-10-04）
+
+### 13.1 环境指纹
+
+Tesla T4（UUID `GPU-1f4c2ae9-…`）/ 驱动 580.65.06 / CUDA 13.0 / torch 2.10.0+cu128 /
+FFmpeg 9.0.2。Gate 0：`h264_nvenc` rc=0、`hevc_nvenc` rc=0、`av1_nvenc` rc=187（T4 无 AV1 NVENC，符合预期）。
+
+### 13.2 任务完成矩阵
+
+| ID | 任务 | 结果 |
+|---|---|---|
+| T4-1/2 | CQ 轴 h264/hevc 等质量 | ✅ 17 素材，已落 `QUALITY_MAP`（并入 `8f0a605`） |
+| T4-3/4 | QP 轴 h264/hevc 等质量 | ✅ 17 素材，已落 `QUALITY_MAP_QP` |
+| T4-5/6 | harness 扩展 / `_qp_model` 模式感知 | ✅ 既有（本次复核 selftest 39/39） |
+| T4-7 | G7/G8 GPU 画质与码率门禁 | ✅ `crf_cq --gpu` PASS=101 / FAIL=0 / WARN=4 / SKIP=1 |
+| T4-8 | h264/hevc 生产管线冒烟 | ✅ hevc+h264 双跑，帧守恒（见 13.4） |
+| T4-9 | 跨仓 ⑨ 组 | ✅ 14/14 |
+
+### 13.3 标定结果（17 素材，锚点 18/21/24/27/30，`n_subsample=1`，720p prep）
+
+**CQ 轴**（`-rc:v vbr -tune hq -multipass fullres -cq:v`，落 `QUALITY_MAP`）：
+
+| 档位 | a | b | 样本 | LOO | 门禁 |
+|---|---|---|---|---|---|
+| `h264_nvenc` | 0.9295 | 6.2523 | 17 | 3.98 | ≤5.9 ✅ |
+| `hevc_nvenc` | 1.1116 | 2.1606 | 17 | 5.81 | ≤5.9 ✅ |
+
+**QP 轴**（`-rc:v constqp -qp`，落 `QUALITY_MAP_QP`，仅 VE）：
+
+| 档位 | a | b | 样本 | LOO | 门禁 |
+|---|---|---|---|---|---|
+| `h264_nvenc` | 0.9704 | 1.4767 | 17 | 3.47 | ≤5.9 ✅ |
+| `hevc_nvenc` | 1.1083 | -2.9183 | 17 | 3.72 | ≤5.9 ✅ |
+
+> 两轴**非同一刻度**（QP 轴 a≠1、b≠0）⇒ 落表后 `to_constqp_qp` 的 **quality 口径**输出改变
+> （h264 CQ26→QP22、hevc CQ28→QP23、h264 QP0→1）。判据 G3/G6/G7 均**钉 size 口径**
+> （`load_quality_map` 内 `set_quality_mode("size")`）⇒ 期望值不变、零回归。
+
+### 13.4 门禁与验证（全绿）
+
+| 门 | 结果 |
+|---|---|
+| harness `--selftest` | 39/39 ✅ |
+| `eqq_pool_fit_table` 软编复现 | 6 档逐位复现库内表值 ✅ |
+| `verify_equal_quality.py` | 5/5 达标（主门禁 ΔVMAF），exit 0 ✅ |
+| `crf_cq_unification_verify --no-gpu --quick` | PASS=94 / FAIL=0 / SKIP=11 ✅ |
+| `crf_cq_unification_verify --gpu`（真实素材） | PASS=101 / **FAIL=0** / WARN=4 / SKIP=1 ✅ |
+| `plan_implementation_gate.py` | 96/94/0/2 ✅ |
+| `pytest Accessory/test` | 29 passed / 2 failed（既有 chroma 环境项，与表无关） |
+| `VidUtils verify_quality_mapping.py`（⑨） | 14/14 ✅ |
+| 生产冒烟 hevc+LA=8 / h264+LA=8 | `segment_bitstream_verify_v5`：frames==packets=199、段首无连 IDR、frame_num 单调、无色度坏帧簇 ✅ |
+
+> `crf_cq --gpu` 的 4 条 WARN（G7-2 hevc ΔPSNR −2.57dB / G7-3 / G7-5 / G7-8）为**已知内容相关诊断项**，
+> 主判据（ΔVMAF）达标，按 P14 **不放宽判据**。
+
+### 13.5 数据与代码落点
+
+- 数据：`Accessory/data/eqq_calibration/points/gpu_t4_cq/`（3 文件 442 点）、
+  `points/gpu_t4_qp/`（17 文件 459 点）。
+- 代码：`src/utils/quality_map.py` 新增 `QUALITY_MAP_QP` 的 h264/hevc 两行。
+- 顺带修复 `Accessory/probe/eqq_calibrate_batch.py` 两个 latent bug：
+  ① `load()` 是生成器却 `len(items)`（无 `--only` 必崩）；② `--sweep` 为 `None` 时被迭代。
+- `Accessory/test/test_quality_map_qp_mode.py` 更新为「标定后」语义（原第 2 例假设未标定；
+  第 3 例的 `pop` 会误删真实标定行，改为保存/还原）。
+
+### 13.6 两个易踩坑（复用本专项时务必遵守）
+
+1. **`screen_ui_code_src1280x720.mp4` 在同一批里既是 6s 又是 10s 切片**（内容不同、同名）⇒
+   直接按文件名池化会把两者并成 1 个素材（17→16），给出**另一组** a/b
+   （h264 `0.9256/6.3447` 而非 `0.9295/6.2523`）。**必须去重为 17 个不同素材名**。
+2. **素材均以 symlink 按「素材名」接入**（`/tmp/eqq_gpu_src*`），切片真实路径在仓库外
+   `/workspace/input_videos/eqq_calib/`；`--src-is-prep` + 每素材独立 workdir 是复现前提。

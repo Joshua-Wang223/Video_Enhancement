@@ -15,8 +15,9 @@
 
 本测试锁四件事（纯 CPU，不需 GPU）：
   1. size 口径：NVENC 走 `_QP_MAP_OVERRIDE`（h264 26→21、av1 27→63）；
-  2. quality 口径：**当前表**下 NVENC 尚无 `QUALITY_MAP_QP` 行 ⇒ 与 size 同值（恒等）；
-  3. 前向兼容：注入 NVENC 行后，quality 用它、size 仍不用；
+  2. quality 口径：**T4 标定后** h264/hevc 命中 `QUALITY_MAP_QP` 标定行（≠ size 的
+     override 值）；**未标定**的 av1_nvenc 仍回退 override（与 size 同值）；
+  3. 前向兼容：注入覆盖行后，quality 用它、size 仍不用（**须保存/还原原行**）；
   4. 回归守卫：size 口径对软编仍走 `SIZE_MAP`，**不得**被 `QUALITY_MAP_QP` 影响。
 """
 import os
@@ -44,27 +45,36 @@ def test_size_mode_uses_override():
         _set('quality')
 
 
-def test_quality_mode_identity_when_uncalibrated():
-    """quality 口径、当前表（QUALITY_MAP_QP 无 NVENC 行）⇒ 回退 override，与 size 同值。"""
-    assert 'h264_nvenc' not in Q.QUALITY_MAP_QP
-    assert 'hevc_nvenc' not in Q.QUALITY_MAP_QP
-    assert 'av1_nvenc' not in Q.QUALITY_MAP_QP
+def test_quality_mode_calibrated_nvenc_rows():
+    """quality 口径：h264/hevc 命中 QUALITY_MAP_QP 标定行（≠ size 的 override）；
+    av1_nvenc 未标定 ⇒ quality 也回退 override（与 size 同值）。"""
+    assert 'h264_nvenc' in Q.QUALITY_MAP_QP, "h264_nvenc 标定行应已落表"
+    assert 'hevc_nvenc' in Q.QUALITY_MAP_QP, "hevc_nvenc 标定行应已落表"
+    assert 'av1_nvenc' not in Q.QUALITY_MAP_QP, "av1_nvenc 未标定，不应有行"
     try:
         _set('quality')
+        a, b, lo, hi = Q.QUALITY_MAP_QP['h264_nvenc']
+        ref = Q.to_x264_crf('h264_nvenc', 26)          # quality 口径基准轴
+        exp = int(max(lo, min(hi, round(a * ref + b))))
         q_quality = Q.to_constqp_qp('h264_nvenc', 26)
         a_quality = Q.to_constqp_qp('av1_nvenc', 27)
         _set('size')
         q_size = Q.to_constqp_qp('h264_nvenc', 26)
         a_size = Q.to_constqp_qp('av1_nvenc', 27)
-        assert q_quality == q_size == 21
+        # size 口径保持改造前行为（override 基准轴直取）
+        assert q_size == 21
         assert a_quality == a_size == 63
+        # quality 口径命中标定行，且与 size 的 21 可区分
+        assert q_quality == exp and q_quality != q_size, \
+            f"quality 应命中标定行 {exp}（≠ size {q_size}），实得 {q_quality}"
     finally:
         _set('quality')
 
 
 def test_quality_mode_prefers_calibrated_row():
-    """前向兼容：注入 NVENC 标定行后，quality 用它、size 仍走 override。"""
+    """前向兼容：注入覆盖行后，quality 用它、size 仍走 override。"""
     injected = (1.0, 5.0, 0, 255)          # ref 21 → 26（与 override 的 21 可区分）
+    orig = Q.QUALITY_MAP_QP.get('h264_nvenc')   # ⚠ 标定后已有真实行：须保存并还原
     Q.QUALITY_MAP_QP['h264_nvenc'] = injected
     try:
         _set('quality')
@@ -72,7 +82,10 @@ def test_quality_mode_prefers_calibrated_row():
         _set('size')
         assert Q.to_constqp_qp('h264_nvenc', 26) == 21, "size 口径不得被 QUALITY_MAP_QP 影响"
     finally:
-        Q.QUALITY_MAP_QP.pop('h264_nvenc', None)
+        if orig is None:
+            Q.QUALITY_MAP_QP.pop('h264_nvenc', None)
+        else:
+            Q.QUALITY_MAP_QP['h264_nvenc'] = orig
         _set('quality')
 
 
@@ -103,7 +116,7 @@ def test_size_mode_ignores_quality_qp_for_soft():
 
 if __name__ == "__main__":
     for fn in (test_size_mode_uses_override,
-               test_quality_mode_identity_when_uncalibrated,
+               test_quality_mode_calibrated_nvenc_rows,
                test_quality_mode_prefers_calibrated_row,
                test_size_mode_ignores_quality_qp_for_soft):
         fn()

@@ -87,18 +87,60 @@ FFmpeg NVENC 封装中，`-rc` 仅暴露三个基础值：
 >    却要付出约 2 倍耗时与数 GB 显存。故 CQ 归档场景**可以不加**——但理由是"收益小、成本高"，
 >    而不是"会掉画质"。若要叠加，官方自身也有先例（SDK 13.1 指南 §6.2.8"Ultra-High Quality Exports"
 >    即 `-preset p7 -tune uhq -rc vbr -cq 19 -maxrate 80M -multipass fullres`）。
->    另注：有实测指出 multipass 会让输出**非确定性**（同参数两次编码结果略有差异），做等质量标定复现时需注意。
+>    另注：有第三方实测指出 multipass 可能让输出**非确定**（同参数两次编码结果略有差异）；
+>    但 **本机 T4 复跑同一参数两次为 byte-identical（未复现该非确定性，见 §5.1）** —— 标定仍默认不开
+>    （主因是 CQ 无收益 + 开销），换驱动 / 并发环境可再复测。
 >
 > ⚠️ **已撤回的旧论断**：本文此前称"CQ 模式下叠加 `-tune hq -multipass fullres` 会导致质量下降约 2.7–3.3 VMAF，
 > 中等质量点（cq=30）可达 4 VMAF 以上"。经核对，其数字来源（arXiv 2605.01187，Netflix Chimera + Twitch 序列）
 > 使用的是**纯 CBR**、**全文未测试 `-multipass`**、报的是 **BD-Rate %** 而非 VMAF 分值，与结论三重错配；
 > 且"降质量 + 增体积"在码率控制层面自相矛盾。已删除，改为上文的定性表述。
-> **待办**：在有 GPU 的环境做固定 CQ 的 ±multipass A/B（记录 VMAF / 实际码率 / 耗时），用实测数据补回量化结论。
+> **✅ 已实测（2026-10-04，Tesla T4 / ffmpeg 9.0.2）**：固定 CQ 的 ±multipass A/B 见表 §5.1 ——
+> multipass **不提升 VMAF**（fullres ΔVMAF −0.006~−0.108、qres −0.067~−0.335，码率 ×0.98~0.997），
+> 只是把码率控制得更紧。故 **CQ 路径默认不开**；真正受益的是 CBR / 受限码率。
 >
 > **核对依据**：本机 `ffmpeg 8.1.2` 的 `-h encoder=h264_nvenc` / `-h encoder=hevc_nvenc`；
 > FFmpeg master `libavcodec/nvenc.c`（L1036、L1038-1041、L1043-1048、L1139-1151、L240-242）；
 > NVIDIA Video Codec SDK 13.1《Using FFmpeg with NVIDIA GPU Hardware Acceleration》§6.1.10 / §6.2.8；
 > NVEncC（rigaya）选项文档。
+> T4 复核（2026-10-04，`ffmpeg 9.0.2`）：`-tune` 默认 `hq`（h264 1~4 / hevc 1~5）；`uhq` 仅
+> hevc/av1（h264 传 `uhq` → rc=234）；`-multipass` 默认 `disabled`（0~2）。
+
+### 5.1 实测：固定 CQ 的 ±multipass A/B（2026-10-04，Tesla T4 / 驱动 580.65.06 / ffmpeg 9.0.2）
+
+口径：`new5_raw` 6s → 720p prep（与等质量标定同口径），`-c:v <codec> -rc vbr -cq <N> -b:v 0
+-preset p4`，仅切换 `-multipass`；指标 `libvmaf` 的 pooled VMAF（`n_subsample=1`）。
+
+| codec | cq | disabled VMAF / kbps | qres ΔVMAF / 码率比 | fullres ΔVMAF / 码率比 |
+|---|---|---|---|---|
+| h264_nvenc | 26 | 99.087 / 3525 | **−0.132** / 0.979× | **−0.034** / 0.994× |
+| h264_nvenc | 34 | 87.382 / 1243 | **−0.335** / 0.986× | **−0.108** / 0.997× |
+| hevc_nvenc | 26 | 99.265 / 3359 | **−0.067** / 0.980× | **−0.006** / 0.996× |
+| hevc_nvenc | 34 | 89.930 / 1177 | **−0.243** / 0.989× | **−0.048** / 0.997× |
+
+**结论**：
+- 固定 CQ 下 multipass **不升 VMAF**（qres 更差、fullres 略差），而是把码率收得更紧（命中精度↑）
+  ⇒ 「CQ 归档可以不加」由定性变为**有据**：加了只会略降 VMAF/码率、并增加耗时与显存。
+- 因此 **CQ / QVBR 路径默认不开**；multipass 的价值在 **CBR / 紧 VBV / 受限码率**（把实际码率
+  拉近目标）。这与 §5 中 NVIDIA 对 multipass 的官方定位一致。
+- 短片段（6s / 720p）在 T4 上编码耗时差异不明显（各 ~1.3–1.6s）；长片 / 高分辨率才是
+  2× 量级的代价来源（本表未放大该成本）。
+- ⚠ 有第三方报告 multipass 可能非确定；**本机 T4 复跑同一参数两次 byte-identical（未复现）**。
+  故「CQ 路径不开」的**主因是 CQ 无 VMAF 收益 + 额外耗时/显存**，非确定性仅作参考（换环境需复测）。
+- **确定性抽测**（h264/hevc × `-cq 34` × 60 帧，各跑两遍）：`-multipass fullres` 与默认的产物
+  **md5 逐字节相同**（h264 fullres `90078a8…` / disabled `bab7a01…`；hevc fullres `ed4bcd6…` /
+  disabled `992a2ec…`）⇒ 本机**未复现**「multipass 非确定」。
+
+### 5.2 VidUtils / VE 落地（2026-10-04）
+
+- **默认路径保持裸 `-rc vbr -cq N -b:v 0 -preset p4`**：不加 `-tune hq`（默认值，写了等于没写）、
+  不加 `-multipass`（上表：CQ 无收益 + 额外开销）。
+- 新增**显式 opt-in**（VidUtils 两脚本孪生 `--nvenc-tune` / `--nvenc-multipass`）：
+  · `--nvenc-tune {hq,ll,ull,lossless,uhq}` —— 默认不发；`uhq` 仅 hevc/av1（h264 报错）；
+  · `--nvenc-multipass {disabled,qres,fullres}` —— 默认不发；`--rc-mode cbr` 或给了 `--bitrate`
+    时**自动补 fullres**（该场景才有意义），可用本参数显式覆盖（含 `disabled`）。
+- 等质量标定 harness（`probe/calibrate_equal_quality.py`）**不受影响**：`BASE_LOCK` 依旧裸 `-rc vbr`。
+- ⚠ 别把 `-preset p7` 当 two-pass：现代 `p1~p7` 别名不带 multipass 标记（只有 legacy `slow` 会开两遍）。
 
 ## 6. 软编 vs 硬编
 

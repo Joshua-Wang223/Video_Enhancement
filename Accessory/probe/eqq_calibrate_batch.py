@@ -113,7 +113,7 @@ def main():
     ap.add_argument('--only', default='', help='只跑这些 tag（逗号分隔，调试用）')
     args = ap.parse_args()
 
-    items = load(args.manifest)
+    items = list(load(args.manifest))   # load 是生成器：需物化后才能 len/重复遍历
     if args.only:
         want = {t.strip() for t in args.only.split(',')}
         items = [i for i in items if i[0] in want]
@@ -125,9 +125,10 @@ def main():
 
     t0 = time.time()
     fails = []
+    sweeps = args.sweep or []   # --sweep 未给时为 None（action='append' 默认），须物化为空表
     with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as ex:
         futs = [ex.submit(run_one, tag, src, dur, args.outroot,
-                          args.tiers, args.sweep, args.src_is_prep, args.keep_prep, args.axis)
+                          args.tiers, sweeps, args.src_is_prep, args.keep_prep, args.axis)
                 for tag, src, dur in items]
         for fu in futs:
             tag, rc, n, dt = fu.result()
