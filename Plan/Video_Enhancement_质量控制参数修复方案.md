@@ -33,6 +33,24 @@
 > **2026-09-30 第二轮提示**：该轮开工时容器已**丢失 GPU**（`libcuda` 变 0 字节桩、`/dev/nvidia*`
 > 消失，见 §9.1）⇒ P3″ 与 AC5 一样按"环境不支持"跳过，纯 CPU 项（G6 断言、pytest、
 > V9 重标定）照常完成。
+>
+> **2026-10-04 更新（NVENC h264/hevc 等质量标定 + 口径/无损/环境修复）**：
+> - **NVENC 等质量表已落**：`QUALITY_MAP['h264_nvenc'/'hevc_nvenc']`（CQ 轴，17 素材，LOO 3.98/5.81，
+>   提交 `8f0a605`）与 `QUALITY_MAP_QP['h264_nvenc'/'hevc_nvenc']`（QP 轴，LOO 3.47/3.72，提交 `66ab226`）。
+> - **NVENC 显式 opt-in + 裸 CQ 默认**（提交 `be8e1db`）：`--nvenc-tune-*`/`--nvenc-multipass-*` + 目标码率
+>   `--bitrate-*`/`--output-bitrate`/`--split-bitrate`；CQ 默认改**裸 `-rc:v vbr -cq:v N -b:v 0`**
+>   （`-tune hq` 是 ffmpeg 默认值、固定 CQ 下 multipass 不升 VMAF）。唯一真源 `src/utils/nvenc_tuning.py`。
+> - **口径可切 + 门禁口径迁移（B1）**：生产新增 `--quality-mode {size,quality}`（+ `processing.quality_mode`，
+>   默认 quality，提交 `d044cdd`）；`crf_cq_unification_verify` 的口径由 size **迁到 quality**
+>   （门禁口径 == 生产默认），G1-2/G2/G3/G6 期望随之更新（提交 `1bedff6`）。
+> - **无损语义优先**：`to_constqp_qp(codec, 0)` 在 size/quality **两口径均返回 0**（`[FIX-QP-LOSSLESS]` 短路）；
+>   生产无损由 writer `crf==0` 分支硬编码 `-rc constqp -qp 0`（G6-18/19 守卫）（提交 `e9ed1d1`）。
+> - **环境修复**：FFmpeg 9.0 **移除 `-vsync`** ⇒ 换 `-fps_mode passthrough`（修 `segment_bitstream_verify_v{4,5}`
+>   单流/回显 + `video_utils`）。根因即 `test_chroma_false_positive` 两例"返回 None"；**pytest 现 31 passed / 0 failed**
+>   （原 29/2）。详见 memory `env-ffmpeg-ffprobe-gotchas.md` §3。
+> - **当前门禁基线**：`crf_cq --no-gpu --quick` **104/0/11**、`--gpu` **113/0/2**；`plan_implementation_gate` **96/94/0/2**。
+> - **对 AC 的影响**：AC1（AV1 QP ×3）**不受影响**（av1 两口径均 63，G3-7 仍 PASS）；**L40 待办不变**——
+>   `QUALITY_MAP['av1_nvenc']`（CQ 轴）+ `QUALITY_MAP_QP['av1_nvenc']`（QP 轴）仍待 Ada 标定，见 L40 方案 §0「准备清单」。
 
 | 编号 | 内容 | 优先级 | 状态 | 依据强度 |
 |---|---|---|---|---|

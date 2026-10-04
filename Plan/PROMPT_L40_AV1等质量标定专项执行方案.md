@@ -14,6 +14,16 @@
 > ⚠ AV1 **不受** FFmpeg 9.0 的 `vbr_hq/qvbr` 移除影响（本就用 plain `vbr`）；但 **CR-2 二次修订
 > 要求 VU 侧 h264/hevc 重新同步**（**裸 `vbr`**，见 T4 方案 §12.5 与
 > `Plan/T4_NVENC_vbr_hq移除_验证专项.md`）——若本专项要与 VU 共享 `QUALITY_MAP`，先完成该 handoff。
+>
+> **前置已就绪（2026-10-04，可在 L40 上直接开工）**：
+> - harness/探针 rc 口径 = **裸 `-rc:v vbr`**（`BASE_LOCK`/`_PROD_RC` 已改，§4.1）——AV1 本就 plain `vbr`；
+> - `crf_cq_unification_verify` 门禁口径已迁 **quality**（== 生产默认；`--no-gpu --quick` **104/0/11**、
+>   `--gpu` **113/0/2**）——**AV1 两口径均 63**，故 AC1/G3-7 期望不受影响；
+> - **无损 `to_constqp_qp(0)=0` 两口径一致**（`[FIX-QP-LOSSLESS]`）；生产可切 `--quality-mode {size,quality}`；
+> - 环境坑已清：FFmpeg 9.0 无 `-vsync`（已换 `-fps_mode passthrough`）；`test_chroma_false_positive` 复绿，
+>   pytest **31 passed / 0 failed**；
+> - **仍待 L40 硬件**：`QUALITY_MAP['av1_nvenc']`（CQ 轴）+ `QUALITY_MAP_QP['av1_nvenc']`（QP 轴）标定（§5）、
+>   AC1~AC4 复验（§5.4）、AV1 长视频冒烟（L40-5）。
 
 ---
 
@@ -135,7 +145,7 @@ _QP_MAP_OVERRIDE['av1_nvenc'] = (3.0, 0.0, 0, 255)   # [L40 实测确认：QP �
 ### 5.1 基线（改动前后对照）
 
 ```bash
-python3 Accessory/verify/crf_cq_unification_verify.py --quick < /dev/null   # FAIL=0（除 cv2 环境项）
+python3 Accessory/verify/crf_cq_unification_verify.py --quick < /dev/null   # PASS=104 / FAIL=0 / SKIP=11（quality 口径，2026-10-04 B1）
 python3 Accessory/verify/plan_implementation_gate.py < /dev/null            # FAIL=0
 python3 Accessory/probe/calibrate_equal_quality.py --selftest               # 39 项（含 NVENC/axis/跨仓）
 python3 Accessory/probe/av1_vp9_quality_matrix.py --selftest 2>/dev/null || true
@@ -220,6 +230,12 @@ python3 Accessory/probe/eqq_pool_fit_table.py \
 ⚠ 写入后 `QUALITY_MAP['av1_nvenc']` 的 hi **必须是 63**（不是 51）——`SIZE_MAP` 已如此，
 等质量表须保持一致，否则 `crf_ref≥45` 被挤到 51（方案 E0 的老 bug）。
 
+> ℹ **无损语义（2026-10-04 B1/`[FIX-QP-LOSSLESS]`）**：`to_constqp_qp(codec, 0)` 在 **size/quality
+> 两口径均返回 0**（对 `value==0` 短路）。故 L40 落 `QUALITY_MAP_QP['av1_nvenc']` 后，AV1 的
+> `-qp 0` 仍是 0（无损/最高质档），不被标定表的 `a/b` 外推；G3-4 已锁双口径、G3-9 锁 size 对照。
+> 生产无损另由 writer `crf==0` 分支硬编码（G6-18/19）。
+> ⚠ 该口径分流**不影响 AV1 的 AC1 结论**（两口径 `-qp` 均 63）。
+
 ---
 
 ## 7. 验收门禁
@@ -299,6 +315,10 @@ cd /workspace/VidUtils && python3 verify/verify_quality_mapping.py < /dev/null
 
 > **但「换算正确 ≠ 管线能跑」**：AV1 端到端能力由 P3 冒烟（§8.5）+ 三处修复（§8.6）保障，
 > 本专项的 **L40-5** 是它首次在 GPU 上的完整回归。
+>
+> **2026-10-04 口径变更对 AC 的影响**：门禁口径已迁 **quality**（B1）且 `to_constqp_qp(0)=0` 双口径，
+> 但 **AV1 的 `-cq`/`-qp` 数值在两口径相同**（`-qp 63`、`-cq` 表值不变）⇒ **AC1~AC4 的判据与期望值不变**，
+> 仅"门禁口径 == 生产默认"这一形式更强。L40 上机前先按 §0「前置已就绪」核对。
 
 ---
 
@@ -320,6 +340,10 @@ cd /workspace/VidUtils && python3 verify/verify_quality_mapping.py < /dev/null
   VU 侧 h264/hevc 需重新同步，否则共享 `QUALITY_MAP` 的 ⑨ 组变红（handoff）。
 - **QP 轴（`QUALITY_MAP_QP` / `_QP_SCALE`）**：VE 侧是独立表；VU 侧无表，只有 `_QP_SCALE`。
   本专项落 `QUALITY_MAP_QP['av1_nvenc']` 后，若与 VU 的 `_QP_SCALE=3` 冲突，**通知 VU 同步**（CR-4）。
+- **无损契约 handoff（2026-10-04 实测）**：VU 自有 `to_constqp_qp(codec, 0)` **不保证 0**——
+  NVENC 靠 `_QP_LIMITS` 夹回 0，但 **`librav1e`→48/52、`libsvtav1`→10/9**（表 b<0 使 ref>0）。
+  VU 生产因 `_resolve_quality_params` 的 `[LOSSLESS]` 短路而未触发，但**函数级与「无损=0」不符**。
+  VE 已加 `[FIX-QP-LOSSLESS]` 短路（两口径均 0）；**建议 VU 同步加 `if value==0: return 0`**。
 - **跨仓态势已双向对称**：VE harness 现与 VU 一样会打印「两表是否相等 / 对侧 harness 是否同版 /
   对侧方案文档」。上机前先看这一行，再决定要不要协调对侧。
 - **素材池共用**：17 条切片在 VE `input_videos/eqq_calib/`（仓库外）——L40 机上需先就位（CR-5）。

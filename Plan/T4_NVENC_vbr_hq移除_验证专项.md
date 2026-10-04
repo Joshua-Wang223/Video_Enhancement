@@ -503,3 +503,27 @@ L40 方案（`PROMPT_L40_AV1等质量标定专项执行方案.md`）**不受影�
 **验证**：`crf_cq --no-gpu --quick` → **101/0/11**（G6 新增 7 例 opt-in 断言 G6-11~17，
 并做过反向校验：故意回归时 G6-1/G6-4/G6-11/G6-16 均 FAIL）；`plan_gate` 96/94/0/2；
 `calibrate_equal_quality --selftest` 39/39；生产 `--dry-run` rc=0、`uhq+h264` rc=2。
+
+---
+
+## 12. 后续收尾：口径统一 B1 + 无损 0→0 + `--quality-mode`（2026-10-04 续）
+
+§11 之后又完成三项与本专项收尾相关的工作：
+
+- **B1 · 门禁口径迁移**（提交 `1bedff6`）：`crf_cq_unification_verify` 的口径钉由 **size 改为 quality**
+  （`load_quality_map` 内 `set_quality_mode("quality")`）⇒ **门禁口径 == 生产默认口径**。G1-2/G2/G3/G6
+  期望随之更新（hevc 28→26、svtav1 24→29、vp9 28→26、rav1e 66→64；G3-1 21→22、G3-2 20→23、
+  G6-2/5/17 `-qp 21`→22）。新增 **G6-18/19**（生产无损硬编码 `-qp 0`）与 **G3-9**（size 口径对照）。
+- **无损语义优先 `[FIX-QP-LOSSLESS]`**（提交 `e9ed1d1`）：`to_constqp_qp(codec, 0)` 在 **size/quality
+  两口径均返回 0**（对 `value==0` 短路；仿射模型 `a·ref+b` 不过原点本会外推为 1）。G3-4 断言改为「quality=0 size=0」。
+- **`--quality-mode {size,quality}`**（提交 `d044cdd`）：生产新增口径开关 + `processing.quality_mode`
+  （默认 `quality`；`main()` 覆盖后 `set_quality_mode`）。生产默认命令逐字不变。
+- **环境**：FFmpeg 9.0 移除 `-vsync` → `-fps_mode passthrough`（同批 `e9ed1d1`，
+  修 `segment_bitstream_verify_v{4,5}` + `video_utils`；根因即 `test_chroma_false_positive` 两例）。
+
+**当前门禁基线**：`crf_cq --no-gpu --quick` **104/0/11**、`--gpu` **113/0/2**（真实素材）；
+`plan_implementation_gate` **96/94/0/2**；pytest **31 passed / 0 failed**。
+
+> 跨仓 handoff（VU 侧）：① harness/生产/探针 `-rc:v vbr_hq` 需同步为**裸 `vbr`**；
+> ② VU 自有 `to_constqp_qp(codec, 0)` 实测对 **librav1e/libsvtav1 返回非 0**（48/52、10/9），
+> 建议加 `if value==0: return 0` 对齐无损契约（生产因 [LOSSLESS] 短路未触发）。
