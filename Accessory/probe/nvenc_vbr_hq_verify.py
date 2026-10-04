@@ -9,7 +9,9 @@ T4 验证：SDK 13.0 是否接受 rc_ptr[1]=32 (VBR_HQ)
 """
 import sys, os
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 项目根 = 本文件上溯 3 层 (Accessory/probe/<file> → 项目根)
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, _PROJECT_ROOT)
 
 from external.ifrnet_video.nvenc_sdk import NVENCEncoder
 
@@ -58,38 +60,38 @@ def verify_vbr_ctypes_fallback():
         return False
 
 
+def _run(cmd, timeout=10):
+    """运行命令，返回 (rc, stdout, stderr)。
+
+    subprocess.CompletedProcess 没有 .values()，必须逐属性取。
+    stdin=DEVNULL 避免后台进程组 SIGTTOU 假挂起。
+    """
+    import subprocess
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                       stdin=subprocess.DEVNULL)
+    return p.returncode, p.stdout, p.stderr
+
+
 def print_sdk_info():
     """打印 SDK 相关信息，辅助判读。"""
-    import subprocess
 
     # FFmpeg 版本
-    rc, out, _ = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-version"],
-        capture_output=True, text=True, timeout=10
-    ).values()
+    rc, out, _ = _run(["ffmpeg", "-hide_banner", "-version"])
     if rc == 0 and out:
         print(f"FFmpeg: {out.split(chr(10))[0]}")
 
     # NVENC 编码器列表
-    rc, out, _ = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-encoders"],
-        capture_output=True, text=True, timeout=10
-    ).values()
+    rc, out, _ = _run(["ffmpeg", "-hide_banner", "-encoders"])
     if rc == 0:
         nvenc = [l.strip() for l in out.split(chr(10)) if "nvenc" in l.lower()]
         print(f"NVENC encoders: {nvenc}")
 
     # nvenc_rc_mode_diagnose.py 输出
-    diag_script = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "Accessory", "probe", "nvenc_rc_mode_diagnose.py"
-    )
+    diag_script = os.path.join(_PROJECT_ROOT, "Accessory", "probe",
+                               "nvenc_rc_mode_diagnose.py")
     if os.path.exists(diag_script):
         print(f"\n--- nvenc_rc_mode_diagnose.py ---")
-        rc, out, err = subprocess.run(
-            ["python3", diag_script],
-            capture_output=True, text=True, timeout=30
-        ).values()
+        rc, out, err = _run(["python3", diag_script], timeout=30)
         if rc == 0:
             # 只打印关键行
             for line in out.split(chr(10)):

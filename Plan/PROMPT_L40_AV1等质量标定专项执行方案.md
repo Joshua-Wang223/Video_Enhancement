@@ -10,7 +10,10 @@
 > **姊妹方案**：`Plan/Video_Enhancement_质量控制参数修复方案.md`（§7 AC1~AC7 / §8 L40 收口 / §9.6）
 > **总览指南**：`Accessory/docs/EQQ_CALIBRATION_OVERVIEW.md`
 >
-> 状态：**纯方案，未落地**。本容器当前无 GPU；AV1 相关实测须在 L40（Ada）上执行。
+> 状态（2026-10-04 更新）：**纯方案，AV1 实测待 Ada(L40)**。本容器为 Tesla T4（无 AV1 NVENC）。
+> ⚠ AV1 **不受** FFmpeg 9.0 的 `vbr_hq/qvbr` 移除影响（本就用 plain `vbr`）；但 **CR-2 二次修订
+> 要求 VU 侧 h264/hevc 重新同步**（`vbr -tune hq -multipass fullres`，见 T4 方案 §12.5 与
+> `Plan/T4_NVENC_vbr_hq移除_验证专项.md`）——若本专项要与 VU 共享 `QUALITY_MAP`，先完成该 handoff。
 
 ---
 
@@ -95,10 +98,12 @@ QUALITY_FLAG['av1_nvenc'] = '-cq:v'
 HW_CODECS 含 av1_nvenc
 ```
 
-> ℹ **CR-2（rate control）已裁定路线 B 并落地**：av1 统一**显式** `-rc:v vbr`
+> ℹ **CR-2（rate control）口径**：av1 统一**显式** `-rc:v vbr`（不加 HQ 附加项）
 > （VE 生产 writer 的 av1 降级路径本就是 `vbr`；VU 已把 av1 也改为显式 `-rc vbr`）。
-> ⚠ `vbr_hq` 对 av1 非法（§8.6-③），故 h264/hevc 用 `vbr_hq`、av1 用 `vbr`。
-> 探针侧 VE 已修（`av1_vp9_quality_matrix.py` 的 `_PROD_RC`）；仅 VU 探针待修（见 T4 方案 §12.3）。
+> ⚠ 2026-10-04 起 FFmpeg 9.0 **移除 `vbr_hq`/`qvbr`**（`-rc` 只剩 constqp/vbr/cbr）⇒
+>   h264/hevc 的 CLI/harness 口径改为 `vbr -tune hq -multipass fullres`（VE SDK 侧仍走
+>   `RC_VBR_HQ(32)`，实测驱动仍接受）。**AV1（本专项唯一目标）不受影响**——它本就是 plain `vbr`。
+> 探针侧 VE 已修（`av1_vp9_quality_matrix.py` 的 `_PROD_RC`）；VU 侧 h264/hevc 待重新同步（T4 方案 §12.3）。
 
 QP 轴由 `--axis qp` 切到 `-rc:v constqp -qp`，量程 `(0, 255)`（T4 方案 §4.2 的量程分支已含 AV1）。
 
@@ -309,9 +314,10 @@ cd /workspace/VidUtils && python3 verify/verify_quality_mapping.py < /dev/null
   **CR-2（rate control 口径）** 约束。**CR-1 已收口：两仓统一 `p4`**（2026-10-04）——
   VE 本就 p4；**VU 已把生产 `DEFAULT_PRESET_GPU` / harness / 探针一并改 p4**（残留 `p5` 均为
   兼容显式 p5 的有意保留，见 T4 方案 §12.5）。
-- **CR-2（rate-control 口径）已裁定「路线 B」且两仓各层已落地**（2026-10-04）：h264/hevc `vbr_hq`、
-  av1 `vbr`，**均显式下发 `-rc`**。VE harness/探针（`av1_vp9_quality_matrix.py` 加 `_PROD_RC`）+
-  VU harness/生产（含 av1）+ VU 探针（`_cq_rc`）均已改 ⇒ **CR-2 全链路对齐，无残留**。
+- **CR-2（rate-control 口径）**：av1 `vbr`，**均显式下发 `-rc`**。⚠ 2026-10-04 FFmpeg 9.0 移除
+  `vbr_hq`/`qvbr` ⇒ h264/hevc 的 CLI/harness 口径从 `vbr_hq` 改为 `vbr -tune hq -multipass fullres`
+  （VE 已改；VE SDK 侧仍 `RC_VBR_HQ(32)`，实测驱动仍接受）。**本专项（AV1）不受影响**（本就 plain `vbr`）。
+  VU 侧 h264/hevc 需重新同步，否则共享 `QUALITY_MAP` 的 ⑨ 组变红（handoff）。
 - **QP 轴（`QUALITY_MAP_QP` / `_QP_SCALE`）**：VE 侧是独立表；VU 侧无表，只有 `_QP_SCALE`。
   本专项落 `QUALITY_MAP_QP['av1_nvenc']` 后，若与 VU 的 `_QP_SCALE=3` 冲突，**通知 VU 同步**（CR-4）。
 - **跨仓态势已双向对称**：VE harness 现与 VU 一样会打印「两表是否相等 / 对侧 harness 是否同版 /

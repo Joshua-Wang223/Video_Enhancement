@@ -890,17 +890,26 @@ class FFmpegWriter:
             #                        因此 VBR 路径不设 -delay 0。
             #   · -surfaces N        扩大 NVENC 内部帧缓冲（同 crf=0 路径）。
             # [FIX-FFMPEGWRITER-RC] 根据 Level 1 的 RC 模式选择对应的 FFmpeg -rc:v 值
-            # 注意：qvbr 在旧版 FFmpeg h264_nvenc 中不可用，回退到 vbr_hq
-            _rc_v_map = {'vbr_hq': 'vbr_hq', 'qvbr': 'vbr_hq', 'vbr': 'vbr', 'cbr': 'cbr', 'constqp': 'constqp'}
-            _rc_v = _rc_v_map.get(rc_mode, 'vbr_hq')
-            # [FIX-AV1-RC] av1_nvenc 的 `-rc` 只接受 constqp/vbr/cbr（实测 ffmpeg 7.1：
-            # `-rc:v vbr_hq` → `Undefined constant or missing '(' in 'vbr_hq'` →
-            # `Unable to parse option value` → 整条编码命令失败）。与
-            # nvenc_sdk.NVENCEncoder 的 AV1 自动降级、以及 realesrgan 侧同口径。
-            if 'av1' in codec and _rc_v in ('vbr_hq', 'qvbr'):
-                print(f'[FFmpegWriter] av1_nvenc 不支持 rc={_rc_v}，自动降级为 vbr',
+            # [FIX-FFMPEG9-VBRHQ] FFmpeg 9.0 起 CLI **移除**了 `vbr_hq` 与 `qvbr`：
+            #   `ffmpeg -h encoder=h264_nvenc` 的 -rc 只剩 constqp/vbr/cbr，传 vbr_hq
+            #   报 `Unable to parse "rc" option value "vbr_hq"`（rc=234）。迁移到官方
+            #   建议的模块化组合 `-rc:v vbr -tune hq -multipass fullres`（旧 vbr_hq
+            #   隐含多遍高质量，新组合显式补回；T4 实测 h264 ΔVMAF -0.048 / hevc -0.130）。
+            #   · qvbr 亦被移除，一并映射为 vbr（与旧映射 vbr_hq 的近似程度相同）。
+            #   · 这是 **CLI token 与 SDK 数字枚举的边界翻译层**：内部 rate_mode 名、
+            #     config/JSON/缓存 key、以及 nvenc_sdk 的 rc_ptr[1]=32 都保持不变
+            #     （T4 实测驱动 13.0 仍接受 32 且行为非静默钳制）。
+            #   · 候选 **方案 B**（未来驱动/SDK 不再接受 32 时）：给
+            #     nvenc_sdk._build_encoder_config 增 `vbr` 分支（rc_ptr[1]=1 +
+            #     targetQuality + avgBitrate 天花板），LA 门控改
+            #     `in ('vbr_hq','vbr','qvbr')`，再全链路改内部名 + 跨仓同步。
+            _rc_v_map = {'vbr_hq': 'vbr', 'qvbr': 'vbr', 'vbr': 'vbr', 'cbr': 'cbr', 'constqp': 'constqp'}
+            _rc_v = _rc_v_map.get(rc_mode, 'vbr')
+            # [FIX-AV1-RC] av1_nvenc 的 `-rc` 只接受 constqp/vbr/cbr。新版 _rc_v_map 已把
+            # vbr_hq/qvbr 统一映射为 vbr，av1 无需再单独降级——此处仅保留告警日志。
+            if 'av1' in codec and rc_mode in ('vbr_hq', 'qvbr'):
+                print(f'[FFmpegWriter] av1_nvenc 不支持 rc={rc_mode}，已映射为 vbr',
                       flush=True)
-                _rc_v = 'vbr'
             if _rc_v == 'constqp':
                 # [QUALITY-UNIFY] CONSTQP 专用参数是 -qp，不是 -cq:v：
                 #   ffmpeg: -cq "…for constant quality mode in VBR rate control"（仅 VBR 有效）
@@ -918,9 +927,15 @@ class FFmpegWriter:
                 ]
             else:
                 _la = _NVENC_LOOKAHEAD_VBR if lookahead_depth is None else int(lookahead_depth)
+                # [FIX-FFMPEG9-VBRHQ] 迁移自旧 vbr_hq/qvbr：补官方建议的 HQ 组合
+                # `-tune hq -multipass fullres`。仅对 h264/hevc 生效；av1 历史上即 plain
+                # vbr（且 T4 无 AV1 NVENC 可验），显式 `vbr` 也保持 plain（用户已明确选择）。
+                _hq_extra = (['-tune', 'hq', '-multipass', 'fullres']
+                             if rc_mode in ('vbr_hq', 'qvbr') and 'av1' not in codec
+                             else [])
                 quality_args = [
                     '-preset', preset,
-                    '-rc:v', _rc_v, '-cq:v', str(crf), '-b:v', '0',
+                    '-rc:v', _rc_v, *_hq_extra, '-cq:v', str(crf), '-b:v', '0',
                     '-bf', '0',
                     '-rc-lookahead', str(_la),
                     '-surfaces', str(_NVENC_SURFACES_PIPE),

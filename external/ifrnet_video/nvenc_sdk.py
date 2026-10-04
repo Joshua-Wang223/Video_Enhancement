@@ -1042,6 +1042,15 @@ class NVENCEncoder:
             # [DIAG-TERM] qvbrQuality 是 RC 质量参数（CRF 语义 1-51），不是 H.264 Level。
             print(f"[NVENCEncoder] QVBR: crf={_qp_val} qvbrQuality(CRF)={_tq} maxBitrate={_est_br//1000}kbps", flush=True)
         else:
+            # ⚠ 未知 rate_mode 会**静默落 CONSTQP**（本分支即兜底）。
+            # [PLAN-B-CANDIDATE] FFmpeg 9.0 CLI 已移除 vbr_hq/qvbr（见 ffmpeg_io.py 的
+            #   [FIX-FFMPEG9-VBRHQ]）。CLI 侧已迁移为 `vbr -tune hq -multipass fullres`；
+            #   SDK 侧仍写 rc_ptr[1]=32（NV_ENC_PARAMS_RC_VBR_HQ）——T4 实测驱动 13.0
+            #   仍接受该值且行为非静默钳制（vbr_hq/constqp/qvbr 三者输出互异），
+            #   故**方案 A 不改本文件**。
+            #   若未来驱动/SDK 不再接受 32，则走**方案 B**：在此新增 `vbr` 分支
+            #   （rc_ptr[1]=1 NV_ENC_PARAMS_RC_VBR + targetQuality@rcParams+88 + avgBitrate），
+            #   同步更新下方 LA 门控收 vbr，并把全链路内部名 vbr_hq→vbr（含缓存 key/跨仓）。
             # CONSTQP mode (default): direct QP control
             rc_ptr[1] = 0                            # NV_ENC_PARAMS_RC_CONSTQP
             rc_ptr[2] = _qp_val                      # constQP.qpInterP @offset 8
@@ -1053,6 +1062,9 @@ class NVENCEncoder:
         rc_ptr[9] = rc_ptr[9] | (1 << 3) | (1 << 8)
 
         # Optional: lookahead for VBR_HQ/QVBR (matching Level 2 -rc-lookahead N)
+        # [PLAN-B-CANDIDATE] 方案 B 时此处须改为 `in ('vbr_hq', 'vbr', 'qvbr')`，否则
+        #   内部名改成 `vbr` 后 LA 会被**静默禁用**（T4 实测：--rate-mode-ifrnet vbr 的
+        #   Ready 行 = HEVC CONSTQP ... la=8，la 只是回显、并未真正启用）。
         if self._la_depth > 0 and self._rate_mode in ('vbr_hq', 'qvbr'):
             _rc_bf = rc_ptr[9]                       # bitfield @offset 36
             _rc_bf |= (1 << 5)                       # enableLookahead (bit 5, NOT bit 4)

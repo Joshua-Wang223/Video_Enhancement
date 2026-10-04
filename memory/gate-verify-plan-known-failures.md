@@ -110,3 +110,25 @@ WARN/SKIP（R5/R7/H1/H3）在这里全部真实执行并通过。
 **2026-09-23 再次实证**：为预扫描缓存的 process 模式新增「子进程落盘必须累积」断言时，用**负向校验**
 （monkeypatch 还原成修复前的覆盖写）确认它确实报 `entries=1/4` 失败 —— 不跑这一步就看不出该断言是否
 有效（也才发现"子进程不继承缓存"的假设本来就错，见 [预扫描缓存断点恢复](probe-scene-cut-cache-persistence.md)）。
+
+## 2026-10-04：方案 A 落地后的门禁/判据基线（T4 实测）
+
+方案 A（FFmpeg 9.0 `vbr_hq`/`qvbr` → CLI `vbr -tune hq -multipass fullres`，SDK 与内部名不动；
+见 [T4 vbr_hq 移除验证专项](t4-vbrhq-verification-plan.md)）落地后复跑：
+
+| 入口 | 命令 | 结果 |
+|---|---|---|
+| 静态子集 | `plan_implementation_gate.py --skip-behavior --no-report-file` | **50 / 48 / 0 / 2**（同基线，无回归） |
+| 行为子集 | `plan_implementation_gate.py --behavior-only --no-report-file` | **46 / 46 / 0 / 0**（同基线） |
+| 合并（静态+行为） | 二者相加 | **96 项 / 94 通过 / 0 失败 / 2 跳过** |
+| CRF/CQ 判据 | `crf_cq_unification_verify.py --no-gpu --quick` | **PASS=94 / FAIL=0 / WARN=0 / SKIP=11** |
+| harness 自测 | `calibrate_equal_quality.py --selftest` | 全绿（两条 `_lock_for`/`_axis_lock` 期望已改为新 vbr 组合） |
+
+- **G5-3 的静态正则已随迁移更新**：`'-rc:v', _rc_v, '-cq:v'` → 放行中间插入的 `*_hq_extra`
+  （h264/hevc 才追加 `-tune hq -multipass fullres`）。这是**断言跟随代码**的正常同步，非放宽判据。
+- **G5-10 两侧映射表语义仍一致**（`vbr_hq→vbr`、`qvbr→vbr`），逐字相等断言通过。
+- 真实 `FFmpegWriter`（真 ffmpeg 进程，`rc_mode='vbr_hq'`）下发
+  `... -rc:v vbr -tune hq -multipass fullres -cq:v 26 -b:v 0 -bf 0 -rc-lookahead 8 -surfaces 32 ...`，
+  产出 30 帧有效 h264。
+- ⚠️ `crf_cq_unification_verify` 本轮是 **`--no-gpu --quick`** 口径（与文档里旧的 `PASS=93` 不同口径），
+  引用时请连同参数一起写。

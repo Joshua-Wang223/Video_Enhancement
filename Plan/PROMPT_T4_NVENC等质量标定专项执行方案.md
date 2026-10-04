@@ -9,8 +9,12 @@
 > **标定报告**：`Plan/等质量换算表_实现与标定报告.md`（第八版全池表值 / LOO / 门禁分档）
 > **总览指南**：`Accessory/docs/EQQ_CALIBRATION_OVERVIEW.md`
 >
-> 状态：**纯方案，未落地**。本容器当前无 GPU（`/dev/nvidia*` 缺失、`torch.cuda.is_available()=False`），
-> 所有改动与实测须在带 T4 的机器上执行。
+> 状态（2026-10-04 更新）：**harness/口径改动已落地；标定主体（T4-1~T4-4）待跑**。
+> 本容器现有 Tesla T4（`nvidia-smi` 可用），`h264_nvenc`/`hevc_nvenc` 实跑 rc=0。
+> **CR-1/CR-2 均已收口**；CR-2 因 FFmpeg 9.0 移除 `vbr_hq`/`qvbr` **二次修订**为 CLI/harness
+> `vbr -tune hq -multipass fullres`（SDK 路径不动）——见 §4.1/§12.5 与
+> `Plan/T4_NVENC_vbr_hq移除_验证专项.md`。**⚠ VU 侧待重新同步**（⑨ 组暂不可比），
+> 故正式标定前先完成 VU handoff。
 
 ---
 
@@ -107,8 +111,10 @@ done
 > 见 §12 态势），VE 侧**只在其上叠加 `--axis` 扩展**，避免两份实现分叉。
 >
 > **落地状态**：`--selftest` **39 项全过**；CPU 干跑（`--quick --codecs libx265`）端到端通过并
-> 打印跨仓态势；无 GPU 时硬件探测优雅降级（exit 2 明确报错）；判据 `PASS=93/FAIL=0`、
-> 门禁 `96/92/0/2`、pytest 与基线一致（详见 §12.4 验证记录）。
+> 打印跨仓态势；无 GPU 时硬件探测优雅降级（exit 2 明确报错）。
+> **2026-10-04 方案 A 落地后复跑（T4）**：`--selftest` 全绿；`crf_cq_unification_verify.py
+> --no-gpu --quick` = **PASS=94 / FAIL=0 / SKIP=11**；`plan_implementation_gate.py` 静态
+> **50/48/0/2** + 行为 **46/46**（合并 **96/94/0/2**）（详见 §12.4 验证记录）。
 
 ### 4.1 新增 NVENC 档位与配套参数（已落地）
 
@@ -125,12 +131,16 @@ HW_CODECS = {'h264_nvenc', 'hevc_nvenc', 'av1_nvenc'}   # 需「实编探测」�
 BASE_LOCK = {
     ...
     # ✅ CR-1（preset）已收口：统一 **p4**（以 VE 的 E5 为准）。
-    # ✅ CR-2（rate control）已裁定（路线 B，2026-10-04）：
-    #   · h264/hevc → **`-rc:v vbr_hq`**（与 VE 生产 / SDK Level 1 的 RC_VBR_HQ 一致）；
-    #   · av1_nvenc 的 `-rc` 只接受 constqp/vbr/cbr ⇒ **`vbr`**（与 VE 生产降级口径一致）。
-    #   ⚠ VU 侧待同步：h264/hevc 由 `auto`(=VBR) 改为 `-rc:v vbr_hq`（生产 + harness，handoff）。
-    'h264_nvenc': ['-rc:v', 'vbr_hq', '-b:v', '0', '-preset', 'p4'],
-    'hevc_nvenc': ['-rc:v', 'vbr_hq', '-b:v', '0', '-preset', 'p4'],
+    # ✅ CR-2（rate control）已裁定（路线 B；2026-10-04 因 FFmpeg 9.0 更新）：
+    #   · h264/hevc → **`-rc:v vbr -tune hq -multipass fullres`**
+    #     ⚠ FFmpeg 9.0 CLI 移除 `vbr_hq`/`qvbr`（-rc 只剩 constqp/vbr/cbr；传 vbr_hq 报
+    #       `Unable to parse "rc" option value`，rc=234）。旧口径 `-rc:v vbr_hq` 作废。
+    #       VE SDK 侧内部仍走 RC_VBR_HQ(32)——T4 实测驱动 13.0 仍接受，故仅 CLI/harness 迁移。
+    #   · av1_nvenc 的 `-rc` 只接受 constqp/vbr/cbr ⇒ **plain `vbr`**（与 VE 生产降级口径一致）。
+    #   ⚠ VU 侧待同步（handoff）：VU 生产/harness/探针若仍下发 `-rc:v vbr_hq` 会被 FFmpeg 9.0
+    #     拒绝 ⇒ 需同步改 `vbr -tune hq -multipass fullres`，否则共享 QUALITY_MAP 的 ⑨ 组变红。
+    'h264_nvenc': ['-rc:v', 'vbr', '-tune', 'hq', '-multipass', 'fullres', '-b:v', '0', '-preset', 'p4'],
+    'hevc_nvenc': ['-rc:v', 'vbr', '-tune', 'hq', '-multipass', 'fullres', '-b:v', '0', '-preset', 'p4'],
     'av1_nvenc':  ['-rc:v', 'vbr',    '-b:v', '0', '-preset', 'p4'],
 }
 QUALITY_FLAG = {..., 'h264_nvenc': '-cq:v', 'hevc_nvenc': '-cq:v', 'av1_nvenc': '-cq:v'}
@@ -252,7 +262,7 @@ CLI `--sibling-root` 可显式指定对侧；不给则自动找同级 `VidUtils`
 # 纯 CPU 基线（本容器即可跑，用于确认「改动前」门禁数）
 python3 Accessory/verify/crf_cq_unification_verify.py --quick < /dev/null   # FAIL=0（除 cv2 环境项）
 python3 Accessory/verify/plan_implementation_gate.py < /dev/null            # FAIL=0
-python3 Accessory/probe/calibrate_equal_quality.py --selftest               # 19 项全过
+python3 Accessory/probe/calibrate_equal_quality.py --selftest               # 39 项全过
 python3 Accessory/probe/eqq_pool_fit_table.py < /dev/null                   # 逐位复现库内表值 rc=0
 ```
 
@@ -347,7 +357,7 @@ python3 /workspace/VidUtils/verify/verify_quality_mapping.py < /dev/null   # ⑨
 
 | 门 | 命令 | 判据 |
 |---|---|---|
-| harness 自测 | `python3 Accessory/probe/calibrate_equal_quality.py --selftest` | 19 项全过 |
+| harness 自测 | `python3 Accessory/probe/calibrate_equal_quality.py --selftest` | 39 项全过 |
 | 落表器 | `python3 Accessory/probe/eqq_pool_fit_table.py --sides …,gpu_t4` | 2 行 LOO ≤5.9 + 顺序无关 ✅ |
 | 等质量专用判据 | `python3 Accessory/verify/verify_equal_quality.py < /dev/null` | 主门禁 ΔVMAF 达标；退出 0 |
 | 本仓静态判据 | `python3 Accessory/verify/crf_cq_unification_verify.py --quick < /dev/null` | **FAIL=0**（G3 期望值同步后） |
@@ -477,8 +487,8 @@ cd /workspace/VidUtils && python3 verify/verify_quality_mapping.py < /dev/null
 | CPU 干跑 `--quick --codecs libx265` | 端到端通过；**跨仓态势打印正确**（两表相等） |
 | 无 GPU 探测 / `--expect-av1` | 均 **exit 2** 且报错明确（优雅降级） |
 | `test_quality_map_qp_mode.py`（新） | **4/4 通过** |
-| `crf_cq_unification_verify.py --quick` | **PASS=93 / FAIL=0**（与基线一致） |
-| `plan_implementation_gate.py` | **96/92/0/2**（与基线一致） |
+| `crf_cq_unification_verify.py --no-gpu --quick` | **PASS=94 / FAIL=0 / SKIP=11**（2026-10-04 方案 A 落地后复跑；旧记录 `PASS=93` 为不同调用口径，勿混用） |
+| `plan_implementation_gate.py`（静态 / 行为） | 静态 **50/48/0/2** + 行为 **46/46/0/0** = 合并 **96/94/0/2**（与基线一致） |
 | `pytest Accessory/test` | 33 采集：**31 passed**（含新增 4）、2 failed —— 2 例为 `test_chroma_false_positive.py` 的**既有环境问题**（`git stash` 隔离后同样失败，非本次引入） |
 
 > **仍需 GPU 才能验证**：所有实际 NVENC 探测/标定/落表、`--axis qp` 的真实编码结果、
@@ -520,3 +530,17 @@ harness `BASE_LOCK`、探针 `NVENC_PRESET='p4'`、README/基线同步）。残�
 - **为何不选「统一到 vbr」**：VE 的 h264/hevc 生产走 **ctypes 直连 SDK Level 1**，而
   `nvenc_sdk` **不支持 `vbr`**（`else` 分支会静默落到 **CONSTQP**，且 SDK 的 LA 门控只认
   `vbr_hq/qvbr`）⇒ 改 VE 会动生产快路径且易静默出错；改 VU（CLI 层）风险低得多。
+
+**CR-2 二次更新（2026-10-04，FFmpeg 9.0 实测后）**：FFmpeg 9.0.2 **CLI 移除 `vbr_hq` 与
+`qvbr`**（`-rc` 只剩 constqp/vbr/cbr；传 vbr_hq 报 `Unable to parse "rc" option value`，rc=234）
+⇒ 上面「harness `-rc:v vbr_hq`」口径在 FFmpeg 9.0 上不可运行，必须迁移：
+- **VE CLI/harness/探针**：h264/hevc 改 **`-rc:v vbr -tune hq -multipass fullres`**
+  （`calibrate_equal_quality.BASE_LOCK`、`av1_vp9_quality_matrix._PROD_RC`、
+  `crf_cq_unification_verify` 的 `enc_nvenc`/G6 期望）；av1 保持 plain `vbr`。
+  生产 writer `ffmpeg_io` 的 `_rc_v_map`/`_NVENC_RC_MAP` 同步（[FIX-FFMPEG9-VBRHQ]）。
+- **VE SDK 侧不动**：`nvenc_sdk` 仍写 `rc_ptr[1]=32`——T4 实测驱动 13.0 仍接受且行为非静默
+  钳制（vbr_hq/constqp/qvbr 输出互异）⇒ 生产快路径逐字节不变（见
+  `Plan/T4_NVENC_vbr_hq移除_验证专项.md`）。
+- **VU 必须重新同步**：VU 生产/harness/探针/`t4_acceptance` A4 的 `-rc:v vbr_hq` 同样会被
+  FFmpeg 9.0 拒绝 ⇒ 需同步改 `vbr -tune hq -multipass fullres`，否则共享 `QUALITY_MAP` 的
+  ⑨ 组跨仓一致性变红（handoff，本仓无法代改）。

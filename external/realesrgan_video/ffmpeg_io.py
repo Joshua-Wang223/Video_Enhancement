@@ -899,10 +899,17 @@ class FFmpegWriter:
                     #   -bf 0 禁用 B 帧，降低流水线缓冲延迟
                     #   -rc-lookahead N 前向帧预看（与 -delay 0 互斥）
                     # [V6451-RATEMODE] rc_mode / rc_lookahead 由 processor 层透传
-                    # [FIX-QVBR-NVENC] FFmpeg NVENC CLI 不支持 "qvbr" 作为 -rc:v 值，
-                    # 映射到 vbr_hq（语义等价：VBR + -cq:v 质量目标控制）。
-                    _NVENC_RC_MAP = {'constqp': 'constqp', 'vbr_hq': 'vbr_hq', 'qvbr': 'vbr_hq', 'vbr': 'vbr', 'cbr': 'cbr'}
-                    nvenc_rc = _NVENC_RC_MAP.get(rc_mode, 'vbr_hq')
+                    # [FIX-FFMPEG9-VBRHQ] FFmpeg 9.0 起 CLI **移除**了 `vbr_hq` 与 `qvbr`
+                    # （-rc 只剩 constqp/vbr/cbr，传 vbr_hq 报 `Unable to parse "rc"
+                    # option value`，rc=234）。迁移到官方建议的模块化组合
+                    # `-rc:v vbr -tune hq -multipass fullres`（旧 vbr_hq/qvbr 隐含多遍
+                    # 高质量，新组合在下面 else 分支显式补回；T4 实测 ΔVMAF -0.048/-0.130）。
+                    # 这是 CLI token 与 SDK 数字枚举的边界翻译层：内部 rate_mode 名、
+                    # config/缓存 key、nvenc_sdk 的 rc_ptr[1]=32 均不变。候选 **方案 B**
+                    # （驱动不再接受 32 时）：nvenc_sdk 加 `vbr` 分支 + LA 门控收 vbr + 全链路改名。
+                    # 与 ifrnet_video 侧 `_rc_v_map` 逐字同源（G5-10 校验两侧语义一致）。
+                    _NVENC_RC_MAP = {'vbr_hq': 'vbr', 'qvbr': 'vbr', 'vbr': 'vbr', 'cbr': 'cbr', 'constqp': 'constqp'}
+                    nvenc_rc = _NVENC_RC_MAP.get(rc_mode, 'vbr')
                     if nvenc_rc == 'constqp':
                         # [QUALITY-UNIFY] CONSTQP 专用参数是 -qp，不是 -cq:v：
                         #   ffmpeg: -cq "…for constant quality mode in VBR rate control"（仅 VBR 有效）
@@ -922,18 +929,21 @@ class FFmpegWriter:
                             '-surfaces', str(_NVENC_SURFACES_PIPE),
                         ]
                     else:
-                        # [FIX-AV1-RC] av1_nvenc 的 `-rc` 只接受 constqp/vbr/cbr
-                        # （实测 ffmpeg 7.1：`Undefined constant or missing '(' in
-                        # 'vbr_hq'` → `Unable to parse option value` → 整条命令失败）。
-                        # 与 nvenc_sdk.NVENCEncoder 的 AV1 降级同口径。
-                        if 'av1' in video_codec and nvenc_rc in ('vbr_hq', 'qvbr'):
-                            print(f'[FFmpegWriter] av1_nvenc 不支持 rc={nvenc_rc}，'
-                                  f'自动降级为 vbr', flush=True)
-                            nvenc_rc = 'vbr'
+                        # [FIX-AV1-RC] av1_nvenc 的 `-rc` 只接受 constqp/vbr/cbr。新版
+                        # _NVENC_RC_MAP 已把 vbr_hq/qvbr 统一映射为 vbr，此处仅保留告警。
+                        if 'av1' in video_codec and rc_mode in ('vbr_hq', 'qvbr'):
+                            print(f'[FFmpegWriter] av1_nvenc 不支持 rc={rc_mode}，'
+                                  f'已映射为 vbr', flush=True)
+                        # [FIX-FFMPEG9-VBRHQ] 迁移自旧 vbr_hq/qvbr：补官方建议的 HQ 组合
+                        # `-tune hq -multipass fullres`。av1 保持 plain vbr（历史口径），
+                        # 显式 `vbr` 也保持 plain（用户已明确选择）。
+                        _hq_extra = (['-tune', 'hq', '-multipass', 'fullres']
+                                     if rc_mode in ('vbr_hq', 'qvbr') and 'av1' not in video_codec
+                                     else [])
                         print(f'[FFmpegWriter] rate_mode={rc_mode} rc-lookahead={rc_lookahead}')
                         quality_args = [
                             '-preset', nvenc_preset,
-                            '-rc:v', nvenc_rc, '-cq:v', str(crf), '-b:v', '0',
+                            '-rc:v', nvenc_rc, *_hq_extra, '-cq:v', str(crf), '-b:v', '0',
                             '-bf', '0',
                             '-rc-lookahead', str(rc_lookahead),
                             '-surfaces', str(_NVENC_SURFACES_PIPE),

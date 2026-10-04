@@ -1,6 +1,6 @@
 ---
 name: 等质量 GPU 标定的跨仓契约（VE↔VU）
-description: M4 GPU 等质量标定的跨仓契约（VE↔VU）：preset/RC 口径分歧会让两仓共享 QUALITY_MAP 的 NVENC 行不逐字相等（⑨ 组红）。CR-1 preset 已统一 p4；CR-2 已裁定路线 B（h264/hevc 统一 vbr_hq、av1 保持 vbr）；含 harness 实现状态、SDK 不支持 vbr 的陷阱与 p5 残留甄别
+description: M4 GPU 等质量标定的跨仓契约（VE↔VU）：preset/RC 口径分歧会让两仓共享 QUALITY_MAP 的 NVENC 行不逐字相等（⑨ 组红）。CR-1 preset 已统一 p4；CR-2 因 FFmpeg 9.0 移除 vbr_hq/qvbr 二次修订为 CLI h264/hevc `vbr -tune hq -multipass fullres`（SDK 仍 RC_VBR_HQ=32）、av1 保持 vbr；含 VU 待同步 handoff、SDK 不支持 vbr 的陷阱与 p5 残留甄别
 type: project
 ---
 
@@ -18,29 +18,25 @@ VU 原 `DEFAULT_PRESET_GPU="p5"`。preset 与 rate control 会整体平移率失
 **How to apply**：上机（T4/L40）**之前**先落定 CR-1/CR-2；否则白跑一轮标定。
 - **CR-1 已收口**（2026-10-04，两仓均 p4）：VE 本已 p4；VU 已把生产默认 + harness + 探针
   一并改 p4（残留 p5 为兼容显式 p5 的有意保留，详见 VE 方案 §12.5 的甄别表）。
-- **CR-2 已裁定「路线 B」**（2026-10-04）：**h264/hevc 统一 `vbr_hq`，av1 保持 `vbr`**。
-  * **VE 侧已落地**：生产**不动**（h264/hevc 本 `vbr_hq`、av1 降级 `vbr`）；**标定 harness 改**
-    h264/hevc → `-rc:v vbr_hq`、av1 → `-rc:v vbr`。**改 VE 生产被否**：其 h264/hevc 走 ctypes
-    直连 SDK，`nvenc_sdk` **不支持 `vbr`**（落到 `else` ⇒ 静默 CONSTQP；SDK 的 LA 门控只认
-    `vbr_hq/qvbr`）⇒ 直接改 config 会毁掉快路径且不报错。
-  * **VU 已同步（含 av1）**（2026-10-04 二次复检）：`_NVENC_DEFAULT_RC={h264_nvenc,hevc_nvenc:"vbr_hq",
-    av1_nvenc:"vbr"}`（两脚本孪生）+ harness `-rc vbr_hq`/`-rc vbr`（selftest 过）+ `t4_acceptance` A4
-    `-rc vbr_hq`。⇒ **生产与 harness 两仓口径已完全一致、且均显式下发 `-rc`**。
-  * **VE 探针已修**（2026-10-04）：`Accessory/probe/av1_vp9_quality_matrix.py` 新增 `_PROD_RC`
-    （`av1_nvenc → -rc:v vbr`、`h264/hevc → vbr_hq`），A 组 CQ 路径显式下发 rc；命令形状已 CPU 验证
-    （av1→vbr / h264→vbr_hq / 软编不带 -rc）。判据 `crf_cq_unification_verify.py` 的 NVENC 编码**本就带
-    `-rc:v`**（`:609-626`）⇒ VE 侧已无缺口。
-  * **VU 探针已修**（2026-10-04）：`probe/verify_nvenc_quality_gpu.py::encode_nvenc(mode='cq')`
-    改走 `_cq_rc(codec)`（av1→`vbr`、h264/hevc→`vbr_hq`），并加 selftest 断言
-    `(_cq_rc('av1_nvenc'), _cq_rc('h264_nvenc'), _cq_rc('hevc_nvenc')) == ('vbr','vbr_hq','vbr_hq')`。
-  * ✅ **结论**：生产 / harness / 探针 / 判据 **两仓各层全部显式对齐**，CR-2 无残留。
+- **CR-2 已裁定「路线 B」并因 FFmpeg 9.0 **二次修订**（2026-10-04）**：
+  * **原裁定**（同日早些）：h264/hevc 统一 `vbr_hq`、av1 保持 `vbr`（理由：VE 生产 SDK Level 1 = RC_VBR_HQ）。
+  * **二次修订**：FFmpeg 9.0 CLI **移除 `vbr_hq`/`qvbr`**（`-rc` 只剩 constqp/vbr/cbr；传 vbr_hq 报
+    `Unable to parse "rc" option value`，rc=234）⇒ **CLI/harness/探针层** h264/hevc 改为
+    **`-rc:v vbr -tune hq -multipass fullres`**；av1 保持 plain `vbr`。
+  * **VE 侧已落地**：`ffmpeg_io` 的 `_rc_v_map`/`_NVENC_RC_MAP`（[FIX-FFMPEG9-VBRHQ]）+ `calibrate_equal_quality.BASE_LOCK`
+    + `av1_vp9_quality_matrix._PROD_RC` + `crf_cq_unification_verify` 的 `enc_nvenc`/G6 期望。**VE 生产 SDK 路径不动**
+    （`rc_ptr[1]=32`，T4 实测驱动 13.0 仍接受且行为非静默钳制）⇒ 快路径逐字节不变。
+  * **⚠ VU 必须重新同步（handoff，本仓无法代改）**：VU 生产/harness/探针/`t4_acceptance` A4 的
+    `-rc:v vbr_hq` 同样会被 FFmpeg 9.0 拒绝 ⇒ 改 `vbr -tune hq -multipass fullres`，否则 ⑨ 组变红。
+  * **陷阱不变**：VE `nvenc_sdk` **不支持内部名 `vbr`**（`else` 静默落 CONSTQP + LA 门控只认
+    `vbr_hq/qvbr`）⇒ 只改 CLI token；**不要**把内部 rate_mode 改成 vbr（除非同时上方案 B）。
 
 ## 契约清单
 
 | 编号 | 内容 | 现状 | 处置 |
 |---|---|---|---|
 | **CR-1** | NVENC preset：VE `p4` vs VU `p5` | ✅ **已收口（两仓均 p4）** | **VE 无需改**（本就 p4）。**VU 已改**：生产 `DEFAULT_PRESET_GPU` p5→p4（`vidcrop_cpu_v2.py` + `vidcrop_hwaccel.py` 孪生）+ harness `BASE_LOCK` p4 + 探针 `NVENC_PRESET='p4'` + README/`test/baseline` 同步。残留 `p5` 均**有意保留**（反向降级表 `p5→medium`、官方枚举 `slow→p5`、`_NVENC_PRESET_RETRY` 兼容显式 p5、QSV 断言） |
-| **CR-2** | NVENC rate control 口径：h264/hevc 与 av1 的 rc 两仓统一 | ✅ **生产 + harness 两仓均已统一**：h264/hevc `vbr_hq`、av1 `vbr`（**均显式下发 `-rc`**） | **VE**：生产不动（SDK RC_VBR_HQ / av1 降级 vbr）；harness `-rc:v vbr_hq`/`-rc:v vbr`。**VU 已同步**：`_NVENC_DEFAULT_RC={h264_nvenc,hevc_nvenc:"vbr_hq", av1_nvenc:"vbr"}`（两脚本孪生）+ harness `-rc vbr_hq`/`-rc vbr`（selftest 过）+ t4_acceptance A4 `-rc vbr_hq`。✅ **全链路对齐，无残留**：生产 / 标定 harness / 验收探针（两仓）**均显式下发 `-rc`**。VE 探针 `av1_vp9_quality_matrix.py` 加了 `_PROD_RC`；VU 探针 `verify_nvenc_quality_gpu.py` 加了 `_cq_rc`（cq 分支 `-rc vbr_hq`/`vbr`，含 selftest 断言）；判据 `crf_cq_unification_verify.py` 本就带 `-rc:v` |
+| **CR-2** | NVENC rate control 口径：h264/hevc 与 av1 的 rc 两仓统一 | ⚠ **FFmpeg 9.0 二次修订后：VE 已落地，VU 待同步** | CLI/harness 层 h264/hevc 改 `vbr -tune hq -multipass fullres`、av1 `vbr`（均显式 `-rc`）；**VE SDK 仍 RC_VBR_HQ=32 不动**。**VE 已落地**（生产 writer `_rc_v_map` + harness `BASE_LOCK` + 探针 `_PROD_RC` + 判据 `enc_nvenc`/G6）。**VU 待同步**：其 `_NVENC_DEFAULT_RC`/harness/探针/`t4_acceptance` A4 的 `vbr_hq` 需改 `vbr -tune hq -multipass fullres`，否则 ⑨ 组红（handoff）。原「路线 B（vbr_hq）」口径被 FFmpeg 9.0 移除所推翻 |
 | **CR-3** | harness 是否同版 | VE 有 `--axis`（QP 轴 D2b），VU 无 ⇒ md5 不同 | **有意差异**；共享块改动两侧同步，`--axis` 各自演进 |
 | **CR-4** | QP 轴归属 | `QUALITY_MAP_QP` 仅 VE；VU 只有 `_QP_SCALE` | VU 改 `_QP_SCALE`（av1 ×3）须通知 VE 同步 |
 | **CR-5** | 素材池 | 17 条切片在 VE `input_videos/eqq_calib/`（**仓库外、不入 git**） | 上机机需先就位；两仓共用同一池保证口径一致 |
@@ -59,10 +55,11 @@ VU 原 `DEFAULT_PRESET_GPU="p5"`。preset 与 rate control 会整体平移率失
 - **CR-1 preset 已收口**（2026-10-04 复检）：VU 生产 `DEFAULT_PRESET_GPU` 两文件均 **p4**、harness/探针 p4；
   残留 `p5` 全为有意保留（反向降级表 / 官方枚举 / `_NVENC_PRESET_RETRY` / QSV 断言）——
   甄别表见 VE 方案 §12.5。
-- **CR-2 路线 B：生产 + harness 两仓均已统一**（2026-10-04 二次复检）：h264/hevc `vbr_hq`、
-  av1 `vbr`，**均显式下发 `-rc`**（VU 已把 av1 也补成显式 `-rc vbr`）。**关键陷阱**：VE `nvenc_sdk`
-  不支持 `vbr`（静默当 CONSTQP），否决「VE 改 vbr」。**CR-2 无残留**：生产 / harness / 探针
-  （VE `_PROD_RC`、VU `_cq_rc`）/ 判据 两仓各层**均显式 `-rc`**。
+- **CR-2：FFmpeg 9.0 引发二次修订（2026-10-04）**：FFmpeg 9.0 CLI 移除 `vbr_hq`/`qvbr` ⇒
+  CLI/harness/探针层 h264/hevc 从 `vbr_hq` 改为 `vbr -tune hq -multipass fullres`（av1 仍 plain `vbr`）。
+  **VE 已落地**；**VE SDK 路径不动**（`rc_ptr[1]=32`，T4 实测驱动 13.0 仍接受且行为非静默钳制）。
+  **⚠ VU 待同步**（生产/harness/探针/A4 的 `vbr_hq`），否则 ⑨ 组变红。**关键陷阱**：VE `nvenc_sdk`
+  不支持内部名 `vbr`（静默 CONSTQP + LA 失效）⇒ 只改 CLI token。详见 [[t4-vbrhq-verification-plan]]。
 
 ## 关联
 

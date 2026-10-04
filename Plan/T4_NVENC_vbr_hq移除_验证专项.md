@@ -1,7 +1,7 @@
 # T4 NVENC vbr_hq 移除 · 验证专项
 
 > **触发**：FFmpeg 9.0 移除 `-rc:v vbr_hq`（NVIDIA SDK 10.0+ 重构 RC API）
-> **容器环境**：无 GPU（`/dev/nvidia*` 缺失），本文件为**纯方案**，实测须在 T4 机器上执行
+> **实测环境（2026-10-04）**：Tesla T4 / 驱动 580.65.06 / CUDA 13.0 / FFmpeg 9.0.2 / NVENCAPI 13.0 —— 本专项**已执行完毕**，结果见 §0 / §1.5.5 / §1.6；裁定 **方案 A**
 > **FFmpeg 构建特征**：FFmpeg 9.0.2 + libffmpeg-nvenc-dev 12.1.14.0 编译
 > **核心问题**：SDK 12.x 仍定义 `NV_ENC_PARAMS_RC_VBR_HQ=32`，但 FFmpeg 9.0 CLI 拒绝 `-rc:v vbr_hq`
 > **关键约束**（来自 T4 方案 §12.3 CR-2 rationale）：`nvenc_sdk` 的 `else` 分支遇未知 rate_mode 静默落到 CONSTQP，且 SDK LA 门控只认 `vbr_hq/qvbr` → **SDK 路径不支持 plain `vbr`**
@@ -11,7 +11,13 @@
 
 ## 0. 一句话结论
 
-FFmpeg 9.0 CLI 层必炸（`Specified rc mode is deprecated`）。**SDK 12.1.14.0 层的 `rc_ptr[1]=32` 需实测确认**。本专项跑完即可决定：P0 只改 CLI 映射（方案 A），还是 SDK ctypes 也需新增 `vbr` 分支（方案 B）。
+**实测（2026-10-04，Tesla T4 / 驱动 580.65.06 / FFmpeg 9.0.2 / NVENCAPI 13.0）：裁定 P0 = 方案 A（仅 CLI 映射）。**
+
+- FFmpeg 9.0 CLI 层确实拒绝 `-rc:v vbr_hq`（rc=234，`Unable to parse "rc" option value`）；迁移路径 `-rc:v vbr -tune hq -multipass fullres` rc=0（h264/hevc 均通）。
+- nv-codec-headers 13.0/13.1 头文件**已删除** `NV_ENC_PARAMS_RC_VBR_HQ`（`NV_ENC_PARAMS_RC_MODE` 仅剩 CONSTQP/VBR/CBR）——按原判定表应落方案 B。
+- **但驱动运行时仍接受 `rc_ptr[1]=32`**：真实 `NVENCEncoder(rate_mode="vbr_hq")` 初始化成功（apiVersion=0xd0=13.0），且行为验证证明 mode 32 被**真实执行而非静默钳制**（见 §1.6.2）。→ 决定性 `[SDK-test]` 通过 → **方案 A**。
+
+> ⚠️ 头文件删除是开源 `nv-codec-headers` 的裁剪，不等于驱动移除。驱动对 32 做了向后兼容。方案 A 保留内部名 `vbr_hq`（SDK 路径仍用 32），仅把 FFmpeg CLI 映射改为 `vbr + -tune hq -multipass fullres`。
 
 ---
 
@@ -145,37 +151,69 @@ python3 Accessory/probe/nvenc_vbr_hq_verify.py
 
 ### 1.5.4 T4 标定方案中受 vbr_hq 移除影响的待办项
 
-以下 T4 方案（`Plan/PROMPT_T4_NVENC等质量标定专项执行方案.md`）中的待办项需在本专项完成后更新：
+以下 T4 方案（`Plan/PROMPT_T4_NVENC等质量标定专项执行方案.md`）中的待办项需在本专项完成后更新。
+**裁定：方案 A**（V12 ctypes 接受 `rc_ptr[1]=32`）——只需改 harness/CLI 映射，生产内部名与 `nvenc_sdk.py` 均不变：
 
 | T4 方案项 | 当前值 | 需更新为 | 依赖 Gate 0 结论 |
 |---|---|---|---|
-| §4.1 BASE_LOCK h264_nvenc/hevc_nvenc | `-rc:v vbr_hq` | 方案 A: `-rc:v vbr -tune hq -multipass fullres` / 方案 B: 同左 + nvenc_sdk.py 加 vbr 分支 | ⑤ ctypes 结果 |
-| §4.1 CR-2 路线B 裁定 | "h264/hevc → vbr_hq（与 VE 生产 / SDK Level 1 的 RC_VBR_HQ 一致）" | 重新裁定：理由从"SDK 不支持 vbr"变为"FFmpeg 9.0 移除 vbr_hq" | ⑤ ctypes 结果 |
-| §5.6 生产管线冒烟 | `--rate-mode-ifrnet vbr_hq` | 方案 A: `--rate-mode-ifrnet vbr` / 方案 B: 同左 + 确保 nvenc_sdk.py vbr 分支已实现 | ⑤ ctypes 结果 |
-| §12.3 CR-2 协同契约 | "VE 生产走 ctypes 直连 SDK Level 1，nvenc_sdk 不支持 vbr" | 若方案 B：需更新为"nvenc_sdk 已加 vbr 分支，VE 生产可切 vbr" | ⑤ ctypes 结果 |
-| §12.5 CR-2 复检 | "VU 生产默认 rc = --rc-mode auto = 不发 -rc" | 复检 VU 侧是否也需同步 vbr_hq 移除改动 | ⑤ ctypes 结果 |
+| §4.1 BASE_LOCK h264_nvenc/hevc_nvenc | `-rc:v vbr_hq` | **方案 A**：`-rc:v vbr -tune hq -multipass fullres` | ✅ V12 接受 → 方案 A |
+| §4.1 CR-2 路线B 裁定 | "h264/hevc → vbr_hq（与 VE 生产 / SDK Level 1 的 RC_VBR_HQ 一致）" | 重新裁定：理由从"SDK 不支持 vbr"变为"FFmpeg 9.0 移除 vbr_hq"；**VE 生产内部仍用 vbr_hq=32，harness 层映射 vbr** | ✅ V10/V12 |
+| §5.6 生产管线冒烟 | `--rate-mode-ifrnet vbr_hq` | **方案 A：保持 `--rate-mode-ifrnet vbr_hq` 不变**（内部名不变；实测 E2E 150→299 帧守恒）。⚠ 不要传 `vbr`——会静默 CONSTQP+LA 失效（§1.6.3） | ✅ V12 |
+| §12.3 CR-2 协同契约 | "VE 生产走 ctypes 直连 SDK Level 1，nvenc_sdk 不支持 vbr" | **维持原状**（方案 A 不动 SDK 路径）；仅需补一句"FFmpeg 9.0 CLI 层已移除 vbr_hq，VE 的 ffmpeg_io 回退路径映射为 vbr+tune hq+multipass" | ✅ V12 |
+| §12.5 CR-2 复检 | "VU 生产默认 rc = --rc-mode auto = 不发 -rc" | 复检 VU 侧是否也需同步 vbr_hq 移除改动（VU 走 FFmpeg CLI，其 harness `-rc:v vbr_hq` 同样会被 FFmpeg 9.0 拒绝 → 需与 VE 同步改 `vbr -tune hq -multipass fullres`） | ✅ V12 |
 
 ### 1.5.5 待办验证清单（T4 上机执行）
 
-| # | 验证项 | 命令/脚本 | 预期结果 | 实际结果 |
+| # | 验证项 | 命令/脚本 | 预期结果 | 实际结果（2026-10-04 T4） |
 |---|---|---|---|---|
-| V1 | nvidia-smi | `nvidia-smi -L` | Tesla T4 | |
-| V2 | torch CUDA | `python3 -c "import torch;print(torch.cuda.is_available())"` | True | |
-| V3 | FFmpeg 版本 | `ffmpeg -version \| head -1` | 9.0.2 | |
-| V4 | NVENC 编码器 | `ffmpeg -encoders \| grep nvenc` | h264/hevc/av1_nvenc 均列出 | |
-| V5 | h264_nvenc 实跑 | `ffmpeg ... -c:v h264_nvenc -f null -` | rc=0 | |
-| V6 | hevc_nvenc 实跑 | `ffmpeg ... -c:v hevc_nvenc -f null -` | rc=0 | |
-| V7 | av1_nvenc 实跑 | `ffmpeg ... -c:v av1_nvenc -f null -` | rc≠0 | |
-| V8 | vbr_hq CLI 被拒 | `ffmpeg ... -rc:v vbr_hq ...` | rc≠0 | |
-| V9 | vbr 迁移路径 | `ffmpeg ... -rc:v vbr -tune hq -multipass fullres ...` | rc=0 | |
-| V10 | 头文件 VBR_HQ | `grep NV_ENC_PARAMS_RC_VBR_HQ nvEncodeAPI.h` | =32 或无定义 | |
-| V11 | 诊断脚本 | `python3 nvenc_rc_mode_diagnose.py` | 输出关键信息 | |
-| V12 | ctypes vbr_hq | `python3 nvenc_vbr_hq_verify.py` | 接受/拒绝 | |
-| V13 | ctypes vbr（若 V12 拒绝） | 同上脚本自动测 | 接受/拒绝 | |
-| V14 | 画质对比 ΔVMAF | 标定预跑 | ≤0.3 | |
-| V15 | LA 联动 | vbr 模式下 LA=8 | 正常启用 | |
+| V1 | nvidia-smi | `nvidia-smi -L` | Tesla T4 | ✅ GPU 0: Tesla T4 |
+| V2 | torch CUDA | `python3 -c "import torch;print(torch.cuda.is_available())"` | True | ✅ torch 2.10.0+cu128, True, Tesla T4 |
+| V3 | FFmpeg 版本 | `ffmpeg -version \| head -1` | 9.0.2 | ✅ 9.0.2 |
+| V4 | NVENC 编码器 | `ffmpeg -encoders \| grep nvenc` | h264/hevc/av1_nvenc 均列出 | ✅ 三者均列出 |
+| V5 | h264_nvenc 实跑 | `ffmpeg ... -c:v h264_nvenc -f null -` | rc=0 | ✅ rc=0 |
+| V6 | hevc_nvenc 实跑 | `ffmpeg ... -c:v hevc_nvenc -f null -` | rc=0 | ✅ rc=0 |
+| V7 | av1_nvenc 实跑 | `ffmpeg ... -c:v av1_nvenc -f null -` | rc≠0 | ✅ rc=187（T4 无 AV1 编码） |
+| V8 | vbr_hq CLI 被拒 | `ffmpeg ... -rc:v vbr_hq ...` | rc≠0 | ✅ rc=234 `Unable to parse "rc" option value "vbr_hq"` |
+| V9 | vbr 迁移路径 | `ffmpeg ... -rc:v vbr -tune hq -multipass fullres ...` | rc=0 | ✅ rc=0（h264/hevc 均通） |
+| V10 | 头文件 VBR_HQ | `grep NV_ENC_PARAMS_RC_VBR_HQ nvEncodeAPI.h` | =32 或无定义 | ⚠️ **无定义**（nv-codec-headers 13.0/13.1 仅 CONSTQP/VBR/CBR） |
+| V11 | 诊断脚本 | `python3 nvenc_rc_mode_diagnose.py` | 输出关键信息 | ✅ 确认 VBR_HQ 未在头文件；-rc 仅 constqp/vbr/cbr |
+| V12 | ctypes vbr_hq | `python3 nvenc_vbr_hq_verify.py` | 接受/拒绝 | ✅ **接受**（apiVersion=0xd0=13.0，`Ready ... VBR_HQ`） |
+| V13 | ctypes vbr（若 V12 拒绝） | 同上脚本自动测 | 接受/拒绝 | —（V12 接受，未触发；另测 `vbr` 落入 `else`→CONSTQP，见 §1.6.3） |
+| V14 | 画质对比 ΔVMAF | 标定预跑 | ≤0.3 | ✅ h264 ΔVMAF=−0.048；hevc ΔVMAF=−0.130（真实素材，见 §1.6.1） |
+| V15 | LA 联动 | vbr 模式下 LA=8 | 正常启用 | ✅ `-rc-lookahead 8` 输出与 LA=0 不同（生效）；SDK 路径 vbr_hq+LA8 E2E 150→299 帧守恒 |
 
-> 上机后逐项填写「实际结果」列，完成后根据 V12 结果选择方案 A 或方案 B。
+> **裁定（依 V12）**：方案 A —— P0 只改 CLI 映射；`nvenc_sdk.py` 不动。
+
+---
+
+## 1.6 实测结果（2026-10-04，Tesla T4）
+
+### 1.6.1 §4 画质对比（真实素材，锚点 cq=23）
+
+> ⚠️ 原 §4 的"旧路径"在 FFmpeg 9.0 上无法产出（`vbr_hq` 被拒）。为取得**真实旧基线**，改用系统备份的 **FFmpeg 6.1.1**（`/var/backups/ffmpeg-v9/20261001-015049/usr_bin/ffmpeg`，实测接受 `-rc:v vbr_hq`）编码旧产物；新产物用 FFmpeg 9.0.2 迁移路径。**存在 FFmpeg 版本混淆**（6.1.1 vs 9.0.2），Δ 值仅供量级参考。
+
+素材：`input_vidiow/real_captured/test_video_640_360_real.mp4`（640×360@30，真实拍摄），取前 6 s（183 帧），无损流拷贝作参考。
+
+| codec | 旧 `vbr_hq` bytes | 新 `vbr+th+mp` bytes | ΔPSNR | 旧 VMAF | 新 VMAF | **ΔVMAF** |
+|---|---|---|---|---|---|---|
+| h264_nvenc | 1,539,271 | 1,467,218 (−4.7%) | −0.090 | 97.679 | 97.631 | **−0.048** |
+| hevc_nvenc | 1,562,355 | 1,538,863 (−1.5%) | −0.077 | 97.513 | 97.383 | **−0.130** |
+
+**判据 ΔVMAF ≤ 0.3 → 双 codec PASS。** 新路径体积略小、画质差在噪声量级内。
+
+### 1.6.2 `[SDK-test]` 决定性证据（V12）
+
+- `nvenc_vbr_hq_verify.py`：`NVENCEncoder(rate_mode="vbr_hq")` 构造成功 → SDK/驱动接受 `rc_ptr[1]=32`。
+  - ⚠️ 脚本原有两个 bug（`sys.path` 少一层 `dirname` → `No module named 'external'`；`subprocess.run(...).values()` 在 `CompletedProcess` 上不存在）→ 已修复后方可运行。
+- **行为验证**（排除"静默钳制为 CONSTQP"）：同输入 30 帧噪声，
+  `vbr_hq`=1,076,383 B / `constqp`=2,159,969 B / `qvbr`=1,018,148 B，三者互异且各 30 帧守恒 → mode 32 真实生效。
+
+### 1.6.3 `vbr` 在 SDK 路径的现状（Plan A 依据）
+
+`nvenc_sdk.py:1044` 的 `else` 把未知 rate_mode 映射为 CONSTQP；`:1056` LA 门控 `_rate_mode in ('vbr_hq','qvbr')`。实测 `--rate-mode-ifrnet vbr`：
+`[NVENCEncoder] Ready: 640x360@60.0fps HEVC CONSTQP QP=28 ... la=8`（**静默 CONSTQP，且 LA 未真正启用**）。
+→ 生产默认内部名始终为 `vbr_hq`，故方案 A 不改内部名即不受影响；但 CLI 已开放 `vbr`/`cbr` 选择，属独立既有隐患（若后续需支持，才走方案 B）。
+
 ---
 
 ## 2. 判定表（五步结果 → P0 范围）
@@ -413,3 +451,24 @@ L40 方案（`PROMPT_L40_AV1等质量标定专项执行方案.md`）**不受影�
 | 并发会话抢 GPU（共享主机） | `nvidia-smi` 查负载；`--jobs 1` |
 | 会话中途 GPU 被回收 | 每步当场复跑；报告写实测时刻 |
 | `< /dev/null` 缺失致 SIGTTOU 假挂起 | 全部命令加 |
+
+---
+
+## 10. 方案 A 落地记录（2026-10-04）
+
+按方案 A 落地（仅 CLI token 迁移；SDK ctypes 与内部名不动）：
+
+| 文件 | 改动 |
+|---|---|
+| `external/ifrnet_video/ffmpeg_io.py` | `[FIX-FFMPEG9-VBRHQ]`：`_rc_v_map` vbr_hq/qvbr→vbr；vbr_hq/qvbr 追加 `-tune hq -multipass fullres`（h264/hevc） |
+| `external/realesrgan_video/ffmpeg_io.py` | 同上（`_NVENC_RC_MAP`），与 ifrnet 侧逐字同源（G5-10 校验） |
+| `external/ifrnet_video/nvenc_sdk.py` / `external/realesrgan_video/nvenc_sdk.py` | 仅加 `[PLAN-B-CANDIDATE]` 注释（else→CONSTQP、LA 门控），**行为不变** |
+| `Accessory/probe/calibrate_equal_quality.py` | BASE_LOCK h264/hevc → `vbr -tune hq -multipass fullres`；selftest 同步；CR-2 理由更新 |
+| `Accessory/verify/crf_cq_unification_verify.py` | `enc_nvenc` / `_probe_raw_driver_illegal` / G6-1 / G6-4 命令形状同步 |
+| `Accessory/probe/av1_vp9_quality_matrix.py` | `_PROD_RC` h264/hevc → `vbr -tune hq -multipass fullres` |
+| `Plan/PROMPT_T4_NVENC等质量标定专项执行方案.md` | §4.1 BASE_LOCK + CR-2 二次更新 |
+| `Plan/FFmpeg9.0-移除-vbr_hq-速率控制模式.md` | 补 §七：`qvbr` 一并移除 + 驱动仍接受 SDK 32 + 方案 A/B |
+| `Plan/PROMPT_L40_AV1等质量标定专项执行方案.md` | CR-2 引用同步（AV1 不受影响） |
+
+**未做（Plan A 边界）**：内部 `rate_mode` 名 / config JSON / `config_manager` / `main.py` 默认参数 / 缓存 key / `nvenc_sdk` ctypes 行为。
+**跨仓 handoff**：VU 侧 h264/hevc 的 harness/生产/探针 `-rc:v vbr_hq` 需同步迁移，否则共享 `QUALITY_MAP` 的 ⑨ 组变红（本仓无法代改）。

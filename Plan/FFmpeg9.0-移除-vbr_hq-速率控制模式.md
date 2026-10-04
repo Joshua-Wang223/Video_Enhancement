@@ -66,3 +66,37 @@ ffmpeg -i input.mp4 -c:v h264_nvenc -rc vbr -tune hq -cq 23 -b:v 0 output.mp4
 NVIDIA 移除 `vbr_hq` 是为了推动编码器 API 向**更现代化、更灵活**的方向演进。新方案虽然需要手动配置更多选项，但也换来了**更精细的控制能力**。
 
 > **迁移速记**：`-rc vbr_hq` → `-rc vbr -tune hq -multipass fullres`（或 `qres`）
+
+---
+
+## 七、本仓实测与落地（2026-10-04，Tesla T4 / 驱动 580.65.06 / FFmpeg 9.0.2 / NVENCAPI 13.0）
+
+### 7.1 补充事实：`qvbr` 同样被移除
+
+FFmpeg 9.0 的 `-rc` 取值只剩 `constqp / vbr / cbr`（`ffmpeg -h encoder=h264_nvenc` 实测）；
+`vbr_hq` 与 **`qvbr`** 都已消失。故旧代码里 `qvbr → 'vbr_hq'` 的映射一并作废，
+本仓统一迁移为 `vbr -tune hq -multipass fullres`。
+
+### 7.2 关键纠正：CLI 被移除 ≠ SDK/驱动被移除
+
+- 头文件层面：`nv-codec-headers` **13.0/13.1** 已删除 `NV_ENC_PARAMS_RC_VBR_HQ`（`NV_ENC_PARAMS_RC_MODE` 仅剩 CONSTQP=0/VBR=1/CBR=2）。
+- **但驱动运行时仍接受 `rc_ptr[1]=32`**：T4 实测 `NVENCEncoder(rate_mode="vbr_hq")` 初始化成功（apiVersion=0xd0=13.0），且行为验证证明 mode 32 **真实生效而非静默钳制**（同 30 帧噪声 `vbr_hq`=1,076,383B / `constqp`=2,159,969B / `qvbr`=1,018,148B，三者互异）。
+- 结论：**头文件删除是开源 ffnvcodec 的裁剪，不等于驱动移除**；驱动对 32 做了向后兼容。
+
+### 7.3 落地裁定：方案 A（仅迁移 CLI token）
+
+| 层 | 处理 |
+|---|---|
+| **FFmpeg CLI（`ffmpeg_io.py` 的 `_rc_v_map`/`_NVENC_RC_MAP`、harness、探针）** | 迁移到 `vbr -tune hq -multipass fullres` |
+| **SDK ctypes（`nvenc_sdk.py` 的 `rc_ptr[1]=32`）** | **不动**（驱动仍接受） |
+| **内部 `rate_mode` 名 / config JSON / 缓存 key** | **不动**（Plan A 边界） |
+
+画质实测（真实素材 640×360，cq=23，旧基线用备份 FFmpeg 6.1.1）：h264 ΔVMAF −0.048 / hevc −0.130（≤0.3 PASS）。
+
+### 7.4 候选方案 B（未来驱动/SDK 不再接受 32 时）
+
+① `nvenc_sdk._build_encoder_config` 新增 `vbr` 分支（`rc_ptr[1]=1` NV_ENC_PARAMS_RC_VBR + `targetQuality@rcParams+88` + avgBitrate 天花板）；② LA 门控改 `in ('vbr_hq','vbr','qvbr')`；③ 全链路内部名 `vbr_hq`→`vbr`（config/main/`_NVENC_LEVEL1_RATE_MODE`/缓存 key）；④ 跨仓同步。
+
+⚠ 陷阱：`nvenc_sdk` 的 `else` 会把未知 rate_mode 静默当 CONSTQP，LA 门控又排除 `vbr` ⇒ 只改内部名不改分支会**静默降级**（实测 `--rate-mode-ifrnet vbr` 的 Ready 行 = `HEVC CONSTQP ... la=8`，la 仅回显）。
+
+> 详细验证过程与 V1–V15 清单见 `Plan/T4_NVENC_vbr_hq移除_验证专项.md`。

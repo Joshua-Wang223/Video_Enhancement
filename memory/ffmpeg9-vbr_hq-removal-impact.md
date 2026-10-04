@@ -52,10 +52,10 @@ T4 方案 CR-2 路线B（h264/hevc → `vbr_hq`）需重新裁定：FFmpeg 9.0 �
 
 ## 待办
 
-- [ ] 实测 SDK 13.0 `rc_ptr[1]=32` 是否仍接受（T4 机器）
-- [ ] 更新 T4 方案 CR-2 路线B 裁定
+- [x] **实测 SDK 13.0 `rc_ptr[1]=32` 是否仍接受（T4 机器）→ 2026-10-04 接受**（方案 A 成立；头文件虽删枚举，驱动仍兼容 32）。详见 [[t4-vbrhq-verification-plan]]
+- [ ] 更新 T4 方案 CR-2 路线B 裁定（理由改为"FFmpeg 9.0 移除 vbr_hq"）
 - [ ] 更新 `calibrate_equal_quality.py` BASE_LOCK
-- [ ] GPU 验证：`-rc:v vbr -tune hq -multipass fullres -cq:v N` 画质/码率 vs 旧 `vbr_hq`
+- [x] **GPU 验证：`-rc:v vbr -tune hq -multipass fullres -cq:v N` 画质 vs 旧 `vbr_hq`** → ΔVMAF h264 −0.048 / hevc −0.130（≤0.3 PASS）
 - [ ] 更新 `crf_cq_unification_verify.py` G6 测试用例
 - [ ] 更新 `plan_implementation_gate.py` 的 `rate_mode == "vbr_hq"` 断言
 - [ ] L40 方案同步 T4 方案引用

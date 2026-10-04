@@ -114,12 +114,19 @@ BASE_LOCK = {
     # ✅ 跨仓契约 **CR-1（preset）已收口**：统一 **p4**（以 VE 的 E5 为准）——
     #   VE 生产 `medium→p4`，VU 生产/harness/探针亦已改 p4。
     # ✅ 跨仓契约 **CR-2（rate control）已裁定（路线 B）**：
-    #   · h264/hevc → **`-rc:v vbr_hq`**（与 VE 生产 / SDK Level 1 直通的 RC_VBR_HQ 一致）；
-    #   · av1_nvenc 的 `-rc` 只接受 constqp/vbr/cbr ⇒ **`vbr`**（与 VE 生产降级口径一致）。
-    #     （VE 生产 h264/hevc = `vbr_hq`、av1 = 降级 `vbr`；标定必须逐项一致，否则等效点漂移。）
-    #   ⚠ VU 侧待同步：h264/hevc 由 `auto`(=VBR) 改为 `-rc:v vbr_hq`（生产 + harness，handoff）。
-    'h264_nvenc': ['-rc:v', 'vbr_hq', '-b:v', '0', '-preset', 'p4'],
-    'hevc_nvenc': ['-rc:v', 'vbr_hq', '-b:v', '0', '-preset', 'p4'],
+    #   · h264/hevc → **`-rc:v vbr -tune hq -multipass fullres`**（等价于旧 `vbr_hq`）。
+    #     ⚠ 2026-10-04 起 FFmpeg 9.0 CLI **移除**了 `vbr_hq`（与 `qvbr`）——`-rc` 只剩
+    #       constqp/vbr/cbr，传 vbr_hq 报 `Unable to parse "rc" option value`（rc=234）。
+    #       故旧口径 `-rc:v vbr_hq` 必须迁移到官方建议的模块化组合。T4 实测迁移后
+    #       h264 ΔVMAF -0.048 / hevc -0.130（≤0.3）。
+    #   · av1_nvenc 的 `-rc` 只接受 constqp/vbr/cbr ⇒ **plain `vbr`**（不加 tune/multipass，
+    #     与 VE 生产 av1 历史口径一致；T4 无 AV1 NVENC 无法验证 AV1 侧附加项）。
+    #     （VE 生产 h264/hevc = SDK `vbr_hq`、av1 = 降级 `vbr`；标定必须逐项一致。）
+    #   ⚠ VU 侧待同步：VU 生产/harness/探针同样下发 `-rc:v vbr_hq`，会被 FFmpeg 9.0 拒绝
+    #     ⇒ 需同步改为 `vbr -tune hq -multipass fullres`，否则共享 QUALITY_MAP 的 ⑨ 组
+    #     跨仓一致性变红（handoff）。
+    'h264_nvenc': ['-rc:v', 'vbr', '-tune', 'hq', '-multipass', 'fullres', '-b:v', '0', '-preset', 'p4'],
+    'hevc_nvenc': ['-rc:v', 'vbr', '-tune', 'hq', '-multipass', 'fullres', '-b:v', '0', '-preset', 'p4'],
     'av1_nvenc':  ['-rc:v', 'vbr',    '-b:v', '0', '-preset', 'p4'],
 }
 QUALITY_FLAG = {
@@ -765,7 +772,7 @@ def selftest():
     # ── GPU / NVENC 支持（移植自 VidUtils 对等 harness）──
     chk('_ffcodec h264_nvenc', _ffcodec('h264_nvenc'), 'h264_nvenc')
     chk('_lock_for h264_nvenc', _lock_for('h264_nvenc'),
-        ['-rc:v', 'vbr_hq', '-b:v', '0', '-preset', 'p4'])
+        ['-rc:v', 'vbr', '-tune', 'hq', '-multipass', 'fullres', '-b:v', '0', '-preset', 'p4'])
     chk('_lock_for av1_nvenc', _lock_for('av1_nvenc'),
         ['-rc:v', 'vbr', '-b:v', '0', '-preset', 'p4'])
     chk('QUALITY_FLAG av1_nvenc', QUALITY_FLAG['av1_nvenc'], '-cq:v')
@@ -784,7 +791,7 @@ def selftest():
     chk('_axis_lock qp', _axis_lock('h264_nvenc', 'qp'),
         ['-rc:v', 'constqp', '-preset', 'p4'])
     chk('_axis_lock cq', _axis_lock('h264_nvenc', 'cq'),
-        ['-rc:v', 'vbr_hq', '-b:v', '0', '-preset', 'p4'])
+        ['-rc:v', 'vbr', '-tune', 'hq', '-multipass', 'fullres', '-b:v', '0', '-preset', 'p4'])
     chk('_axis_range qp av1', _axis_range('av1_nvenc', 'qp'), (0, 255))
     chk('_axis_range qp h264', _axis_range('h264_nvenc', 'qp'), (0, 51))
     _cq = encode_cmd('REF.mp4', 'h264_nvenc', 26, 'OUT.mp4', axis='cq')

@@ -606,24 +606,29 @@ def enc_nvenc(ctx: Ctx, src: Path, out: Path, codec: str, rc_mode: str,
               timeout: Optional[int] = None) -> Path:
     """按 Level 2（FFmpeg CLI）形状编码。
 
-    rc_mode='vbr_hq'  → -rc:v vbr_hq -cq:v <value> -b:v <avg_br or 0>
+    ⚠ FFmpeg 9.0 起 CLI **移除** vbr_hq/qvbr（`-rc` 只剩 constqp/vbr/cbr，传 vbr_hq 报
+    `Unable to parse "rc" option value`，rc=234）⇒ vbr_hq/qvbr 迁移为官方建议的
+    `vbr -tune hq -multipass fullres`（与 ffmpeg_io 的 [FIX-FFMPEG9-VBRHQ] 同口径）。
+    rc_mode='vbr_hq'  → -rc:v vbr -tune hq -multipass fullres -cq:v <value> -b:v <avg_br or 0>
     rc_mode='constqp' → -rc:v constqp -qp <value>
     avg_br 非 None 时用于模拟 SDK Level 1 的 averageBitRate 字段（天花板测试）。
 
-    ⚠ AV1 NVENC 仅支持 constqp / vbr / cbr 三种 RC 模式（无 vbr_hq / qvbr）。
-    遇到 av1_nvenc 时自动把 vbr_hq/qvbr 降级为 vbr。
+    ⚠ AV1 NVENC 仅支持 constqp / vbr / cbr 三种 RC 模式（无 vbr_hq / qvbr），且不追加
+    HQ 附加项；遇到 av1_nvenc 的 vbr_hq/qvbr 降级为 plain vbr。
     """
-    # AV1 NVENC 不支持 vbr_hq / qvbr，需降级到 vbr
-    effective_rc = rc_mode
-    if codec == "av1_nvenc" and rc_mode in ("vbr_hq", "qvbr"):
-        effective_rc = "vbr"
+    # [FIX-FFMPEG9-VBRHQ] vbr_hq/qvbr → vbr（+ HQ 附加项）；av1 不追加附加项
+    _hq = rc_mode in ("vbr_hq", "qvbr")
+    effective_rc = "vbr" if _hq else rc_mode
 
     cmd = [ctx.ffmpeg, "-y", "-v", "error", "-i", str(src),
            "-c:v", codec, "-preset", preset]
     if rc_mode == "constqp":
         cmd += ["-rc:v", "constqp", "-qp", str(value)]
     else:
-        cmd += ["-rc:v", effective_rc, "-cq:v", str(value)]
+        cmd += ["-rc:v", effective_rc]
+        if _hq and codec != "av1_nvenc":
+            cmd += ["-tune", "hq", "-multipass", "fullres"]
+        cmd += ["-cq:v", str(value)]
         if avg_br is None:
             cmd += ["-b:v", "0"]
         else:
@@ -724,7 +729,7 @@ def _probe_raw_driver_illegal(ctx: Ctx, w: int, h: int, fps: int,
     cmd = [ctx.ffmpeg, "-y", "-v", "error",
            "-f", "lavfi", "-i", f"color=c=black:s={w}x{h}:r={fps}:d=0.1",
            "-frames:v", "2", "-c:v", "h264_nvenc",
-           "-rc:v", "vbr_hq", "-cq:v", str(tq),
+           "-rc:v", "vbr", "-cq:v", str(tq),
            "-b:v", str(raw), "-maxrate", str(raw * 2), "-bufsize", str(raw * 2),
            "-f", "null", "-"]
     rc, _, err = ctx.run(cmd, min(int(ctx.args.timeout), 120))
@@ -1274,7 +1279,10 @@ def group_static(ctx: Ctx, v: Verifier) -> None:
     checks = [
         (r"'_?constqp'\s*:\s*'constqp'", "constqp 不再被错映射为 vbr"),
         (r"'-rc:v',\s*'constqp',\s*'-qp',\s*str\(\s*_nvenc_qp\s*\)", "CONSTQP 发 -qp"),
-        (r"'-rc:v',\s*_rc_v,\s*'-cq:v',\s*str\(\s*crf\s*\),\s*'-b:v',\s*'0'", "VBR 发 -cq:v + -b:v 0"),
+        # [FIX-FFMPEG9-VBRHQ] vbr_hq/qvbr 迁移动 `vbr -tune hq -multipass fullres`
+        # 后，`_rc_v` 与 `-cq:v` 之间多一个 `*_hq_extra`（h264/hevc 才有），正则需放行。
+        (r"'-rc:v',\s*_rc_v,\s*(?:\*_hq_extra,\s*)?'-cq:v',\s*str\(\s*crf\s*\),\s*'-b:v',\s*'0'",
+         "VBR 发 -cq:v + -b:v 0"),
         (r"_nvenc_qp\s*=\s*to_constqp_qp\(\s*codec\s*,\s*crf\s*\)", "constqp 轴换算调用"),
     ]
     bad = [d for pat, d in checks if not has(ifio, pat, re.S)]
@@ -1482,15 +1490,17 @@ def group_emit(ctx: Ctx, v: Verifier) -> None:
 
     cases = [
         ("G6-1", "IFRNet", "ifrnet_video", "h264_nvenc", 26, "vbr_hq", 8,
-         [("-rc:v", "vbr_hq"), ("-cq:v", "26"), ("-b:v", "0"), ("-rc-lookahead", "8")],
-         [("-qp", None)]),
+         [("-rc:v", "vbr"), ("-tune", "hq"), ("-multipass", "fullres"),
+          ("-cq:v", "26"), ("-b:v", "0"), ("-rc-lookahead", "8")],
+         [("-rc:v", "vbr_hq"), ("-qp", None)]),
         ("G6-2", "IFRNet", "ifrnet_video", "h264_nvenc", 26, "constqp", 8,
          [("-rc:v", "constqp"), ("-qp", "21")],
          [("-cq:v", None), ("-b:v", None)]),
         ("G6-3", "IFRNet", "ifrnet_video", "libx264", 21, "vbr_hq", 8,
          [("-crf", "21")], [("-cq:v", None)]),
         ("G6-4", "ESRGAN", "realesrgan_video", "h264_nvenc", 26, "vbr_hq", 8,
-         [("-rc:v", "vbr_hq"), ("-cq:v", "26"), ("-b:v", "0")], []),
+         [("-rc:v", "vbr"), ("-tune", "hq"), ("-multipass", "fullres"),
+          ("-cq:v", "26"), ("-b:v", "0")], [("-rc:v", "vbr_hq")]),
         ("G6-5", "ESRGAN", "realesrgan_video", "h264_nvenc", 26, "constqp", 0,
          [("-rc:v", "constqp"), ("-qp", "21")], [("-cq:v", None)]),
         ("G6-6", "ESRGAN", "realesrgan_video", "libx265", 24, "vbr_hq", 8,
