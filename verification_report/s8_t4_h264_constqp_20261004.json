@@ -1,0 +1,110 @@
+{
+  "generated": "2026-10-04T12:45:15",
+  "src": "/workspace/input_videos/01 the race to mystery island.fixed.mp4",
+  "rate_modes": [
+    "constqp",
+    "vbr"
+  ],
+  "codec": "h264_nvenc",
+  "host": "5e3c0db496e3",
+  "precondition": "实跑一帧成功",
+  "runs": [
+    {
+      "rate_mode": "constqp",
+      "codec": "h264_nvenc",
+      "out": "/tmp/s8_t4_out/h264_nvenc_constqp.mp4",
+      "checks": [
+        {
+          "id": "S1",
+          "name": "管线退出码",
+          "status": "PASS",
+          "detail": "rc=0，耗时 2977.9s"
+        },
+        {
+          "id": "S2",
+          "name": "段级解码级门禁（decoded==expected）",
+          "status": "PASS",
+          "detail": "12 次通过 / 失败 0 次；分段帧数合计 17926"
+        },
+        {
+          "id": "S3",
+          "name": "产物可解码帧数 = 各段之和",
+          "status": "PASS",
+          "detail": "产物 17926 帧 vs 分段合计 17926 帧；源 8969 帧"
+        },
+        {
+          "id": "S4",
+          "name": "validate_decodable_video(count_mode=decode)",
+          "status": "PASS",
+          "detail": "ok=True reason=ok frames=17926 errors=0 path=direct"
+        },
+        {
+          "id": "S5",
+          "name": "segment_bitstream_verify_v5（帧守恒/IDR/frame_num/pts）",
+          "status": "PASS",
+          "detail": "✅ 验收通过 (总用时 14.25 s): 帧数守恒 / 段首无连IDR / 帧号单调 / 无 pts_anomaly / 色度正常"
+        },
+        {
+          "id": "S6",
+          "name": "QA sidecar 字段完整",
+          "status": "PASS",
+          "detail": "缺字段 无；codec_hint=h264_nvenc rate_mode=constqp"
+        },
+        {
+          "id": "S7",
+          "name": "产物编码器确为 h264",
+          "status": "PASS",
+          "detail": "codec=h264（期望 h264）；音轨=有"
+        },
+        {
+          "id": "S8",
+          "name": "无内存泄漏（后半程 RSS 斜率 ≤ +50 MB/min）",
+          "status": "FAIL",
+          "detail": "RSS 峰值 12393 MB，斜率 -55.6 MB/min（主 -55.0 / 子 -0.6 MB/min；PSS -56.2），显存峰值 0 MiB，进程数 1~5，样本 572，峰值 12393/12000 MB ✗ 超上界；明细 /tmp/s8_mem/constqp.mem.tsv"
+        }
+      ],
+      "cmd": "/root/.pyenv/versions/3.11.1/bin/python3 -u /workspace/Video_Enhancement/src/main_video_optimized.py -c /workspace/Video_Enhancement/config/default_config.json -i /workspace/input_videos/01 the race to mystery island.fixed.mp4 -o /tmp/s8_t4_out/h264_nvenc_constqp.mp4 --codec-ifrnet h264_nvenc --codec-esrgan h264_nvenc --rate-mode-ifrnet constqp --rate-mode-esrgan constqp --segment-duration 30",
+      "rc": 0,
+      "elapsed_s": 2977.9,
+      "log": "/tmp/s8_t4_out/h264_nvenc_constqp.mp4.constqp.log",
+      "segments": 12,
+      "segment_frames_sum": 17926,
+      "frames": 17926,
+      "validate": "ok=True reason=ok frames=17926 errors=0 path=direct",
+      "rss_peak_mb": 12393.3,
+      "gpu_peak_mib": 0.0,
+      "rss_slope_mb_per_min": -55.6,
+      "rss_slope_main_mb_per_min": -55.0,
+      "rss_slope_child_mb_per_min": -0.6,
+      "pss_slope_mb_per_min": -56.2,
+      "proc_count_range": [
+        1,
+        5
+      ],
+      "mem_samples": 572,
+      "mem_dump": "/tmp/s8_mem/constqp.mem.tsv"
+    },
+    {
+      "rate_mode": "vbr",
+      "codec": "h264_nvenc",
+      "out": "/tmp/s8_t4_out/h264_nvenc_vbr.mp4",
+      "checks": [
+        {
+          "id": "S1",
+          "name": "管线退出码",
+          "status": "FAIL",
+          "detail": "rc=1，耗时 61.4s | 尾部:    💡 提示: /       · 断点已自动保存，重新运行相同命令可从断点恢复 /       · 如遇 OOM: --tile-size 512 --batch-size-esrgan 2 --no-cuda-graph-esrgan /       · 如遇 TRT 构建失败: 移除 --use-tensorrt-esrgan / --use-tensorrt-ifrnet /       · 如遇编码错误: --codec-esrgan libx264 --crf-esrgan 23 / [NVENCEncoder] Encoder closed"
+        }
+      ],
+      "cmd": "/root/.pyenv/versions/3.11.1/bin/python3 -u /workspace/Video_Enhancement/src/main_video_optimized.py -c /workspace/Video_Enhancement/config/default_config.json -i /workspace/input_videos/01 the race to mystery island.fixed.mp4 -o /tmp/s8_t4_out/h264_nvenc_vbr.mp4 --codec-ifrnet h264_nvenc --codec-esrgan h264_nvenc --rate-mode-ifrnet vbr --rate-mode-esrgan vbr --segment-duration 30",
+      "rc": 1,
+      "elapsed_s": 61.4,
+      "log": "/tmp/s8_t4_out/h264_nvenc_vbr.mp4.vbr.log"
+    }
+  ],
+  "summary": {
+    "pass": 7,
+    "fail": 2,
+    "skip": 0
+  }
+}

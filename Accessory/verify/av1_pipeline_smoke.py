@@ -11,13 +11,15 @@ AV1 路径缺陷（方案 §8.6）：cv2 验收层把完好 AV1 产物判成损�
 本脚本把那次一次性验证固化成一条命令，供每次改动 AV1 路径后复跑。
 
     python3 Accessory/verify/av1_pipeline_smoke.py --src <真实素材> < /dev/null
+    python3 Accessory/verify/av1_pipeline_smoke.py --src <真实素材> \
+        --codec h264_nvenc --rate-modes constqp,vbr < /dev/null   # T4 上复现 S8 机制
 
 覆盖
 ----
 | 阶段 | 内容 |
 |---|---|
-| 前置 | `av1_nvenc` **实跑一帧**（不是 `-h encoder=`）；不可用 ⇒ exit 2（环境前置不成立） |
-| 跑批 | 对每个 rate_mode 调 `src/main_video_optimized.py`，两侧 `--codec-* av1_nvenc` |
+| 前置 | 目标编码器（默认 `av1_nvenc`）**实跑一帧**（不是 `-h encoder=`）；不可用 ⇒ exit 2（环境前置不成立） |
+| 跑批 | 对每个 rate_mode 调 `src/main_video_optimized.py`，两侧 `--codec-* <CODEC>` |
 | 采样 | 整棵进程树 RSS/PSS + **主进程 vs 子进程分组斜率** + 按 pid 归属的 GPU 显存（判泄漏：后半程斜率 + 峰值上界）|
 | 验收 | ① 退出码 ② 段级日志 `decoded == expected` ③ 产物 `ffprobe -count_frames` 帧数守恒 ④ `validate_decodable_video(count_mode='decode')` ⑤ `segment_bitstream_verify_v5 --skip-chroma` 硬指标 ⑥ QA sidecar 字段完整 |
 
@@ -25,7 +27,34 @@ AV1 路径缺陷（方案 §8.6）：cv2 验收层把完好 AV1 产物判成损�
 ⚠ 色度检查（检查 4）在真实素材上是**内容相关假阳性**（方案 §8.5：AV1 长片 113 簇，
    而源片段自身 40 簇）⇒ 硬指标一律 `--skip-chroma`。
 
-退出码：0 = 无 FAIL；1 = 有 FAIL；2 = 环境前置不成立（无 ffmpeg / 无 av1_nvenc）。
+`--codec`（S8 机制复现用）
+------------------------
+`constqp` 强制 `LA=0`（硬件静默禁用）⇒ 走 `encode_frames_batch_ce_pipeline`；
+其它 rate_mode 保留配置 LA ⇒ 走 `encode_frames_stream` 分块累积。**两条路径与编码器无关**
+（`main.py` 的 Level 1 直通判据是 `'nvenc' in use_codec`），故 **T4 上用 `h264_nvenc`/
+`hevc_nvenc` 跑 constqp vs vbr，可复现 AV1/L40 上 S8 观测到的同一机制**（方案 §9.5 D 项：
+降本验证，省掉等 L40）。Turing 无 AV1 NVENC ⇒ 本机须显式 `--codec h264_nvenc`。
+
+`--batch-size`（T4 默认 8）
+--------------------------
+config 默认 `batch_size=24`。T4 上实测（358.76s 素材切 40s 段，插帧阶段，2 轮交替 A/B）：
+
+| bs | 墙钟（中位） | 单批 ms | pinned result pool |
+|---|---|---|---|
+| 24（config 默认） | 33.45 s | 343 / 363 | 305 MB |
+| **8** | **29.14 s（快 12.9%）** | **90 / 90** | **102 MB** |
+
+两轮各差 <0.5% ⇒ 可复现。**双重收益**：
+① 吞吐更高（单批 3.9× 快 ⇒ 同样 24 帧只要 90ms 而非 353ms）；
+② **S8 的锯齿幅度由 batch_size 驱动** —— pinned result pool 按 `n × 单帧字节` 线性分配，
+bs=24 时逐段从 305 MB 涨到 1251 MB（实测 HEVC constqp 臂 12 段），而这正是让后半程 OLS
+斜率在 **−786 ~ +1434 MB/min** 之间跳变的噪声源 ⇒ 小 bs 让 S8 斜率可信。
+`--batch-size 0` = 不下发，沿用 config。
+
+⚠ **换 batch_size 会破坏与历史 S8 读数的可比性**（L40 的 +149.5 是 bs=24 下测的）。
+跨批次比较必须同 bs。
+
+退出码：0 = 无 FAIL；1 = 有 FAIL；2 = 环境前置不成立（无 ffmpeg / 编码器不可用）。
 """
 from __future__ import annotations
 
@@ -87,16 +116,26 @@ def has_audio(ffprobe: str, path: Path) -> bool:
     return bool((out or "").strip())
 
 
-def av1_nvenc_available(ffmpeg: str) -> Tuple[bool, str]:
-    """**实跑一帧**判 AV1 NVENC 能力（`ffmpeg -h encoder=av1_nvenc` 在 Turing 上照样打印）。"""
+def encoder_available(ffmpeg: str, codec: str) -> Tuple[bool, str]:
+    """**实跑一帧**判编码器能力（`ffmpeg -h encoder=av1_nvenc` 在 Turing 上照样打印选项表，
+    构建里有 ≠ 硬件编得动 —— 本仓 memory 有实证）。"""
     cmd = [ffmpeg, "-hide_banner", "-v", "error", "-nostdin",
            "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=1",
-           "-frames:v", "1", "-c:v", "av1_nvenc", "-f", "null", "-"]
+           "-frames:v", "1", "-c:v", codec, "-f", "null", "-"]
     rc, _, err = run(cmd, 180)
     if rc == 0:
         return True, "实跑一帧成功"
     first = [ln for ln in (err or "").strip().splitlines() if ln.strip()]
     return False, (first[0] if first else f"rc={rc}")[:200]
+
+
+#: ffmpeg 编码器名 → 产物 ffprobe `codec_name`（S7 断言用）。
+#: 不在表内的编码器不做断言（codec 名通常去掉 `_nvenc` 后缀，但不必猜）。
+EXPECTED_CODEC_NAME = {
+    "av1_nvenc": "av1",
+    "h264_nvenc": "h264",
+    "hevc_nvenc": "hevc",
+}
 
 
 def source_frame_count(ffprobe: str, path: Path) -> int:
@@ -321,8 +360,11 @@ def run_one(ffmpeg: str, ffprobe: str, src: Path, out: Path, rate_mode: str,
             seg_dur: int, extra: List[str], keep: bool,
             mem_interval: int, checks_only: bool = False,
             log_text: str = "", mem_dump: Optional[Path] = None,
-            mem_peak_mb: float = 0.0, mem_min_samples: int = 8) -> Dict[str, Any]:
-    rec: Dict[str, Any] = {"rate_mode": rate_mode, "out": str(out), "checks": []}
+            mem_peak_mb: float = 0.0, mem_min_samples: int = 8,
+            codec: str = "av1_nvenc", batch_size: int = 0) -> Dict[str, Any]:
+    rec: Dict[str, Any] = {"rate_mode": rate_mode, "codec": codec,
+                           "batch_size": batch_size,
+                           "out": str(out), "checks": []}
     watcher: Optional[MemWatcher] = None
     if checks_only:
         # 复验既有产物：跳过跑批，只跑验收项（GPU 不可用时也能核对历史产物）
@@ -334,9 +376,15 @@ def run_one(ffmpeg: str, ffprobe: str, src: Path, out: Path, rate_mode: str,
         cmd = [sys.executable, "-u", str(MAIN),
                "-c", str(ROOT / "config" / "default_config.json"),
                "-i", str(src), "-o", str(out),
-               "--codec-ifrnet", "av1_nvenc", "--codec-esrgan", "av1_nvenc",
+               "--codec-ifrnet", codec, "--codec-esrgan", codec,
                "--rate-mode-ifrnet", rate_mode, "--rate-mode-esrgan", rate_mode,
-               "--segment-duration", str(seg_dur)] + extra
+               "--segment-duration", str(seg_dur)]
+        # [S8-BS8] batch_size 显式下发：T4 上 bs=8 推理 FPS 更高，且 S8 内存锯齿
+        # 幅度由 pinned result pool（∝ batch_size）驱动 ⇒ 小 bs 让斜率可信。
+        if batch_size > 0:
+            cmd += ["--batch-size-ifrnet", str(batch_size),
+                    "--batch-size-esrgan", str(batch_size)]
+        cmd += extra
         rec["cmd"] = " ".join(cmd)
         print(f"\n=== [{rate_mode}] {' '.join(cmd)}")
         log_path = out.with_suffix(out.suffix + f".{rate_mode}.log")
@@ -426,7 +474,7 @@ def run_one(ffmpeg: str, ffprobe: str, src: Path, out: Path, rate_mode: str,
         try:
             payload = json.loads(qa.read_text(encoding="utf-8"))
             missing = [f for f in QA_REQUIRED_FIELDS if f not in payload]
-            ok = not missing and payload.get("codec_hint") == "av1_nvenc"
+            ok = not missing and payload.get("codec_hint") == codec
             check("S6", "QA sidecar 字段完整", ok,
                   f"缺字段 {missing or '无'}；codec_hint={payload.get('codec_hint')} "
                   f"rate_mode={payload.get('rate_mode_ifrnet')}")
@@ -436,9 +484,16 @@ def run_one(ffmpeg: str, ffprobe: str, src: Path, out: Path, rate_mode: str,
         check("S6", "QA sidecar 字段完整", False, f"未生成：{qa}")
 
     # ⑦ 产物编码器/音轨（确认没被静默换编码器 —— 曾经的缺陷 ②）
-    codec = probe_stream_codec(ffprobe, out)
-    check("S7", "产物编码器确为 av1", codec == "av1",
-          f"codec={codec}；音轨={'有' if has_audio(ffprobe, out) else '无'}")
+    want_codec = EXPECTED_CODEC_NAME.get(codec)
+    codec_actual = probe_stream_codec(ffprobe, out)
+    audio_note = f"音轨={'有' if has_audio(ffprobe, out) else '无'}"
+    if want_codec is None:
+        check("S7", f"产物编码器确为 {codec}", None,
+              f"codec={codec_actual or '未知'}；无 {codec} 的期望 codec_name 映射，跳过断言"
+              f"；{audio_note}")
+    else:
+        check("S7", f"产物编码器确为 {want_codec}", codec_actual == want_codec,
+              f"codec={codec_actual}（期望 {want_codec}）；{audio_note}")
 
     # ⑧ 内存
     # [FIX-S8-CRITERIA] 判据从「单一斜率」扩为「斜率 + 峰值上界 + 样本充分性」三项：
@@ -501,9 +556,11 @@ def run_one(ffmpeg: str, ffprobe: str, src: Path, out: Path, rate_mode: str,
 
 # ── 报告 ─────────────────────────────────────────────────────────────────────
 def render_md(result: Dict[str, Any]) -> str:
-    L = ["# AV1 NVENC 端到端冒烟 + 验收报告", "",
+    L = ["# NVENC 端到端冒烟 + 验收报告", "",
          f"- 生成时间：{result['generated']}",
          f"- 素材：`{result['src']}`",
+         f"- 编码器：`{result['codec']}`",
+         f"- batch_size：{result.get('batch_size') or '沿用 config（默认 24）'}",
          f"- rate_mode：{', '.join(result['rate_modes'])}",
          f"- 主机：{result['host']}",
          f"- 环境前置：{result['precondition']}",
@@ -534,9 +591,14 @@ def render_md(result: Dict[str, Any]) -> str:
 
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(
-        description="AV1 NVENC 端到端冒烟 + 验收（constqp / vbr 双 rate_mode）")
+        description="NVENC 端到端冒烟 + 验收（constqp / vbr 双 rate_mode）")
+    ap.add_argument("--codec", default="av1_nvenc",
+                    help="两侧编码器（默认 av1_nvenc；T4 上复现 S8 机制用 h264_nvenc/hevc_nvenc）")
+    ap.add_argument("--batch-size", type=int, default=8,
+                    help="两阶段 batch_size（默认 8：T4 上推理 FPS 更高，且 S8 内存锯齿幅度 "
+                         "∝ pinned result pool ∝ batch_size；0 = 沿用 config 的 24）")
     ap.add_argument("--src", required=True, help="真实素材（建议 ≥1 min，含音轨）")
-    ap.add_argument("--out-dir", help="产物目录（默认 <src 同级>/av1_smoke_out）")
+    ap.add_argument("--out-dir", help="产物目录（默认 <src 同级>/<codec>_smoke_out）")
     ap.add_argument("--rate-modes", default="constqp,vbr", help="逗号分隔（默认 constqp,vbr）")
     ap.add_argument("--segment-duration", type=int, default=30, help="分段秒数（默认 30）")
     ap.add_argument("--timeout", type=int, default=7200, help="单轮超时秒（默认 7200）")
@@ -549,7 +611,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     help="内存采样明细落盘目录（每轮一个 <rate_mode>.mem.tsv，含逐进程明细）")
     ap.add_argument("--keep", action="store_true", help="保留产物（默认跑完删除视频）")
     ap.add_argument("--checks-only", metavar="VIDEO", default="",
-                    help="只对既有 AV1 产物跑验收项（不跑批、不需要 GPU）")
+                    help="只对既有产物跑验收项（不跑批、不需要 GPU）")
     ap.add_argument("--report", help="Markdown 报告路径")
     ap.add_argument("--json", dest="json_path", help="JSON 结果路径")
     ap.add_argument("extra", nargs="*", help="透传给主入口的额外参数")
@@ -565,9 +627,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"❌ 素材不存在：{src}")
         return 2
 
-    ok_av1, why = av1_nvenc_available(ffmpeg)
+    ok_codec, why = encoder_available(ffmpeg, args.codec)
     print("=" * 78)
-    print("  AV1 NVENC 端到端冒烟 + 验收")
+    print(f"  {args.codec} 端到端冒烟 + 验收")
     print("=" * 78)
     print(f"素材: {src}")
     if args.checks_only:
@@ -578,27 +640,29 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"模式: --checks-only（只验收既有产物，不跑批、不需要 GPU）→ {target}")
         rec = run_one(ffmpeg, ffprobe, src, target,
                       args.rate_modes.split(",")[0].strip(), args.segment_duration,
-                      [], True, args.mem_interval, checks_only=True)
+                      [], True, args.mem_interval, checks_only=True,
+                      codec=args.codec, batch_size=args.batch_size)
         runs = [rec]
         for c in rec["checks"]:
             mark = {"PASS": "✅", "FAIL": "❌", "SKIP": "⏭️"}[c["status"]]
             print(f"  {mark} [{c['id']}] {c['name']} — {c['detail']}")
     else:
-        print(f"前置: av1_nvenc {'✅' if ok_av1 else '⏭️ 不可用'} — {why}")
-        if not ok_av1:
-            print("⏭️ 环境前置不成立（需 Ada 及以上 + ffmpeg 含 av1_nvenc）⇒ exit 2")
+        print(f"前置: {args.codec} {'✅' if ok_codec else '⏭️ 不可用'} — {why}")
+        if not ok_codec:
+            print(f"⏭️ 环境前置不成立（{args.codec} 实跑一帧失败）⇒ exit 2")
             return 2
-        out_dir = Path(args.out_dir) if args.out_dir else src.parent / "av1_smoke_out"
+        out_dir = Path(args.out_dir) if args.out_dir else src.parent / f"{args.codec}_smoke_out"
         out_dir.mkdir(parents=True, exist_ok=True)
         runs = []
         for rate in [r.strip() for r in args.rate_modes.split(",") if r.strip()]:
-            out = out_dir / f"av1_{rate}{src.suffix or '.mp4'}"
+            out = out_dir / f"{args.codec}_{rate}{src.suffix or '.mp4'}"
             dump = (Path(args.mem_dump_dir) / f"{rate}.mem.tsv"
                     if args.mem_dump_dir else None)
             rec = run_one(ffmpeg, ffprobe, src, out, rate, args.segment_duration,
                           list(args.extra), args.keep, args.mem_interval,
                           mem_dump=dump, mem_peak_mb=args.mem_peak_mb,
-                          mem_min_samples=args.mem_min_samples)
+                          mem_min_samples=args.mem_min_samples, codec=args.codec,
+                          batch_size=args.batch_size)
             runs.append(rec)
             for c in rec["checks"]:
                 mark = {"PASS": "✅", "FAIL": "❌", "SKIP": "⏭️"}[c["status"]]
@@ -614,6 +678,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     result = {
         "generated": datetime.now().isoformat(timespec="seconds"),
         "src": str(src), "rate_modes": args.rate_modes.split(","),
+        "codec": args.codec,
+        "batch_size": args.batch_size,
         "host": os.uname().nodename if hasattr(os, "uname") else "",
         "precondition": why, "runs": runs,
         "summary": {"pass": n_pass, "fail": n_fail, "skip": n_skip},

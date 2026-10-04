@@ -1,0 +1,168 @@
+{
+  "generated": "2026-10-04T14:45:21",
+  "src": "/workspace/input_videos/01 the race to mystery island.fixed.mp4",
+  "rate_modes": [
+    "constqp",
+    "vbr_hq"
+  ],
+  "codec": "hevc_nvenc",
+  "host": "5e3c0db496e3",
+  "precondition": "实跑一帧成功",
+  "runs": [
+    {
+      "rate_mode": "constqp",
+      "codec": "hevc_nvenc",
+      "out": "/tmp/s8_t4_out_hevc/hevc_nvenc_constqp.mp4",
+      "checks": [
+        {
+          "id": "S1",
+          "name": "管线退出码",
+          "status": "PASS",
+          "detail": "rc=0，耗时 2457.5s"
+        },
+        {
+          "id": "S2",
+          "name": "段级解码级门禁（decoded==expected）",
+          "status": "PASS",
+          "detail": "12 次通过 / 失败 0 次；分段帧数合计 17926"
+        },
+        {
+          "id": "S3",
+          "name": "产物可解码帧数 = 各段之和",
+          "status": "PASS",
+          "detail": "产物 17926 帧 vs 分段合计 17926 帧；源 8969 帧"
+        },
+        {
+          "id": "S4",
+          "name": "validate_decodable_video(count_mode=decode)",
+          "status": "PASS",
+          "detail": "ok=True reason=ok frames=17926 errors=0 path=direct"
+        },
+        {
+          "id": "S5",
+          "name": "segment_bitstream_verify_v5（帧守恒/IDR/frame_num/pts）",
+          "status": "PASS",
+          "detail": "✅ 验收通过 (总用时 13.44 s): 帧数守恒 / 段首无连IDR / 帧号单调 / 无 pts_anomaly / 色度正常"
+        },
+        {
+          "id": "S6",
+          "name": "QA sidecar 字段完整",
+          "status": "PASS",
+          "detail": "缺字段 无；codec_hint=hevc_nvenc rate_mode=constqp"
+        },
+        {
+          "id": "S7",
+          "name": "产物编码器确为 hevc",
+          "status": "PASS",
+          "detail": "codec=hevc（期望 hevc）；音轨=有"
+        },
+        {
+          "id": "S8",
+          "name": "无内存泄漏（后半程 RSS 斜率 ≤ +50 MB/min）",
+          "status": "FAIL",
+          "detail": "RSS 峰值 13877 MB，斜率 +3.1 MB/min（主 +6.4 / 子 -3.3 MB/min；PSS +4.9），显存峰值 0 MiB，进程数 1~5，样本 471，峰值 13877/12000 MB ✗ 超上界；明细 /tmp/s8_mem_hevc/constqp.mem.tsv"
+        }
+      ],
+      "cmd": "/root/.pyenv/versions/3.11.1/bin/python3 -u /workspace/Video_Enhancement/src/main_video_optimized.py -c /workspace/Video_Enhancement/config/default_config.json -i /workspace/input_videos/01 the race to mystery island.fixed.mp4 -o /tmp/s8_t4_out_hevc/hevc_nvenc_constqp.mp4 --codec-ifrnet hevc_nvenc --codec-esrgan hevc_nvenc --rate-mode-ifrnet constqp --rate-mode-esrgan constqp --segment-duration 30",
+      "rc": 0,
+      "elapsed_s": 2457.5,
+      "log": "/tmp/s8_t4_out_hevc/hevc_nvenc_constqp.mp4.constqp.log",
+      "segments": 12,
+      "segment_frames_sum": 17926,
+      "frames": 17926,
+      "validate": "ok=True reason=ok frames=17926 errors=0 path=direct",
+      "rss_peak_mb": 13877.3,
+      "gpu_peak_mib": 0.0,
+      "rss_slope_mb_per_min": 3.1,
+      "rss_slope_main_mb_per_min": 6.4,
+      "rss_slope_child_mb_per_min": -3.3,
+      "pss_slope_mb_per_min": 4.9,
+      "proc_count_range": [
+        1,
+        5
+      ],
+      "mem_samples": 471,
+      "mem_dump": "/tmp/s8_mem_hevc/constqp.mem.tsv"
+    },
+    {
+      "rate_mode": "vbr_hq",
+      "codec": "hevc_nvenc",
+      "out": "/tmp/s8_t4_out_hevc/hevc_nvenc_vbr_hq.mp4",
+      "checks": [
+        {
+          "id": "S1",
+          "name": "管线退出码",
+          "status": "PASS",
+          "detail": "rc=0，耗时 3182.0s"
+        },
+        {
+          "id": "S2",
+          "name": "段级解码级门禁（decoded==expected）",
+          "status": "PASS",
+          "detail": "12 次通过 / 失败 0 次；分段帧数合计 17926"
+        },
+        {
+          "id": "S3",
+          "name": "产物可解码帧数 = 各段之和",
+          "status": "PASS",
+          "detail": "产物 17926 帧 vs 分段合计 17926 帧；源 8969 帧"
+        },
+        {
+          "id": "S4",
+          "name": "validate_decodable_video(count_mode=decode)",
+          "status": "PASS",
+          "detail": "ok=True reason=ok frames=17926 errors=0 path=direct"
+        },
+        {
+          "id": "S5",
+          "name": "segment_bitstream_verify_v5（帧守恒/IDR/frame_num/pts）",
+          "status": "PASS",
+          "detail": "✅ 验收通过 (总用时 13.93 s): 帧数守恒 / 段首无连IDR / 帧号单调 / 无 pts_anomaly / 色度正常"
+        },
+        {
+          "id": "S6",
+          "name": "QA sidecar 字段完整",
+          "status": "PASS",
+          "detail": "缺字段 无；codec_hint=hevc_nvenc rate_mode=vbr_hq"
+        },
+        {
+          "id": "S7",
+          "name": "产物编码器确为 hevc",
+          "status": "PASS",
+          "detail": "codec=hevc（期望 hevc）；音轨=有"
+        },
+        {
+          "id": "S8",
+          "name": "无内存泄漏（后半程 RSS 斜率 ≤ +50 MB/min）",
+          "status": "FAIL",
+          "detail": "RSS 峰值 13578 MB，斜率 +35.8 MB/min（主 +36.7 / 子 -0.9 MB/min；PSS +35.9），显存峰值 0 MiB，进程数 1~5，样本 610，峰值 13578/12000 MB ✗ 超上界；明细 /tmp/s8_mem_hevc/vbr_hq.mem.tsv"
+        }
+      ],
+      "cmd": "/root/.pyenv/versions/3.11.1/bin/python3 -u /workspace/Video_Enhancement/src/main_video_optimized.py -c /workspace/Video_Enhancement/config/default_config.json -i /workspace/input_videos/01 the race to mystery island.fixed.mp4 -o /tmp/s8_t4_out_hevc/hevc_nvenc_vbr_hq.mp4 --codec-ifrnet hevc_nvenc --codec-esrgan hevc_nvenc --rate-mode-ifrnet vbr_hq --rate-mode-esrgan vbr_hq --segment-duration 30",
+      "rc": 0,
+      "elapsed_s": 3182.0,
+      "log": "/tmp/s8_t4_out_hevc/hevc_nvenc_vbr_hq.mp4.vbr_hq.log",
+      "segments": 12,
+      "segment_frames_sum": 17926,
+      "frames": 17926,
+      "validate": "ok=True reason=ok frames=17926 errors=0 path=direct",
+      "rss_peak_mb": 13578.0,
+      "gpu_peak_mib": 0.0,
+      "rss_slope_mb_per_min": 35.8,
+      "rss_slope_main_mb_per_min": 36.7,
+      "rss_slope_child_mb_per_min": -0.9,
+      "pss_slope_mb_per_min": 35.9,
+      "proc_count_range": [
+        1,
+        5
+      ],
+      "mem_samples": 610,
+      "mem_dump": "/tmp/s8_mem_hevc/vbr_hq.mem.tsv"
+    }
+  ],
+  "summary": {
+    "pass": 14,
+    "fail": 2,
+    "skip": 0
+  }
+}

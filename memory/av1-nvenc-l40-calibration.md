@@ -98,8 +98,8 @@ type: project
 - **自测（无 GPU，已做）**：合成泄漏子进程（每 0.5 s 追加 20 MB）被正确检出
   斜率 +1887.9 MB/min，且分组斜率 `main +1888.0 / child −0.1` 精确归因；
   静止进程组 slope 0.36 MB/min（噪声量级）⇒ 无误报。`plan_implementation_gate` 无失败。
-- ⚠ 本容器 `nvidia-smi --query-compute-apps` 返回空（无 GPU 挂载）⇒ 显存字段为 0，
-  **显存归属判定须在 L40 上复验**（这是本次准备唯一未被 CPU 自测覆盖的点）。
+- ⚠ ~~本容器 `nvidia-smi --query-compute-apps` 返回空（无 GPU 挂载）⇒ 显存字段为 0~~
+  **该归因已于 2026-10-04 被 T4 实测推翻**，见下方「§9.5-D 项已在 T4 执行完毕」的 B3。
 
 **下次上机待办（2026-10-04 定稿，权威版在方案 §9.5）**
 - **A｜S8 定位（最高优先）**：一条命令跑完读 S8 detail 的 `主 x / 子 y MB/min` 即可得归属，**无需二次跑**。
@@ -120,4 +120,83 @@ type: project
   `crf_cq_unification_verify --quick --no-gpu` **PASS=51 / FAIL=3**，
   那 3 个 FAIL 全部是 `ModuleNotFoundError: No module named 'cv2'` ⇒ **缺 cv2 的既有环境问题**，
   与改动无关；已用 `git stash` 对比确认与改动前逐项一致。
+
+---
+
+**§9.5-D 项已在 T4 执行完毕（2026-10-04）—— S8 收口 + 三个新阻塞项**
+
+执行环境 = **Tesla T4（sm75）**，非 L40 ⇒ 走的正是 D 项（降本验证）。素材
+`01 the race to mystery island.fixed.mp4`（358.76s / 720×576 / 12 段 / 8969 源帧）。
+脚本改动：`av1_pipeline_smoke.py` 增 `--codec`（默认 av1_nvenc 不变）+ `--batch-size`（默认 8）；
+门禁 **96 项 / 94 通过 / 0 失败**。完整版见 `Plan/PROMPT_L40_AV1等质量标定专项执行方案.md` **§0.1**。
+
+**S8 结论（措辞勿越界）**：T4 上 constqp 两臂（h264 −55.6、hevc +3.1 MB/min）**均无泄漏**
+⇒ 否证「constqp 路径泄漏」。但 **h264 的 vbr 对照臂崩了**（见 B1），A/B 只在 hevc 成立；
+**S8 原始问题（L40 的 +149.5 是否 AV1 特有）仍未回答**。
+
+**⚠ S8 判据本身不可靠（本轮最重要的方法论产出）**：同一份 HEVC constqp 数据只换 OLS 窗口
+⇒ 前 10% **+1434.2** / 后 50%（判据口径）+3.1 / **全程 +149.4** / 稳态 +36.1 /
+后 25% −240.5 / 末 10% **−786.7**。⇒ **「全程 +149.4」与 L40 的「+149.5」几乎相同**
+⇒ L40 那个数**疑为窗口伪影**而非真泄漏。锯齿幅度来源之一 = **pinned result pool 随
+batch_size 线性增长**（bs=24 实测逐段 305→549→794→1038→1190→**1251 MB**）⇒ 冒烟默认
+`--batch-size` 改 8（**实测**：T4 40s 段插帧阶段 2 轮交替 A/B，bs=24 墙钟 33.45s / 单批
+343~363ms / pinned 305MB vs bs=8 墙钟 **29.14s（−12.9%）** / 单批 **90ms** / pinned **102MB**，
+两轮各差 <0.5%；仅插帧阶段，超分阶段收益未实测）。**跨 bs 的 S8 读数不可比。**
+后半程 sd 1356 MB ⇒ 不确定度约 ±66 MB/min，
+**|slope| < 5 的阈值都是随意的**，须先定噪声底噪。
+**⚠ `--mem-peak-mb` 默认 12000 已被实测否决**：T4 两臂峰值 13578~13877 MB **超上界但斜率正常**
+⇒ 峰值判据比斜率更易误报。
+
+**B1（生产级缺陷）h264 + LA>0 + 跨段复用 ⇒ 片段 2 起必崩**
+`non-existing PPS 0 referenced` → muxer pipe broken → rc=1（61s/62s，vbr 与 vbr_hq 两臂同现）。
+根因四段闭环：`ffmpeg_io.py:163` `nvenc_map={'libx264':'h264_nvenc'}` ⇒ **config 默认 libx264
+在 T4 上就升级为 h264_nvenc（生产默认路径）**；`main.py:1155` `_force_new` 只含 `("hevc","av1")`
+⇒ h264 复用编码器；`nvenc_sdk.py:2282/2285` `_stream_begin` 每段清 `_cached_sps_pps=None`；
+`nvenc_sdk.py:971` `repeatSPSPPS bit12 不写` ⇒ 驱动不重吐参数集 ⇒
+`_prepend_param_sets`(`:2297`) 与 `_drain_write`(`:3927`) 两条通道同时失效。
+**为何 constqp 臂同素材同复用却不崩**：constqp 清 LA → `ce_pipeline` 路径 `:2858-2859`
+**只重置 `_sps_pps_injected`、不清 `_cached_sps_pps`** ⇒ 段 2 由 `_prepend_param_sets` 补挂。
+**这个 LA=0 / LA>0 的不对称就是缺陷面。** 回归点 `1e57c0b`(2026-09-18)。
+ESRGAN 侧 `realesrgan_video/nvenc_sdk.py` 逐字同构。
+修复方向（待做）：`_stream_begin` **保留** `_cached_sps_pps`、只重置 `_sps_pps_injected`
+（与 LA=0 路径 `:2858` 对齐）；hevc 臂作负向回归（现 0 错，不能被改坏）。
+
+**B2 `--rate-mode vbr/cbr` 在 Level 1 静默落 CONSTQP 且 LA 未启用**
+`nvenc_sdk.py:1055` `else` 兜底写 `rc_ptr[1]=0`；`:1069` LA 门控 `in ('vbr_hq','qvbr')` 排除 vbr；
+`:634` 清 LA 判据是 `== 'constqp'` ⇒ **Python 认为 LA=8 而硬件是 CONSTQP+LA=0**。
+既有 memory 只记「静默落 CONSTQP + LA 失效 + 别传 vbr」，**本轮新增三点**：
+① `[FIX-CONSTQP-FRAME-CE]` 守卫是 `('constqp',0)`（`:2500`），vbr 走 `('vbr',8)` 不命中
+⇒ **绕过 per-frame completionEvent**，正落在 [[nvenc-drain-unsubmitted-slot-segfault]] 记载的
+T4 崩溃组合上（**代码路径确认、崩溃未复现**，本轮 rc=1 是 muxer pipe broken 非 segfault）；
+② QP 未过 `to_constqp_qp` 换算 ⇒ 画质偏松（实测 h264 constqp Ready `QP=22` vs vbr `QP=26`）；
+③ `nvenc_sdk.py:568`（IFRNet）/:636（ESRGAN）**AV1 自动降级产生 `'vbr'`**，是**无需用户传参**的
+第三入口（当前因 AV1 Level 1 code=12 降级而潜伏）。Level 2/3 CLI 路径**正确**
+（`ffmpeg_io.py:926` 真下发 `-rc:v vbr`）⇒ **两条路径口径分裂**。
+⚠ 已**排除**：B2 不是 vbr 臂崩溃的原因 —— vbr_hq 臂是真 VBR_HQ 仍报同样错误。
+
+**B3 显存 `gpu_tree_mib` 恒 0（静默假零）** —— **推翻了旧归因**
+`nvidia-smi --query-compute-apps` 返回**宿主 pid**（实测 725115 / 1071006），在容器 `/proc`
+下**不存在**；`/proc/<pid>/status` 的 `NSpid` 只有一层 ⇒ **容器 PID namespace 与驱动侧不通**，
+pid 查表永远 miss。**与 GPU 是否挂载无关**（跑批时 GPU 实际满载 7698 MiB/100%）。
+仅污染 S8 的显存维度，RSS/PSS 口径正确。`0.0` 会被读成「确实没用显存」，
+**须改报 `None` 才表达「测不到」**。⇒ [[memory-leak-attribution-measurement]] 里
+「按 pid 归属」的规矩在**容器内不可实现**，缺的是容器场景落地。
+
+**记录勘误**：E1 [[nvenc-sps-pps-debugging]] 与 E2 [[sps-pps-la-pipe4-startup-corruption]]
+「多段段 2+ 不再报 non-existing PPS」在 **h264+LA>0+跨段复用**下**已不成立**（成立范围仅
+LA=0 或 hevc/av1 每段新建编码器）；E3 [[ifrnet-multisegment-la-strict-drain]] 未记同提交
+`1e57c0b` 引入的 SPS/PPS 清空缺陷（B1，机制不同但同源）；E4 [[t4-vbrhq-verification-plan]]:43
+行号 `1044/1056` 已漂移为 **`1055/1069`**（`be8e1db` 插入 11 行注释）；E5 同条缺上述三点。
+
+**原始采样已存档（2026-10-04）**：`verification_report/s8_20261004_raw/` —— 五份 `.mem.tsv`
+（h264_constqp / h264_vbr_FAILED / h264_vbrhq_FAILED / hevc_constqp / hevc_vbrhq）
++ `README.md`（采样器列口径、每份对应哪条臂、**三条使用纪律**、失效字段说明）。
+⇒ **后续修复与复算不必再花一次 GPU 上机**。⚠ 两条纪律已写进 README：
+失败臂仅 12 点全在启动爬坡段（复算会得 +4585.8/+1872.4 的**伪影**，不是趋势）；
+全部为 bs=24，与 L40 的 +149.5 才可比（脚本现已默认 bs=8）。
+已核验 1677/1677 行 `gpu_tree_mib` 全为 0（佐证 B3）。
+
+**下一步顺序**（有依赖，勿打乱）：修 B3（无需 GPU）→ 修 B1（需 GPU + hevc 负向回归）→
+重跑 h264 vbr 臂（第一次真正测到 h264 的 LA>0 路径）→ B2 方案 A（脚本级禁 vbr/cbr + 修
+`_log_ready` 自相矛盾回显；方案 B 需 GPU A/B）→ 标定 `--mem-peak-mb` → L40 三臂同批。
 
