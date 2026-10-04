@@ -29,6 +29,8 @@ _bak*
 /output/
 /temp/
 tests/
+verification_report/
+input_vidiow/
 output*.txt
 Video_Enhancement_github_token.txt
 
@@ -58,3 +60,20 @@ Plan/conversation*
 Plan/Conversation-*
 Plan/2026-*
 Plan/*.txt
+/benchmark_output/
+
+# ── 根级杂散临时文件（2026-10-04 清理；一律锚定 `/`，避免匹配任意层级同名文件）──
+# 判据（详见提交说明）：
+#  · A / Had / Little / Lamb_Cropped.txt：四处字节相同的运行日志残片
+#    （md5 bb9f28672315b05700464e3d02cbce89，UTF-8+CRLF，首行 "[P5-FIX-RUN] 视频增强运行开始…"）
+#  · p_testsrc*.mp4：NVENC 探针遗留的小 mp4
+#  · verify_segment_bitstream_v4_stuck.log：segment_bitstream_verify_v4/v5.py 的看门狗日志
+#    （脚本写到 CWD，从仓库根运行时落在根级；非项目资产）
+#  · .claude/：会话工具本地配置（与上面的 .codebuddy/ 同类）
+/A
+/Had
+/Little
+/Lamb_Cropped.txt
+/p_testsrc*.mp4
+/verify_segment_bitstream_v4_stuck.log
+/.claude/
