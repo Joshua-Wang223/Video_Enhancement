@@ -1,11 +1,23 @@
 ---
 name: pipeline-thread-coordination
-description: IFRNet 三线程流水线的线程同步、退出时序、队列管理的关键规则和已知竞态
+description: IFRNet 三线程流水线的线程同步、退出时序、队列管理的关键规则和已知竞态；⚠ 2026-10-04 复核：退出时序一节所述 b'FLUSH' 机制在活跃代码已不存在、其前提已被推翻，本文件仅线程协调与锁规则部分仍有效
 metadata: 
   node_type: memory
   type: project
   originSessionId: 9ac38aa0-722c-43f8-aa1e-b6fad7621a9e
 ---
+
+> ⚠ **2026-10-04 复核：下方「退出时序」一节已失效，勿照此改代码。**
+> 该节要求「put FLUSH tuple → `(b'FLUSH', leftover)` 到 result_queue」，其前提是
+> **LA flush 帧是花屏残片、需在 Writer 端丢弃** —— 该前提已被推翻：
+> `[[la-flush-recovery-is-harmful]]` 证明正确排空逻辑下 flush 帧是完整有效帧，
+> `[[nvenc-la-frame-conservation-fix]]` 已用 SDK 合规排空实现帧数守恒，
+> 因此**不需要也不应**在 Writer 端丢弃 flush 帧。
+> **代码证据**：活跃包 `external/ifrnet_video/` 与 `external/realesrgan_video/` 全库
+> `grep -rn "b'FLUSH'"` = **0 命中**（仅历史单文件 `external/IFRNet/process_video_v6_4_*`
+> 仍有，属 CODEBUDDY.md 所述无生产 import 的历史代码）。该节所有 `file:line` 亦全部指向历史文件。
+> **仍有效的部分**：下方「NVENCEncoder 锁使用规则」（不可重入锁 + 严禁持锁调 flush）
+> 与「Writer 循环静默退出条件」两段与 LA flush 结论无关，可继续参考。
 
 # IFRNet 三线程流水线线程协调
 
