@@ -174,6 +174,8 @@ from stdin_hardening import detach_background_stdin   # noqa: E402
 detach_background_stdin()
 # [P0-FIX-QUALITY-RANGE] 质量参数量程取编码器技术规范（单一真源 QUALITY_MAP）
 from quality_map import literal_range, supports_cq, supports_crf   # noqa: E402
+# [QUALITY-MODE] 全局质量换算口径（size=等体积 / quality=等质量，默认 quality）
+from quality_map import set_quality_mode, get_quality_mode   # noqa: E402
 # [NVENC-TUNING] NVENC `-tune` / `-multipass` / 目标码率的唯一真源
 from nvenc_tuning import (                          # noqa: E402
     NVENC_TUNE_VALUES, NVENC_MULTIPASS_VALUES, is_bitrate)
@@ -898,6 +900,8 @@ def _write_final_report(
     _snap_keys = [
         "mode", "interpolation_factor", "upscale_factor", "segment_duration",
         "skip_interpolate", "skip_upscale",
+        # [QUALITY-MODE] 全局换算口径
+        "quality_mode",
         "batch_size_ifrnet", "max_batch_size_ifrnet",
         "no_fp16_ifrnet", "no_compile_ifrnet", "no_cuda_graph_ifrnet",
         "use_tensorrt_ifrnet", "no_tensorrt_ifrnet",
@@ -1193,6 +1197,9 @@ def _apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
         config.set("processing", "upscale_factor",       value=args.upscale_factor)
     if args.segment_duration is not None:  # [P1-FIX-VALIDATE] falsy 值(0)不再被静默忽略
         config.set("processing", "segment_duration",     value=args.segment_duration)
+    # [QUALITY-MODE] 全局换算口径（CLI 覆盖 config；默认取 config 的 quality）
+    if getattr(args, "quality_mode", None):
+        config.set("processing", "quality_mode",         value=args.quality_mode)
     if args.skip_validate:
         config.set("processing", "skip_validate", value=True)
     if args.validate_workers is not None:
@@ -2475,6 +2482,11 @@ ESRGan 模型选项 (--esrgan-model):
                    help="处理前把源时间轴归一化为均匀 CFR（按帧号重编号 pts，需一次"
                         "重编码）。用于修复 VFR 源（时间戳空洞）与首帧非零起始偏移"
                         "导致的段级帧数验收失败/时长偏差")
+    # [QUALITY-MODE] 与 VidUtils 的 --quality-mode 对齐（size/quality，默认 quality）
+    g.add_argument("--quality-mode", choices=["size", "quality"], metavar="MODE",
+                   help="质量换算口径（--crf-ref/--cq-ref 换算用）：size=等体积"
+                        "（文件大小优先）| quality=等质量（画质优先，默认）。覆盖配置"
+                        " processing.quality_mode")
 
     # ── 去噪参数（可选前处理阶段）──────────────────────────────────   [V1]
     g = parser.add_argument_group("去噪参数（可选前处理阶段）")
@@ -2807,6 +2819,11 @@ def main() -> int:
 
     # ── 命令行参数覆盖 ────────────────────────────────────────────────────────
     _apply_cli_overrides(config, args)
+    # [QUALITY-MODE] 应用全局换算口径（size=等体积 / quality=等质量，默认 quality）。
+    # 必须在任何 resolve_quality / to_constqp_qp 之前设置（校验与处理都读该全局态）。
+    _qm = config.get("processing", "quality_mode", default="quality")
+    set_quality_mode(_qm)
+    print(f"   🔧 质量换算口径: {_qm}（size=等体积 / quality=等质量）", flush=True)
     # [NVENC-TUNING] `--nvenc-tune uhq` 仅 hevc/av1 NVENC 有该档；显式落到 h264_nvenc 时
     # 报错退出 2（与 VidUtils 一致）。libx264/auto 不在此硬拦——编码器可能后续自动升级，
     # 交给 writer 侧「忽略并告知」。

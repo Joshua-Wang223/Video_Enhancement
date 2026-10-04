@@ -1009,6 +1009,24 @@ def group_constqp(ctx: Ctx, v: Verifier) -> None:
           Status.PASS if Q.to_constqp_qp("no_such_codec", 26) == 26 else Status.FAIL)
     v.add("G3-4", "CONSTQP", "无损 QP=0 保持 0",
           Status.PASS if Q.to_constqp_qp("h264_nvenc", 0) == 0 else Status.FAIL)
+    # [QUALITY-MODE] 生产**默认 quality 口径**的 constqp 数值——本门禁其余项钉 size 口径
+    # （见 load_quality_map 的说明），故此处临时切 quality、断言真实标定值、再复位。
+    # 覆盖面：G6-1x 锁命令**形状**（口径无关）+ 本条锁 quality 口径的 **-qp 数值** = 生产全覆盖。
+    _prev_qm = Q.get_quality_mode()
+    try:
+        Q.set_quality_mode("quality")
+        _q_h = Q.to_constqp_qp("h264_nvenc", 26)
+        _q_e = Q.to_constqp_qp("hevc_nvenc", 28)
+        _q_a = Q.to_constqp_qp("av1_nvenc", 27)
+        _q_ok = (_q_h == 22 and _q_e == 23 and _q_a == 63)
+        v.add("G3-9", "CONSTQP",
+              "quality 口径（生产默认）：h264 CQ26→QP22 / hevc CQ28→QP23 / av1 CQ27→QP63",
+              Status.PASS if _q_ok else Status.FAIL,
+              detail=f"h264={_q_h} hevc={_q_e} av1={_q_a}（期望 22/23/63）",
+              evidence=["[QUALITY-MODE] QUALITY_MAP_QP['h264_nvenc']=(0.9704,1.4767)、"
+                        "['hevc_nvenc']=(1.1083,-2.9183)；D2b 标定"])
+    finally:
+        Q.set_quality_mode(_prev_qm)   # 复位到本门禁既定口径（size）
     v.add("G3-5", "CONSTQP", "CONSTQP_QP_OFFSET 为可调口且当前为 0",
           Status.PASS if getattr(Q, "CONSTQP_QP_OFFSET", None) == 0 else Status.WARN,
           detail=f"CONSTQP_QP_OFFSET={getattr(Q, 'CONSTQP_QP_OFFSET', 'N/A')}")

@@ -464,7 +464,8 @@ def resolve_quality(codec: str, *,
         crf_ref / cq_ref: 基准轴质量值（None 表示未指定）
         default_ref: 四类输入都为空时使用的 libx264 CRF 基准
         table: 可选的换算表**一次性覆盖**（``{codec: (a, b, lo, hi)}``）。
-               None ⇒ 用当前活动表（``set_quality_mode()`` 维护；默认 ``size``）。
+               None ⇒ 用当前活动表（``set_quality_mode()`` 维护；
+               **默认 ``quality`` 等质量**，见 convert_crf._QUALITY_MODE）。
                仅对**派生分支**（基准轴 / 跨族 / 默认）生效；字面量同族仍原样下发。
 
     Returns:

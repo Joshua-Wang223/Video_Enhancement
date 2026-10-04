@@ -16,7 +16,9 @@
         "validate_mode": "thread",
         "validate_gpu_workers": null,
         "auto_parallel": true,
-        "max_parallel_workers": 0
+        "max_parallel_workers": 0,
+        "// quality_mode_note": "质量换算口径（对齐 VidUtils 的 --quality-mode）：size=等体积（SIZE_MAP，目标同文件大小）| quality=等质量（QUALITY_MAP，目标同 VMAF）。默认 quality；可用 --quality-mode 覆盖。",
+        "quality_mode": "quality"
     },
     "paths": {
         "// base_dir_note": [

@@ -31,6 +31,9 @@ class Config:
             "validate_gpu_workers": None,
             "auto_parallel":        True,
             "max_parallel_workers": 0,
+            # [QUALITY-MODE] 全局质量换算口径（对齐 VidUtils 的 --quality-mode）：
+            #   size=等体积（SIZE_MAP，目标同文件大小）| quality=等质量（QUALITY_MAP，目标同 VMAF，默认）
+            "quality_mode":         "quality",
         },
         "paths": {
             "base_dir":    "",
@@ -226,6 +229,10 @@ class Config:
         # 验证分段时长
         if self.config["processing"]["segment_duration"] <= 0:
             raise ValueError("分段时长必须大于0")
+        # [QUALITY-MODE] 质量换算口径
+        _qm = self.config["processing"].get("quality_mode", "quality")
+        if _qm not in ("size", "quality"):
+            raise ValueError(f"processing.quality_mode 必须是 'size' 或 'quality'（当前 {_qm!r}）")
     
     def _setup_paths(self):
         """设置和创建必要的路径"""
