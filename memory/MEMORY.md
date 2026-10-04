@@ -15,7 +15,10 @@
 
 **工作约定（2026-08-14 用户确认，2026-09-08 重申）**：每次新建/修改 `memory/` 下任何文件后，必须**自动同步**到镜像目录（同名覆盖），不得只改一侧。2026-09-08 起镜像目录为上述 Linux A/B 两处，同步后建议用 `diff -r` 复核。
 **写入规范（2026-08-24 事故）**：禁止经 PowerShell 管道/heredoc 向 memory 写中文（控制台代码页有损转码为字面 ?，不可逆）；必须用支持 UTF-8 的直写工具，写后字节扫描抽检 0x3F。
+**写入纪律（2026-10-04 事故）**：`open(p,'w')` 会立即清空原文件 ⇒ 内容必须在内存里算完并校验通过才落盘（详见 [先算完再落盘](feedback_atomic_file_write.md)）；同步后除`diff -r` 外还要跑索引双向校验（见 [索引双向完整](memory-index-integrity.md)）。
 - [项目综合认知入口](project-core-knowledge.md) — opencode/Claude 共享的浓缩认知：架构、活跃文件、NVENC 铁律、关键 offset、生产配置、工作偏好；含 2026-08-29 新增的 upscale 模式自动保护与 IFRNet 模型路径派生
+- [写文件必须「先算完再落盘」（open(p,'w') 会立即清空原文件）](feedback_atomic_file_write.md) — 2026-10-04 事故：批量改索引的脚本漏一个逗号 → `replace()` 抛 TypeError，但 `open(p,'w')` 已先 truncate ⇒ 162 行索引变 0 字节、本轮 10 处改动全丢；含恢复判据（未提交时 `git checkout --` 可回 HEAD）与「内容算完+校验通过才落盘」/ 临时文件 + `os.replace` 两条纪律
+- [MEMORY.md 索引要双向完整（悬空链接多半是路径/文件名写错）](memory-index-integrity.md) — 2026-10-04：139 条索引里 7 条悬空 + 13 个 .md 未收录，修后 151 条双向完整；含双向校验脚本、**链接基准是 `memory/` 自己**（指 `Plan/` 要写 `../Plan/`）、「[文件缺失]」标注常是文件名记错而非真缺失、未收录文件的 A/B/C 分档处置（作废项标 ~~ 并加文件内失效标注而非删除）
 - [IFRNet 水彩花屏+HEVC 尾帧损坏双症状调查](ifrnet-watercolor-tail-defect-investigation.md) — 2026-08-26 定性：尾帧参考链断裂为 LA 流式既有缺陷（备份同配置复现，包级守恒校验盲区，尾部 CRA 重启组）；水彩单帧为 H2D 预取 pinned 槽无同步竞态被方案时序改动显性化；含 Fix-1~5 修复方案与验证方法；2026-08-27/28 修复落地（P1-FIX-H2D-EVENT-SYNC + EOS 硬化 + 解码级门禁），生产验证全过
 - [优化方案全量执行记录 2026-08](optimization-execution-2026-08.md) — P0×8+P1+P2+P3 全量落地（tile 批级接入、ESRGAN compile 实现、NVENC RC/挂起/死锁修复、指纹断点、回归测试 30/30）；含延后项与 GPU 生产验证清单；后验证三合一 → Accessory/verify/plan_implementation_gate.py v2（72 项，test_regression_min.py 为兼容别名；后扩展至 90 项：F-修复效果 phase + FIX-HEVC-LA-OPEN，见 hevc-la-open-production.md）
 - [语言与代码修改偏好](user_language.md) — 只用中英文交流，代码修改保留原有注释
