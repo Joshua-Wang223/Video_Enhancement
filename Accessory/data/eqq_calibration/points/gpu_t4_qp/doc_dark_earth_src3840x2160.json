@@ -1,0 +1,326 @@
+{
+ "doc_dark_earth_src3840x2160.mp4|libx264|18": {
+  "m": {
+   "vmaf": 95.407811,
+   "psnr_hvs": 47.30935,
+   "vif_scale0": 0.824008,
+   "adm2": 0.990072,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 4.47
+ },
+ "doc_dark_earth_src3840x2160.mp4|libx264|21": {
+  "m": {
+   "vmaf": 93.501307,
+   "psnr_hvs": 45.049007,
+   "vif_scale0": 0.779813,
+   "adm2": 0.984769,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 4.05
+ },
+ "doc_dark_earth_src3840x2160.mp4|libx264|24": {
+  "m": {
+   "vmaf": 90.540571,
+   "psnr_hvs": 42.783407,
+   "vif_scale0": 0.732048,
+   "adm2": 0.976958,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 3.7
+ },
+ "doc_dark_earth_src3840x2160.mp4|libx264|27": {
+  "m": {
+   "vmaf": 86.224412,
+   "psnr_hvs": 40.453774,
+   "vif_scale0": 0.680653,
+   "adm2": 0.966217,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 3.48
+ },
+ "doc_dark_earth_src3840x2160.mp4|libx264|30": {
+  "m": {
+   "vmaf": 80.215561,
+   "psnr_hvs": 38.09482,
+   "vif_scale0": 0.627053,
+   "adm2": 0.951565,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 3.36
+ },
+ "doc_dark_earth_src3840x2160.mp4|h264_nvenc|10": {
+  "m": {
+   "vmaf": 97.980636,
+   "psnr_hvs": 51.923857,
+   "vif_scale0": 0.942012,
+   "adm2": 0.998184,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.2
+ },
+ "doc_dark_earth_src3840x2160.mp4|h264_nvenc|15": {
+  "m": {
+   "vmaf": 97.523868,
+   "psnr_hvs": 50.198764,
+   "vif_scale0": 0.910678,
+   "adm2": 0.996612,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.2
+ },
+ "doc_dark_earth_src3840x2160.mp4|h264_nvenc|19": {
+  "m": {
+   "vmaf": 96.374741,
+   "psnr_hvs": 47.541524,
+   "vif_scale0": 0.860721,
+   "adm2": 0.993329,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.31
+ },
+ "doc_dark_earth_src3840x2160.mp4|h264_nvenc|23": {
+  "m": {
+   "vmaf": 94.159259,
+   "psnr_hvs": 44.870793,
+   "vif_scale0": 0.799547,
+   "adm2": 0.987456,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.25
+ },
+ "doc_dark_earth_src3840x2160.mp4|h264_nvenc|26": {
+  "m": {
+   "vmaf": 91.18877,
+   "psnr_hvs": 42.571478,
+   "vif_scale0": 0.748443,
+   "adm2": 0.98025,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.21
+ },
+ "doc_dark_earth_src3840x2160.mp4|h264_nvenc|29": {
+  "m": {
+   "vmaf": 86.72341,
+   "psnr_hvs": 40.227472,
+   "vif_scale0": 0.693042,
+   "adm2": 0.969997,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.24
+ },
+ "doc_dark_earth_src3840x2160.mp4|h264_nvenc|33": {
+  "m": {
+   "vmaf": 78.505584,
+   "psnr_hvs": 37.143536,
+   "vif_scale0": 0.618401,
+   "adm2": 0.95165,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.19
+ },
+ "doc_dark_earth_src3840x2160.mp4|h264_nvenc|37": {
+  "m": {
+   "vmaf": 67.141651,
+   "psnr_hvs": 34.264298,
+   "vif_scale0": 0.54475,
+   "adm2": 0.925473,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.22
+ },
+ "doc_dark_earth_src3840x2160.mp4|h264_nvenc|42": {
+  "m": {
+   "vmaf": 49.083915,
+   "psnr_hvs": 30.82504,
+   "vif_scale0": 0.456977,
+   "adm2": 0.877554,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.23
+ },
+ "doc_dark_earth_src3840x2160.mp4|h264_nvenc|48": {
+  "m": {
+   "vmaf": 27.18776,
+   "psnr_hvs": 27.129082,
+   "vif_scale0": 0.369997,
+   "adm2": 0.793084,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.23
+ },
+ "doc_dark_earth_src3840x2160.mp4|h264_nvenc|51": {
+  "m": {
+   "vmaf": 16.11714,
+   "psnr_hvs": 25.20547,
+   "vif_scale0": 0.334414,
+   "adm2": 0.729675,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.21
+ },
+ "doc_dark_earth_src3840x2160.mp4|hevc_nvenc|10": {
+  "m": {
+   "vmaf": 97.757077,
+   "psnr_hvs": 51.349997,
+   "vif_scale0": 0.93431,
+   "adm2": 0.997531,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.19
+ },
+ "doc_dark_earth_src3840x2160.mp4|hevc_nvenc|15": {
+  "m": {
+   "vmaf": 97.023203,
+   "psnr_hvs": 49.285622,
+   "vif_scale0": 0.895079,
+   "adm2": 0.995332,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.25
+ },
+ "doc_dark_earth_src3840x2160.mp4|hevc_nvenc|19": {
+  "m": {
+   "vmaf": 95.737884,
+   "psnr_hvs": 46.992001,
+   "vif_scale0": 0.849571,
+   "adm2": 0.991701,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.19
+ },
+ "doc_dark_earth_src3840x2160.mp4|hevc_nvenc|23": {
+  "m": {
+   "vmaf": 93.566008,
+   "psnr_hvs": 44.604264,
+   "vif_scale0": 0.795657,
+   "adm2": 0.986112,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.19
+ },
+ "doc_dark_earth_src3840x2160.mp4|hevc_nvenc|26": {
+  "m": {
+   "vmaf": 90.559818,
+   "psnr_hvs": 42.529016,
+   "vif_scale0": 0.747358,
+   "adm2": 0.97865,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.19
+ },
+ "doc_dark_earth_src3840x2160.mp4|hevc_nvenc|29": {
+  "m": {
+   "vmaf": 86.564496,
+   "psnr_hvs": 40.415662,
+   "vif_scale0": 0.69591,
+   "adm2": 0.969579,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.19
+ },
+ "doc_dark_earth_src3840x2160.mp4|hevc_nvenc|33": {
+  "m": {
+   "vmaf": 78.800851,
+   "psnr_hvs": 37.577399,
+   "vif_scale0": 0.624854,
+   "adm2": 0.951761,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.21
+ },
+ "doc_dark_earth_src3840x2160.mp4|hevc_nvenc|37": {
+  "m": {
+   "vmaf": 68.561528,
+   "psnr_hvs": 34.920799,
+   "vif_scale0": 0.554443,
+   "adm2": 0.927175,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.2
+ },
+ "doc_dark_earth_src3840x2160.mp4|hevc_nvenc|42": {
+  "m": {
+   "vmaf": 52.178206,
+   "psnr_hvs": 31.754169,
+   "vif_scale0": 0.470928,
+   "adm2": 0.881851,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.22
+ },
+ "doc_dark_earth_src3840x2160.mp4|hevc_nvenc|48": {
+  "m": {
+   "vmaf": 30.311089,
+   "psnr_hvs": 28.149127,
+   "vif_scale0": 0.388036,
+   "adm2": 0.801006,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.21
+ },
+ "doc_dark_earth_src3840x2160.mp4|hevc_nvenc|51": {
+  "m": {
+   "vmaf": 19.172384,
+   "psnr_hvs": 26.179155,
+   "vif_scale0": 0.351695,
+   "adm2": 0.743727,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.22
+ }
+}

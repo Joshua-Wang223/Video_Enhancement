@@ -165,8 +165,9 @@ _EQQUAL_SPEED_OVERRIDE: Dict[str, tuple] = {
 # 本仓走 ``external/*/nvenc_sdk.py`` 的 ctypes 直连 SDK，``to_constqp_qp()`` 需要
 # **QP 轴**上的等质量值，而 ``QUALITY_MAP`` 是 CQ/CRF 轴的表。
 #   · 软编（libx265/libsvtav1/librav1e）的 ``-qp`` 本身就落在 QP 刻度上 ⇒ 镜像 D2a；
-#   · ⚠ NVENC 的 QP 行**需上机标定**（M4，需 NVIDIA 卡）—— 在标定前，
-#     ``_QP_MAP_OVERRIDE`` 会先行命中（h264/hevc 基准轴直取、av1 ×3），行为与现状一致。
+#   · ⚠ NVENC 的 QP 行已于 2026-10-04 在 T4 上机标定并落表（见下方 h264/hevc 行）；
+#     未覆盖的 av1_nvenc（需 L40/Ada）仍由 ``_QP_MAP_OVERRIDE`` 先行命中
+#     （h264/hevc 基准轴直取、av1 ×3），行为与标定前一致。
 QUALITY_MAP_QP: Dict[str, tuple] = {
     # 软编行镜像 QUALITY_MAP 的 2026-10-02 **第八版**标定值（统一锚点 18/21/24/27/30，
     # 17 条素材 + 同 key 取均值，720p prep，n_subsample=1；软编门禁 ≤5.9，实测
@@ -174,11 +175,20 @@ QUALITY_MAP_QP: Dict[str, tuple] = {
     # ⚠ 数值与旧版不同：曾有一版漏读 VE 侧 10s 历史数据（316 点）导致虚低，
     #   已按完整数据修正（详见上方 _EQQUAL_SPEED_OVERRIDE 的说明）。
     # ⚠ libx265/libvpx-vp9/libaom-av1/libsvtav1 的 QP 轴 = CRF 轴（ffmpeg 直接透传 -qp）。
-    # ⚠ TODO(M4): 'h264_nvenc' / 'hevc_nvenc' / 'av1_nvenc' 需 NVIDIA 机上标定。
     'libx265':     (1.0979, -2.3119, 0, 51),
     'libvpx-vp9':  (1.9716, -15.0929, 0, 63),
     'libaom-av1':  (2.3219, -22.3927, 0, 63),
     'libsvtav1':   (2.3961, -21.3615, 0, 63),
+    # ---------- 硬件编码器（NVENC QP 轴，**T4 实测 2026-10-04**）----------
+    # 口径：锚点 18/21/24/27/30 + n_subsample=1 + 720p prep + `-rc:v constqp -qp`
+    #   （CR-1 preset p4）。素材池 = eqq_calib 17 条（12×6s + 5×10s 切片）。
+    # 池化 a=最小二乘 / b=各素材中位数；LOO worst：h264 3.47 / hevc 3.72 —— 按
+    #   分档门禁 ≤5.9 判达标（与 CQ 轴同源同口径）。指纹：T4 / 580.65.06 / ffmpeg 9.0.2。
+    # ⚠ 与 CQ 轴（QUALITY_MAP）**不是同一刻度**：QP 轴 a≈0.97/1.11、b≈+1.48/−2.92
+    #   （非恒等）⇒ 落表后 ``to_constqp_qp`` 的 quality 口径输出随之改变（判据同步见
+    #   crf_cq_unification_verify 的 G3/G6/G7）。
+    'h264_nvenc':  (0.9704, 1.4767, 0, 51),
+    'hevc_nvenc':  (1.1083, -2.9183, 0, 51),
     # ⚠ rav1e 分档：native 进 QUALITY_MAP，speed10 进 _EQQUAL_SPEED_OVERRIDE，
     #   本表不重复登记 librav1e（避免与档位语义冲突）。
 }

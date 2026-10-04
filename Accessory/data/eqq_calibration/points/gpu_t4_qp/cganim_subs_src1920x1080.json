@@ -1,0 +1,326 @@
+{
+ "cganim_subs_src1920x1080.mp4|libx264|18": {
+  "m": {
+   "vmaf": 98.60727,
+   "psnr_hvs": 47.772716,
+   "vif_scale0": 0.853442,
+   "adm2": 0.995142,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 3.19
+ },
+ "cganim_subs_src1920x1080.mp4|libx264|21": {
+  "m": {
+   "vmaf": 98.000412,
+   "psnr_hvs": 45.753761,
+   "vif_scale0": 0.81379,
+   "adm2": 0.992611,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 2.95
+ },
+ "cganim_subs_src1920x1080.mp4|libx264|24": {
+  "m": {
+   "vmaf": 96.854231,
+   "psnr_hvs": 43.669691,
+   "vif_scale0": 0.768728,
+   "adm2": 0.989154,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 2.58
+ },
+ "cganim_subs_src1920x1080.mp4|libx264|27": {
+  "m": {
+   "vmaf": 94.695381,
+   "psnr_hvs": 41.456649,
+   "vif_scale0": 0.71768,
+   "adm2": 0.984401,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 2.5
+ },
+ "cganim_subs_src1920x1080.mp4|libx264|30": {
+  "m": {
+   "vmaf": 91.38153,
+   "psnr_hvs": 39.211864,
+   "vif_scale0": 0.660903,
+   "adm2": 0.977397,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 2.22
+ },
+ "cganim_subs_src1920x1080.mp4|h264_nvenc|10": {
+  "m": {
+   "vmaf": 99.242591,
+   "psnr_hvs": 51.265419,
+   "vif_scale0": 0.932588,
+   "adm2": 0.998711,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.89
+ },
+ "cganim_subs_src1920x1080.mp4|h264_nvenc|15": {
+  "m": {
+   "vmaf": 99.045438,
+   "psnr_hvs": 49.127579,
+   "vif_scale0": 0.895775,
+   "adm2": 0.997548,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.37
+ },
+ "cganim_subs_src1920x1080.mp4|h264_nvenc|19": {
+  "m": {
+   "vmaf": 98.519334,
+   "psnr_hvs": 46.366487,
+   "vif_scale0": 0.841711,
+   "adm2": 0.995402,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.39
+ },
+ "cganim_subs_src1920x1080.mp4|h264_nvenc|23": {
+  "m": {
+   "vmaf": 97.267284,
+   "psnr_hvs": 43.444045,
+   "vif_scale0": 0.775314,
+   "adm2": 0.99165,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.67
+ },
+ "cganim_subs_src1920x1080.mp4|h264_nvenc|26": {
+  "m": {
+   "vmaf": 95.108737,
+   "psnr_hvs": 41.062152,
+   "vif_scale0": 0.720235,
+   "adm2": 0.98745,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.71
+ },
+ "cganim_subs_src1920x1080.mp4|h264_nvenc|29": {
+  "m": {
+   "vmaf": 91.898742,
+   "psnr_hvs": 38.820551,
+   "vif_scale0": 0.661618,
+   "adm2": 0.981791,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.79
+ },
+ "cganim_subs_src1920x1080.mp4|h264_nvenc|33": {
+  "m": {
+   "vmaf": 86.01655,
+   "psnr_hvs": 35.98853,
+   "vif_scale0": 0.581122,
+   "adm2": 0.970988,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.1
+ },
+ "cganim_subs_src1920x1080.mp4|h264_nvenc|37": {
+  "m": {
+   "vmaf": 77.731181,
+   "psnr_hvs": 33.153147,
+   "vif_scale0": 0.496523,
+   "adm2": 0.95523,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.04
+ },
+ "cganim_subs_src1920x1080.mp4|h264_nvenc|42": {
+  "m": {
+   "vmaf": 63.423154,
+   "psnr_hvs": 29.544739,
+   "vif_scale0": 0.392631,
+   "adm2": 0.923435,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.04
+ },
+ "cganim_subs_src1920x1080.mp4|h264_nvenc|48": {
+  "m": {
+   "vmaf": 41.58199,
+   "psnr_hvs": 25.693492,
+   "vif_scale0": 0.29015,
+   "adm2": 0.853411,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.05
+ },
+ "cganim_subs_src1920x1080.mp4|h264_nvenc|51": {
+  "m": {
+   "vmaf": 30.979505,
+   "psnr_hvs": 23.735708,
+   "vif_scale0": 0.243604,
+   "adm2": 0.810834,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.01
+ },
+ "cganim_subs_src1920x1080.mp4|hevc_nvenc|10": {
+  "m": {
+   "vmaf": 99.154452,
+   "psnr_hvs": 50.715424,
+   "vif_scale0": 0.922244,
+   "adm2": 0.998209,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.91
+ },
+ "cganim_subs_src1920x1080.mp4|hevc_nvenc|15": {
+  "m": {
+   "vmaf": 98.867124,
+   "psnr_hvs": 48.404993,
+   "vif_scale0": 0.882606,
+   "adm2": 0.996662,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.01
+ },
+ "cganim_subs_src1920x1080.mp4|hevc_nvenc|19": {
+  "m": {
+   "vmaf": 98.300677,
+   "psnr_hvs": 45.89352,
+   "vif_scale0": 0.834508,
+   "adm2": 0.994249,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.01
+ },
+ "cganim_subs_src1920x1080.mp4|hevc_nvenc|23": {
+  "m": {
+   "vmaf": 96.865478,
+   "psnr_hvs": 43.258004,
+   "vif_scale0": 0.776118,
+   "adm2": 0.990268,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.04
+ },
+ "cganim_subs_src1920x1080.mp4|hevc_nvenc|26": {
+  "m": {
+   "vmaf": 94.61691,
+   "psnr_hvs": 41.128616,
+   "vif_scale0": 0.724209,
+   "adm2": 0.985669,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.04
+ },
+ "cganim_subs_src1920x1080.mp4|hevc_nvenc|29": {
+  "m": {
+   "vmaf": 91.430676,
+   "psnr_hvs": 39.006037,
+   "vif_scale0": 0.666513,
+   "adm2": 0.979376,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.93
+ },
+ "cganim_subs_src1920x1080.mp4|hevc_nvenc|33": {
+  "m": {
+   "vmaf": 85.645993,
+   "psnr_hvs": 36.285541,
+   "vif_scale0": 0.5856,
+   "adm2": 0.968126,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.02
+ },
+ "cganim_subs_src1920x1080.mp4|hevc_nvenc|37": {
+  "m": {
+   "vmaf": 77.659253,
+   "psnr_hvs": 33.624743,
+   "vif_scale0": 0.501748,
+   "adm2": 0.95109,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.17
+ },
+ "cganim_subs_src1920x1080.mp4|hevc_nvenc|42": {
+  "m": {
+   "vmaf": 64.760692,
+   "psnr_hvs": 30.377355,
+   "vif_scale0": 0.405422,
+   "adm2": 0.921757,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.02
+ },
+ "cganim_subs_src1920x1080.mp4|hevc_nvenc|48": {
+  "m": {
+   "vmaf": 44.196125,
+   "psnr_hvs": 26.51197,
+   "vif_scale0": 0.309305,
+   "adm2": 0.859454,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 1.27
+ },
+ "cganim_subs_src1920x1080.mp4|hevc_nvenc|51": {
+  "m": {
+   "vmaf": 32.425978,
+   "psnr_hvs": 24.573741,
+   "vif_scale0": 0.268188,
+   "adm2": 0.812318,
+   "psnr": null,
+   "ssim": null,
+   "xpsnr": null
+  },
+  "sec": 0.97
+ }
+}

@@ -37,6 +37,21 @@ ACC 总点数 = 1153      ← 合并重复观测后的唯一 (素材,档位,参�
 | | `eqq2_10s_bbc_anchorB.json` | 9 | 同上，仅 BBC 3 条 |
 | | `vu_m2_anchorA.json` | 21 | 锚点集探测（A 套） |
 
+### GPU 标定数据（T4，硬编 h264/hevc，2026-10-04）
+
+与软编库**分开存放**（不并入上面的 18 文件/1400 点口径计数），`--sides` 用时显式加上：
+
+| 目录 | 文件数 | 点数 | 说明 |
+|---|---|---|---|
+| `points/gpu_t4_cq/` | 3 | 442 | CQ 轴（`-cq:v`，VBR）标定：17 素材 × {h264,hevc} + libx264 锚点。`--sides …,gpu_t4_cq --axis cq` |
+| `points/gpu_t4_qp/` | 17 | 459 | QP 轴（`-rc:v constqp -qp`）标定：17 素材 × {h264,hevc} + 锚点。`--sides …,gpu_t4_qp --axis qp` |
+
+- 素材 = `eqq_calib` 的 17 条切片（12×6s + 5×10s），锚点 18/21/24/27/30，`n_subsample=1`，720p prep，`--src-is-prep`。
+- ⚠ **`screen_ui_code_src1280x720.mp4` 6s/10s 同名但内容不同** ⇒ `gpu_t4_*` 内 10s 侧已改名
+  `screen_ui_code_src1280x720_10s.mp4`；否则池化会并成 16 素材、给出另一组 a/b。
+- 落表值：CQ → `QUALITY_MAP['h264_nvenc']=(0.9295,6.2523)` LOO 3.98 / `['hevc_nvenc']=(1.1116,2.1606)` LOO 5.81；
+  QP → `QUALITY_MAP_QP['h264_nvenc']=(0.9704,1.4767)` LOO 3.47 / `['hevc_nvenc']=(1.1083,-2.9183)` LOO 3.72。
+
 ### ⚠ `legacy10s/` 是有效数据，不可剔除
 
 这 5 个文件（337 点）是 **12 条素材的 10s 侧观测**。历史上曾被误判为「跨时长脏数据」
@@ -98,6 +113,8 @@ eqq_calibration/
 │   ├── 6s/           8 个points（738 点）
 │   ├── 10s/          5 个 points（325 点）
 │   ├── legacy10s/    5 个 points（337 点，有效观测）
+│   ├── gpu_t4_cq/    3 个 points（442 点，硬编 CQ 轴）
+│   ├── gpu_t4_qp/    17 个 points（459 点，硬编 QP 轴）
 │   └── clip_name_mapping.json
 ├── superseded/仅 2 个真正作废的数据集
 ├── reports/          门禁与验证日志、最终看板
