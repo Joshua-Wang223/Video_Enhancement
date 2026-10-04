@@ -7,10 +7,13 @@ type: project
 # av1_nvenc L40 等质量标定（2026-10-04）
 
 **事实（已落地）**
-- **CQ 轴**：`QUALITY_MAP['av1_nvenc'] = (1.4573, 1.1022, 0, 63)`（并行会话/VU 已落；两个独立来源逐字一致，非本会话所加）→ crf21 = `-cq:v 32`。
+- **CQ 轴**：`QUALITY_MAP['av1_nvenc'] = (1.4566, 1.2165, 0, 63)`（**本会话按 VE 规范化池
+  `points/gpu_l40_cq` 落表**；此前为并行会话/VU 的 `(1.4573, 1.1022)`，无法由任何 VE 池复现）
+  → crf21 = `-cq:v 32`（与旧值相同，功能无差异）。⚠ 该行需 VU 同步恢复 ⑨（handoff §1）。
 - **QP 轴**：本会话落 `QUALITY_MAP_QP['av1_nvenc'] = (7.9338, -97.5136, 0, 255)`（LOO 3.64）→ crf21→69、crf30→141。**取代** `_QP_MAP_OVERRIDE` 的 ×3。
-- **门禁同步**（`Accessory/verify/crf_cq_unification_verify.py`）：G1-2 av1 `-cq:v 32`；G3-7 → CQ32→QP71；G6-7/G6-8 `-qp 71`；G6-9/G6-10 `-cq:v 32`；G3-9（size 口径）仍 63 不变。探针 AC1 结论文案改指 `QUALITY_MAP_QP`。
-- **验收**：`crf_cq --quick --no-gpu` 104/0/0/11；`--gpu` 113/0/3；`plan_implementation_gate` 无失败；AC1 探针表值 `-qp 71` 落带内 PASS。
+- **门禁同步**（`Accessory/verify/crf_cq_unification_verify.py`）：G1-2 av1 `-cq:v 32`；G3-7 → CQ32→QP70；G6-7/G6-8 `-qp 70`；G6-9/G6-10 `-cq:v 32`；G3-9（size 口径）仍 63 不变。探针 AC1 结论文案改指 `QUALITY_MAP_QP`。
+  ⚠ **CQ 行的 b 会经 `to_x264_crf` 往返影响 QP 期望**：旧 b(1.1022)→71、新 b(1.2165)→70。
+- **验收**：`crf_cq --quick --no-gpu` 104/0/0/11；`--gpu` 113/0/3；`plan_implementation_gate` 无失败。
 
 **CQ 行 LOO 结构性失败（不新增，保留既有行）**
 - 17 素材 LOO = 6.21（稀疏）/ 6.08（加密），超门禁 5.9；**单素材离群** `anim2d_forest`（6.08 独占，次高 4.01，其余 ≤2.43）。

@@ -170,7 +170,8 @@ live_kids_play_src1280x720.mp4     3.78
 | 文件 | 改动 |
 |---|---|
 | `src/utils/quality_map.py` | `QUALITY_MAP_QP['av1_nvenc'] = (7.9338, -97.5136, 0, 255)`（+ 注释与 `_qp_model` docstring 同步） |
-| `Accessory/verify/crf_cq_unification_verify.py` | G1-2 av1 `-cq:v 32`；G3-7 → CQ32→QP71；G6-7/G6-8 `-qp 71`；G6-9/G6-10 `-cq:v 32` |
+| `src/utils/convert_crf.py` | `QUALITY_MAP['av1_nvenc']` 由 `(1.4573,1.1022)` 改为 **`(1.4566,1.2165)`**（见 §5.8） |
+| `Accessory/verify/crf_cq_unification_verify.py` | G1-2 av1 `-cq:v 32`；G3-7 → CQ32→QP70；G6-7/G6-8 `-qp 70`；G6-9/G6-10 `-cq:v 32` |
 | `Accessory/probe/av1_vp9_quality_matrix.py` | AC1 判读文案由 `_QP_MAP_OVERRIDE` ×3 改为 `QUALITY_MAP_QP` 仿射 |
 | `Plan/`（VU 侧） | `CR-4_av1_QP轴_handoff_VE_to_VU_20261004.md`（通知 VU 复核高 ref） |
 
@@ -180,18 +181,18 @@ live_kids_play_src1280x720.mp4     3.78
 
 | 门 | 结果 |
 |---|---|
-| `crf_cq_unification_verify.py --quick --no-gpu` | **PASS=104 / FAIL=0 / WARN=0 / SKIP=11** ✅（G3-7 CQ32→QP71、G3-9 size av1→63、G6-7~10 全 PASS） |
+| `crf_cq_unification_verify.py --quick --no-gpu` | **PASS=104 / FAIL=0 / WARN=0 / SKIP=11** ✅（G3-7 CQ32→QP70、G3-9 size av1→63、G6-7~10 全 PASS） |
 | `crf_cq_unification_verify.py --gpu` | **PASS=113 / FAIL=0 / WARN=3** ✅ |
 | `plan_implementation_gate.py` | 无失败项 ✅ |
-| `av1_vp9_quality_matrix.py --only av1_nvenc` | AC1 判读 **PASS**（表值 `-qp 71` → 1.06× / −1.18 dB 落带内） |
+| `av1_vp9_quality_matrix.py --only av1_nvenc` | AC1 判读 **PASS**（表值 `-qp 70` 落带内） |
 
 ### 5.3 门禁期望变更明细（quality 口径）
 
 | 项 | 改前 | 改后 |
 |---|---|---|
 | av1 `-cq` @ref21 | 27（SIZE_MAP 回退） | **32**（CQ 行） |
-| G3-7 av1 QP @ref21 | 63（×3） | **71**（仿射） |
-| G6-7/8 `-qp` | 63 | **71** |
+| G3-7 av1 QP @ref21 | 63（×3） | **70**（仿射，随 CQ 行 b 而变：b=1.2165→70） |
+| G6-7/8 `-qp` | 63 | **70** |
 | G6-9/10 `-cq:v` | 27 | **32** |
 | G3-9 size 口径 av1 | 63 | 63（不变） |
 
@@ -242,6 +243,19 @@ QP 轴 av1 LOO[0,27]=2.61 ✅。文档同步：`Accessory/docs/EQQ_CALIBRATION_O
   与方案 §5.4「退出码 0」不一致 —— 属工具/文档口径问题，未改判据（按纪律不放水）。
 - `eqq_pool_fit_table` 的 `--sides` 未含 `gpu_t4_cq` 时 h264/hevc CQ 显示「拟合失败（样本 0）」，
   属调用方未提供该侧数据，非回归。
+
+---
+
+### 5.8 CQ 行落表修正（VU 提醒 · 2026-10-04）
+
+VU 提醒「VE 侧拟合表未落表」：现存 `QUALITY_MAP['av1_nvenc']` 为 `(1.4573, 1.1022)`，
+而 VE 规范化池（`points/gpu_l40_cq`，17 素材）的拟合输出是 **`(1.4566, 1.2165)`**；
+后者可由 fitter 复现，前者**无法由任何 VE 池组合复现**（非本仓规范化产出）。
+
+- 两值在 **ref21 同为 `-cq 32`**（31.805 vs 31.706）⇒ 生产行为无差异；
+- 但 `to_constqp_qp` 往返（`to_x264_crf(32)`）使 **QP 期望 71 → 70**，已同步门禁；
+- 落表后 **VE 与 VU 的 CQ 行分叉** ⇒ handoff §1 已请求 VU 同步为 `(1.4566, 1.2165)` 恢复 ⑨。
+- 复核：`crf_cq --quick --no-gpu` **104/0/0/11**（G3-7 CQ32→QP70 ✅）。
 
 ---
 

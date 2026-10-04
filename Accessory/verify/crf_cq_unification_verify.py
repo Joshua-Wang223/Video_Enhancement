@@ -1054,12 +1054,12 @@ def group_constqp(ctx: Ctx, v: Verifier) -> None:
     # G3-7 [FIX-QP-SCALE] AV1 的 -qp 是 qindex（0~255），与 -cq 的 0~63 不同刻度。
     #   2026-10-04 L40 17 素材标定：quality 口径 QP 轴为**仿射** (7.9338, −97.5136)，
     #   取代早期仅在 ref21 验证的 ×3 近似。输入取 av1 在 ref21 的 **CQ 表值 32**
-    #   （与 G3-1/G3-2 同约定：传表在 ref21 产出的 CQ 值），回基准轴≈21.2 → QP 71。
+    #   （与 G3-1/G3-2 同约定：传表在 ref21 产出的 CQ 值），回基准轴≈21.13 → QP 70。
     #   ⚠ VU 侧仍为 `_QP_SCALE=3`（仅 ref21 验证）⇒ 跨仓 CR-4 handoff 待同步。
     _av1_cq = Q.resolve_quality("av1_nvenc", crf_ref=21)[1]
     q_av1 = Q.to_constqp_qp("av1_nvenc", _av1_cq)
-    v.add("G3-7", "CONSTQP", f"av1_nvenc：CQ {_av1_cq} → QP 71（L40 仿射标定，非 ×3）",
-          Status.PASS if q_av1 == 71 else Status.FAIL,
+    v.add("G3-7", "CONSTQP", f"av1_nvenc：CQ {_av1_cq} → QP 70（L40 仿射标定，非 ×3）",
+          Status.PASS if q_av1 == 70 else Status.FAIL,
           detail=f"QP={q_av1}（L40 17 素材仿射标定 QUALITY_MAP_QP['av1_nvenc']）",
           evidence=["[L40-QP-CALIB] QUALITY_MAP_QP['av1_nvenc'] = (7.9338, -97.5136, 0, 255)"])
 
@@ -1566,10 +1566,10 @@ def group_emit(ctx: Ctx, v: Verifier) -> None:
          [("-crf", "24")], [("-cq:v", None)]),
         # G6-7 [FIX-QP-SCALE] AV1 的 constqp 必须发 qindex（0~255），不是 CQ 轴值：
         #   crf=32 是 av1_nvenc 在基准 21 上的 -cq 表值（L40 落表后；旧值 27 为 SIZE_MAP 回退），
-        #   切 constqp 后应换算成 71（L40 17 素材仿射标定，取代早期 ×3 的 63）。
+        #   切 constqp 后应换算成 70（L40 17 素材仿射标定，取代早期 ×3 的 63）。
         #   需 Ada(L40) 才能真正跑起来；T4 / 本机无 AV1 NVENC ⇒ 该格 SKIP。
         ("G6-7", "IFRNet", "ifrnet_video", "av1_nvenc", 32, "constqp", 0,
-         [("-rc:v", "constqp"), ("-qp", "71")],
+         [("-rc:v", "constqp"), ("-qp", "70")],
          [("-cq:v", None), ("-b:v", None)]),
         # G6-8~G6-10 [FIX-AV1-NVENC / FIX-AV1-RC] 2026-09-30 L40 长视频冒烟暴露的
         #   三处 AV1 缺陷的命令形状回归（详见方案 §8.6）。三者都**不需要 AV1 硬件**：
@@ -1578,7 +1578,7 @@ def group_emit(ctx: Ctx, v: Verifier) -> None:
         #      av1_nvenc 落到 else 的 libx264 分支 → 静默发 `-crf 27`（把 CQ 当 CRF）。
         ("G6-8", "ESRGAN", "realesrgan_video", "av1_nvenc", 32, "constqp", 0,
          [("-vcodec", "av1_nvenc"), ("-preset", "p4"),
-          ("-rc:v", "constqp"), ("-qp", "71")],
+          ("-rc:v", "constqp"), ("-qp", "70")],
          [("-crf", None), ("-cq:v", None)]),
         #   ③ av1_nvenc 的 `-rc` 只接受 constqp/vbr/cbr；`vbr_hq` 会让 ffmpeg
         #      报 `Undefined constant or missing '(' in 'vbr_hq'` 并整条命令失败。
