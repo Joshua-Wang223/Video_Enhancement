@@ -75,7 +75,7 @@ NVIDIA 移除 `vbr_hq` 是为了推动编码器 API 向**更现代化、更灵�
 
 FFmpeg 9.0 的 `-rc` 取值只剩 `constqp / vbr / cbr`（`ffmpeg -h encoder=h264_nvenc` 实测）；
 `vbr_hq` 与 **`qvbr`** 都已消失。故旧代码里 `qvbr → 'vbr_hq'` 的映射一并作废，
-本仓统一迁移为 `vbr -tune hq -multipass fullres`。
+本仓统一迁移为**裸 `vbr`**（见 7.4 二次校正）。
 
 ### 7.2 关键纠正：CLI 被移除 ≠ SDK/驱动被移除
 
@@ -87,11 +87,22 @@ FFmpeg 9.0 的 `-rc` 取值只剩 `constqp / vbr / cbr`（`ffmpeg -h encoder=h26
 
 | 层 | 处理 |
 |---|---|
-| **FFmpeg CLI（`ffmpeg_io.py` 的 `_rc_v_map`/`_NVENC_RC_MAP`、harness、探针）** | 迁移到 `vbr -tune hq -multipass fullres` |
+| **FFmpeg CLI（`ffmpeg_io.py` 的 `_rc_v_map`/`_NVENC_RC_MAP`、harness、探针）** | 迁移到**裸 `vbr`**（7.4 二次校正；`-tune/-multipass` 改显式 opt-in） |
 | **SDK ctypes（`nvenc_sdk.py` 的 `rc_ptr[1]=32`）** | **不动**（驱动仍接受） |
 | **内部 `rate_mode` 名 / config JSON / 缓存 key** | **不动**（Plan A 边界） |
 
 画质实测（真实素材 640×360，cq=23，旧基线用备份 FFmpeg 6.1.1）：h264 ΔVMAF −0.048 / hevc −0.130（≤0.3 PASS）。
+
+### 7.4 二次校正：CQ 默认改回**裸命令**（2026-10-04，据 VU A/B）
+
+7.3 落地时给 CLI 追加了 `-tune hq -multipass fullres`。VU 侧 A/B（`Plan/ffmpeg_nvenc_knowledge.md` §5.1）
+证明：`-tune hq` 是 ffmpeg **默认值**（写了等于没写），固定 CQ 下 `-multipass` **不升 VMAF**
+（fullres ΔVMAF −0.006~−0.108 / qres −0.067~−0.335）。故：
+- CLI 默认改回**裸 `-rc:v vbr -cq:v N -b:v 0 -preset p4`**；
+- `-tune` / `-multipass` 改为显式 opt-in（`--nvenc-tune-* / --nvenc-multipass-*`），
+  `cbr` 或目标码率时自动 `-multipass fullres`；唯一真源 `src/utils/nvenc_tuning.py`；
+- 仅 ffmpeg_io / CLI 层；SDK ctypes 仍不动。
+详见 `Plan/T4_NVENC_vbr_hq移除_验证专项.md` §11。
 
 ### 7.4 候选方案 B（未来驱动/SDK 不再接受 32 时）
 

@@ -139,7 +139,16 @@ FFmpeg NVENC 封装中，`-rc` 仅暴露三个基础值：
   · `--nvenc-tune {hq,ll,ull,lossless,uhq}` —— 默认不发；`uhq` 仅 hevc/av1（h264 报错）；
   · `--nvenc-multipass {disabled,qres,fullres}` —— 默认不发；`--rc-mode cbr` 或给了 `--bitrate`
     时**自动补 fullres**（该场景才有意义），可用本参数显式覆盖（含 `disabled`）。
-- 等质量标定 harness（`probe/calibrate_equal_quality.py`）**不受影响**：`BASE_LOCK` 依旧裸 `-rc vbr`。
+- **VE（Video_Enhancement）落地**——同一口径，唯一真源 `src/utils/nvenc_tuning.py`（两个
+  `external/*/ffmpeg_io.py` writer 共用）：
+  · 分阶段 flag：`--nvenc-tune-ifrnet|-esrgan`、`--nvenc-multipass-ifrnet|-esrgan`（默认不发）；
+  · `uhq` 显式落 `h264_nvenc` → CLI **退出 2**（libx264/auto 由 writer 忽略并告知）；
+  · `constqp` 下 multipass 忽略并告知（`-tune` 仍可下发，与 RC 正交）；
+  · 目标码率 `--bitrate-ifrnet|-esrgan`、`--output-bitrate`、`--split-bitrate`（改发 `-b:v X`
+    去掉 `-cq:v`；**软编同样支持**；NVENC 侧自动 fullres）；
+  · ⚠ 仅作用于 **ffmpeg_io / CLI 层**；SDK ctypes 主路径（`tuningInfo`/`multiPass`）不变。
+- 等质量标定 harness（`probe/calibrate_equal_quality.py`）**不受影响**：`BASE_LOCK` 保持裸 `-rc vbr`
+  （VE 于 2026-10-04 二次校正后与 VU 对齐）。
 - ⚠ 别把 `-preset p7` 当 two-pass：现代 `p1~p7` 别名不带 multipass 标记（只有 legacy `slow` 会开两遍）。
 
 ## 6. 软编 vs 硬编

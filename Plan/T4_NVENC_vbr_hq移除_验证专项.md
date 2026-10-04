@@ -477,3 +477,29 @@ L40 方案（`PROMPT_L40_AV1等质量标定专项执行方案.md`）**不受影�
 （`README.md` + `metrics.json` + `quality_compare/` 的 §4 对比产物 + `smoke/` E2E 输入输出 +
 `writer_e2e/` 真实 FFmpegWriter 产物 + `reports/` 验证报告；含 md5 指纹与复现命令）。
 ⚠️ 旧产物 `old_*.mp4` 由本机备份 FFmpeg 6.1.1 生成（9.0 无法重造），故一并入库。
+
+---
+
+## 11. 二次校正：CQ 默认改回**裸命令** + 新增显式 opt-in（2026-10-04）
+
+**触发**：VU 侧 A/B 实测（`Plan/ffmpeg_nvenc_knowledge.md` §5.1）——固定 CQ 下 `-multipass`
+**不升 VMAF**（fullres ΔVMAF −0.006~−0.108 / qres −0.067~−0.335，码率 ×0.98~0.997），且
+`-tune hq` 是 ffmpeg 默认值（写了等于没写）。§10 里「追加 `-tune hq -multipass fullres`」
+的做法**被推翻**。
+
+**新口径**：
+- 生产 CQ 路径**默认裸命令** `-rc:v vbr -cq:v N -b:v 0 -preset p4`（去掉两对 token）。
+- 新增显式 opt-in `--nvenc-tune-ifrnet|-esrgan`、`--nvenc-multipass-ifrnet|-esrgan`：
+  · `-tune` 默认不发；`uhq` 仅 hevc/av1（显式落 `h264_nvenc` → **退出 2**，libx264/auto 由 writer 忽略并告知）；
+  · `-multipass` 默认不发；`rc_mode=='cbr'` 或给了目标码率时**自动补 `fullres`**（显式值优先，含 `disabled`）；`constqp` 忽略并告知。
+- 新增目标码率 `--bitrate-ifrnet|-esrgan`、`--output-bitrate`、`--split-bitrate`
+  （改发 `-b:v X` 并去掉 `-cq:v`，**软编同样支持**；output/split 侧 NVENC 也自动补 fullres）。
+- 仅作用于 **ffmpeg_io / CLI 层**；SDK ctypes 路径**不动**（`tuningInfo`/`multiPass` 不变）。
+- 唯一真源：`src/utils/nvenc_tuning.py`（两 writer 共用，G5-3/G5-5 断言命令形状）。
+
+**标定溯源**：`QUALITY_MAP` 的 h264/hevc CQ 行是用**带 fullres** 的命令标的；A/B 显示
+Δ≤0.11 VMAF（在 LOO 噪声内）⇒ **不重标**；`BASE_LOCK` 改为裸命令供**后续**复现。
+
+**验证**：`crf_cq --no-gpu --quick` → **101/0/11**（G6 新增 7 例 opt-in 断言 G6-11~17，
+并做过反向校验：故意回归时 G6-1/G6-4/G6-11/G6-16 均 FAIL）；`plan_gate` 96/94/0/2；
+`calibrate_equal_quality --selftest` 39/39；生产 `--dry-run` rc=0、`uhq+h264` rc=2。

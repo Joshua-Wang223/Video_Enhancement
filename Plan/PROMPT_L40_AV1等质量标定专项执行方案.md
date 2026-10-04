@@ -12,7 +12,7 @@
 >
 > 状态（2026-10-04 更新）：**纯方案，AV1 实测待 Ada(L40)**。本容器为 Tesla T4（无 AV1 NVENC）。
 > ⚠ AV1 **不受** FFmpeg 9.0 的 `vbr_hq/qvbr` 移除影响（本就用 plain `vbr`）；但 **CR-2 二次修订
-> 要求 VU 侧 h264/hevc 重新同步**（`vbr -tune hq -multipass fullres`，见 T4 方案 §12.5 与
+> 要求 VU 侧 h264/hevc 重新同步**（**裸 `vbr`**，见 T4 方案 §12.5 与
 > `Plan/T4_NVENC_vbr_hq移除_验证专项.md`）——若本专项要与 VU 共享 `QUALITY_MAP`，先完成该 handoff。
 
 ---
@@ -101,7 +101,7 @@ HW_CODECS 含 av1_nvenc
 > ℹ **CR-2（rate control）口径**：av1 统一**显式** `-rc:v vbr`（不加 HQ 附加项）
 > （VE 生产 writer 的 av1 降级路径本就是 `vbr`；VU 已把 av1 也改为显式 `-rc vbr`）。
 > ⚠ 2026-10-04 起 FFmpeg 9.0 **移除 `vbr_hq`/`qvbr`**（`-rc` 只剩 constqp/vbr/cbr）⇒
->   h264/hevc 的 CLI/harness 口径改为 `vbr -tune hq -multipass fullres`（VE SDK 侧仍走
+>   h264/hevc 的 CLI/harness 口径改为**裸 `vbr`**（`-tune`/`-multipass` 改显式 opt-in；VE SDK 侧仍走
 >   `RC_VBR_HQ(32)`，实测驱动仍接受）。**AV1（本专项唯一目标）不受影响**——它本就是 plain `vbr`。
 > 探针侧 VE 已修（`av1_vp9_quality_matrix.py` 的 `_PROD_RC`）；VU 侧 h264/hevc 待重新同步（T4 方案 §12.3）。
 
@@ -315,7 +315,7 @@ cd /workspace/VidUtils && python3 verify/verify_quality_mapping.py < /dev/null
   VE 本就 p4；**VU 已把生产 `DEFAULT_PRESET_GPU` / harness / 探针一并改 p4**（残留 `p5` 均为
   兼容显式 p5 的有意保留，见 T4 方案 §12.5）。
 - **CR-2（rate-control 口径）**：av1 `vbr`，**均显式下发 `-rc`**。⚠ 2026-10-04 FFmpeg 9.0 移除
-  `vbr_hq`/`qvbr` ⇒ h264/hevc 的 CLI/harness 口径从 `vbr_hq` 改为 `vbr -tune hq -multipass fullres`
+  `vbr_hq`/`qvbr` ⇒ h264/hevc 的 CLI/harness 口径从 `vbr_hq` 改为**裸 `vbr`**（2026-10-04 二次校正）
   （VE 已改；VE SDK 侧仍 `RC_VBR_HQ(32)`，实测驱动仍接受）。**本专项（AV1）不受影响**（本就 plain `vbr`）。
   VU 侧 h264/hevc 需重新同步，否则共享 `QUALITY_MAP` 的 ⑨ 组变红（handoff）。
 - **QP 轴（`QUALITY_MAP_QP` / `_QP_SCALE`）**：VE 侧是独立表；VU 侧无表，只有 `_QP_SCALE`。

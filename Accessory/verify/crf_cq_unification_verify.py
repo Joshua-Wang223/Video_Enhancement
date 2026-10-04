@@ -603,38 +603,51 @@ def enc_soft(ctx: Ctx, src: Path, out: Path, crf: int, preset: str = "medium",
 def enc_nvenc(ctx: Ctx, src: Path, out: Path, codec: str, rc_mode: str,
               value: int, preset: str = "p4",
               avg_br: Optional[int] = None,
-              timeout: Optional[int] = None) -> Path:
+              timeout: Optional[int] = None,
+              *, tune: Optional[str] = None,
+              multipass: Optional[str] = None,
+              bitrate: Optional[str] = None) -> Path:
     """按 Level 2（FFmpeg CLI）形状编码。
 
     ⚠ FFmpeg 9.0 起 CLI **移除** vbr_hq/qvbr（`-rc` 只剩 constqp/vbr/cbr，传 vbr_hq 报
-    `Unable to parse "rc" option value`，rc=234）⇒ vbr_hq/qvbr 迁移为官方建议的
-    `vbr -tune hq -multipass fullres`（与 ffmpeg_io 的 [FIX-FFMPEG9-VBRHQ] 同口径）。
-    rc_mode='vbr_hq'  → -rc:v vbr -tune hq -multipass fullres -cq:v <value> -b:v <avg_br or 0>
-    rc_mode='constqp' → -rc:v constqp -qp <value>
-    avg_br 非 None 时用于模拟 SDK Level 1 的 averageBitRate 字段（天花板测试）。
+    `Unable to parse "rc" option value`，rc=234）⇒ 统一映射为 `vbr`。
+    **默认裸命令** `-rc:v vbr -cq:v <value> -b:v 0`：`-tune hq` 是 ffmpeg 默认值、
+    固定 CQ 下 multipass 不升 VMAF ⇒ 二者改为显式 opt-in（见
+    Plan/ffmpeg_nvenc_knowledge.md §5.1/§5.2）。
+      rc_mode='vbr_hq'/'qvbr' → `-rc:v vbr`；constqp → `-rc:v constqp -qp <value>`
+      tune/multipass/bitrate：显式 opt-in；给 bitrate 时改发 `-b:v X` 并去掉 `-cq:v`。
+      avg_br 非 None 时模拟 SDK Level 1 的 averageBitRate 天花板（该臂保留 `-multipass fullres`）。
 
-    ⚠ AV1 NVENC 仅支持 constqp / vbr / cbr 三种 RC 模式（无 vbr_hq / qvbr），且不追加
-    HQ 附加项；遇到 av1_nvenc 的 vbr_hq/qvbr 降级为 plain vbr。
+    ⚠ AV1 NVENC 仅支持 constqp / vbr / cbr 三种 RC 模式（无 vbr_hq / qvbr），遇到
+    av1_nvenc 的 vbr_hq/qvbr 降级为 plain vbr。
     """
-    # [FIX-FFMPEG9-VBRHQ] vbr_hq/qvbr → vbr（+ HQ 附加项）；av1 不追加附加项
-    _hq = rc_mode in ("vbr_hq", "qvbr")
-    effective_rc = "vbr" if _hq else rc_mode
-
+    _mp = multipass
     cmd = [ctx.ffmpeg, "-y", "-v", "error", "-i", str(src),
            "-c:v", codec, "-preset", preset]
     if rc_mode == "constqp":
         cmd += ["-rc:v", "constqp", "-qp", str(value)]
+        if tune:                                   # -tune 与 RC 正交，constqp 下也可下发
+            cmd += ["-tune", tune]
     else:
+        effective_rc = "vbr" if rc_mode in ("vbr_hq", "qvbr") else rc_mode
         cmd += ["-rc:v", effective_rc]
-        if _hq and codec != "av1_nvenc":
-            cmd += ["-tune", "hq", "-multipass", "fullres"]
-        cmd += ["-cq:v", str(value)]
-        if avg_br is None:
-            cmd += ["-b:v", "0"]
+        if tune:
+            cmd += ["-tune", tune]
+        # 自动 multipass：CBR / 受限码率（avg_br 模拟 SDK 天花板）/ 目标码率才有意义
+        if _mp is None and (rc_mode == "cbr" or avg_br is not None or bitrate is not None):
+            _mp = "fullres"
+        if _mp is not None:
+            cmd += ["-multipass", _mp]
+        if bitrate is not None:
+            cmd += ["-b:v", str(bitrate)]
         else:
-            # 模拟 SDK Level 1：averageBitRate=avg_br，maxBitRate=avg_br*2
-            cmd += ["-b:v", str(avg_br), "-maxrate", str(avg_br * 2),
-                    "-bufsize", str(avg_br * 2)]
+            cmd += ["-cq:v", str(value)]
+            if avg_br is None:
+                cmd += ["-b:v", "0"]
+            else:
+                # 模拟 SDK Level 1：averageBitRate=avg_br，maxBitRate=avg_br*2
+                cmd += ["-b:v", str(avg_br), "-maxrate", str(avg_br * 2),
+                        "-bufsize", str(avg_br * 2)]
     cmd += ["-bf", "0", "-pix_fmt", "yuv420p", str(out)]
     rc, _, err = ctx.run(cmd, timeout)
     if rc != 0:
@@ -1279,10 +1292,10 @@ def group_static(ctx: Ctx, v: Verifier) -> None:
     checks = [
         (r"'_?constqp'\s*:\s*'constqp'", "constqp 不再被错映射为 vbr"),
         (r"'-rc:v',\s*'constqp',\s*'-qp',\s*str\(\s*_nvenc_qp\s*\)", "CONSTQP 发 -qp"),
-        # [FIX-FFMPEG9-VBRHQ] vbr_hq/qvbr 迁移动 `vbr -tune hq -multipass fullres`
-        # 后，`_rc_v` 与 `-cq:v` 之间多一个 `*_hq_extra`（h264/hevc 才有），正则需放行。
-        (r"'-rc:v',\s*_rc_v,\s*(?:\*_hq_extra,\s*)?'-cq:v',\s*str\(\s*crf\s*\),\s*'-b:v',\s*'0'",
-         "VBR 发 -cq:v + -b:v 0"),
+        # [NVENC-TUNING] 默认**裸命令**：质量段（-cq:v/-b:v 0、tune/multipass、bitrate）
+        # 统一交给 nvenc_tuning.resolve_nvenc_tokens，不再硬编码 `-tune hq -multipass fullres`。
+        (r"from nvenc_tuning import", "引入 nvenc_tuning 唯一真源"),
+        (r"'-rc:v',\s*_rc_v,\s*\*resolve_nvenc_tokens\(", "VBR 质量段走 resolve_nvenc_tokens"),
         (r"_nvenc_qp\s*=\s*to_constqp_qp\(\s*codec\s*,\s*crf\s*\)", "constqp 轴换算调用"),
     ]
     bad = [d for pat, d in checks if not has(ifio, pat, re.S)]
@@ -1310,6 +1323,9 @@ def group_static(ctx: Ctx, v: Verifier) -> None:
         (r"nvenc_rc\s*==\s*'constqp'", "constqp 分支存在"),
         (r"'-rc:v',\s*'constqp',\s*'-qp',\s*str\(\s*_nvenc_qp\s*\)", "CONSTQP 发 -qp"),
         (r"'-rc',\s*'constqp',\s*\n\s*'-qp',\s*'0'", "无损分支显式 -rc constqp"),
+        # [NVENC-TUNING] 与 ifrnet 侧同源：质量段走 nvenc_tuning（默认裸命令）
+        (r"from nvenc_tuning import", "引入 nvenc_tuning 唯一真源"),
+        (r"'-rc:v',\s*nvenc_rc,\s*\*resolve_nvenc_tokens\(", "VBR 质量段走 resolve_nvenc_tokens"),
     ]
     bad = [d for pat, d in checks if not has(efio, pat)]
     v.add("G5-5", "STATIC", "Real-ESRGAN FFmpeg 下发路径正确",
@@ -1431,13 +1447,18 @@ class _FakePopen:
 
 
 def _capture_writer(ctx: Ctx, pkg: str, codec: str, crf: int, rc_mode: str,
-                    lookahead: Optional[int]) -> Optional[List[str]]:
+                    lookahead: Optional[int],
+                    tune: Optional[str] = None,
+                    multipass: Optional[str] = None,
+                    bitrate: Optional[str] = None) -> Optional[List[str]]:
     """构造后端 FFmpegWriter 并捕获其将执行的 ffmpeg 命令（不真正拉起进程）。
 
     两个后端的 FFmpegWriter 构造签名不同：IFRNet 为位置参数 + codec/crf/rc_mode，
     Real-ESRGAN 为 (args_namespace, audio, h, w, path, fps)。此处分别适配。
     同时把 HardwareCapability.best_encoder 临时替换为恒等函数，确保捕获的是
     "传入该 codec 时的命令形状"，而不是自动升降级之后的结果。
+
+    [NVENC-TUNING] tune/multipass/bitrate 为显式 opt-in（默认 None = 裸命令）。
     """
     for p in (str(UTILS_DIR), str(EXTERNAL_DIR)):
         if p not in sys.path:
@@ -1460,11 +1481,14 @@ def _capture_writer(ctx: Ctx, pkg: str, codec: str, crf: int, rc_mode: str,
         if pkg == "ifrnet_video":
             w = fio.FFmpegWriter(str(ctx.tmp / "emit.mp4"), 320, 240, 30.0,
                                  codec=codec, crf=crf, rc_mode=rc_mode,
-                                 lookahead_depth=lookahead, quiet=True)
+                                 lookahead_depth=lookahead, quiet=True,
+                                 nvenc_tune=tune, nvenc_multipass=multipass,
+                                 bitrate=bitrate)
         else:
             ns = types.SimpleNamespace(
                 codec=codec, crf=crf, rate_mode=rc_mode,
                 lookahead_depth=lookahead, encode_preset="medium",
+                nvenc_tune=tune, nvenc_multipass=multipass, bitrate=bitrate,
                 ffmpeg_bin="ffmpeg", quiet=True)
             w = fio.FFmpegWriter(ns, None, 240, 320, str(ctx.tmp / "emit.mp4"), 30.0)
         with contextlib.suppress(Exception):
@@ -1489,18 +1513,18 @@ def group_emit(ctx: Ctx, v: Verifier) -> None:
     print("\n【G6】下发命令捕获（ffmpeg 参数形状）")
 
     cases = [
+        # [NVENC-TUNING] 默认**裸命令**：不含 -tune / -multipass（二者为显式 opt-in）。
         ("G6-1", "IFRNet", "ifrnet_video", "h264_nvenc", 26, "vbr_hq", 8,
-         [("-rc:v", "vbr"), ("-tune", "hq"), ("-multipass", "fullres"),
-          ("-cq:v", "26"), ("-b:v", "0"), ("-rc-lookahead", "8")],
-         [("-rc:v", "vbr_hq"), ("-qp", None)]),
+         [("-rc:v", "vbr"), ("-cq:v", "26"), ("-b:v", "0"), ("-rc-lookahead", "8")],
+         [("-rc:v", "vbr_hq"), ("-tune", None), ("-multipass", None), ("-qp", None)]),
         ("G6-2", "IFRNet", "ifrnet_video", "h264_nvenc", 26, "constqp", 8,
          [("-rc:v", "constqp"), ("-qp", "21")],
          [("-cq:v", None), ("-b:v", None)]),
         ("G6-3", "IFRNet", "ifrnet_video", "libx264", 21, "vbr_hq", 8,
          [("-crf", "21")], [("-cq:v", None)]),
         ("G6-4", "ESRGAN", "realesrgan_video", "h264_nvenc", 26, "vbr_hq", 8,
-         [("-rc:v", "vbr"), ("-tune", "hq"), ("-multipass", "fullres"),
-          ("-cq:v", "26"), ("-b:v", "0")], [("-rc:v", "vbr_hq")]),
+         [("-rc:v", "vbr"), ("-cq:v", "26"), ("-b:v", "0")],
+         [("-rc:v", "vbr_hq"), ("-tune", None), ("-multipass", None)]),
         ("G6-5", "ESRGAN", "realesrgan_video", "h264_nvenc", 26, "constqp", 0,
          [("-rc:v", "constqp"), ("-qp", "21")], [("-cq:v", None)]),
         ("G6-6", "ESRGAN", "realesrgan_video", "libx265", 24, "vbr_hq", 8,
@@ -1530,12 +1554,43 @@ def group_emit(ctx: Ctx, v: Verifier) -> None:
          [("-vcodec", "av1_nvenc"), ("-rc:v", "vbr"), ("-cq:v", "27"),
           ("-b:v", "0")],
          [("-rc:v", "vbr_hq"), ("-crf", None)]),
+        # ── [NVENC-TUNING] 显式 opt-in / 自动 multipass / 目标码率（第 10 元素 = opts）──
+        ("G6-11", "IFRNet", "ifrnet_video", "h264_nvenc", 26, "vbr_hq", 8,
+         [("-tune", "ll"), ("-multipass", "qres"), ("-cq:v", "26"), ("-b:v", "0")],
+         [("-tune", "hq")],
+         {"tune": "ll", "multipass": "qres"}),
+        ("G6-12", "IFRNet", "ifrnet_video", "h264_nvenc", 26, "vbr_hq", 8,
+         [("-multipass", "disabled"), ("-cq:v", "26"), ("-b:v", "0")],
+         [("-multipass", "fullres")],
+         {"multipass": "disabled"}),
+        ("G6-13", "IFRNet", "ifrnet_video", "h264_nvenc", 26, "cbr", 8,
+         [("-rc:v", "cbr"), ("-multipass", "fullres"), ("-cq:v", "26"), ("-b:v", "0")],
+         [], {}),
+        ("G6-14", "IFRNet", "ifrnet_video", "h264_nvenc", 26, "vbr_hq", 8,
+         [("-rc:v", "vbr"), ("-multipass", "fullres"), ("-b:v", "8M")],
+         [("-cq:v", None)],
+         {"bitrate": "8M"}),
+        ("G6-15", "IFRNet", "ifrnet_video", "hevc_nvenc", 26, "vbr_hq", 8,
+         [("-tune", "uhq"), ("-cq:v", "26"), ("-b:v", "0")], [],
+         {"tune": "uhq"}),
+        # h264_nvenc 无 uhq 档 ⇒ writer 忽略并告知（命令里不得出现 -tune uhq）
+        ("G6-16", "IFRNet", "ifrnet_video", "h264_nvenc", 26, "vbr_hq", 8,
+         [("-cq:v", "26"), ("-b:v", "0")],
+         [("-tune", "uhq"), ("-tune", "hq")],
+         {"tune": "uhq"}),
+        # constqp：multipass 忽略（无码率目标），tune 仍可下发
+        ("G6-17", "IFRNet", "ifrnet_video", "h264_nvenc", 26, "constqp", 0,
+         [("-rc:v", "constqp"), ("-qp", "21"), ("-tune", "ll")],
+         [("-multipass", None), ("-cq:v", None)],
+         {"tune": "ll", "multipass": "fullres"}),
     ]
 
-    for cid, stage, pkg, codec, crf, rc, la, want, forbid in cases:
+    for case in cases:
+        cid, stage, pkg, codec, crf, rc, la, want, forbid = case[:9]
+        opts = case[9] if len(case) > 9 else {}
         title = f"{stage} {codec} rc={rc} → 命令形状"
         try:
-            cmd = _capture_writer(ctx, pkg, codec, crf, rc, la)
+            cmd = _capture_writer(ctx, pkg, codec, crf, rc, la, **opts)
         except Exception as exc:  # noqa: BLE001
             v.add(cid, "EMIT", title, Status.SKIP,
                   detail=f"后端不可导入/需 GPU：{type(exc).__name__}: {exc}")

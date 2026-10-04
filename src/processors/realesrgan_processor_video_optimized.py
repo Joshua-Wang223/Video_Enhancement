@@ -159,6 +159,10 @@ class RealESRGANVideoProcessor:
         self.cq_ref      = config.get("models", "realesrgan", "cq_ref",      default=None)
         self.rate_mode       = config.get("models", "realesrgan", "rate_mode",       default="vbr_hq")
         self.lookahead_depth = config.get("models", "realesrgan", "lookahead_depth", default=8)
+        # [NVENC-TUNING] 显式调优轴 + 目标码率（None = 默认不发，保持裸默认命令）
+        self.nvenc_tune      = config.get("models", "realesrgan", "nvenc_tune",      default=None)
+        self.nvenc_multipass = config.get("models", "realesrgan", "nvenc_multipass", default=None)
+        self.bitrate         = config.get("models", "realesrgan", "bitrate",         default=None)
         # [FIX-HEVC-LA-SOFT-RETIRED] hevc_la_disable 软退役：已由 FIX-HEVC-COUNTED/EOS 保障，不再改写 LA（与 IFRNet 镜像）
         self.hevc_la_disable = bool(config.get(
             "models", "realesrgan", "hevc_la_disable", default=True))
@@ -516,6 +520,10 @@ class RealESRGANVideoProcessor:
         ns.encode_preset   = self.encode_preset
         ns.rate_mode       = self.rate_mode
         ns.lookahead_depth = self.lookahead_depth
+        # [NVENC-TUNING] 显式调优轴 + 目标码率（None = 默认不发）
+        ns.nvenc_tune      = self.nvenc_tune
+        ns.nvenc_multipass = self.nvenc_multipass
+        ns.bitrate         = self.bitrate
         # [FIX-QUEUE-RIGHTSIZE] 透传队列深度与延迟解析开关
         ns.frame_queue_size  = self.frame_queue_size
         ns.detect_queue_size = self.detect_queue_size
@@ -987,6 +995,10 @@ class RealESRGANVideoProcessor:
             ns.encode_preset  = self.encode_preset
             ns.rate_mode       = self.rate_mode
             ns.lookahead_depth = self.lookahead_depth
+            # [NVENC-TUNING] 显式调优轴 + 目标码率（None = 默认不发）
+            ns.nvenc_tune      = self.nvenc_tune
+            ns.nvenc_multipass = self.nvenc_multipass
+            ns.bitrate         = self.bitrate
             # [FIX-QUEUE-RIGHTSIZE] 透传队列深度与延迟解析开关
             ns.frame_queue_size  = self.frame_queue_size
             ns.detect_queue_size = self.detect_queue_size

@@ -22,6 +22,11 @@ import ffmpeg
 # 单独 import 本模块不成立。
 from quality_map import to_constqp_qp
 
+# [NVENC-TUNING] NVENC `-tune` / `-multipass` / 目标码率的唯一真源
+# （与 ifrnet_video/ffmpeg_io.py 同源，两 writer 命令形状须逐字一致）。
+from nvenc_tuning import (resolve_nvenc_tokens, resolve_tune_token,   # noqa: F401
+                          note_suppressed, note_non_nvenc)
+
 # [P2-2] 读帧器 hwaccel 自适应决策：与 quality_map 同样取自 src/utils 的唯一
 # 真源（与 ifrnet_video 侧共用同一份阈值，避免两侧漂移）。
 from reader_hwaccel import decide_reader_hwaccel, cpu_core_count
@@ -804,6 +809,10 @@ class FFmpegWriter:
         # [V6451-RATEMODE] 从 processor 层透传的 rate_mode / lookahead_depth
         rc_mode = getattr(self.args, 'rate_mode', 'vbr_hq')
         rc_lookahead = getattr(self.args, 'lookahead_depth', _NVENC_LOOKAHEAD_VBR)
+        # [NVENC-TUNING] 显式调优轴（默认 None = 保持裸默认命令）
+        nvenc_tune = getattr(self.args, 'nvenc_tune', None)
+        nvenc_multipass = getattr(self.args, 'nvenc_multipass', None)
+        bitrate = getattr(self.args, 'bitrate', None)
 
         # [FIX-NVENC-UNIFIED] 统一 NVENC 检测：静态 GPU 型号表 + ffmpeg probe 双路径
         _hw_profile = getattr(self.args, '_hw_profile', None)
@@ -874,10 +883,18 @@ class FFmpegWriter:
 
         # [FIX-EXTRA-CODEC-ARGS] extra_codec_args 完全替换 quality_args
         if self._extra_codec_args:
+            # [NVENC-TUNING] extra_codec_args 会整体替换编码参数 ⇒ 调优轴无法叠加；
+            # 生产中不传 extra_codec_args，此处仅在有需求时**明确告知**（不静默丢弃）。
+            if nvenc_tune or nvenc_multipass or bitrate:
+                print('[FFmpegWriter] ⚠ extra_codec_args 会整体替换编码参数，'
+                      '--nvenc-tune / --nvenc-multipass / --bitrate 不生效', flush=True)
             cmd_args += ['-vcodec', video_codec, '-pix_fmt', 'yuv420p'] + self._extra_codec_args
         else:
             # [FIX-SLICE-THREAD / FIX-NVENC-PIPE / FIX-LOSSLESS]
             # 依据编解码器和 crf 构造最优编码参数
+            # [NVENC-TUNING] 非 NVENC 编码器上给了 tune/multipass ⇒ 忽略并告知（一次覆盖后续全部分支）。
+            if 'nvenc' not in video_codec:
+                note_non_nvenc(video_codec, tune=nvenc_tune, multipass=nvenc_multipass)
             # [FIX-AV1-NVENC] 同上：用子串判定，让 av1_nvenc 走 NVENC 分支
             if 'nvenc' in video_codec:
                 if crf == 0:
@@ -886,6 +903,12 @@ class FFmpegWriter:
                     # [QUALITY-UNIFY] 显式补 `-rc constqp`，与 ifrnet_video 侧无损
                     # 分支同形（ffmpeg 在 -qp>=0 且未给 -rc 时本就会自选 CONSTQP，
                     # 此处仅消除两侧命令差异，不改变行为）。
+                    # [NVENC-TUNING] 无损(QP=0) 无码率目标 ⇒ tune/multipass 不适用。
+                    note_suppressed(tune=nvenc_tune, multipass=nvenc_multipass,
+                                    reason='NVENC 无损(QP=0) 管道模式不适用')
+                    if bitrate:
+                        print('[FFmpegWriter] 目标码率与无损(crf=0) 互斥，已忽略 bitrate',
+                              flush=True)
                     quality_args = [
                         '-preset', nvenc_preset,
                         '-rc', 'constqp',
@@ -901,9 +924,10 @@ class FFmpegWriter:
                     # [V6451-RATEMODE] rc_mode / rc_lookahead 由 processor 层透传
                     # [FIX-FFMPEG9-VBRHQ] FFmpeg 9.0 起 CLI **移除**了 `vbr_hq` 与 `qvbr`
                     # （-rc 只剩 constqp/vbr/cbr，传 vbr_hq 报 `Unable to parse "rc"
-                    # option value`，rc=234）。迁移到官方建议的模块化组合
-                    # `-rc:v vbr -tune hq -multipass fullres`（旧 vbr_hq/qvbr 隐含多遍
-                    # 高质量，新组合在下面 else 分支显式补回；T4 实测 ΔVMAF -0.048/-0.130）。
+                    # option value`，rc=234）⇒ 统一映射为 vbr。
+                    # ⚠ 2026-10-04 二次校正：迁移时曾补 `-tune hq -multipass fullres`，但
+                    # T4 A/B 证明 `-tune hq` 是 ffmpeg 默认、固定 CQ 下 multipass **不升 VMAF**
+                    # ⇒ 默认改回**裸命令**，二者改为显式 opt-in（Plan/ffmpeg_nvenc_knowledge.md §5.1）。
                     # 这是 CLI token 与 SDK 数字枚举的边界翻译层：内部 rate_mode 名、
                     # config/缓存 key、nvenc_sdk 的 rc_ptr[1]=32 均不变。候选 **方案 B**
                     # （驱动不再接受 32 时）：nvenc_sdk 加 `vbr` 分支 + LA 门控收 vbr + 全链路改名。
@@ -922,9 +946,16 @@ class FFmpegWriter:
                         _nvenc_qp = to_constqp_qp(video_codec, crf)
                         print(f'[FFmpegWriter] rate_mode=constqp qp={_nvenc_qp} '
                               f'(la=off, 硬件禁用)', flush=True)
+                        # [NVENC-TUNING] constqp 无码率目标 ⇒ multipass 忽略；`-tune` 仍可下发。
+                        note_suppressed(multipass=nvenc_multipass,
+                                        reason='-rc constqp 无码率目标，NVENC 会忽略 multipass')
+                        if bitrate:
+                            print('[FFmpegWriter] 目标码率需要 VBR/CBR，constqp 下已忽略 bitrate',
+                                  flush=True)
                         quality_args = [
                             '-preset', nvenc_preset,
                             '-rc:v', 'constqp', '-qp', str(_nvenc_qp),
+                            *resolve_tune_token(video_codec, nvenc_tune),
                             '-bf', '0',
                             '-surfaces', str(_NVENC_SURFACES_PIPE),
                         ]
@@ -934,16 +965,17 @@ class FFmpegWriter:
                         if 'av1' in video_codec and rc_mode in ('vbr_hq', 'qvbr'):
                             print(f'[FFmpegWriter] av1_nvenc 不支持 rc={rc_mode}，'
                                   f'已映射为 vbr', flush=True)
-                        # [FIX-FFMPEG9-VBRHQ] 迁移自旧 vbr_hq/qvbr：补官方建议的 HQ 组合
-                        # `-tune hq -multipass fullres`。av1 保持 plain vbr（历史口径），
-                        # 显式 `vbr` 也保持 plain（用户已明确选择）。
-                        _hq_extra = (['-tune', 'hq', '-multipass', 'fullres']
-                                     if rc_mode in ('vbr_hq', 'qvbr') and 'av1' not in video_codec
-                                     else [])
+                        # [FIX-FFMPEG9-VBRHQ] FFmpeg 9.0 移除 vbr_hq/qvbr ⇒ 统一映射为 vbr。
+                        # [NVENC-TUNING] 默认**裸命令** `-rc:v vbr -cq:v N -b:v 0`：
+                        #   `-tune hq` 是 ffmpeg 默认值、固定 CQ 下 multipass 不升 VMAF
+                        #   ⇒ 二者改为显式 opt-in（T4 A/B 见 Plan/ffmpeg_nvenc_knowledge.md §5.1）。
+                        #   给了 bitrate ⇒ 改发 `-b:v X` 并去掉 `-cq:v`；cbr/bitrate 时自动 fullres。
                         print(f'[FFmpegWriter] rate_mode={rc_mode} rc-lookahead={rc_lookahead}')
                         quality_args = [
                             '-preset', nvenc_preset,
-                            '-rc:v', nvenc_rc, *_hq_extra, '-cq:v', str(crf), '-b:v', '0',
+                            '-rc:v', nvenc_rc, *resolve_nvenc_tokens(
+                                rc_mode, codec=video_codec, tune=nvenc_tune,
+                                multipass=nvenc_multipass, bitrate=bitrate, crf=crf),
                             '-bf', '0',
                             '-rc-lookahead', str(rc_lookahead),
                             '-surfaces', str(_NVENC_SURFACES_PIPE),
@@ -965,7 +997,7 @@ class FFmpegWriter:
                         '-vcodec', video_codec,
                         '-pix_fmt', 'yuv420p',
                         '-preset', nvenc_preset,
-                        '-crf', str(crf),
+                        *(['-b:v', str(bitrate)] if bitrate else ['-crf', str(crf)]),
                         '-x265-params',
                         f'pools={_x265_pool}:frame-threads={_x265_ft}',
                     ]
@@ -985,7 +1017,7 @@ class FFmpegWriter:
                         '-vcodec', 'libx264',
                         '-pix_fmt', 'yuv420p',
                         '-preset', nvenc_preset,
-                        '-crf', str(crf),
+                        *(['-b:v', str(bitrate)] if bitrate else ['-crf', str(crf)]),
                         '-x264-params', f'threads={_et}:slices={_s}',
                     ]
             else:
@@ -1003,7 +1035,7 @@ class FFmpegWriter:
                         '-vcodec', 'libx264',
                         '-pix_fmt', 'yuv420p',
                         '-preset', nvenc_preset,
-                        '-crf', str(crf),
+                        *(['-b:v', str(bitrate)] if bitrate else ['-crf', str(crf)]),
                         '-x264-params', f'threads={_et}:slices={_s}',
                     ]
 

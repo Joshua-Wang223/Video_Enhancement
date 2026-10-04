@@ -100,15 +100,15 @@ _EXTRA_ARGS: Dict[str, List[str]] = {
 
 # NVENC 的**生产 rc 口径**（跨仓契约 CR-2）——探针必须与生产/harness 一致，
 # 否则 A 组的 `-cq` 结论不代表生产实际等效点：
-#   · h264/hevc → `vbr -tune hq -multipass fullres`（VE 生产 SDK 走 RC_VBR_HQ；
-#     ⚠ FFmpeg 9.0 CLI 已移除 `vbr_hq`/`qvbr`，CLI 侧迁移为官方建议的模块化组合）
-#   · av1_nvenc → plain `vbr`（VE 生产 av1 由 `vbr_hq` 降级为 `vbr`，不加 HQ 附加项）
+#   · h264/hevc → **裸 `vbr`**（FFmpeg 9.0 CLI 移除 `vbr_hq`/`qvbr` ⇒ 统一映射为 vbr；
+#     `-tune hq` 是 ffmpeg 默认值、固定 CQ 下 multipass 不升 VMAF ⇒ 均不下发）
+#   · av1_nvenc → plain `vbr`（VE 生产 av1 由 `vbr_hq` 降级为 `vbr`）
 # ⚠ 与 `Accessory/probe/calibrate_equal_quality.BASE_LOCK`、`ffmpeg_io` writer 的
-#   `_rc_v_map`/[FIX-FFMPEG9-VBRHQ] 同源；软编不用 `-rc`，qsv/amf 不在 VE 生产路径故不猜。
-# ⚠ VU 侧待同步（跨仓 CR-2 handoff）：VU 若仍下发 `-rc:v vbr_hq` 会被 FFmpeg 9.0 拒绝。
+#   `_rc_v_map` 同源；软编不用 `-rc`，qsv/amf 不在 VE 生产路径故不猜。
+# ⚠ VU 侧同步（跨仓 CR-2 handoff）：VU 若仍下发 `-rc:v vbr_hq` 会被 FFmpeg 9.0 拒绝。
 _PROD_RC: Dict[str, List[str]] = {
-    "h264_nvenc": ["-rc:v", "vbr", "-tune", "hq", "-multipass", "fullres"],
-    "hevc_nvenc": ["-rc:v", "vbr", "-tune", "hq", "-multipass", "fullres"],
+    "h264_nvenc": ["-rc:v", "vbr"],
+    "hevc_nvenc": ["-rc:v", "vbr"],
     "av1_nvenc":  ["-rc:v", "vbr"],
 }
 

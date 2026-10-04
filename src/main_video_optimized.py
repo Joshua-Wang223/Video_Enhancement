@@ -174,6 +174,9 @@ from stdin_hardening import detach_background_stdin   # noqa: E402
 detach_background_stdin()
 # [P0-FIX-QUALITY-RANGE] 质量参数量程取编码器技术规范（单一真源 QUALITY_MAP）
 from quality_map import literal_range, supports_cq, supports_crf   # noqa: E402
+# [NVENC-TUNING] NVENC `-tune` / `-multipass` / 目标码率的唯一真源
+from nvenc_tuning import (                          # noqa: E402
+    NVENC_TUNE_VALUES, NVENC_MULTIPASS_VALUES, is_bitrate)
 from video_utils import (                            # noqa: E402
     format_time,
     get_video_duration,
@@ -1159,6 +1162,17 @@ def _validate_effective_config(config: Config,
     if not (ts == 0 or (isinstance(ts, int) and not isinstance(ts, bool) and ts >= 128)):
         _errors.append(f"models.realesrgan.tile_size 为 0（禁用）或 ≥128（当前 {ts!r}）")
 
+    # ── [NVENC-TUNING] 目标码率写法校验（ffmpeg 记法：8M / 8000k / 12000000）──
+    for _keys, _flag in (
+            (("models", "ifrnet", "bitrate"), "--bitrate-ifrnet"),
+            (("models", "realesrgan", "bitrate"), "--bitrate-esrgan"),
+            (("output", "video_bitrate"), "--output-bitrate"),
+            (("split", "video_bitrate"), "--split-bitrate")):
+        _bv = config.get(*_keys, default=None)
+        if _bv is not None and not is_bitrate(_bv):
+            _errors.append(f"{_flag} 写法非法（应为 8M / 8000k / 12000000 这类 ffmpeg "
+                           f"记法，当前 {_bv!r}）")
+
     if _errors:
         print("❌ 生效配置未通过范围校验：")
         for e in _errors:
@@ -1254,6 +1268,13 @@ def _apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
         config.set("models", "ifrnet", "rate_mode",       value=args.rate_mode_ifrnet)
     if args.lookahead_depth_ifrnet is not None:
         config.set("models", "ifrnet", "lookahead_depth", value=args.lookahead_depth_ifrnet)
+    # [NVENC-TUNING] 显式调优轴 + 目标码率
+    if args.nvenc_tune_ifrnet:
+        config.set("models", "ifrnet", "nvenc_tune",      value=args.nvenc_tune_ifrnet)
+    if args.nvenc_multipass_ifrnet:
+        config.set("models", "ifrnet", "nvenc_multipass", value=args.nvenc_multipass_ifrnet)
+    if args.bitrate_ifrnet:
+        config.set("models", "ifrnet", "bitrate",         value=args.bitrate_ifrnet)
     if args.no_audio_ifrnet:
         config.set("models", "ifrnet", "keep_audio",     value=False)
     if args.report_ifrnet:
@@ -1356,6 +1377,13 @@ def _apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
         config.set("models", "realesrgan", "rate_mode",       value=args.rate_mode_esrgan)
     if args.lookahead_depth_esrgan is not None:
         config.set("models", "realesrgan", "lookahead_depth", value=args.lookahead_depth_esrgan)
+    # [NVENC-TUNING] 显式调优轴 + 目标码率
+    if args.nvenc_tune_esrgan:
+        config.set("models", "realesrgan", "nvenc_tune",      value=args.nvenc_tune_esrgan)
+    if args.nvenc_multipass_esrgan:
+        config.set("models", "realesrgan", "nvenc_multipass", value=args.nvenc_multipass_esrgan)
+    if args.bitrate_esrgan:
+        config.set("models", "realesrgan", "bitrate",         value=args.bitrate_esrgan)
     if getattr(args, "ffmpeg_bin", None):
         config.set("models", "realesrgan", "ffmpeg_bin",      value=args.ffmpeg_bin)
 
@@ -1455,9 +1483,16 @@ def _apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
         config.set("output", "crf_ref", value=None)
     if args.output_preset:
         config.set("output", "preset", value=args.output_preset)
-    # 写入 use_copy：显式 --output-codec copy（且无质量/preset）也算 copy
+    # [NVENC-TUNING] 目标码率与质量参数互斥：改发 `-b:v X`，清掉 crf/cq 系列
+    if getattr(args, "output_bitrate", None):
+        config.set("output", "video_bitrate", value=args.output_bitrate)
+        config.set("output", "crf", value=None)
+        config.set("output", "cq", value=None)
+        config.set("output", "crf_ref", value=None)
+        config.set("output", "cq_ref", value=None)
+    # 写入 use_copy：显式 --output-codec copy（且无质量/preset/bitrate）也算 copy
     _output_cli_any = (bool(args.output_codec) or _output_quality_cli
-                       or bool(args.output_preset))
+                       or bool(args.output_preset) or bool(getattr(args, "output_bitrate", None)))
     if _output_codec_copy and not _output_quality_cli and not args.output_preset:
         _output_cli_any = False
     config.set("output", "use_copy", value=(not _output_cli_any))
@@ -1473,6 +1508,11 @@ def _apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
         config.set("split", "crf_ref", value=None)
     if getattr(args, "split_preset", None):
         config.set("split", "preset", value=args.split_preset)
+    # [NVENC-TUNING] 归一化目标码率（互斥：改发 `-b:v X`，清掉质量参数）
+    if getattr(args, "split_bitrate", None):
+        config.set("split", "video_bitrate", value=args.split_bitrate)
+        config.set("split", "crf_ref", value=None)
+        config.set("split", "cq_ref", value=None)
 
     # ── 最终报告输出路径（--report）──────────────────────────────────────
     if getattr(args, "report", None):
@@ -1735,7 +1775,8 @@ def _run_normalize_source(config: Config, input_video: str,
             encoder=_sp.get("codec", "libx264"),
             preset=_sp.get("preset", "veryfast"),
             crf=_sp.get("crf"), cq=_sp.get("cq"),
-            crf_ref=_sp.get("crf_ref"), cq_ref=_sp.get("cq_ref")):
+            crf_ref=_sp.get("crf_ref"), cq_ref=_sp.get("cq_ref"),
+            bitrate=_sp.get("video_bitrate")):
         print("   ❌ 源时间轴归一化失败，回退使用原始输入")
         try:
             out_path.unlink(missing_ok=True)
@@ -2497,6 +2538,19 @@ ESRGan 模型选项 (--esrgan-model):
                     "AV1 NVENC 仅支持 constqp / vbr / cbr（自动降级 vbr_hq/qvbr→vbr）。")
     g.add_argument("--lookahead-depth-ifrnet", type=int, metavar="N",
                help="IFRNet NVENC 前向帧预看深度（0~32，NVENC 硬件上限 32，默认 8）")
+    # [NVENC-TUNING] NVENC 显式调优轴（默认不发，保持裸默认命令）
+    g.add_argument("--nvenc-tune-ifrnet", metavar="TUNE",
+               choices=list(NVENC_TUNE_VALUES),
+               help="IFRNet NVENC -tune 档：hq（ffmpeg 默认值，写不写一样）/ ll / ull / "
+                    "lossless / uhq（仅 hevc_nvenc / av1_nvenc 有）。默认不发")
+    g.add_argument("--nvenc-multipass-ifrnet", metavar="MP",
+               choices=list(NVENC_MULTIPASS_VALUES),
+               help="IFRNet NVENC -multipass 档：disabled / qres / fullres。默认不在 CQ "
+                    "路径下发（固定 -cq 下实测不升 VMAF）；rc-mode=cbr 或给了 --bitrate-ifrnet "
+                    "时自动补 fullres，可用本参数显式覆盖（含 disabled）")
+    g.add_argument("--bitrate-ifrnet", metavar="RATE",
+               help="IFRNet 目标码率（如 8M / 8000k）：改为 -rc:v vbr -b:v RATE 并去掉 "
+                    "-cq:v（目标码率 VBR）。与 --cq-ifrnet/--crf-ifrnet 互斥")
     g.add_argument("--report-ifrnet", metavar="PATH",
                    help="IFRNet JSON 性能报告输出路径")
     g.add_argument("--preview-ifrnet", action="store_true",
@@ -2576,6 +2630,19 @@ ESRGan 模型选项 (--esrgan-model):
                         "AV1 NVENC 仅支持 constqp / vbr / cbr（自动降级 vbr_hq/qvbr→vbr）。")
     g.add_argument("--lookahead-depth-esrgan", type=int, metavar="N",
                    help="ESRGan NVENC 前向帧预看深度（0~32，NVENC 硬件上限 32，默认 8）")
+    # [NVENC-TUNING] NVENC 显式调优轴（默认不发，保持裸默认命令）
+    g.add_argument("--nvenc-tune-esrgan", metavar="TUNE",
+                   choices=list(NVENC_TUNE_VALUES),
+                   help="ESRGAN NVENC -tune 档：hq（ffmpeg 默认值，写不写一样）/ ll / ull / "
+                        "lossless / uhq（仅 hevc_nvenc / av1_nvenc 有）。默认不发")
+    g.add_argument("--nvenc-multipass-esrgan", metavar="MP",
+                   choices=list(NVENC_MULTIPASS_VALUES),
+                   help="ESRGAN NVENC -multipass 档：disabled / qres / fullres。默认不在 CQ "
+                        "路径下发；rc-mode=cbr 或给了 --bitrate-esrgan 时自动补 fullres，"
+                        "可用本参数显式覆盖（含 disabled）")
+    g.add_argument("--bitrate-esrgan", metavar="RATE",
+                   help="ESRGAN 目标码率（如 8M / 8000k）：改为 -rc:v vbr -b:v RATE 并去掉 "
+                        "-cq:v（目标码率 VBR）。与 --cq-esrgan/--crf-esrgan 互斥")
     g.add_argument("--ffmpeg-bin", type=str,
                    help="ffmpeg 可执行文件路径（默认 ffmpeg）")
     # ── 高优先级覆盖开关（强制启用，覆盖 --no-* / config 中的禁用设置）──────────
@@ -2639,6 +2706,9 @@ ESRGan 模型选项 (--esrgan-model):
                    help="最终合并质量：h264_nvenc CQ 基准 0~51，按等效表换算")
     g.add_argument("--output-preset", metavar="PRESET",
                    help="最终合并编码预设（如 medium / slow，覆盖配置）")
+    # [NVENC-TUNING] 目标码率（NVENC 自动补 -multipass fullres；软编发 -b:v，去掉 -crf）
+    g.add_argument("--output-bitrate", metavar="RATE",
+                   help="最终合并目标码率（如 8M / 8000k）：改为目标码率 VBR，去掉质量参数")
 
     # ── 归一化 / 分段参数（环节①）──────────────────────────────────────────
     g = parser.add_argument_group("归一化 / 分段参数（环节①）")
@@ -2650,6 +2720,9 @@ ESRGan 模型选项 (--esrgan-model):
                    help="归一化质量：h264_nvenc CQ 基准 0~51，按等效表换算")
     g.add_argument("--split-preset",  metavar="PRESET",
                    help="归一化重编码预设（默认 veryfast）")
+    # [NVENC-TUNING] 目标码率（同 --output-bitrate）
+    g.add_argument("--split-bitrate", metavar="RATE",
+                   help="归一化重编码目标码率（如 8M / 8000k）：改为目标码率 VBR，去掉质量参数")
 
     # ── TRT 缓存目录（全局）─────────────────────────────────────────────────
     g = parser.add_argument_group("TRT Engine 缓存（IFRNet / ESRGan 共用）")
@@ -2734,6 +2807,17 @@ def main() -> int:
 
     # ── 命令行参数覆盖 ────────────────────────────────────────────────────────
     _apply_cli_overrides(config, args)
+    # [NVENC-TUNING] `--nvenc-tune uhq` 仅 hevc/av1 NVENC 有该档；显式落到 h264_nvenc 时
+    # 报错退出 2（与 VidUtils 一致）。libx264/auto 不在此硬拦——编码器可能后续自动升级，
+    # 交给 writer 侧「忽略并告知」。
+    for _sect, _flag in (("ifrnet", "--nvenc-tune-ifrnet"),
+                         ("realesrgan", "--nvenc-tune-esrgan")):
+        _tune = config.get("models", _sect, "nvenc_tune", default=None)
+        _c = str(config.get("models", _sect, "codec", default="") or "").lower()
+        if _tune == "uhq" and _c == "h264_nvenc":
+            print(f"[ERROR] {_flag} uhq 不受 h264_nvenc 支持（uhq 仅 hevc_nvenc / "
+                  f"av1_nvenc 有）；请改用 --nvenc-tune hq 或换编码器。", file=sys.stderr)
+            return 2
     # [P1-FIX-VALIDATE] CLI 数值参数无 argparse 范围约束，覆盖会绕过加载期校验，
     # 非法值可直达 ffmpeg/NVENC（故障点远离出错原因）。覆盖后重验关键范围。
     if not _validate_effective_config(config, args):
