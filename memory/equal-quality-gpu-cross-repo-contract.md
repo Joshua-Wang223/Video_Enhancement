@@ -50,8 +50,9 @@ VU 原 `DEFAULT_PRESET_GPU="p5"`。preset 与 rate control 会整体平移率失
   selftest 39 项、CPU 干跑通过、跨仓态势打印正确、无 GPU 时探测 exit 2。
 - **跨仓态势已双向**：此前只有 VU 能感知 VE，现 VE 也打印「两表是否相等 / 对侧 harness 是否同版 /
   对侧方案文档」（VE harness `cross_repo_status()` / `_print_cross_repo()`）。
-- **`_qp_model` 已改「模式感知」**：quality 口径优先 `QUALITY_MAP_QP`、size 口径保持 override→活动表
-  （判据钉 size ⇒ G3/G6 零侵入）。当前表下是**恒等变换**（无 NVENC 行），已用旧/新模块 680 组对比验证。
+- **`_qp_model` 已改「模式感知」**：quality 口径优先 `QUALITY_MAP_QP`、size 口径保持 override→活动表。
+  ⚠ 2026-10-04 **B1**：`crf_cq` 判据口径由 size **改为 quality**（== 生产默认），故 G3/G6 期望值
+  已更新为 quality 值（不再是"零侵入"）。
 - **CR-1 preset 已收口**（2026-10-04 复检）：VU 生产 `DEFAULT_PRESET_GPU` 两文件均 **p4**、harness/探针 p4；
   残留 `p5` 全为有意保留（反向降级表 / 官方枚举 / `_NVENC_PRESET_RETRY` / QSV 断言）——
   甄别表见 VE 方案 §12.5。

@@ -1,6 +1,6 @@
 ---
 name: T4 NVENC 等质量标定（CQ+QP 双轴）完成
-description: 2026-10-04 T4 上 h264/hevc NVENC 两轴标定落表；含 screen_ui_code 同名冲突陷阱与「判据钉 size 口径」关键点
+description: 2026-10-04 T4 上 h264/hevc NVENC 两轴标定落表；含 screen_ui_code 同名冲突陷阱与「B1 口径迁移（门禁 quality == 生产默认）」关键点
 type: project
 ---
 
@@ -18,10 +18,12 @@ type: project
 - ⚠ **同名不同内容陷阱**：`screen_ui_code_src1280x720.mp4` 同时是 6s 与 10s 切片（内容不同、文件名相同）⇒
   直接按文件名池化会把两者并成 **16** 素材，给出**另一组** a/b（h264 `0.9256/6.3447`，而非 17 素材的 `0.9295/6.2523`）。
   必须去重为 17 个不同素材名。复现落表值前先确认素材数 = 17。
-- ⚠ **判据钉 size 口径**：`crf_cq_unification_verify.load_quality_map()` 内 `set_quality_mode("size")`
-  ⇒ G1/G3/G6/G7 期望值**不受** `QUALITY_MAP_QP` 落表影响（计划 §4.4 担心的 G3-1/G3-2/REF21 同步**并不需要**，
-  实测 `--no-gpu --quick` 仍 PASS=94/FAIL=0）。落表后 **quality 口径**（生产默认）的 `to_constqp_qp`
-  变为 h264 CQ26→QP22、hevc CQ28→QP23、h264 QP0→1；size 口径不变。
+- ⚠ **口径与门禁（B1，2026-10-04 迁移）**：`crf_cq_unification_verify.load_quality_map()` 现钉
+  **`set_quality_mode("quality")`**（原为 size）⇒ **门禁口径 == 生产默认口径**；相应更新
+  G1-2/G2/G3/G6 期望（hevc 28→26、svtav1 24→29、vp9 28→26、rav1e 66→64；G3-1 21→22、G3-2 20→23、
+  G6-2/5/17 `-qp 21`→22）。quality 口径 `to_constqp_qp`：h264 CQ26→22、hevc CQ28→23、QP0→1。
+  新增 **G6-18/19** 锁"生产无损（crf==0）硬编码 `-rc constqp -qp 0`"（因 quality 下函数 QP0→1，
+  契约改由真分支守）；**G3-9** 反向锁 size 对照（21/20/63）。实测 `--no-gpu --quick` 104/0/11、GPU 113/0/2。
 - 数据落点：`Accessory/data/eqq_calibration/points/gpu_t4_cq`（3 文件 442 点）、`gpu_t4_qp`（17 文件 459 点）；
   素材在**仓库外** `/workspace/input_videos/eqq_calib/`，用 symlink 按「素材名」接入后 `--src <link>`。
 - 顺带修复 `Accessory/probe/eqq_calibrate_batch.py` 两个 latent bug：`load()` 是生成器却 `len(items)`

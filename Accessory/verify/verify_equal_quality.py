@@ -140,7 +140,7 @@ def main():
                   f'ΔVMAF={dv:+.3f}  ΔPSNR={dp:+.3f}  ΔPSNR-HVS={dh:+.3f}  '
                   f'(参考门限 {TOL_PSNR}/{TOL_HVS}，不判红)')
     finally:
-        CRF.set_quality_mode('size')
+        CRF.set_quality_mode('quality')   # 复位到默认口径（本门禁按 quality 运行）
         if not args.keep:
             for f in work.glob('*.mp4'):
                 f.unlink(missing_ok=True)

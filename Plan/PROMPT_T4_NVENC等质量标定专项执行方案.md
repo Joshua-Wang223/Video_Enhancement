@@ -221,12 +221,11 @@ def _qp_model(codec, table=None):
 > 的三分支形式 —— 那会让 **size 口径的软编也读 `QUALITY_MAP_QP`**，破坏判据 G3/G6 的
 > 「零侵入」。**以本节为准**。
 
-**为什么安全（已实测验证）**：`crf_cq_unification_verify.py:513` 显式 `set_quality_mode("size")`
-⇒ G3-1/G3-2/G3-7 仍走 `_QP_MAP_OVERRIDE`、**期望值不变**；生产默认 `quality` 口径用标定值。
-**当前表下该改造是恒等变换**（`QUALITY_MAP_QP` 尚无 NVENC 行）——已用「旧模块(HEAD) vs 新模块」
-全矩阵对比验证：`2 模式 × 20 编码器 × 17 值 = 680 组` **逐位一致**；并验证前向兼容
-（注入 NVENC 行后 quality 生效、size 不变）。回归测试：
-`Accessory/test/test_quality_map_qp_mode.py`（4 例）。
+**为什么安全（已实测验证）**：`_qp_model()` 按口径分流后，size 口径仍走 `_QP_MAP_OVERRIDE`
+（不受 `QUALITY_MAP_QP` 影响），quality 口径走标定表。⚠ 判据口径已于 2026-10-04 由 size
+**迁移到 quality**（见 §13.3 后续注），故 G3 期望值随之更新为 quality 值。
+（历史：迁移前该改造是**恒等变换**，已用「旧模块(HEAD) vs 新模块」全矩阵对比 `2 模式 × 20
+编码器 × 17 值 = 680 组`逐位一致验证。）回归测试：`Accessory/test/test_quality_map_qp_mode.py`。
 
 ⚠ **同步复核独立期望值**：若标定后 `QUALITY_MAP_QP['h264_nvenc']` 在基准轴 21 处
 不等于 21（即 a≠1.0 或 b≠0），须同步：
@@ -588,8 +587,11 @@ FFmpeg 9.0.2。Gate 0：`h264_nvenc` rc=0、`hevc_nvenc` rc=0、`av1_nvenc` rc=1
 | `hevc_nvenc` | 1.1083 | -2.9183 | 17 | 3.72 | ≤5.9 ✅ |
 
 > 两轴**非同一刻度**（QP 轴 a≠1、b≠0）⇒ 落表后 `to_constqp_qp` 的 **quality 口径**输出改变
-> （h264 CQ26→QP22、hevc CQ28→QP23、h264 QP0→1）。判据 G3/G6/G7 均**钉 size 口径**
-> （`load_quality_map` 内 `set_quality_mode("size")`）⇒ 期望值不变、零回归。
+> （h264 CQ26→QP22、hevc CQ28→QP23、h264 QP0→1）。
+> ⚠ **2026-10-04 B1 迁移**：判据 `crf_cq_unification_verify` 的口径由 size **改为 quality**
+> （`load_quality_map` 内 `set_quality_mode("quality")`），使**门禁口径 == 生产默认口径**；
+> 相应更新 G1-2/G2/G3/G6 期望值（并新增 G6-18/19 锁"生产无损硬编码 `-qp 0`"、G3-9 反向锁 size 对照）。
+> 迁移前是「判据钉 size ⇒ 期望值不变」；迁移后条数 104（CPU）/113（GPU）全绿。
 
 ### 13.4 门禁与验证（全绿）
 

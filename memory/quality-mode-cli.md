@@ -19,12 +19,14 @@ VE 生产（`src/main_video_optimized.py`）2026-10-04 新增 `--quality-mode {s
 - 应用点：`main()` 内 `_apply_cli_overrides` 之后、校验/处理之前
   `set_quality_mode(config.get("processing","quality_mode", default="quality"))`。
   默认不变 ⇒ **生产默认命令逐字不变**。
-- ⚠ **门禁口径 ≠ 生产口径**：`crf_cq_unification_verify` 内部**硬钉 `size`**（`load_quality_map`）、
-  `verify_equal_quality` **硬钉 `quality`**。故 G3/G6/G7 的 constqp 期望是 **size 值**
-  （h264 CQ26→QP**21**），而**生产 quality 口径是 QP 22**（hevc CQ28→23；av1 27→63 两口径一致）。
-- **覆盖闭环**：G6-1x 锁命令**形状**（口径无关）+ 新增 **G3-9** 锁 quality 口径**数值**
-  （h264 CQ26→22 / hevc CQ28→23 / av1 CQ27→63；临时 `set_quality_mode('quality')` 后断言、`finally` 复位 size）
-  ⇒ 生产 constqp 全覆盖。G3-9 已反向校验（扰动 `QUALITY_MAP_QP['h264_nvenc']` → 断言 FAIL）。
-- ⚠ `to_constqp_qp(codec, 0)` 在 quality 口径返回 **1**（仿射模型不过原点）；生产**无损**走独立分支
-  硬编码 `-qp 0`，不受影响（`crf_cq` 的 G3-4 "QP=0 保持 0" 是 size 口径断言）。
-- 顺带修掉 `quality_map.py` 里"默认 `size`"的过期注释（真源 `convert_crf._QUALITY_MODE='quality'`）。
+- ✅ **门禁口径 == 生产默认口径（B1，2026-10-04 迁移）**：`crf_cq_unification_verify` 的口径钉
+  已由 `size` **改为 `quality`**（`load_quality_map` 内 `set_quality_mode("quality")`）⇒ 其
+  G1-2/G2/G3/G6 期望值随 `QUALITY_MAP` 更新（hevc 28→26、svtav1 24→29、vp9 28→26、rav1e 66→64；
+  G3-1 21→22、G3-2 20→23、G6-2/5/17 `-qp 21`→22）。`verify_equal_quality` 本就用 quality。
+- **覆盖闭环**：G6-1x 锁命令**形状**（口径无关）+ G3-1/G3-2 锁 quality 数值；
+  **G3-9** 反向锁 **size 对照**（h264 CQ26→21 / hevc CQ28→20 / av1→63，临时切 size 后复位）。
+- ⚠ `to_constqp_qp(codec, 0)` 在 quality 口径返回 **1**（仿射模型不过原点）⇒ 原 G3-4「QP=0 保持 0」
+  已改为「quality 下 QP=0→1」，**生产无损契约改由新断言 G6-18/19 守**（writer 的 `crf==0` 分支
+  硬编码 `-rc constqp -qp 0`，不经该函数）。G6-18/19 已反向校验（扰动无损分支 → FAIL）。
+- 顺带修掉 `quality_map.py` 里"默认 `size`"的过期注释（真源 `convert_crf._QUALITY_MODE='quality'`）；
+  `--quality-mode` 可随时在两口径间切换（生产默认仍 quality）。
