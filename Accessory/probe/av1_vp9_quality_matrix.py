@@ -492,14 +492,24 @@ def main(argv: Optional[List[str]] = None) -> int:
         ac1_text = ac1
 
     # ── 4. 产出 ───────────────────────────────────────────────────────────
-    n_fail = sum(1 for r in rows if r["verdict"] == "FAIL") + \
-        sum(1 for r in qp_rows if r.get("ok") and r["verdict"] == "FAIL")
+    # [E-EXIT-CODE] 退出码只反映 **A 组/AC 判据**的 PASS/FAIL；
+    # **B 组（AC1 QP 扫描）点是诊断探针，不是通过性判据** ——
+    # 扫描点 21/84/105 本就「有意带外」（分别对应旧的 ×1/×4/×5 假设，
+    # 用来确认表值 70 才是正解），把它们计入 n_fail 会让
+    #「AC1 表值落带内 PASS」的工具仍然 exit 1 ⇒ 退出码与判读口径矛盾。
+    # ⇒ 拆成两个计数：n_fail（判据，决定退出码）/ n_scan_fail（诊断，仅打印）。
+    n_fail = sum(1 for r in rows if r["verdict"] == "FAIL")
+    n_scan_fail = sum(1 for r in qp_rows if r.get("ok") and r["verdict"] == "FAIL")
     n_pass = sum(1 for r in rows if r["verdict"] == "PASS")
     n_warn = sum(1 for r in rows if r["verdict"] == "WARN")
     n_skip = sum(1 for r in rows if r["verdict"] == "SKIP")
     print("\n" + "=" * 78)
     print(f"  汇总：PASS={n_pass}  WARN={n_warn}  FAIL={n_fail}  SKIP={n_skip}"
           f"（B 组：{'未跑' if not qp_rows else len(qp_rows)} 点）")
+    if qp_rows:
+        # 诊断列：带外是**预期**结果，不影响退出码（[E-EXIT-CODE]）。
+        print(f"  [诊断·不计退出码] B 组扫描点出带{n_scan_fail}/{len(qp_rows)}"
+              f"（扫描点含**有意带外**的对照值 21/84/105，属预期）")
     print("=" * 78)
 
     result: Dict[str, Any] = {
@@ -512,7 +522,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         "matrix": rows, "av1_qp_scan": qp_rows,
         "av1_qp_expected": av1_expected_qp(args.ref_crf),
         "ac1_verdict": ac1_text,
-        "summary": {"pass": n_pass, "warn": n_warn, "fail": n_fail, "skip": n_skip},
+        "summary": {"pass": n_pass, "warn": n_warn, "fail": n_fail, "skip": n_skip,
+                    # [E-EXIT-CODE] 诊断计数单列，**不参与**退出码（见上方注释）。
+                    "scan_fail_diagnostic": n_scan_fail,
+                    "scan_points": len(qp_rows)},
     }
     md = _render_md(result)
     if args.report:

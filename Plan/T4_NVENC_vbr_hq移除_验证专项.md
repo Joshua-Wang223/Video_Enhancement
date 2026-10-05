@@ -367,11 +367,19 @@ ffmpeg -hide_banner -f lavfi -i testsrc2=size=320x240:rate=30:duration=1 \
 # grep 日志确认 "lookahead" 启用
 
 # 5.2 端到端 pipeline（IFRNet，hevc + LA=8）
+# [L6-B2-FIX] 原为 `--rate-mode-ifrnet vbr`，与本文档 :161 的裁定
+#   「⚠ 不要传 vbr——会静默 CONSTQP+LA 失效（§1.6.3）」自相矛盾：
+#   `vbr`/`cbr` 在 NVENC SDK 直通（Level 1）上未实现，落else 兜底 ⇒
+#   rc_ptr[1]=0（CONSTQP）且 LA 门控不含它 ⇒ **与 constqp 臂同路径，LA=8 测不到**。
+#   已由 src/main_video_optimized.py [FIX-B2-VBR-CBR-REJECT] 在启动时硬拒绝
+#   （av1_nvenc 除外，见该检查的 AV1 豁免分支）。
 python3 run.py -i /tmp/seg_src_5s.mp4 -o /tmp/seg_hevc_la8.mp4 \
     --mode interpolate_then_upscale \
     --codec-ifrnet hevc_nvenc --codec-esrgan hevc_nvenc \
-    --rate-mode-ifrnet vbr --lookahead-depth-ifrnet 8 < /dev/null
+    --rate-mode-ifrnet vbr_hq --lookahead-depth-ifrnet 8 < /dev/null
 # 判据：退出码 0 + 段数正确 + 无超时挂起
+# ⚠ 确认 LA 真的启用：查日志 Ready 行显示 `VBR_HQ ... la=8`
+#   （[FIX-LOG-ECHO-LIE] 后若显示 `la=8->0(未使能:...)` ⇒ LA 未生效，本项判FAIL）
 ```
 
 > ⚠ **LA 启用条件差异**：

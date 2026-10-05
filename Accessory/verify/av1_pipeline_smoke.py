@@ -12,7 +12,7 @@ AV1 路径缺陷（方案 §8.6）：cv2 验收层把完好 AV1 产物判成损�
 
     python3 Accessory/verify/av1_pipeline_smoke.py --src <真实素材> < /dev/null
     python3 Accessory/verify/av1_pipeline_smoke.py --src <真实素材> \
-        --codec h264_nvenc --rate-modes constqp,vbr < /dev/null   # T4 上复现 S8 机制
+        --codec h264_nvenc --rate-modes constqp,vbr_hq < /dev/null   # T4 上复现 S8 机制
 
 覆盖
 ----
@@ -23,6 +23,12 @@ AV1 路径缺陷（方案 §8.6）：cv2 验收层把完好 AV1 产物判成损�
 | 采样 | 整棵进程树 RSS/PSS + **主进程 vs 子进程分组斜率** + 按 pid 归属的 GPU 显存（判泄漏：后半程斜率 + 峰值上界）|
 | 验收 | ① 退出码 ② 段级日志 `decoded == expected` ③ 产物 `ffprobe -count_frames` 帧数守恒 ④ `validate_decodable_video(count_mode='decode')` ⑤ `segment_bitstream_verify_v5 --skip-chroma` 硬指标 ⑥ QA sidecar 字段完整 |
 
+⚠ **显存维度可能「不可归属」而不是 0**（`[FIX-B3-GPU-UNATTRIBUTABLE]`）：
+`nvidia-smi --query-compute-apps=pid` 在容器里返回**宿主机命名空间 pid**，容器 `/proc` 下
+不存在 ⇒ 无法按 pid 归属。本脚本此时记 `None` + 状态串（报告里渲染为「不可归属」并附原因），
+**绝不填 0**——0 会被读成「确实没用显存」，而 T4 实测整卡 7698 MiB / 100% 时该字段也是 0。
+这只影响显存维度；RSS/PSS 走 `/proc`，口径正确。判泄漏仍以 RSS 斜率为主判据。
+
 ⚠ **必须 `< /dev/null`**：这些脚本在「后台进程组 + tty stdin」下会被 SIGTTOU 整组停住。
 ⚠ 色度检查（检查 4）在真实素材上是**内容相关假阳性**（方案 §8.5：AV1 长片 113 簇，
    而源片段自身 40 簇）⇒ 硬指标一律 `--skip-chroma`。
@@ -32,8 +38,17 @@ AV1 路径缺陷（方案 §8.6）：cv2 验收层把完好 AV1 产物判成损�
 `constqp` 强制 `LA=0`（硬件静默禁用）⇒ 走 `encode_frames_batch_ce_pipeline`；
 其它 rate_mode 保留配置 LA ⇒ 走 `encode_frames_stream` 分块累积。**两条路径与编码器无关**
 （`main.py` 的 Level 1 直通判据是 `'nvenc' in use_codec`），故 **T4 上用 `h264_nvenc`/
-`hevc_nvenc` 跑 constqp vs vbr，可复现 AV1/L40 上 S8 观测到的同一机制**（方案 §9.5 D 项：
+`hevc_nvenc`跑 constqp vs vbr_hq，可复现 AV1/L40 上 S8 观测到的同一机制**（方案 §9.5 D项：
 降本验证，省掉等 L40）。Turing 无 AV1 NVENC ⇒ 本机须显式 `--codec h264_nvenc`。
+
+⚠ **`h264_nvenc`/`hevc_nvenc` 的对照臂必须用 `vbr_hq`，不能用 `vbr`**（[FIX-B2-VBR-CBR-REJECT]）：
+`vbr`/`cbr` 在 NVENC SDK 直通（Level 1）上**未实现** —— `nvenc_sdk._build_encoder_config`
+只有 `vbr_hq`/`qvbr` 两个 CQ 分支，`vbr` 落 `else` 兜底 ⇒ `rc_ptr[1]=0`（真 CONSTQP）且
+LA 门控不含它 ⇒ 硬件 LA 也不使能。即 `vbr` 臂拿到的仍是 CONSTQP，**与constqp 臂同路径**，
+A/B 失去意义。故 `main_video_optimized.py` 对非 AV1 的 NVENC 编码器**直接拒绝** `vbr`/`cbr`
+（AV1 豁免：AV1 硬件本就只支持 constqp/vbr/cbr）。
+⇒ 脚本在 `--codec` 为 h264/hevc NVENC 时，若 `--rate-modes` 含 `vbr`/`cbr` **提前报错退出**，
+   避免跑完 10 分钟才发现臂失效。`av1_nvenc`（本脚本默认）不受影响。
 
 `--batch-size`（T4 默认 8）
 --------------------------
@@ -163,43 +178,69 @@ def _read_pss_kb(pid: int) -> int:
     return 0
 
 
-def _gpu_mem_by_pid() -> Dict[int, float]:
+def _gpu_mem_by_pid() -> Tuple[Optional[Dict[int, float]], str]:
     """本机各进程占用的显存（MiB）。整卡 `memory.used` 在共享 GPU 主机上会被
-    其他会话污染（本仓 memory 有实证），必须按 pid 归属后再由调用方筛进程树。"""
+    其他会话污染（本仓 memory 有实证），必须按 pid 归属后再由调用方筛进程树。
+
+    [FIX-B3-GPU-UNATTRIBUTABLE] 返回 `(表, 状态)`：
+      · `({}, "empty")`     —— 驱动侧没有 compute app（确实没进程在用 GPU）；
+      · `({pid: mib}, "ok")` —— 表可用；
+      · `(None, 原因)`       —— **测不到**（不是 0）。
+
+    ⚠ **不可用 `0` 冒充「没占显存」**（B3，2026-10-04 T4 实测推翻旧归因）：
+    `nvidia-smi --query-compute-apps=pid` 返回的是**宿主机命名空间 pid**
+    （实测 725115 / 1071006），在容器 `/proc` 下不存在；容器内 `NSpid` 只有一层
+    ⇒ 驱动侧与容器 PID namespace 不通，pid 查表永远 miss ⇒ 整卡实测 7698 MiB / 100%
+    利用率的同时，本字段恒为 0。`0` 会被读成「确实没用显存」，只有 `None` 才能表达
+    「测不到」。**状态串**会原样进入 S8 detail 与报告，避免无声降级。
+    """
+    saw_field = False
     for field in ("used_gpu_memory", "used_memory"):      # 不同 driver/版本字段名不同
         try:
             p = subprocess.run(
                 ["nvidia-smi", f"--query-compute-apps=pid,{field}",
                  "--format=csv,noheader,nounits"],
                 capture_output=True, text=True, timeout=30)
-            out = (p.stdout or "").strip()
-            if p.returncode != 0 or not out:
-                continue
-            got: Dict[int, float] = {}
-            for line in out.splitlines():
-                parts = [x.strip() for x in line.split(",")]
-                if len(parts) < 2:
-                    continue
-                try:
-                    got[int(parts[0])] = float(parts[1])
-                except ValueError:
-                    continue
-            if got:
-                return got
-        except (OSError, ValueError, subprocess.TimeoutExpired):
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            return None, f"nvidia-smi 调用失败（{type(exc).__name__}）"
+        if p.returncode != 0:
+            return None, f"nvidia-smi rc={p.returncode}（{(p.stderr or '').strip()[:80]}）"
+        out = (p.stdout or "").strip()
+        saw_field = True
+        if not out:
             continue
-    return {}
+        got: Dict[int, float] = {}
+        for line in out.splitlines():
+            parts = [x.strip() for x in line.split(",")]
+            if len(parts) < 2:
+                continue
+            try:
+                got[int(parts[0])] = float(parts[1])
+            except ValueError:
+                continue
+        if got:
+            # 驱动侧 pid 在本容器 /proc 下**全部不存在** ⇒ PID namespace 不通，
+            # 无法把显存归属到进程树（宿主 pid 725115/1071006 是本次实测的证据）。
+            if not any(os.path.isdir(f"/proc/{pid}") for pid in got):
+                sample = next(iter(got))
+                return None, (f"驱动侧 pid 与容器 PID namespace 不通"
+                              f"（如 {sample} 在 /proc 下不存在）⇒ 不可归属")
+            return got, "ok"
+    if not saw_field:
+        return None, "nvidia-smi 无 compute-app 字段（无 GPU 或驱动不支持）"
+    return {}, "empty"
 
 
-def _gpu_total_mib() -> float:
-    """整卡已用显存（MiB）——只作参考，不作判据（见 _gpu_mem_by_pid 注释）。"""
+def _gpu_total_mib() -> Optional[float]:
+    """整卡已用显存（MiB）——只作参考，不作判据（见 _gpu_mem_by_pid 注释）。
+    测不到返回 `None`（同 [FIX-B3-GPU-UNATTRIBUTABLE]：0 会被读成「整卡没占显存」）。"""
     try:
         q = subprocess.run(["nvidia-smi", "--query-gpu=memory.used",
                             "--format=csv,noheader,nounits"],
                            capture_output=True, text=True, timeout=30).stdout.strip()
         return float(q.splitlines()[0])
-    except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
-        return 0.0
+    except (ValueError, IndexError, OSError, subprocess.TimeoutExpired):
+        return None
 
 
 class MemWatcher:
@@ -273,8 +314,11 @@ class MemWatcher:
         def _grp(tag: str, key: str = "rss_mb") -> float:
             return sum(d[key] for d in procs if d["tag"] == tag)
 
-        gpu_by_pid = _gpu_mem_by_pid()
-        gpu_tree = sum(gpu_by_pid.get(d["pid"], 0.0) for d in procs)
+        gpu_by_pid, gpu_status = _gpu_mem_by_pid()
+        # [FIX-B3-GPU-UNATTRIBUTABLE] 不可归属时 gpu_tree_mib = None（**不是 0**）：
+        # 0 会被读成「本进程树确实没用显存」，而实测整卡满载时本字段也是 0。
+        gpu_tree = (None if gpu_by_pid is None
+                    else sum(gpu_by_pid.get(d["pid"], 0.0) for d in procs))
         return {
             "n": len(procs),
             "rss_mb": sum(d["rss_mb"] for d in procs),
@@ -284,6 +328,7 @@ class MemWatcher:
             "pss_main_mb": _grp("main", "pss_mb"),
             "pss_child_mb": sum(d["pss_mb"] for d in procs if d["tag"] != "main"),
             "gpu_tree_mib": gpu_tree,
+            "gpu_status": gpu_status,
             "gpu_total_mib": _gpu_total_mib(),
             "procs": procs,
         }
@@ -303,10 +348,14 @@ class MemWatcher:
                     self.rows.append({"t": t, **{k: v for k, v in s.items() if k != "procs"}})
                     if self._dump_fh:
                         import json as _json
+                        # [FIX-B3-GPU-UNATTRIBUTABLE] 显存不可归属时写 `NA` 而非 `0.0`
+                        # （0.0 会被后续离线复算读成「确实没用显存」）。
+                        _gpu = ("NA" if s["gpu_tree_mib"] is None
+                                else f"{s['gpu_tree_mib']:.1f}")
                         self._dump_fh.write(
                             f"{t:.1f}\t{s['n']}\t{s['rss_mb']:.1f}\t{s['pss_mb']:.1f}\t"
                             f"{s['rss_main_mb']:.1f}\t{s['rss_child_mb']:.1f}\t"
-                            f"{s['gpu_tree_mib']:.1f}\t"
+                            f"{_gpu}\t"
                             f"{_json.dumps(s['procs'], ensure_ascii=False)}\n")
                         self._dump_fh.flush()
                 time.sleep(self.interval)
@@ -342,12 +391,30 @@ class MemWatcher:
             "pss_all": self._slope(self.rows, "pss_mb"),
         }
 
-    def peak(self) -> Tuple[float, float]:
-        """(RSS 峰值 MB, 本进程树显存峰值 MiB)。"""
+    def peak(self) -> Tuple[float, Optional[float]]:
+        """(RSS 峰值 MB, 本进程树显存峰值 MiB)。
+
+        [FIX-B3-GPU-UNATTRIBUTABLE] 显存全样本不可归属时返回 `None`（测不到），
+        区别于「峰值 = 0」（确实没占）。
+        """
         if not self.rows:
-            return 0.0, 0.0
+            return 0.0, None
+        gpu_vals = [r["gpu_tree_mib"] for r in self.rows
+                    if r.get("gpu_tree_mib") is not None]
         return (max(r["rss_mb"] for r in self.rows),
-                max(r["gpu_tree_mib"] for r in self.rows))
+                max(gpu_vals) if gpu_vals else None)
+
+    def gpu_status(self) -> str:
+        """显存归属状态（末次采样）——「ok」/「empty」/ 不可归属原因。"""
+        if not self.rows:
+            return "未采样"
+        return str(self.rows[-1].get("gpu_status", "未知"))
+
+    def _fmt_gpu_peak(self, gpu_peak: Optional[float]) -> str:
+        """显存峰值的报告文本：`None` 渲染为「不可归属（原因）」而非 `0 MiB`。"""
+        if gpu_peak is None:
+            return f"不可归属（{self.gpu_status()}）"
+        return f"{gpu_peak:.0f} MiB"
 
     def n_range(self) -> Tuple[int, int]:
         if not self.rows:
@@ -499,20 +566,39 @@ def run_one(ffmpeg: str, ffprobe: str, src: Path, out: Path, rate_mode: str,
     # [FIX-S8-CRITERIA] 判据从「单一斜率」扩为「斜率 + 峰值上界 + 样本充分性」三项：
     #   · 斜率（后半程 RSS OLS，≤ +50 MB/min）——**口径与历史记录一致，未改**，
     #     保证与 2026-09-30 的 +149.5 / −21.4 直接可比；
-    #   · 峰值上界（默认 12 GB，可用 --mem-peak-mb 调）——短跑（11 min）里
+    #   · 峰值上界（默认 16 GB，可用 --mem-peak-mb 调）——短跑（11 min）里
     #     OLS 斜率对「何时进段 / 段内缓存台阶 / 平台噪声」敏感，峰值是独立
     #     的第二道判据：斜率勉强过线但峰值失控仍应暴露；
     #   · 样本充分性（≥ mem_min_samples 个采样点，默认 8）——样本太少时
     #     斜率不可信，明确报 SKIP 而不是给一个假 PASS/FAIL。
     #   斜率超阈值时 detail 附**主进程 / 子进程分组斜率**（[FIX-S8-ATTRIB]），
     #   使「主进程泄漏 vs ffmpeg 子进程累积」在报告里就能直接读出，无需再上机。
+    #
+    # [FIX-S8-PEAK-CALIBRATION] 峰值上界默认 **12000 → 16000**（原值是拍脑袋估值，
+    # 已被 T4 实测否决）。依据（`verification_report/s8_20261004_raw/`，bs=24、
+    # 358.76s 素材 / 720×576 / 12 段，三条**已知无泄漏**的臂）：
+    #     h264 constqp 12393 / hevc constqp 13877 / hevc vbr_hq 13578 MB
+    # 三者斜率分别为 −55.6 / +3.1 / +35.8 MB/min（全部判定为无泄漏），
+    # **却全部超出 12000 上界 ⇒ 12000 只会产生假 FAIL，不具备判别力**。
+    # 取 16000 = 最坏实测 13877 × 1.15（留 15% 余量），仍是有限值。
+    #   ⚠ 峰值是**结构性锯齿**而非泄漏征兆，实测特征：峰值出现在全程 80~87% 处
+    #     （非启动爬坡），全程有 6~10 次 2~3 GB 级别的下跌（段切换清缓存），
+    #     峰值/中位数 = 1.17~1.35×，且 **RSS ≈ PSS**（差 <0.3%）⇒ 真实占用，
+    #     不是共享页虚高。峰值几乎全部在**主进程**（子进程仅 85~113 MB）。
+    #   ⚠ **换素材/分辨率/卡型/段长必须重新标定**：本值只对上述 T4 配置有效。
+    #     bs 是关键变量（pinned pool ∝ bs：bs=24 起点 305 MB vs bs=8 的 102 MB），
+    #     脚本现默认 bs=8 ⇒ 峰值预计低于上表（外推 ≈13.2 GB，未实测）。
+    #   ⚠ **本判据优先级低于斜率**：S8 判读以斜率为准，峰值只在斜率勉强过线时
+    #     提供独立佐证；上界失效（误报）时先看 detail 里的分组斜率与 PSS，
+    #     **别直接改管线**（见 Plan §9.5 读数判读表第 3、4 行）。
     if watcher is not None and watcher.rows:
         rss_peak, gpu_peak = watcher.peak()
         slope = watcher.slope_mb_per_min()
         br = watcher.slope_breakdown()
         n_lo, n_hi = watcher.n_range()
         rec["rss_peak_mb"] = round(rss_peak, 1)
-        rec["gpu_peak_mib"] = round(gpu_peak, 1)
+        rec["gpu_peak_mib"] = None if gpu_peak is None else round(gpu_peak, 1)
+        rec["gpu_status"] = watcher.gpu_status()
         rec["rss_slope_mb_per_min"] = None if slope is None else round(slope, 1)
         rec["rss_slope_main_mb_per_min"] = (None if br["rss_main"] is None
                                             else round(br["rss_main"], 1))
@@ -541,7 +627,8 @@ def run_one(ffmpeg: str, ffprobe: str, src: Path, out: Path, rate_mode: str,
             check("S8", "无内存泄漏（后半程 RSS 斜率 ≤ +50 MB/min）",
                   bool(slope <= 50.0 and peak_ok),
                   f"RSS 峰值 {rss_peak:.0f} MB，斜率 {slope:+.1f} MB/min"
-                  f"（{attrib}；PSS {br['pss_all']:+.1f}），显存峰值 {gpu_peak:.0f} MiB，"
+                  f"（{attrib}；PSS {br['pss_all']:+.1f}），显存峰值 "
+                  f"{watcher._fmt_gpu_peak(gpu_peak)}，"
                   f"进程数 {n_lo}~{n_hi}，样本 {n_s}{peak_note}；"
                   f"明细 {rec.get('mem_dump', '未落盘')}")
     else:
@@ -579,7 +666,9 @@ def render_md(result: Dict[str, Any]) -> str:
                   f"{rec.get('proc_count_range', ['?', '?'])[0]}~"
                   f"{rec.get('proc_count_range', ['?', '?'])[1]}，"
                   f"RSS 峰值 {rec.get('rss_peak_mb')} MB，"
-                  f"本进程树显存峰值 {rec.get('gpu_peak_mib')} MiB",
+                  f"本进程树显存峰值 "
+                  f"{rec.get('gpu_peak_mib') if rec.get('gpu_peak_mib') is not None else '不可归属'}"
+                  f"（{rec.get('gpu_status', '未知')}）",
                   f"- 斜率（全树 / 主进程 / 子进程 / PSS）："
                   f"{rec.get('rss_slope_mb_per_min')} / {rec.get('rss_slope_main_mb_per_min')} / "
                   f"{rec.get('rss_slope_child_mb_per_min')} / {rec.get('pss_slope_mb_per_min')} MB/min",
@@ -599,12 +688,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                          "∝ pinned result pool ∝ batch_size；0 = 沿用 config 的 24）")
     ap.add_argument("--src", required=True, help="真实素材（建议 ≥1 min，含音轨）")
     ap.add_argument("--out-dir", help="产物目录（默认 <src 同级>/<codec>_smoke_out）")
-    ap.add_argument("--rate-modes", default="constqp,vbr", help="逗号分隔（默认 constqp,vbr）")
+    ap.add_argument("--rate-modes", default="constqp,vbr_hq",
+                    help="逗号分隔（默认 constqp,vbr_hq）。"
+                         "非AV1 的 NVENC 编码器请用 vbr_hq：vbr/cbr 在Level 1 SDK "
+                         "未实现（落 CONSTQP 且 LA 不生效 ⇒ 与 constqp 臂同路径，"
+                         "A/B 空转），传了会被 [FIX-B2-ARMS] 提前拒；"
+                         "av1_nvenc 保留 vbr/cbr（那是 AV1 的合法 RC）")
     ap.add_argument("--segment-duration", type=int, default=30, help="分段秒数（默认 30）")
     ap.add_argument("--timeout", type=int, default=7200, help="单轮超时秒（默认 7200）")
     ap.add_argument("--mem-interval", type=int, default=10, help="内存采样间隔秒（默认 10）")
-    ap.add_argument("--mem-peak-mb", type=float, default=12000.0,
-                    help="S8 RSS 峰值上界 MB（默认 12000；0 = 不判峰值只看斜率）")
+    ap.add_argument("--mem-peak-mb", type=float, default=16000.0,
+                    help="S8 RSS 峰值上界 MB（默认 16000，按 T4 实测重标定，见下注；"
+                         "0 = 不判峰值只看斜率）")
     ap.add_argument("--mem-min-samples", type=int, default=8,
                     help="S8 斜率所需最少采样点（默认 8，不足则报 SKIP）")
     ap.add_argument("--mem-dump-dir",
@@ -626,6 +721,20 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not src.exists():
         print(f"❌ 素材不存在：{src}")
         return 2
+
+    # [FIX-B2-ARMS] 非 AV1 的 NVENC 编码器禁用 vbr/cbr 对照臂（提前拦截，见模块 docstring）。
+    # 主入口 `main_video_optimized.py [FIX-B2-VBR-CBR-REJECT]` 会拒绝启动，但那要等
+    # 模型加载完才报错（白等数分钟）⇒ 在此提前 exit 2。
+    if "nvenc" in args.codec and "av1" not in args.codec:
+        _bad = [r.strip() for r in args.rate_modes.split(",")
+                if r.strip() in ("vbr", "cbr")]
+        if _bad:
+            print(f"❌ --rate-modes 含 {_bad}，但 codec={args.codec} 在 NVENC SDK 直通上"
+                  f"未实现该档位（会静默落 CONSTQP ⇒ 与 constqp 臂同路径，A/B 失效）。")
+            print(f"   请改用 vbr_hq（质量优先）或 qvbr，例如："
+                  f"--rate-modes constqp,vbr_hq")
+            print(f"   （av1_nvenc 保留 vbr/cbr：那是 AV1 的合法 RC）")
+            return 2
 
     ok_codec, why = encoder_available(ffmpeg, args.codec)
     print("=" * 78)

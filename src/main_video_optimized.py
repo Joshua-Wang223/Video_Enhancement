@@ -986,7 +986,18 @@ def _validate_effective_config(config: Config,
     up = config.get("processing", "upscale_factor", default=2)
     if not (isinstance(up, (int, float)) and not isinstance(up, bool) and 1.0 <= up <= 4.0):
         _errors.append(f"processing.upscale_factor 需在 1~4（当前 {up!r}）")
+    # [L1-SKIP-STAGE] 被 `--skip-*` 跳过的阶段不参与质量/档位校验：
+    # 跳过的阶段根本不会执行，其配置错误对本次运行无影响，硬错误会让
+    # 「只想跑插帧」的用户被一个**永不执行**的阶段的配置挡住。
+    # ⚠ 必须用 `getattr(args, ...)`：`:977` 缺省时 `args` 是 `argparse.Namespace()`，
+    #   直接 `args.skip_interpolate` 会 AttributeError。
+    _skip = {
+        "ifrnet": bool(getattr(args, "skip_interpolate", False)),
+        "realesrgan": bool(getattr(args, "skip_upscale", False)),
+    }
     for sect in ("ifrnet", "realesrgan"):
+        if _skip.get(sect):
+            continue
         bs = config.get("models", sect, "batch_size", default=1)
         if not isinstance(bs, int) or isinstance(bs, bool) or bs < 1:
             _errors.append(f"models.{sect}.batch_size 必须 ≥1（当前 {bs!r}）")
@@ -1000,11 +1011,66 @@ def _validate_effective_config(config: Config,
         la = config.get("models", sect, "lookahead_depth", default=0)
         if not isinstance(la, int) or isinstance(la, bool) or not (0 <= la <= 32):
             _errors.append(f"models.{sect}.lookahead_depth 需在 0~32（当前 {la!r}）")
+        # [B2-ORDER] **AV1 降级必须先于 B2 拒绝检查**（[FIX-B2-VBR-CBR-REJECT]）。
+        # 两者的先后很关键：AV1 硬件无 vbr_hq/qvbr，本仓把它们降级为 'vbr'，
+        # 而 'vbr' 正是 AV1 的**合法** RC。若 B2 检查跑在降级之前，它看到的是
+        # 尚未降级的 'vbr_hq'，而降级发生在下游另一个循环里 ⇒ 两轮循环读到的是
+        # **不一致的 config 状态**（首轮 vbr_hq / 末轮 vbr），任何一侧单独看都不够。
+        # 把降级提到本轮开头，使 B2 检查读到的rate 已是**最终生效值**；
+        # 此时 AV1 走的是「'vbr' 是合法 RC」这条已显式豁免的路径，语义自洽。
+        # 降级本身保持原实现（warnings.warn + config.set）语义不变，仅调整执行时点。
+        _codec_pre = config.get("models", sect, "codec", default="libx264") or "libx264"
+        _rate_pre = config.get("models", sect, "rate_mode", default="vbr_hq")
+        # [L4-CODEC-KEY] 同上：小写子串比较，避免 `AV1_NVENC` 大写写法绕过降级。
+        if "av1" in _codec_pre.lower() and _rate_pre in ("vbr_hq", "qvbr"):
+            _stage_pre = "IFRNet" if sect == "ifrnet" else "ESRGan"
+            import warnings
+            warnings.warn(
+                f"{_stage_pre}: AV1 NVENC does not support rate_mode={_rate_pre!r}, "
+                f"auto-downgrading to 'vbr'",
+                UserWarning
+            )
+            config.set("models", sect, "rate_mode", value="vbr")
         rate = config.get("models", sect, "rate_mode", default="vbr_hq")
         if rate not in ("constqp", "vbr_hq", "qvbr", "vbr", "cbr"):
             _errors.append(
                 f"models.{sect}.rate_mode 需为 constqp/vbr_hq/qvbr/vbr/cbr"
                 f"（NVENC SDK 直通支持的档位；当前 {rate!r}）")
+        # [FIX-B2-VBR-CBR-REJECT] `vbr`/`cbr` 在 **NVENC SDK 直通（Level 1）** 上
+        # 是**未实现**的档位：`nvenc_sdk._build_encoder_config` 只有 vbr_hq/qvbr 两个
+        # CQ 分支，vbr/cbr 落`else` 兜底 ⇒ rc_ptr[1]=0（真 CONSTQP），
+        # 且 LA 门控 `in ('vbr_hq','qvbr')` 不含它们 ⇒ 硬件 LA 也没使能。
+        # 即「传 vbr 拿到的是 CONSTQP + LA 关」，与用户意图（可变码率 + 预读）
+        # 完全不同，且 QP 未过 `to_constqp_qp` 换算 ⇒ 画质偏松。
+        # ⇒ 对 **NVENC 编码器** 直接拒绝 `vbr`/`cbr`，不再静默兜底。
+        # ⚠ **AV1 例外**：`av1_nvenc` 的合法 RC 就是 constqp/vbr/cbr（AV1 硬件
+        #   不支持 vbr_hq/qvbr），且上面的降级已把 vbr_hq/qvbr 改写为 'vbr'。
+        #   若不豁免，会把 AV1 的默认档位一并打死 ⇒ 故 AV1 全部放行。
+        # ⚠ **确定 vs 不确定要分级**（避免误伤软编主机）：
+        #   · codec 字面含 `nvenc` 且非 av1 ⇒ **必然**走 Level 1 SDK ⇒ 硬错误拒绝；
+        #   · codec 为 libx264/libx265 ⇒ `FFmpegWriter.best_encoder`
+        #     （ffmpeg_io.py:161 `nvenc_map`）在有 NVIDIA 卡时**可能**升级为
+        #     h264/hevc_nvenc，此时同样静默落 CONSTQP；但在**无卡/软编主机上
+        #     `vbr` 完全合法**（ffmpeg_io 的 `_rc_v_map` 会正确下发 CLI `-rc:v vbr`）
+        #     ⇒ 硬拒绝会误伤 ⇒ 只告警，不拒绝。
+        # [L4-CODEC-KEY] 三处codec 判定此前口径不一（AV1 用精确 `== "av1_nvenc"`、
+        # 豁免用子串 `"av1"`、`"nvenc" in codec` 又是大小写敏感的子串），
+        # 实测 `codec="H264_NVENC"` 会静默通过 ⇒ 统一为**小写子串**。
+        # ⚠ 判定为「必然走 SDK」时必须用**生效编码器**（`main.py:1856` 同样
+        #   大小写敏感），故这里只做**规范化比较**，不改实际下发值。
+        _codec_for_rate = config.get("models", sect, "codec", default="libx264") or "libx264"
+        _codec_lc = _codec_for_rate.lower()
+        if rate in ("vbr", "cbr") and "av1" not in _codec_lc:
+            _hint = (f"models.{sect}.rate_mode={rate!r} 在 NVENC SDK 直通（Level 1）上未实现："
+                     f"会静默落 CONSTQP 且 LA 不生效，QP 也未过 to_constqp_qp 换算"
+                     f"（见 Plan/PROMPT_L40_AV1等质量标定专项执行方案.md §0.1.3 B2）。"
+                     f"请用 vbr_hq（质量优先）/ qvbr / constqp（最低延迟）。")
+            if "nvenc" in _codec_lc:
+                _errors.append(_hint)      # 必然走 SDK ⇒ 拒绝启动
+            elif _codec_lc in ("libx264", "libx265"):
+                # 可能被升级为 NVENC（ffmpeg_io.py:161 nvenc_map）⇒ 告警不拒绝
+                print(f"⚠️  {_hint} 提示：当前 codec={_codec_for_rate}，"
+                      f"若本机有 NVIDIA 卡可能被升级为 NVENC 而落入该问题。", flush=True)
 
     # ── 分段输出质量参数（IFRNet / ESRGan 两侧同规则）─────────────────────────
     # [P0-FIX-QUALITY-RANGE] 所有质量输入（字面量 crf/cq 与基准 crf_ref/cq_ref，
@@ -1016,19 +1082,21 @@ def _validate_effective_config(config: Config,
     # 超限一律**拒绝执行**并给出明确错误，绝不静默放行或自动截断。
     # 互斥判定基于 CLI 实参：config 里 crf 恒有默认值（23），无法区分"用户显式给了"
     # 与"配置默认"，用 config 判互斥会把默认配置误判成冲突。
-    for _stage, _sfx in (("IFRNet", "ifrnet"), ("ESRGan", "esrgan")):
-        _codec = config.get("models", _sfx, "codec", default="libx264") or "libx264"
-        # AV1 NVENC 仅支持 constqp / vbr / cbr 三种 RC 模式
-        # 若用户指定了 vbr_hq / qvbr，自动降级为 vbr 并警告
-        _rate_mode = config.get("models", _sfx, "rate_mode", default="vbr_hq")
-        if _codec == "av1_nvenc" and _rate_mode in ("vbr_hq", "qvbr"):
-            import warnings
-            warnings.warn(
-                f"{_stage}: AV1 NVENC does not support rate_mode={_rate_mode!r}, "
-                f"auto-downgrading to 'vbr'",
-                UserWarning
-            )
-            config.set("models", _sfx, "rate_mode", value="vbr")
+    # [L3-SECTION-NAME] `_sfx` 原被同时用作①config 节名 ②CLI 参数后缀。
+    #   ① 用 `esrgan`，但 `config["models"]` 的实际键是 **`realesggan`**
+    #      ⇒ `config.get("models","esrgan",...)` 恒读默认值，永远读不到
+    #      首轮循环写入的 AV1 降级结果（`[B2-ORDER]` 的前置条件在 ESRGan 侧失效）。
+    #   ② 用 `esrgan` 是**对的**（CLI 侧确实是 `--crf-esrgan`），**不得**一并改掉。
+    # ⇒ 拆成两个变量：`_cfg_sect`（config 节名）/ `_sfx`（CLI 后缀，保持不变）。
+    for _stage, _cfg_sect, _sfx in (("IFRNet", "ifrnet", "ifrnet"),
+                                     ("ESRGan", "realesrgan", "esrgan")):
+        _codec = config.get("models", _cfg_sect, "codec", default="libx264") or "libx264"
+        # [B2-ORDER] AV1 的 vbr_hq/qvbr → vbr 降级**已提到首个循环**（见上方 [B2-ORDER]
+        # 注释：必须先于 [FIX-B2-VBR-CBR-REJECT] 执行，否则两轮循环读到的 rate 不一致）。
+        # 此处只取**已降级的最终生效值**（节名用 `_cfg_sect`），不再重复改写 config。
+        #注：`_rate_mode` 当前在本循环内**无消费者**（唯一使用点即此行），
+        #   保留仅为可读性；它不参与任何判据。
+        _ = config.get("models", _cfg_sect, "rate_mode", default="vbr_hq")
         _lit = [(f"--{_n}-{_sfx}", _v) for _n, _v in
                 (("crf", getattr(args, f"crf_{_sfx}", None)),
                  ("cq",  getattr(args, f"cq_{_sfx}",  None))) if _v is not None]
@@ -1049,8 +1117,8 @@ def _validate_effective_config(config: Config,
             if _cli_v is not None:
                 _label, _val = f"--{_kind}-{_sfx}", _cli_v
             else:
-                _val = config.get("models", _sfx, _kind, default=None)
-                _label = f"models.{_sfx}.{_kind}"
+                _val = config.get("models", _cfg_sect, _kind, default=None)
+                _label = f"models.{_cfg_sect}.{_kind}"
                 if _val is None:
                     continue
             _lo, _hi = literal_range(_codec, _kind)
@@ -1075,7 +1143,7 @@ def _validate_effective_config(config: Config,
             if _cli_v is not None:
                 _label, _val = f"--{_kind}-{_sfx}-ref", _cli_v
             else:
-                _val = config.get("models", _sfx, f"{_kind}_ref", default=None)
+                _val = config.get("models", _cfg_sect, f"{_kind}_ref", default=None)
                 _label = f"models.{_sfx}.{_kind}_ref"
                 if _val is None:
                     continue

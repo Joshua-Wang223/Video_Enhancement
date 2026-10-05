@@ -75,7 +75,7 @@ Source: `nvEncodeAPI.h` from nv-codec-headers master (github.com/FFmpeg/nv-codec
 Offset  rc_ptr   Type      Field                    Notes
 ────────────────────────────────────────────────────────────────────
   0       [0]    uint32    version                  _sdk13_ver(1)
-  4       [1]    uint32    rateControlMode          0=CONSTQP, 32=VBR_HQ, 64=QVBR
+| 4       [1]    uint32    rateControlMode          0=CONSTQP（一致）；**32/64 的语义未确证**，见下方勘误 |
   8       [2]    uint32    constQP.qpInterP         NV_ENC_QP struct (12B)
  12       [3]    uint32    constQP.qpInterB
  16       [4]    uint32    constQP.qpIntra
@@ -139,6 +139,38 @@ Offset  rc_ptr   Type      Field                    Notes
 | VBR_HQ | 32 (0x20) | CQ via targetQuality@88: `max(1, 51-CRF)` |
 | QVBR | 64 (0x40) | Quality VBR via targetQuality@88 |
 
+### ⚠ 2026-10-05 勘误：`rateControlMode` 的 32/64 **语义未确证**（写入值本身照旧，标签待裁）
+
+⚠ 本行曾把 `32 = VBR_HQ` / `64 = QVBR` 写成「verified」。该标签**未被证实**：
+我曾据FFmpeg 的 `nv-codec-headers/include/ffnvcodec/nvEncodeAPI.h`（**按 FFmpeg 需求裁剪的子集**，
+`grep -cE "VBR_HQ|QVBR"` = **0**）断言「枚举里没有 32/64」，被用户以 **T4 实机 GPU 直通
+ctypes 验证**驳回 ⇒ 断言已撤回。详见 [[nvenc-rc-enum-illegal-vbr-hq]] 与
+[[feedback-verify-external-source-completeness]]。
+
+**仍未确证 / 仍冲突**：
+
+| 来源 | 声称 |
+|---|---|
+| 本行（早期据头文件抄录） | `VBR_HQ=32`、`QVBR=64` |
+| `Accessory/probe/nvenc_vbr_hq_offsets_probe.py:17,532` 注释 | **`VBR_HQ=4`、`QVBR=32`** |
+| **T4 实机 ctypes 实测（权重最高）** | `rc_ptr[1]=32` 被驱动**接受**，且 vbr_hq/constqp/qvbr **三者输出互异**（非静默钳制） |
+
+⚠ T4 实测只证明「32 ≠ 0 且行为与另两者不同」，**不证明「32 的语义 == VBR_HQ」** ——
+「驱动接受」与「语义正确」是两个命题。仓库内两个记录**互相矛盾** ⇒ 缺乏单一真源。
+
+**裁决入口**（GPU 上一条命令）：
+```bash
+python3 Accessory/probe/nvenc_rc_enum_truth.py --caps-only --verbose < /dev/null
+```
+用官方 caps API `NvEncGetEncodeCaps` 问驱动支持哪些 RC 模式（返回位掩码）。
+⚠ 已补的结构/索引：`nvenc_sdk._FUNC_IDX["GetEncodeCaps"] = 7`、
+`_NvEncCapsParam`（**仅 3 字段**：`version`@0 / `capsToQuery`@4 / `reserved[62]`@8 = **256 B**；
+⚠ **没有** `codecGuid`、**没有** `valueToRead`，结果由函数第 3 出参返回）。
+⚠⚠ `capsToQuery` 序号极易错：实测解析权威头文件的 **60 项** `NV_ENC_CAPS` 枚举得
+`NV_ENC_CAPS_SUPPORTED_RATECONTROL_MODES = 1`（紧跟 `NUM_MAX_BFRAMES` 之后）；
+早前手抄为 **8** 会**查到错误字段**并得到「不支持 32/64」的**假位掩码**，
+从而闭环「证实」被撤回的静态推断 —— 探针现已改为运行时自检该序号，取不到头文件时显式标注未校验。
+
 ### NV_ENC_CONFIG 布局（SDK 13.0）— encodeCodecConfig@168（绝对 176）[FIX-DIAG-SDK13]
 
 2026-08-07 sweep 三重旁证（`Accessory/probe/nvenc_profilelevel_offset_diagnose.py --sweep`）。
@@ -176,6 +208,7 @@ Offset  rc_ptr   Type      Field                    Notes
 |----------|-------|
 | GetEncodeGUIDCount | 1 |
 | GetEncodeGUIDs | 4 |
+| **GetEncodeCaps** | **7** ← 2026-10-05 补（B4RC 枚举裁决用；来源见上方勘误节） |
 | GetEncodePresetGUIDs | 9 |
 | GetEncodePresetConfig | 10 |
 | InitializeEncoder | 11 |

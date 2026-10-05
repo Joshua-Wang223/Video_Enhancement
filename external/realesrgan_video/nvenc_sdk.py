@@ -385,6 +385,21 @@ class _NvEncMapInputResource(Structure):
         ("reserved1",          c_uint32 * 62),
     ]
 
+class _NvEncCapsParam(Structure):
+    """[FIX-B3-CAPS-PARAM] `NvEncGetEncodeCaps` 入参结构 —— 与 ifrnet_video/nvenc_sdk.py 逐字同构。
+
+    权威依据 `nvEncodeAPI.h`（nv-codec-headers master `include/ffnvcodec/nvEncodeAPI.h`
+    line 1373-1378）**只有三个成员**：`version` / `capsToQuery` / `reserved[62]`
+    （总计 256 字节）。⚠ **没有 `codecGuid`、也没有 `valueToRead`**（结果由函数第 3 出参返回），
+    勿臆造字段。
+    """
+    _pack_ = 1
+    _fields_ = [
+        ("version",    c_uint32),          # @0
+        ("capsToQuery", c_uint32),         # @4  (NV_ENC_CAPS 枚举值)
+        ("reserved",   c_uint32 * 62),     # @8  (248B)
+    ]
+
 class _NvEncPicParamsH264(Structure):
     _pack_ = 1
     _fields_ = [
@@ -489,6 +504,10 @@ _LockBitstreamProto_raw = ctypes.CFUNCTYPE(
 _FUNC_IDX = {
     "GetEncodeGUIDCount":        1,   # nvEncGetEncodeGUIDCount
     "GetEncodeGUIDs":            4,   # nvEncGetEncodeGUIDs
+    # [FIX-B3-CAPS-INDEX] 补 nvEncGetEncodeCaps（index 7）—— 与 ifrnet_video 侧同源同值。
+    # 索引交叉校验：Accessory/probe/nvenc_comprehensive_matrix.py:84「offset 64: index 7」
+    # + Accessory/probe/nvenc_struct_dump.c:299 的打印顺序；与本表其余 12 项共有条目零冲突。
+    "GetEncodeCaps":7,   # nvEncGetEncodeCaps
     "GetEncodePresetGUIDs":      9,   # nvEncGetEncodePresetGUIDs
     "GetEncodePresetConfig":    10,   # nvEncGetEncodePresetConfig
     "InitializeEncoder":        11,   # nvEncInitializeEncoder (旧名 nvEncCreateEncoder)
@@ -1233,18 +1252,28 @@ class NVENCEncoder:
         self._libcuda.cuCtxPopCurrent.restype = c_uint32
         self._libcuda.cuCtxPopCurrent.argtypes = [ctypes.POINTER(c_void_p)]
 
-        _mode_label = (self._rate_mode.upper() if self._rate_mode == 'vbr_hq'
-                       else 'QVBR' if self._rate_mode == 'qvbr' else 'CONSTQP')
+        # [FIX-LOG-ECHO-LIE] 与 ifrnet_video/nvenc_sdk.py 逐字同构：RC 标签与 la 回显
+        # 改为**按实际生效值**打印。此前对 rate_mode='vbr' 会打出 CONSTQP + la=8 的
+        # 自相矛盾行（:1044 else 兜底 rc_ptr[1]=0；:1097 LA 门控不含 vbr ⇒ 硬件实际
+        # CONSTQP + LA 关）。⚠ 纯观测改动，不改 rc_ptr / LA 使能。
+        _cq_mode = self._rate_mode in ('vbr_hq', 'qvbr')
+        _eff_rc = 'CONSTQP' if not _cq_mode else (
+            'VBR_HQ' if self._rate_mode == 'vbr_hq' else 'QVBR')
+        _eff_la = self._la_depth if (_cq_mode and self._la_depth > 0) else 0
         _extra = ""
-        if self._la_depth > 0:
-            _extra += " la=%d" % self._la_depth
-        if self._rate_mode in ('vbr_hq', 'qvbr'):
-            _tq = max(1, _qp_val)  # QVBR qvbrQuality = CRF (QP标度)
+        if _eff_la > 0:
+            _extra += " la=%d" % _eff_la
+        elif self._la_depth > 0:
+            _extra += f" la={self._la_depth}->0(未使能:{_eff_rc})"
+        if self._rate_mode not in ('constqp', 'vbr_hq', 'qvbr'):
+            _extra += f" [未实现的rate_mode={self._rate_mode!r}→实际{_eff_rc}]"
+        if _cq_mode:
+            _tq = max(1, self._qp_val)  # QVBR qvbrQuality = CRF (QP标度)
             _extra += " tq(CRF)=%d" % _tq
         # [FIX-CODEC-SUPPORT] Ready 日志按 codec 显示，避免 HEVC/AV1 时仍打印 H.264。
         _codec_disp = {"h264": "H.264", "hevc": "HEVC", "av1": "AV1"}.get(self._codec, self._codec.upper())
         print("[NVENCEncoder] Ready: %dx%d@%.1ffps %s %s QP=%d preset=%s slots=%d%s (GPU direct SDK 13.0)" %
-              (width, height, fps, _codec_disp, _mode_label, _qp_val, self._preset_name, self._slot_count, _extra), flush=True)
+              (width, height, fps, _codec_disp, _eff_rc, _qp_val, self._preset_name, self._slot_count, _extra), flush=True)
 
     def _copy_into_input_buffer(self, cpy2d_struct) -> int:
         """[FIX-ASYNC-COPY] 把 NV12 源数据拷贝进 NVENC 输入缓冲区。
