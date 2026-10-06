@@ -1020,6 +1020,13 @@ def _validate_effective_config(config: Config,
         _codec = config.get("models", _sfx, "codec", default="libx264") or "libx264"
         # AV1 NVENC 仅支持 constqp / vbr / cbr 三种 RC 模式
         # 若用户指定了 vbr_hq / qvbr，自动降级为 vbr 并警告
+        # [FIX-B2-RC-MODE-REJECT] 降级目标 `vbr` 对 **ffmpeg CLI 路径（Level 2/3）**
+        # 是正确的（`ffmpeg_io._rc_v_map` 真实下发 `-rc:v vbr`），故此处保持不变。
+        # 但 NVENC **SDK 直通层未实现 vbr**（`nvenc_sdk.__init__` 会显式 raise 而非
+        # 静默落 CONSTQP）；该 raise 被 `main.py::_setup_level1_nvenc` 的
+        # `except Exception` 接住 → 自动降级到 Level 2/3 CLI 路径（打印
+        # "[NVENCEncoder] Level 1 失败: ..."）。AV1 的 SDK 直通本就恒失败
+        # （GetEncodePresetConfig code=12，见方案 §9.6），故最终落点与改前一致。
         _rate_mode = config.get("models", _sfx, "rate_mode", default="vbr_hq")
         if _codec == "av1_nvenc" and _rate_mode in ("vbr_hq", "qvbr"):
             import warnings

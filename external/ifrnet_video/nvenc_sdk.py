@@ -563,12 +563,44 @@ class NVENCEncoder:
             raise ValueError("NVENCEncoder: unsupported codec %r (supported: h264/hevc/av1)" % codec)
         self._codec = codec
 
-        # AV1 NVENC 不支持 vbr_hq / qvbr，需降级到 vbr
+        # [FIX-B2-RC-MODE-REJECT] **显式拒绝** SDK 未实现的 rate_mode，不再静默落 CONSTQP。
+        #
+        # 缺陷（本轮 T4 取证确认，方案 §0.1.3 B2）：`_build_encoder_config()` 只分支
+        # `constqp` / `vbr_hq` / `qvbr`，其余全部落进最后的 `else` 兜底写
+        # `rc_ptr[1]=0`（CONSTQP）⇒ 传 `vbr` / `cbr` 时**静默**变成 CONSTQP，且
+        #   · LA 门控 `in ('vbr_hq','qvbr')` 排除它 ⇒ 硬件 CONSTQP+LA=0，
+        #     而 `_init_session_state` 的清 LA 判据是 `== 'constqp'` 不命中 ⇒
+        #     `self._la_depth` 仍是 8 ⇒ **Python 认为 LA=8 而硬件 LA=0**；
+        #   · `[FIX-CONSTQP-FRAME-CE]` 守卫判 `('constqp', 0)` 不命中 ⇒ **绕过
+        #     per-frame completionEvent**，正落在 memory/nvenc-drain-unsubmitted-slot-segfault.md
+        #     记载的 T4 崩溃组合上；
+        #   · QP 未过 `to_constqp_qp` 换算 ⇒ CQ 值被当真实 QP 用，画质偏松
+        #     （T4 实测 h264 Ready `QP=22` vs vbr_hq 的 26）。
+        #
+        # 为何是 raise 而不是「实现 vbr」：真 vbr 分支要动 `rc_ptr[1]=1` + LA 门控 +
+        # 全链路内部改名 + 跨仓同步，且需 GPU A/B 定量（方案 B）。本仓当前生产默认是
+        # `vbr_hq`，vbr/cbr 无生产使用者 ⇒ 先把静默错误变成显式失败。
+        # ⚠ Level 2/3 的 ffmpeg CLI 路径**正确支持** vbr/cbr
+        # （`ffmpeg_io.py` 的 `_rc_v_map` 真实下发 `-rc:v vbr`），故本拒绝只在
+        # SDK 直通层生效，不影响 CLI 路径。
+        if rate_mode not in ("constqp", "vbr_hq", "qvbr"):
+            raise ValueError(
+                "[NVENCEncoder] SDK 直通不支持 rate_mode=%r；"
+                "本层仅实现 constqp / vbr_hq / qvbr（传 vbr/cbr 会**静默**落 CONSTQP："
+                "LA 被硬件禁用但代码仍认为 LA>0，且绕过 per-frame completionEvent）。"
+                "请改用 vbr_hq/qvbr/constqp，或走 ffmpeg CLI 路径（Level 2/3 支持 vbr/cbr）。"
+                % rate_mode)
+
+        # AV1 NVENC 不支持 vbr_hq / qvbr，需降级到 vbr。
+        # [FIX-B2-RC-MODE-REJECT] 降级目标必须仍是 SDK 已实现的档位：AV1 只接受
+        # constqp/vbr/cbr，而本层 vbr 未实现 ⇒ 降级到 **constqp**（AV1 的 constqp
+        # 是 NVENC 原生支持档位），否则上面已 raise。
         effective_rate_mode = rate_mode
         if codec == "av1" and rate_mode in ("vbr_hq", "qvbr"):
-            effective_rate_mode = "vbr"
+            effective_rate_mode = "constqp"
             print(f"[NVENCEncoder] WARNING: AV1 NVENC does not support rate_mode={rate_mode!r}, "
-                  f"auto-downgrading to {effective_rate_mode!r}", flush=True)
+                  f"auto-downgrading to {effective_rate_mode!r} "
+                  f"(SDK 直通层未实现 vbr；AV1 原生支持 constqp)", flush=True)
 
         self._init_session_state(width, height, fps, qp, preset,
                                  effective_rate_mode, la_depth, pipeline_depth)
@@ -1236,8 +1268,13 @@ class NVENCEncoder:
 
     def _log_ready(self, width: int, height: int, fps: float) -> None:
         """[P3.1-SPLIT] Ready 汇总日志（原收尾打印）。"""
-        _mode_label = (self._rate_mode.upper() if self._rate_mode == 'vbr_hq'
-                       else 'QVBR' if self._rate_mode == 'qvbr' else 'CONSTQP')
+        # [FIX-B2-RC-MODE-REJECT] 原三段三元把「非 vbr_hq/qvbr」一律显示为 CONSTQP，
+        # 于是传 `vbr` 时这行会打成 `CONSTQP ... la=8` —— **自相矛盾**：真实硬件是
+        # CONSTQP + LA 被静默禁用，而 `la=8` 只是把未被清零的 `self._la_depth` 回显出来。
+        # [FIX-B2-RC-MODE-REJECT] 已在 `__init__` 拒绝未实现的档位，故此处按实际生效
+        # 档位显示，不再有第三种兜底标签；`la=` 仅在 `self._la_depth > 0` 时追加。
+        _mode_label = {'constqp': 'CONSTQP', 'vbr_hq': 'VBR_HQ',
+                       'qvbr': 'QVBR'}.get(self._rate_mode, self._rate_mode.upper())
         _extra = ""
         if self._la_depth > 0:
             _extra += " la=%d" % self._la_depth
@@ -2280,10 +2317,27 @@ class NVENCEncoder:
             # `if not _sps_pps_injected` 门控跳过（仅靠 IDR 自带 + _prepend_param_sets
             # 兜底）。此处每段重置，段首首个 chunk 即重新预注入新段 muxer。
             self._sps_pps_injected = False
-            # [BUGFIX] Clear cached SPS/PPS on segment boundary when reusing encoder.
-            # Old segment's SPS/PPS would be prepended to new segment's frames, causing
-            # "PPS id out of range" and "Could not find ref with POC" decode errors.
-            self._cached_sps_pps = None
+            # [FIX-B1-SPS-PPS-SESSION-REUSE] **不再**清空 _cached_sps_pps。
+            #
+            # 原 [BUGFIX]「段边界清缓存」的假设是「跨段会拿到不同的参数集」，但本类
+            # **实例即会话**：`_open_encode_session()` 仅在 `__init__` 调用一次，无
+            # reopen 路径 ⇒ 实例存活期间 W/H/fps/preset/qp/rate_mode/LA/codec 全部
+            # 恒定（跨段复用的前提，见 main.py `_get_or_create_nvenc_encoder` 的 key
+            # 严格相等判定；key 不等则**新建对象**，缓存本就是 None）。
+            # 而驱动侧 `repeatSPSPPS` bit12 **不写** ⇒ 参数集只在会话建立后下发一次，
+            # 复用会话时**不会为新段重吐**。清空缓存与「驱动不重吐」叠加 ⇒ 段 2+ 完全
+            # 没有参数集，实测（2026-10-04 T4，h264_nvenc + LA>0 + 多段）：
+            #   `non-existing PPS 0 referenced` → muxer pipe broken → rc=1（片段 2 起必崩）
+            # 这也是 LA=0 路径（`encode_frames_batch_ce_pipeline` 的
+            # [FIX-SPS-PPS-SEGMENT-RESET] 只重置 _sps_pps_injected、不清缓存）不崩的
+            # 原因 —— **LA=0 / LA>0 的这个不对称就是缺陷面**。
+            #
+            # 残留风险已由两道机制覆盖：① `_cache_param_sets` 的 [P3-FIX-NAL-COMMON]
+            # 字节漂移检测（段 2 若真吐出不同参数集，打印告警并切到流内值）；
+            # ② `_prepend_param_sets` 仅在「IDR 且原生缺参数集」时预挂，不产生
+            # avcC numSPS/numPPS=2 重复。
+            # 对齐 ESRGAN 侧的会话代数方案 [FIX-ESRGAN-SPSPPS-REUSE]。
+            #
             # [FIX-DRAIN-ORDER-DEFENSE] / [FIX-EMPTY-PREV-FILL] 每段重置：
             # gfi 单调基准、prev 填充缓存与错配诊断计数。
             self._last_drained_gfi = None

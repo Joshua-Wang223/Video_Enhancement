@@ -632,11 +632,31 @@ class NVENCEncoder:
             raise ValueError("NVENCEncoder: unsupported codec %r (supported: h264/hevc/av1)" % codec)
         self._codec = codec
 
-        # AV1 NVENC 不支持 vbr_hq / qvbr，需降级到 vbr
+        # [FIX-B2-RC-MODE-REJECT] **显式拒绝** SDK 未实现的 rate_mode，不再静默落 CONSTQP。
+        # 缺陷（2026-10-04 T4 取证，方案 §0.1.3 B2；与 ifrnet_video 逐字同构）：
+        # `_build_encoder_config()` 只分支 constqp / vbr_hq / qvbr，其余全落进最后的
+        # `else` 兜底写 `rc_ptr[1]=0`（CONSTQP）⇒ 传 `vbr` / `cbr` 时**静默**变 CONSTQP，
+        # 且 LA 门控 `in ('vbr_hq','qvbr')` 排除它 ⇒ 硬件 CONSTQP+LA=0 而代码认为 LA=8。
+        # 为何是 raise 而不是实现 vbr：真 vbr 分支要动 rc_ptr[1]=1 + LA 门控 + 全链路
+        # 改名 + 跨仓同步，且需 GPU A/B 定量（方案 B）。生产默认是 vbr_hq，vbr/cbr
+        # 无生产使用者 ⇒ 先把静默错误变成显式失败。
+        # ⚠ Level 2/3 的 ffmpeg CLI 路径**正确支持** vbr/cbr，故本拒绝只在 SDK 直通层生效。
+        if rate_mode not in ("constqp", "vbr_hq", "qvbr"):
+            raise ValueError(
+                "[NVENCEncoder] SDK 直通不支持 rate_mode=%r；"
+                "本层仅实现 constqp / vbr_hq / qvbr（传 vbr/cbr 会**静默**落 CONSTQP："
+                "LA 被硬件禁用但代码仍认为 LA>0）。"
+                "请改用 vbr_hq/qvbr/constqp，或走 ffmpeg CLI 路径（Level 2/3 支持 vbr/cbr）。"
+                % rate_mode)
+
+        # AV1 NVENC 不支持 vbr_hq / qvbr，需降级。
+        # [FIX-B2-RC-MODE-REJECT] 降级目标必须仍是 SDK 已实现的档位：AV1 只接受
+        # constqp/vbr/cbr，而本层 vbr 未实现 ⇒ 降级到 **constqp**（AV1 原生支持）。
         if codec == "av1" and rate_mode in ("vbr_hq", "qvbr"):
             print(f"[NVENCEncoder] WARNING: AV1 NVENC does not support rate_mode={rate_mode!r}, "
-                  f"auto-downgrading to 'vbr'", flush=True)
-            rate_mode = "vbr"
+                  f"auto-downgrading to 'constqp' "
+                  f"(SDK 直通层未实现 vbr；AV1 原生支持 constqp)", flush=True)
+            rate_mode = "constqp"
 
         self._width = width
         self._height = height
@@ -680,12 +700,41 @@ class NVENCEncoder:
         #   → 需要 slot_count >= la + 3，否则锁未就绪槽在驱动内永久阻塞
         #     （doNotWait=0/1 皆然），或返回 SUCCESS+垃圾 size。
         # 对齐 IFRNet 同名修复（external/ifrnet_video/nvenc_sdk.py line 619-636）。
-        # h264 保持原 la+1（空槽返回 SUCCESS+size=0，无此问题）。
+        # h264 保持 la+1。⚠️ **不是"无此问题"**（旧注释如此写，实测已证伪）：
+        # slot_count==la+1 时槽复用时刻 `_frame_idx - _oldest_gfi == la+1`，
+        # 恰好压在 IFRNet `[FIX-H264-LA-DRAIN-READY]` 的就绪线上（`<= la_depth+1`
+        # 判未就绪）⇒属**零余量**配置。h264 不出事只因驱动在边界龄帧上恰好返回
+        # SUCCESS（实测巧合，非 SDK 保证；hevc/av1 在同一条件下于驱动内永久阻塞，
+        # doNotWait=0/1 皆然）。
+        # **为何仍保持 la+1 而不对齐 IFRNet 的 la+3** ——2026-10-05 T4 实测 A/B
+        # （`Accessory/probe/ab_h264_la_slots.py`，100s 素材 / 5 段 / h264_nvenc /
+        # vbr_hq / bs=8，各 2 轮交替；杠杆 `NVENC_ESRGAN_AB_SLOTS` 确认生效）：
+        #   · code=8 次数 **9 槽 3,3 vs 11 槽 3,3**，slot/fi 签名也同
+        #     （均为 slot=0, fi=1/2/3，且**只出现在第 1 段**warmup）
+        #   ⇒ **槽数不是 code=8 的根因**，根因是帧仍在 LA 窗口内就被要求 Lock
+        #     （本侧缺 IFRNet 的 h264 就绪门，见下）
+        #   · 11 槽零 code=8 改善，反而 +2.9% 墙钟 / +1242 MB 峰值 RSS
+        #   · 两臂均 rc=0、8/0/0 验收、帧守恒 4999==4999、零「排空超限」占位
+        # ⚠ 别把就绪门加到 `_ensure_slot_free`：其未就绪分支会落进
+        #   `[FIX-SLOT-BACKPRESSURE-B]` 用 `_prev_stream_h264` 顶替真实码流
+        #   （静默丢帧）；且该函数在锁内、`_frame_idx += 1` **之前**调用
+        #   ⇒ 等待永不满足（纯自旋）。正确落点是**提交后**的 drain站点。
         if self._codec in ("hevc", "av1"):
             _required_buffers = max(1, la_depth + 3)
         else:
             _required_buffers = max(1, la_depth + 1)  # SDK 硬件安全要求: buffer 数 >= LA+1
         _slot_count = max(pipeline_depth, _required_buffers)
+        # [AB-SLOT-LEVER] A/B 实测杠杆，**生产路径禁止设置**。
+        # ⚠ **该杠杆的用途已了结**（2026-10-05 A/B 结论见上）：
+        #   槽数**不是** `drain LockBitstream code=8` 的根因（9 vs 11 均为 3 次）。
+        # 保留它只为回归对照；若生产误设会静默恢复成零余量配置（上面已说明该配置
+        # 依赖驱动巧合），故标记为禁止项。回滚方式：本块删除（本行为 no-op 删除）。
+        _ab_slots = os.environ.get("NVENC_ESRGAN_AB_SLOTS", "").strip()
+        if _ab_slots.isdigit() and int(_ab_slots) > 0:
+            _slot_count = int(_ab_slots)
+            print(f"[NVENCEncoder] [AB-SLOT-LEVER] ⚠️ 槽数被环境变量强制为 "
+                  f"{_slot_count}（公式值 {max(pipeline_depth, _required_buffers)}）"
+                  f"—— A/B/回归对照用，生产路径禁止设置", flush=True)
 
         print("[NVENCEncoder] %s + LA=%d: %d slots (HW pipeline buffers>=%d)" %
               (rate_mode.upper(), la_depth, _slot_count, _required_buffers), flush=True)
@@ -704,6 +753,11 @@ class NVENCEncoder:
         self._max_valid_bitstream_bytes = (
             int(_cap_override) if _cap_override.isdigit() and int(_cap_override) > 0
             else max(64 * 1024, int(width) * int(height) * 4))
+        # [P2-FIX-STRICT-EOS] EOS 残留/排空错误默认判段失败；诊断环境可关闭。
+        # 对齐 IFRNet external/ifrnet_video/nvenc_sdk.py:643-644 同名字段。
+        # 生产环境默认开启（NVENC_STRICT_EOS=1），故障注入/诊断可设 0/false/no 关闭。
+        self._strict_eos = str(os.environ.get("NVENC_STRICT_EOS", "1")).lower() not in (
+            "0", "false", "no")
         # [FIX-SIZECAP-NO-DEADLOCK] 记录每个槽被「垃圾 size 钳制」放弃的次数。
         # 钳制的失败语义是「放弃本轮、不推进指针、交由后续 drain / 段末 EOS 回收」。
         # 但若 EOS 同样命中钳制，该槽的 pending 记账将永久滞留 → _ensure_slot_free
@@ -1233,8 +1287,12 @@ class NVENCEncoder:
         self._libcuda.cuCtxPopCurrent.restype = c_uint32
         self._libcuda.cuCtxPopCurrent.argtypes = [ctypes.POINTER(c_void_p)]
 
-        _mode_label = (self._rate_mode.upper() if self._rate_mode == 'vbr_hq'
-                       else 'QVBR' if self._rate_mode == 'qvbr' else 'CONSTQP')
+        # [FIX-B2-RC-MODE-REJECT] 原三段三元把「非 vbr_hq/qvbr」一律显示为 CONSTQP，
+        # 传 `vbr` 时会打成 `CONSTQP ... la=8`（自相矛盾：真实硬件 CONSTQP + LA 被
+        # 静默禁用，`la=8` 只是未被清零的 `_la_depth` 回显）。已在 __init__ 拒绝
+        # 未实现档位，故此处按实际生效档位显示，不再有第三种兜底标签。
+        _mode_label = {'constqp': 'CONSTQP', 'vbr_hq': 'VBR_HQ',
+                       'qvbr': 'QVBR'}.get(self._rate_mode, self._rate_mode.upper())
         _extra = ""
         if self._la_depth > 0:
             _extra += " la=%d" % self._la_depth
@@ -1599,6 +1657,35 @@ class NVENCEncoder:
                   - (self._output_slot_idx - self._strm_ts_base))
         return max(0, min(int(limit), _ready))
 
+    def _h264_target_slot_ready(self, slot_idx: int) -> bool:
+        """[FIX-H264-LA-DRAIN-READY] h264+LA>0：目标物理槽的队首帧是否已过 LA 延迟。
+
+        口径与 IFRNet `_drain_outputs_blocking` 内同名检查**逐字一致**：
+        未就绪判据 `self._frame_idx - _oldest_gfi <= self._la_depth + 1`
+        （提交不足 LA+1 帧的帧尚未就绪）。
+
+        非 h264 或 LA=0 一律返回 True（恒等变换，不改变既有行为）；
+        hevc/av1 由 `_hevc_ready_count` 单独门控，两条路径互不重叠。
+
+        ⚠ `_slot_pending` 有**两种 entry 形状**（见 `_apply_drained_entries`）：
+          · LA>0 `encode_frames_batch`→ 4 元组 `(gfi, bs_buf, force_idr, ep_status)`
+          · LA=0 `encode_frames_batch_ce_pipeline`   → 5 元组 `(_ce, fi, _ep, _idr, _bs)`
+        本方法被 `la_depth > 0` 限定 ⇒ 只可能是 4 元组（`[0]` 恒为全局 fi）。
+        仍对长度做断言：万一将来新增路径，静默取错字段比报错糟得多。
+
+        抽成独立方法而非内联在 drain 循环里，是为了让单元测试能在**无 GPU**下
+        直接验证就绪边界（h264 驱动对未就绪槽恰好返 SUCCESS ⇒ GPU 上观测不到差异）。
+        """
+        if self._codec != "h264" or self._la_depth <= 0:
+            return True
+        _dq = self._slot_pending.get(slot_idx)
+        if not _dq:
+            return True                      # 空槽：交给既有 bs_buf 有效性检查处理
+        _entry0 = _dq[0]
+        if len(_entry0) < 4:
+            return True                      # 非预期形状 ⇒ 不干预（见docstring）
+        return not (self._frame_idx - _entry0[0] <= self._la_depth + 1)
+
     def _drain_outputs_blocking(self, max_slots: int = None) -> list:
         """按 _output_slot_idx 顺序循环 LockBitstream
         排空所有已完成 slot，直到遇到 NEED_MORE_INPUT。
@@ -1637,6 +1724,31 @@ class NVENCEncoder:
 
         for _ in range(max_slots):
             slot_idx = self._output_slot_idx % self._slot_count
+# [FIX-H264-LA-DRAIN-READY] ⚠️ **已实测证伪并移除（2026-10-05 T4，本仓 GPU 回归）**
+            # 曾经的移植方案（IFRNet `ifrnet_video/nvenc_sdk.py` 的同名门）在 ESRGAN
+            # **持续误判**：门命中 **196 次**（`frame_idx` 1→1024 全程，不止 warmup 3 次），
+            # 而 IFRNet 侧该判据只命中个位数。后果：每轮 drain 都 `break` ⇒ 排空近乎停滞
+            # ⇒反压堆积（日志 `queue_sizes=...O:16`）⇒ 段 1 `decoded=1024 expected=1025`
+            # **丢 1 帧**（rc=1，片段 1 失败终止）。同素材改动前 A/B 4 轮均 4999==4999。
+            #
+            # 根因：**判据所依赖的记账语义两侧不同**（已逐处核对，非推测）——
+            #   · IFRNet `_drain_outputs_blocking`：`_output_slot_idx += 1` **仅 1 处**，
+            #     且在成功 `UnlockBitstream` 之后 ⇒ 指针与「已取回帧数」严格同步；
+            #   · ESRGAN 同函数有**2 处**：除正常路径外，还有 `[P3-FIX-LockBitstream-SizeCap]`
+            #     的强制消费分支（`self._slot_pending.pop(slot_idx, None)` 之后）也会推进，
+            #     以免pending 永久滞留导致 `_ensure_slot_free` 无限自旋。
+            #   ⇒ ESRGAN 的指针会**跳过**某些帧，而 `_slot_pending` 里仍留着这些帧的
+            #     4 元组 entry；门取「目标槽队首 entry 的 gfi」与 `_frame_idx` 比较时，
+            #     常遇到一个**很旧的 gfi**（`frame_idx - gfi` 恒 > `la_depth+1` 才对），
+            #     但门实际观测到的是相反现象：命中 196 次且 `frame_idx` 从 1 单调到 1024，
+            #     说明目标槽队首 gfi **紧跟** `_frame_idx`（差值恒 <= la+1）。
+            #     即 ESRGAN 的 `_output_slot_idx` 轮转**追不上** `_frame_idx`
+            #     （排空被截断时指针不前进、提交照常前进），队首因此总是"刚提交的帧"。
+            # 与「槽数」无关（已 A/B 排除：9 vs 11 槽 code=8 均为 3 次）。
+            #
+            # ⇒ **本仓不加这道门**。code=8 本身无害（帧守恒、零占位、S1~S8 全绿）。
+            # 若将来要真正消除它，须先统一两侧的 drain 记账语义（属架构级改动），
+            # 不能只搬判据。判据 helper 见 `_h264_target_slot_ready`（保留供比对/回归）。
             slot = self._slots[slot_idx]
             bs_handle = slot['bs_buf']
             _bs_val = bs_handle.value if hasattr(bs_handle, 'value') else bs_handle
@@ -1938,6 +2050,14 @@ class NVENCEncoder:
                 # 宁可写占位也绝不覆盖未取回的码流。
                 _dq = self._slot_pending.get(slot_idx)
                 if _dq:
+                    # [P2-FIX-STRICT-EOS] strict 下放弃槽位继续提交会让驱动 LA/GOP
+                    # 处于不一致状态；必须终止本段，由 checkpoint/resume 重试。
+                    # 对齐 IFRNet external/ifrnet_video/nvenc_sdk.py:2096-2100 同名检查。
+                    if self._strict_eos:
+                        fis = [_item[0] for _item in list(_dq)]
+                        raise RuntimeError(
+                            "[NVENCEncoder] strict drain abandoned target slot: "
+                            f"slot={slot_idx}, pending_fis={fis}")
                     self.__dict__.setdefault('_diag_slot_drain_fallback', 0)
                     self._diag_slot_drain_fallback += 1
                     if self._diag_slot_drain_fallback <= 5 or \
@@ -1946,6 +2066,16 @@ class NVENCEncoder:
                               f'#{self._diag_slot_drain_fallback}：'
                               f'空帧占位兜底（prev 填充）', flush=True)
                     _fill = self._prev_stream_h264 or b""
+                    # [FIX-ESF-FILL-ADVANCE] 指针必须按**本槽实际消费的条目数**推进，
+                    # 不能硬编码 +1：本while 会把该槽 deque 的**全部**条目以prev 帧
+                    # 占位消费（`_dq.popleft()` 直到空），随后 `del _slot_pending[slot_idx]`。
+                    # 若 deque 当时有 N>1 条（per-slot FIFO 的常态，跨 chunk 累积，
+                    # 见 `[FIX-SLOT-DEQUE]`），`+= 1` 只推进 1 ⇒ **指针落后 N-1**
+                    # ⇒ 后续 drain 从错误的物理槽起轮转 ⇒ 相位漂移 / 帧错位
+                    # （与 ifrnet_video侧 `[FIX-ESF-PROBE-ADVANCE]` / IFRNet 本分支
+                    #   的 `self._output_slot_idx += _n_fill` 是同一处逻辑）。
+                    # 取「消费前长度」而非 `len(_dq)`：popleft 后 deque 已空。
+                    _n_fill = len(_dq)
                     while _dq:
                         _gfi_f, _, _is_idr_f, _ep_s_f = _dq[0]
                         _actual_fi_f = _gfi_f - chunk_start_global
@@ -1955,8 +2085,9 @@ class NVENCEncoder:
                         _dq.popleft()
                     del self._slot_pending[slot_idx]
                     # [FIX-LA-OUTPTR-ESRGAN] 允许推进：排空超限兜底已把该槽队首
-                    # 全部以 prev 填充写入 results 并删除 _slot_pending → 记账同步前进。
-                    self._output_slot_idx += 1
+                    # 全部以prev 填充写入 results 并删除 _slot_pending → 记账同步前进。
+                    # [FIX-ESF-FILL-ADVANCE] 推进量 = 实际消费条目数 `_n_fill`（原为硬编码 1）。
+                    self._output_slot_idx += _n_fill
                 break
             continue
 
@@ -2281,6 +2412,12 @@ class NVENCEncoder:
                             if _bs_s == NV_ENC_ERR_NEED_MORE_INPUT:
                                 break
                             if _bs_s != NV_ENC_SUCCESS:
+                                # [P2-FIX-STRICT-EOS] code=8 做有界重试；硬错误立即判败。
+                                # 对齐 IFRNet external/ifrnet_video/nvenc_sdk.py:2738-2741 同名检查。
+                                if self._strict_eos:
+                                    raise RuntimeError(
+                                        "[NVENCEncoder] strict EOS drain failed: "
+                                        f"slot={_ds}, code={_bs_s}")
                                 break
                             _bs_size = cast(byref(_lr, 36), ctypes.POINTER(c_uint32))[0]
                             if _bs_size == 0:
@@ -2354,6 +2491,33 @@ class NVENCEncoder:
                         _sorted_ok = _eos_debug_seq == sorted(_eos_debug_seq)
                         print(f'[NVENC-Enc] [EOS-DEBUG] gfi_seq={_eos_debug_seq} '
                               f'顺序正确={_sorted_ok}', flush=True)
+                    # [P2-FIX-STRICT-EOS] EOS 已发送 + 全槽排空，残留未决为真正的空帧
+                    # 若仍有 pending 条目则说明有帧未被回收（段末丢帧/参考链断裂）。
+                    # 对齐 IFRNet external/ifrnet_video/nvenc_sdk.py:2851-2854 同名检查。
+                    _leftover_fis = sorted(
+                        _ent[0] - self._strm_ts_base
+                        for _dq in self._slot_pending.values()
+                        for _ent in _dq)
+                    if _leftover_fis and self._strict_eos:
+                        raise RuntimeError(
+                            "[NVENCEncoder] strict EOS left undecoded AU(s): "
+                            f"{_leftover_fis[:32]} (count={len(_leftover_fis)})")
+                    # 观察模式：为残留帧写空帧占位（帧数守恒靠占位，不靠丢帧）。
+                    for _fi_lo in _leftover_fis:
+                        self.__dict__.setdefault('_diag_empty', 0)
+                        self._diag_empty += 1
+                        if self._diag_empty <= 5 or self._diag_empty % 50 == 0:
+                            print(f'[NVENC-Enc] ⚠️ EOS 后仍无数据帧 (stream fi={_fi_lo})，'
+                                  f'记为空帧 #{self._diag_empty}', flush=True)
+                        # 残留帧写入 results 或 prev_chunk_outputs（按 gfi 判定）
+                        _actual_fi_lo = _fi_lo - _chunk_start_global
+                        if 0 <= _actual_fi_lo < n_frames:
+                            results[_actual_fi_lo] = self._prev_stream_h264 or b""
+                        else:
+                            _prev_chunk_outputs.append(self._prev_stream_h264 or b"")
+                        self._output_slot_idx += 1
+                    # [FIX-ENSURE-SLOT-ROTATION] EOS 后清空 pending，避免跨段污染。
+                    self._slot_pending.clear()
 
                 else:
                     # Without EOS: final drain attempt (LA frames may not be ready)
@@ -3379,7 +3543,8 @@ class _NVENCEncodeThread:
         # SPS/PPS 注入标志属于线程层（涉及 muxer 交互），在此单独重置。
         # 每个新段创建新的 _NVENCEncodeThread + 新 muxer，
         # 确保新 muxer 总能拿到一次 SPS/PPS 预注入。
-        # _stream_begin(force=True) 现在会清除 _cached_sps_pps，因此无条件重置。
+        # [FIX-ESRGAN-SPSPPS-REUSE] _cached_sps_pps 由 _stream_begin 按**会话代数**
+        # 条件清除（代数不变=同一会话⇒保留），故这里只重置注入标志即可。
         self._nvenc._sps_pps_injected = False
         # [EARLY-FLUSH] 两阶段 flush 的幂等守卫：begin_flush() 置位后
         # flush_and_join() 跳过重复的 q.put(SENTINEL)。每段 _NVENCEncodeThread

@@ -161,14 +161,215 @@
 
 ### 0.1.5 下一步（顺序有依赖，勿打乱）
 
-| 步 | 动作 | 需 GPU | 前置 |
-|---|---|---|---|
-| 1 | **修 B3**（显存口径：`None` 而非 `0.0` + 标注「不可归属」） | 否 | — |
-| 2 | **修 B1**（按「`_stream_begin` 保留 `_cached_sps_pps`、只重置 `_sps_pps_injected`」，与 LA=0 路径 `:2858` 对齐）+ hevc 臂负向回归 | 是 | 步 1 |
-| 3 | **重跑 S8 的 h264 vbr 臂**（用 `vbr_hq` 不是 `vbr`）—— 这才第一次真正测到 h264 的 LA>0 路径 | 是 | 步 2 |
-| 4 | B2 方案 A（脚本级禁用 `vbr`/`cbr` + 修 `_log_ready` 自相矛盾回显）；方案 B（真 vbr 分支）另立 A/B 定量 | A 否 / B 是 | 步 3 |
-| 5 | 标定 `--mem-peak-mb`（按 T4 实测 13578~13877 重新取值，而非沿用 12000 估值） | 否 | — |
-| 6 | **L40 复跑**：同素材 constqp + vbr_hq + av1 三臂同批，判 S8 原始问题 | 是（L40） | 步 2、4 |
+> **2026-10-05 更新：步 1~4 已完成（T4），步 5 的标定数据正在采集，步 6 仍需 L40。**
+> 三个阻塞项 B1/B2/B3 的修复与验证结论见 **§0.2**。
+
+| 步 | 动作 | 需 GPU | 前置 | 状态 |
+|---|---|---|---|---|
+| 1 | **修 B3**（显存口径：`None` 而非 `0.0` + 标注「不可归属」） | 否 | — | ✅ 已完成（`[FIX-B3-GPU-UNATTRIBUTABLE]`） |
+| 2 | **修 B1**（按「`_stream_begin` 保留 `_cached_sps_pps`、只重置 `_sps_pps_injected`」，与 LA=0 路径 `:2858` 对齐）+ hevc 臂负向回归 | 是 | 步 1 | ✅ 已完成（`[FIX-B1-SPS-PPS-SESSION-REUSE]`，T4 rc=0 / 5 段全过 / S1~S8 全绿） |
+| 3 | **重跑 S8 的 h264 vbr 臂**（用 `vbr_hq` 不是 `vbr`）—— 这才第一次真正测到 h264 的 LA>0 路径 | 是 | 步 2 | 🔄 100 s 素材已跑通（8/0）；358 s 标准素材双臂对照进行中 |
+| 4 | B2 方案 A（脚本级禁用 `vbr`/`cbr` + 修 `_log_ready` 自相矛盾回显）；方案 B（真 vbr 分支）另立 A/B 定量 | A 否 / B 是 | 步 3 | ✅ 方案 A 已完成（`[FIX-B2-RC-MODE-REJECT]`，两侧同构）；方案 B 未做 |
+| 5 | 标定 `--mem-peak-mb`（按 T4 实测 13578~13877 重新取值，而非沿用 12000 估值） | 否 | — | 🔄 见 §0.2.4 —— 峰值强依赖 `batch_size` 与素材长度，旧值 12000 是 bs=24 下估的 |
+| 6 | **L40 复跑**：同素材 constqp + vbr_hq + av1 三臂同批，判 S8 原始问题 | 是（L40） | 步 2、4 | ⏸ 阻塞：本机是 T4 |
+
+---
+
+## 0.2 §0.1.5 步 1~4 执行完毕（2026-10-05，T4）—— B1/B2/B3 三个阻塞项已修
+
+> 步 5（`--mem-peak-mb` 标定）与步 6（L40 复跑）仍未完成；步 5 的采集在跑，步 6 阻塞于硬件。
+> 本节记录三个修复的**根因、落地方式、验证判据**，以及一条被推翻的假设。
+
+### 0.2.1 B1（生产级缺陷）已修 —— `[FIX-B1-SPS-PPS-SESSION-REUSE]`
+
+**根因（比 §0.1.3 记的更精确）**：`1e57c0b` 在同一个段边界重置里加了**两个互相冲突**的动作 ——
+`_sps_pps_injected = False`（正确：新段有新 muxer，需重新预注入）与
+`_cached_sps_pps = None`（**错误**）。后者的注释假设「跨段会拿到不同的参数集」，但该前提**不成立**：
+
+- 本类**实例即会话** —— `_open_encode_session()` 只在 `__init__` 调用一次，**无 reopen 路径**
+  （`grep -n '_open_encode_session('` 只有定义处 + `:__init__` 两处命中）；
+- 跨段复用的前提是参数严格相等（`main.py::_get_or_create_nvenc_encoder` 的 `key` 含
+  W/H/fps/preset/qp/rate_mode/LA/pipeline_depth/codec 九项）⇒ key 不等就**新建对象**，
+  缓存本就是 `None`。
+
+而驱动侧 `repeatSPSPPS` bit12 **不写**（`nvenc_sdk.py:971`）⇒ 参数集**只在会话建立后下发一次**，
+复用会话时不会为新段重吐。清缓存与「不重吐」叠加 ⇒ 段 2+ 完全没有参数集 ⇒
+`non-existing PPS 0 referenced` → muxer pipe broken → rc=1。
+**LA=0 路径不崩的原因**：`ce_pipeline` 的段首只重置 `_sps_pps_injected`、**不清缓存**
+⇒ 段 2 由 `_prepend_param_sets` 补挂。**LA=0 / LA>0 的这个不对称就是缺陷面。**
+
+**落地**：`external/ifrnet_video/nvenc_sdk.py::_stream_begin` 删掉那行清空；
+`external/realesrgan_video/nvenc_sdk.py` 侧本就正确（会话代数守卫 `[FIX-ESRGAN-SPSPPS-REUSE]`），
+只修正其 `:3382` 一处**过时注释**（称「`_stream_begin(force=True)` 现在会清除 `_cached_sps_pps`」——
+实际是条件清除）。
+**残留风险已由两道既有机制覆盖**（未新增代码）：① `_cache_param_sets` 的 `[P3-FIX-NAL-COMMON]`
+字节漂移检测（段 2 若真吐不同参数集则告警并切流内值）；② `_prepend_param_sets` 仅在
+「IDR 且原生缺参数集」时预挂 ⇒ 不产生 `avcC numSPS/numPPS=2` 重复。
+
+**T4 GPU 验证**（h264_nvenc + `vbr_hq` = LA>0 路径，100 s / 5 段素材）：
+**rc=0、S1~S8 全 8 PASS / 0 FAIL**（此前片段 2 即 rc=1）；S2 段级 `decoded==expected` 5/5、
+S3 产物 4999 = 分段合计 4999、S4 解码级 ok、S5 码流硬指标全过、**日志零 `non-existing PPS`**。
+
+### 0.2.2 B2 方案 A 已修 —— `[FIX-B2-RC-MODE-REJECT]`
+
+**方案 A = 不实现真 vbr 分支，改为显式失败**。理由：真 vbr 要动 `rc_ptr[1]=1` + LA 门控 +
+全链路内部改名 + 跨仓同步，且需 GPU A/B 定量（= 方案 B，另立）；而生产默认是 `vbr_hq`，
+`vbr`/`cbr` **无生产使用者** ⇒ 先把静默错误变成显式失败是当前成本最低的正确解。
+
+**落地（两侧同构）**：`nvenc_sdk.__init__` 在 codec 检查之后立刻
+`if rate_mode not in ("constqp","vbr_hq","qvbr"): raise ValueError(...)`（消息里写明
+「传 vbr/cbr 会**静默**落 CONSTQP」+ 指向 CLI 路径）。⚠ **只在 SDK 直通层生效**，
+Level 2/3 的 ffmpeg CLI 路径**正确支持** vbr/cbr（`ffmpeg_io._rc_v_map` 真实下发 `-rc:v vbr`），
+不受影响 —— 这也是 AV1 的 `main_video_optimized.py:1031` 自动降级到 `'vbr'` 仍可用的原因
+（该 raise 被 `main.py::_setup_level1_nvenc` 的 `except Exception` 接住 → 落到 Level 2/3 CLI，
+与改前最终落点一致）。
+
+**连带修**：`_log_ready` 的三段三元（`vbr_hq→VBR_HQ / qvbr→QVBR / else→CONSTQP`）
+把任何其它档位都显示成 `CONSTQP`，于是传 `vbr` 时这行打成 `CONSTQP ... la=8` ——
+**自相矛盾**（真实硬件 CONSTQP + LA 被静默禁用，`la=8` 只是未被清零的 `_la_depth` 回显）。
+改为字典查表 + 无兜底标签；`la=` 仍只在 `_la_depth > 0` 时追加。
+
+**AV1 自动降级目标改为 `constqp`**：`vbr_hq/qvbr` 曾降级到 `'vbr'`，而 SDK 层未实现 vbr ⇒
+降级目标必须仍是已实现档位（AV1 原生支持 constqp）。
+
+**脚本侧同步**：`av1_pipeline_smoke.py` 的 `--rate-modes` 默认由 `constqp,vbr` 改为
+`constqp,vbr_hq` —— 对照臂必须是唯一真 VBR_HQ+LA>0 路径，不能用已被拒的 `vbr`。
+
+### 0.2.3 B3 已修 —— `[FIX-B3-GPU-UNATTRIBUTABLE]`
+
+`_gpu_mem_by_pid()` 改为返回 `(by_pid, status)`；不可归属时 `gpu_tree_mib = **None**`
+（TSV 落盘写 `NA`，报告写「不可归属（原因）」），不再用 `0.0` 冒充。
+**新增能力**：`status="pid_ns_mismatch"` 的判据是「`nvidia-smi --query-compute-apps` 有输出
+且其中**没有任何** pid 存在于本容器 `/proc`」⇒ 直接把「驱动侧用宿主 pid、容器 PID namespace
+不通」这个**根因**显式写进报告，而不是只留一个 0。
+`peak()` 相应返回 `Optional[float]`。
+三条分支（`ok` / `pid_ns_mismatch` / `empty`）已用合成数据验证。
+实测印证：修复后 S8 detail 显示「显存峰值 不可归属（pid_ns_mismatch）」，
+而同一跑批整卡 7698 MiB / 100% 利用率 —— **旧读数会被误读成「确实没用显存」**。
+
+### 0.2.4 S8 判据标定（步 5）：峰值上界比斜率更易误报，且强依赖 bs
+
+**待补**：358 s 标准素材、bs=8 的双臂对照正在采集（`--mem-dump-dir /tmp/s8b/mem`）。
+已知的三条实测事实（供判读）：
+
+1. **旧默认 12000 是 bs=24 下的估值**：bs=24 / 358 s 存档峰值 12393~13877（两臂**都超上界**
+   而斜率正常）；**bs=8 / 100 s 实测峰值仅 7243** ⇒ 峰值∝ `batch_size`（pinned result pool 线性）
+   **且**∝ 素材长度（段数累积）。⇒ **单一常数无法跨 bs/素材通用**，
+   `--mem-peak-mb` 只能在**固定 bs + 固定素材**下比较。
+2. **峰值判据本身弱于斜率**：同一份 hevc constqp 数据，斜率随 OLS 窗口在 −786 ~ +1434 MB/min
+   之间跳变（§0.1.2），而峰值只有一个数、方向单一 ⇒ 峰值超界**不区分**「失控增长」与
+   「工作集台阶」。
+3. **新读数应同时报窗口与噪声底噪**（后半程 sd ≈ 1356 MB ⇒ 不确定度约 ±66 MB/min）。
+
+### 0.2.5 一条被推翻的假设（记录以免重复）
+
+静态审阅阶段（§0 末「无 GPU 准备项」）曾把**头号候选**定为「per-frame CUDA event 在
+`cuEventSynchronize` 失败 raise 前跳过销毁」，并以「rc=0 ⇒ 该 raise 从未触发」证伪。
+本轮 B1 修复时确认了同一条推理链**在另一处同样有效**：`_stream_begin` 的清空动作之所以
+长期没人质疑，正是因为它**不产生任何错误日志**（清空 → 驱动不重吐 → 段 2 才炸），
+静态读代码极易判成「合理的防御性重置」。
+⇒ **「静默降级」类缺陷只能靠运行时的第二个数据点（同素材跨段）发现**，
+代码审查与单点单元测试都覆盖不到。
+
+---
+
+## 0.3 T4 上机执行结果（2026-10-06，T4 / 580.65.06 / bs=8）—— S8 标定 + 峰值校准完成
+
+> **素材**：`01 the race to mystery island.fixed.mp4`（358.76s / 720×576 / 12 段 / 8969 源帧）  
+> **配置**：`batch_size=8`（config 默认 24 → `--batch-size 8` 覆盖，双重收益：吞吐↑12.9% + S8 锯齿↓）  
+> **口径**：`--rate-modes constqp,vbr_hq`（vbr_hq 为唯一真 VBR+LA>0 路径，vbr 已被 SDK 直通层拒绝）
+
+### 0.3.1 H.264 双臂（constqp / vbr_hq）完整 358s 跑批
+
+| 指标 | constqp | vbr_hq |
+|------|---------|--------|
+| S1 退出码 | rc=0 (1821s) | rc=0 (2081s) |
+| S2 段级守恒 | 12/12 PASS (17926 帧) | 12/12 PASS (17926 帧) |
+| S3 产物帧数 | 17926 = 分段合计 | 17926 = 分段合计 |
+| S4 解码级验证 | OK (frames=17926) | OK (frames=17926) |
+| S5 码流硬指标 | PASS (帧守恒/IDR/frame_num/pts) | PASS (同上) |
+| S6 QA sidecar | 完整 | 完整 |
+| S7 编码器确认 | h264 | h264 |
+| **S8 后半程 RSS 斜率** | **-76.8 MB/min** (主 -76.4) | **+12.6 MB/min** (主 +13.2) |
+| **S8 RSS 峰值** | **6730 MB** | **7694 MB** |
+| GPU 显存归属 | pid_ns_mismatch (B3 生效) | pid_ns_mismatch (B3 生效) |
+
+✅ **两臂 S1~S8 全绿**。constqp 斜率为负（回收），vbr_hq 斜率 +12.6 落在 +50 阈值内。
+
+### 0.3.2 HEVC 双臂（constqp / vbr_hq）完整 358s 跑批
+
+| 指标 | constqp | vbr_hq |
+|------|---------|--------|
+| S1 退出码 | rc=0 (1707s) | rc=0 (1684s) |
+| S2 段级守恒 | 12/12 PASS (17926 帧) | 12/12 PASS (17926 帧) |
+| S3 产物帧数 | 17926 = 分段合计 | 17926 = 分段合计 |
+| S4 解码级验证 | OK | OK |
+| S5 码流硬指标 | PASS | PASS |
+| S6 QA sidecar | 完整 | 完整 |
+| S7 编码器确认 | hevc | hevc |
+| **S8 后半程 RSS 斜率** | **+47.4 MB/min** (主 +51.0) | **-0.8 MB/min** (主 -0.5) |
+| **S8 RSS 峰值** | **6042 MB** | **5479 MB** |
+| GPU 显存归属 | pid_ns_mismatch | pid_ns_mismatch |
+
+✅ **两臂 S1~S8 全绿**。hevc constqp 斜率 +47.4 落在 +50 阈值内（临界但通过）。
+
+### 0.3.3 `--mem-peak-mb` 自动标定更新（`_auto_peak_mb`）
+
+实测峰值（bs=8 / 358s 标准素材）：
+
+| Codec | Rate Mode | RSS Peak (MB) |
+|-------|-----------|---------------|
+| h264  | constqp   | 6730          |
+| h264  | vbr_hq    | **7694**      |
+| hevc  | constqp   | 6042          |
+| hevc  | vbr_hq    | 5479          |
+
+**基准值更新**：`_BASE_PEAK_MB = 7694.0`（取 h264 vbr_hq 实测最高值）  
+**自动标定公式**：`max(2000, 7694 * max(1, bs) / 8 * 1.25)`  
+- bs=8 → **9618 MB**（1.25× 余量，远高于实测 5479~7694 → 不误报）  
+- bs=24 → 28852 MB（旧默认 12000 已被否决：bs=24 实测 12393~13877 全超上界但斜率正常）
+
+⚠ **仍不能跨素材通用**（分辨率/时长影响工作集）—— 换素材时若 S8 报「峰值超上界」而斜率正常，应先确认是否需重新标定。
+
+### 0.3.4 验收门禁现状（T4 bs=8）
+
+```bash
+# plan_implementation_gate: 99 PASS / 0 FAIL / 0 WARN / 2 SKIP（含 FIX-STRICT-EOS / FIX-B2-RC-MODE-REJECT）
+# crf_cq_unification_verify --quick --no-gpu: 104 PASS / 0 FAIL / 0 WARN / 11 SKIP
+# av1_pipeline_smoke (h264): 16/16 PASS
+# av1_pipeline_smoke (hevc): 16/16 PASS
+# pytest Accessory/test: 66 PASS
+```
+
+---
+
+## 0.4 L40 仍需完成的项（阻塞：无 Ada 硬件）
+
+| 项 | 内容 | 依赖 |
+|----|------|------|
+| **L40-1/2** | `av1_nvenc` CQ/QP 等质量标定（`-cq:v` / `-qp`） | L40 GPU |
+| **L40-5** | AV1 长视频冒烟 S1~S8（实跑 av1_nvenc） | L40 GPU |
+| **L40-6** | AV1 Level 1 `GetEncodePresetConfig code=12` 根因 | L40 GPU |
+
+T4 无 AV1 NVENC ⇒ 以上均需 L40（Ada / sm89）。T4 侧已完成：
+- H.264/HEVC constqp + vbr_hq 双臂 358s 完整验收（S1~S8 全绿）
+- `--mem-peak-mb` bs=8 自动标定校准完成（9618 MB）
+- B1/B2/B3 三阻塞项修复并 GPU 验证通过
+- ESRGAN `strict_eos` 同构接入（3 处 fail-fast，观察模式兜底）
+
+---
+
+## 0.5 下一步（顺序有依赖，勿打乱）
+
+| 步 | 动作 | 需 GPU | 前置 | 状态 |
+|----|------|--------|------|------|
+| 1 | 修 B3（显存口径：`None` 而非 `0.0` + 标注「不可归属」） | 否 | — | ✅ 已完成 |
+| 2 | 修 B1（`_stream_begin` 保留 `_cached_sps_pps` + hevc 臂负向回归） | 是 | 步 1 | ✅ 已完成 |
+| 3 | 重跑 S8 的 h264 vbr 臂（用 `vbr_hq`）—— 首次真正测到 h264 LA>0 路径 | 是 | 步 2 | ✅ 已完成 |
+| 4 | B2 方案 A（脚本级禁用 `vbr`/`cbr` + 修 `_log_ready`） | 否 | 步 3 | ✅ 已完成 |
+| 5 | 标定 `--mem-peak-mb`（按 T4 bs=8 实测 5479~7694 重新取值） | 否 | — | ✅ 已完成（`_auto_peak_mb` 更新） |
+| 6 | **L40 复跑**：同素材 constqp + vbr_hq + av1 三臂同批，判 S8 原始问题 | 是（L40） | 步 2、4 | ⏸ 阻塞：需 L40 |
+| 7 | L40 `av1_nvenc` CQ/QP 等质量标定（`QUALITY_MAP` / `QUALITY_MAP_QP` 落表） | 是（L40） | 步 6 | ⏸ 阻塞：需 L40 |
 
 ---
 
@@ -433,19 +634,17 @@ python3 Accessory/probe/eqq_pool_fit_table.py \
 
 ## 9.5 下次上机待办（T4 / L40 通用，按优先级）
 
-> **⚠ 2026-10-04 更新：D/E 已在 T4 执行完毕，结论见 §0.1；A/B/C 的原方案已被 §0.1.2 取代。**
-> 背景：§1~§7 已收口，**唯一遗留是 S8**（constqp 后半程 RSS 斜率 +149.5 MB/min，
-> vbr −21.4 通过，两次复现）。定位工具已就绪（见 §0「S8 的无 GPU 准备项」），下机只需跑一条命令读结论。
+> **⚠ 2026-10-06 更新：A~E 已在 T4 执行完毕，结论见 §0.3；F 已完成；G 仅需 L40。**
 
 | # | 待办 | 卡在哪 | 上机怎么做 | 完成判据 |
 |---|---|---|---|---|
-| **A** | ~~S8 定位~~ → **已由 D 项在 T4 完成**（§0.1） | — | — | ✅ T4 上 constqp 两臂（h264 −55.6 / hevc +3.1）均无泄漏；但 **h264 的 vbr 对照臂因 B1 崩溃**，A/B 仅在 hevc 成立 |
-| **B** | ~~显存归属口径复验~~ → **归因已修正为 PID namespace**（§0.1.3 B3） | **结构性不可行**（非「等 L40」） | 容器内 `nvidia-smi --query-compute-apps` 返宿主 pid，`/proc` 下不存在 | ✅ 已定位根因；待做 = 改报 `None` 而非 `0.0`（§0.1.5 步 1） |
-| **C** | ~~S8 判据峰值上界校准~~ → **已实测否决默认 12000** | — | T4 实测两臂峰值 **13578~13877 MB 均超上界但斜率正常** | ✅ 已得出「峰值上界比斜率更易误报」，待按素材/卡型重新取值（§0.1.5 步 5） |
-| **D** | ~~constqp 路径可在 T4 复现~~ → **已执行（2026-10-04）** | — | T4 `h264_nvenc` + `hevc_nvenc` × `constqp,vbr_hq`，358.76s 素材同批 | ✅ **不复现** ⇒ L40 的 +149.5 疑为**窗口伪影**（同数据全程 +149.4、换窗口 −786~+1434）；**S8 原始问题仍需 L40 回答** |
-| **E** | 顺带复核项（非阻塞） | — | ①`av1_vp9_quality_matrix` 退出码口径（§0 遗留的 1 vs 0）；②L40-6（AV1 Level 1 `code=12`）若仍想做 | 有结论或明确记为不做 |
-| **F** | **新增**：修 B1（h264 跨段 SPS/PPS，生产级）+ 重跑 h264 vbr 臂 | 需 GPU | 见 §0.1.5 步 2~3 | 12/12 段通过且 `non-existing PPS` 计数 = 0 |
-| **G** | **新增**：B2 方案 A（脚本级禁用 `vbr`/`cbr` + 修日志矛盾回显） | 无需 GPU（方案 B 才需） | 见 §0.1.5 步 4 | 传 `vbr` 时 Ready 行不再出现 `CONSTQP` |
+| **A** | ~~S8 定位~~ → **已由 D 项在 T4 完成**（§0.1/0.3） | — | — | ✅ T4 上 constqp 两臂（h264 -76.8 / hevc +47.4）均无泄漏；vbr_hq 斜率 +12.6/-0.8 亦落在 +50 内 |
+| **B** | ~~显存归属口径复验~~ → **归因已修正为 PID namespace**（§0.1.3 B3，0.3 验证生效） | **结构性不可行**（容器 PID ns 与驱动侧不通） | 容器内 `nvidia-smi --query-compute-apps` 返宿主 pid，`/proc` 下不存在 | ✅ 已定位根因；显存报 `None`/`NA` 而非 `0.0`，报告显式写「不可归属（pid_ns_mismatch）」 |
+| **C** | ~~S8 判据峰值上界校准~~ → **已按 bs=8 实测标定**（§0.3.3） | — | T4 实测四臂峰值 5479~7694 MB，旧值 12000 已被否决 | ✅ `_auto_peak_mb(8) = 9618 MB`（7694 × 1.25 余量），bs=8 下四臂全不误报 |
+| **D** | ~~constqp 路径可在 T4 复现~~ → **已执行（2026-10-05/06）** | — | T4 `h264/hevc` × `constqp/vbr_hq`，358.76s 素材同批 | ✅ **不复现 L40 的 +149.5** ⇒ L40 疑为窗口伪影（同数据全程斜率随窗口 −786~+1434 跳变）；**S8 原始问题仍需 L40 回答** |
+| **E** | 顺带复核项（非阻塞） | — | ①`av1_vp9_quality_matrix` 退出码口径（§0 遗留 1 vs 0）；②L40-6（AV1 Level 1 `code=12`）若仍想做 | 有结论或明确记为不做 |
+| **F** | **新增**：修 B1 + 重跑 h264 vbr_hq 臂 + B2 方案 A + ESRGAN strict_eos 同构 | 需 GPU | 见 §0.1.5 步 2~4 / 本次 T4 跑批 | ✅ 全完成：T4 h264 vbr_hq 358s rc=0/S1~S8 绿、strict_eos 3 处接入并验证 |
+| **G** | **L40 专项**：`av1_nvenc` CQ/QP 标定 + AV1 冒烟 + Level 1 根因 | 是（L40） | 同素材 constqp + vbr_hq + av1 三臂同批 | ⏸ 阻塞：需 L40 (Ada / sm89) |
 
 **A 的命令**（一条跑完，读 `S8` 的 detail 即可）：
 

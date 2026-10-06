@@ -1476,7 +1476,7 @@ def beh_group_f() -> List[CheckResult]:
 
 
 def beh_group_g() -> List[CheckResult]:
-    """BEH-G：SPS/PPS 原语动态行为（[P2.4c-LADDER]，8 断言，纯字节无 GPU）。"""
+    """BEH-G：SPS/PPS 原语 + RC 档位守卫动态行为（13 断言，纯字节无 GPU）。"""
     out: List[CheckResult] = []
     ph = "C-行为·SPS原语"
     try:
@@ -1542,6 +1542,66 @@ def beh_group_g() -> List[CheckResult]:
     out.append(_beh(ph, "BEH-G8", "后续IDR补挂且muxer单次注入",
                     r8 == sps_pps + SC4 + b"\x65\xff"
                     and len(e7._muxer_writes) == 1))
+    # G9/G10: [FIX-B1-SPS-PPS-SESSION-REUSE] 段边界重置语义 ——
+    #   跨段复用（同一 encoder 实例 = 同一驱动会话）时**必须保留** _cached_sps_pps：
+    #   驱动 repeatSPSPPS bit12 不写 ⇒ 参数集只在会话建立后下发一次，段 2+ 不重吐；
+    #   清缓存与「不重吐」叠加 ⇒ 段 2 起 `non-existing PPS` → muxer pipe broken → rc=1。
+    #   （与 _sps_pps_injected 必须重置成对使用：新段有新 muxer，要重新预注入。）
+    def make_enc_for_begin(cached, frame_idx=1000, slot_count=4):
+        e = make_enc(cached=cached, injected=True)
+        e._strm_active = True
+        e._strm_slot_pending = {}
+        e._frame_idx = frame_idx
+        e._slot_count = slot_count
+        e._prev_stream_h264 = b"\x00prev"
+        e._diag_slot_mismatch = 7
+        e._diag_gfi_regress = 7
+        return e
+
+    e9 = make_enc_for_begin(sps_pps)
+    e9._stream_begin(force=True)
+    out.append(_beh(ph, "BEH-G9", "[FIX-B1] 段边界保留缓存参数集（会话复用）",
+                    e9._cached_sps_pps == sps_pps))
+    out.append(_beh(ph, "BEH-G10", "[FIX-B1] 段边界仍重置注入标志（新 muxer 需重注入）",
+                    e9._sps_pps_injected is False))
+    # G11 负向校验：其它 per-segment 状态**必须**照旧重置（防止为修B1 误放宽）。
+    e11 = make_enc_for_begin(sps_pps)
+    e11._stream_begin(force=True)
+    out.append(_beh(ph, "BEH-G11", "[FIX-B1] 负向：slot 表/诊断计数仍重置",
+                    e11._strm_slot_pending == {} and e11._diag_slot_mismatch == 0
+                    and e11._diag_gfi_regress == 0 and e11._prev_stream_h264 is None))
+    # G12/G13: [FIX-B2-RC-MODE-REJECT] 未实现的 rate_mode 必须**显式 raise**，
+    #   不得静默落 CONSTQP（那会让 LA 门控/FIX-CONSTQP-FRAME-CE/QP 换算三处同时失配）。
+    #   判据用 AST 定位 `x not in (constqp, vbr_hq, qvbr)` 形式的 membership 检查，
+    #   避免匹配注释文案（memory:「新断言必须用 AST/结构切片，禁止匹配注释文案」）。
+    def _sdk_rc_allowlist(src_path: str) -> Optional[set]:
+        """返回 SDK 直通层允许的 rate_mode 集合；未找到该检查则返回 None。"""
+        import ast as _ast
+        try:
+            tree = _ast.parse(Path(src_path).read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        for node in _ast.walk(tree):
+            if not isinstance(node, _ast.Compare) or not isinstance(node.ops[0], _ast.NotIn):
+                continue
+            try:
+                allowed = {ast.literal_eval(c) for c in node.comparators[0].elts}
+            except Exception:
+                continue
+            if "constqp" in allowed and "vbr_hq" in allowed:
+                return allowed
+        return None
+
+    ifr_sdk = PROJECT_ROOT / "external" / "ifrnet_video" / "nvenc_sdk.py"
+    esr_sdk = PROJECT_ROOT / "external" / "realesrgan_video" / "nvenc_sdk.py"
+    ifr_allow = _sdk_rc_allowlist(ifr_sdk)
+    esr_allow = _sdk_rc_allowlist(esr_sdk)
+    out.append(_beh(ph, "BEH-G12", "[FIX-B2] SDK 直通拒绝未实现档位（两侧同构，AST 判定）",
+                    ifr_allow is not None and esr_allow is not None
+                    and ifr_allow == esr_allow))
+    out.append(_beh(ph, "BEH-G13", "[FIX-B2] 负向：拒绝集合恰为 constqp/vbr_hq/qvbr",
+                    ifr_allow == {"constqp", "vbr_hq", "qvbr"}
+                    and esr_allow == {"constqp", "vbr_hq", "qvbr"}))
     return out
 
 
