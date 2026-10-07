@@ -6,6 +6,7 @@
 > **核心问题**：SDK 12.x 仍定义 `NV_ENC_PARAMS_RC_VBR_HQ=32`，但 FFmpeg 9.0 CLI 拒绝 `-rc:v vbr_hq`
 > **关键约束**（来自 T4 方案 §12.3 CR-2 rationale）：`nvenc_sdk` 的 `else` 分支遇未知 rate_mode 静默落到 CONSTQP，且 SDK LA 门控只认 `vbr_hq/qvbr` → **SDK 路径不支持 plain `vbr`**
 > **目标**：确认 SDK 13.0 对 rc_ptr[1]=32 的接受度 + 验证迁移路径 `-rc:v vbr -tune hq -multipass fullres`，决定 P0 范围
+> **最终结论（2026-10-04）**：**方案 A 落地完成**，SDK ctypes 路径保持 `vbr_hq=32`，仅 CLI/harness 映射改为裸 `vbr`；二次校正后 CQ 默认改为**裸命令**，新增显式 opt-in（§11）。
 
 ---
 
@@ -16,8 +17,8 @@
 - FFmpeg 9.0 CLI 层确实拒绝 `-rc:v vbr_hq`（rc=234，`Unable to parse "rc" option value`）；迁移路径 `-rc:v vbr -tune hq -multipass fullres` rc=0（h264/hevc 均通）。
 - nv-codec-headers 13.0/13.1 头文件**已删除** `NV_ENC_PARAMS_RC_VBR_HQ`（`NV_ENC_PARAMS_RC_MODE` 仅剩 CONSTQP/VBR/CBR）——按原判定表应落方案 B。
 - **但驱动运行时仍接受 `rc_ptr[1]=32`**：真实 `NVENCEncoder(rate_mode="vbr_hq")` 初始化成功（apiVersion=0xd0=13.0），且行为验证证明 mode 32 被**真实执行而非静默钳制**（见 §1.6.2）。→ 决定性 `[SDK-test]` 通过 → **方案 A**。
-
-> ⚠️ 头文件删除是开源 `nv-codec-headers` 的裁剪，不等于驱动移除。驱动对 32 做了向后兼容。方案 A 保留内部名 `vbr_hq`（SDK 路径仍用 32），仅把 FFmpeg CLI 映射改为 `vbr + -tune hq -multipass fullres`。
+- **二次校正（2026-10-04，§11）**：CQ 默认改为**裸命令** `-rc:v vbr -cq:v N -b:v 0 -preset p4`，新增显式 opt-in `--nvenc-tune-*`/`--nvenc-multipass-*`，固定 CQ 下 multipass 不升 VMAF，故去掉 `-tune hq -multipass fullres` 追加。
+- **方案 A 落地完成（提交记录 §10）**：仅 CLI token 迁移；SDK ctypes 与内部名 `vbr_hq` 不动。跨仓 handoff：VU 侧 h264/hevc harness/生产/探针需同步迁移裸 `vbr`。
 
 ---
 

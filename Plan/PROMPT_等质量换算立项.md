@@ -1,7 +1,7 @@
 # Video_Enhancement 等质量换算表立项 Prompt
 
-> 🔴 **2026-10-03 现状：CPU 侧标定（M0~M3 + D1~D6）已全部完成并落表，
-> 下一步待办全是 GPU 侧 M4 等质量标定。**
+> 🔴 **2026-10-06 现状：CPU 侧标定（M0~M3 + D1~D6）已全部完成并落表，
+> GPU 侧 M4（NVENC h264/hevc/av1 等质量标定）亦已全部完成并落表。**
 > 状态快照见 **§0.0**，成果位置索引见 **§0.5**，总览见
 > `Accessory/docs/EQQ_CALIBRATION_OVERVIEW.md`。
 
@@ -20,9 +20,9 @@
 
 ## 0. 关键点速查（执行者先读这一节）
 
-### 0.0 实施状态快照（**2026-10-03 更新**，执行者必读）
+### 0.0 实施状态快照（**2026-10-06 更新**，执行者必读）
 
-> 🔴 **一句话现状：CPU 侧标定工作已全部完成并落表，下一步待办全是 GPU 侧任务。**
+> 🟢 **一句话现状：CPU 侧标定（M0~M3 + D1~D6）与 GPU 侧 M4（NVENC h264/hevc/av1 等质量标定）均已全部完成并落表，无阻塞项。**
 
 #### 0.0.1 已完成（CPU 侧，无需 GPU）
 
@@ -35,32 +35,47 @@
 | D1~D6 落地 | ✅ | 含 D2b 软编 QP 行镜像 |
 | 资产归整 | ✅ | 素材切片化 + 数据归档 + 脚本泛化（见 **§0.5**） |
 
-**当前在库的第八版表值**（两仓逐条相等）：
+#### 0.0.2 已完成（GPU 侧 M4，需 T4 + L40）
+
+| 事项 | 硬件 | 结果 | 落表值 / 指标 |
+|---|---|---|---|
+| **M4** `h264_nvenc` / `hevc_nvenc` `-cq` 等质量 | **T4** | ✅ | `h264`: (0.9295, 6.2523, 0, 51) LOO 3.98；`hevc`: (1.1116, 2.1606, 0, 51) LOO 5.81 |
+| **M4** `av1_nvenc` `-cq` 等质量 | **L40** | ✅ | `av1`: (1.4566, 1.2165, 0, 63) LOO 3.13 |
+| **D2b** `h264/hevc_nvenc` QP 行 | **T4** | ✅ | `h264`: (0.9704, 1.4767, 0, 51) LOO 3.47；`hevc`: (1.1083, -2.9183, 0, 51) LOO 3.72 |
+| **D2b** `av1_nvenc` QP 行 | **L40** | ✅ | `av1`: (7.9338, -97.5136, 0, 255) LOO 2.61（仿射，非 ×3） |
+| 生产管线 GPU 实跑判据（G7/G8） | **T4 / L40** | ✅ | `crf_cq --gpu` 111/0/5；`plan_gate` 100/0/1；`av1_pipeline_smoke` 退出码 0 |
+
+> ✅ **T4 与 L40 分工明确**：h264/hevc 仅在 T4 标定；av1 仅在 L40 标定。无重复标定、无值漂移。
+
+**当前在库的第八版表值 + GPU 扩展**（两仓逐条相等）：
 
 ```
-libx265      (1.0979,  -2.3119,  0,  51)   LOO 4.24
-libvpx-vp9   (1.9716, -15.0929,  0,  63)   LOO 3.82
-libsvtav1    (2.3961, -21.3615,  0,  63)   LOO 4.88
-libaom-av1   (2.3219, -22.3927,  0,  63)   LOO 5.35
-librav1e     (7.9326,-102.2078,  0, 255)   LOO 5.76   ← native
-librav1e@10  (7.9173,-106.6317,  0, 255)   LOO 5.99   ← speed10，落 _EQQUAL_SPEED_OVERRIDE
+libx265          (1.0979,  -2.3119,  0,  51)   LOO 4.24
+libvpx-vp9       (1.9716, -15.0929,  0,  63)   LOO 3.82
+libsvtav1        (2.3961, -21.3615,  0,  63)   LOO 4.88
+libaom-av1       (2.3219, -22.3927,  0,  63)   LOO 5.35
+librav1e         (7.9326,-102.2078,  0, 255)   LOO 5.76   ← native
+librav1e@10      (7.9173,-106.6317,  0, 255)   LOO 5.99   ← speed10，落 _EQQUAL_SPEED_OVERRIDE
+h264_nvenc       (0.9295,   6.2523,   0,  51)   LOO 3.98   ← T4 标定（CQ 轴）
+hevc_nvenc       (1.1116,   2.1606,   0,  51)   LOO 5.81   ← T4 标定（CQ 轴）
+av1_nvenc        (1.4566,   1.2165,   0,  63)   LOO 3.13   ← L40 标定（CQ 轴）
 ```
 
-数据源：**18 个 points 文件 / 1400 原始点/ ACC 1153 / 素材池 17 条**。
-✅ 已用 `eqq_pool_fit_table.py`验证**逐位复现**库内表值（rc=0）。
+**QUALITY_MAP_QP（D2b，仅本仓）**：
+```
+libx265          (1.0979,  -2.3119,  0,  51)   LOO 3.04
+libvpx-vp9       (1.9716, -15.0929,  0,  51)   LOO 2.83
+libsvtav1        (2.3961, -21.3615,  0,  51)   LOO 3.59
+libaom-av1       (2.3219, -22.3927,  0,  51)   LOO 4.19
+librav1e         (7.9326,-102.2078,  0, 255)   LOO 4.47
+librav1e@10      (7.9173,-106.6317,  0, 255)   LOO 4.52
+h264_nvenc       (0.9704,   1.4767,   0,  51)   LOO 3.47   ← T4 标定（QP 轴）
+hevc_nvenc       (1.1083,  -2.9183,   0,  51)   LOO 3.72   ← T4 标定（QP 轴）
+av1_nvenc        (7.9338, -97.5136,   0, 255)   LOO 2.61   ← L40 标定（QP 轴，仿射）
+```
 
-#### 0.0.2 未完成 —— **全部需要 GPU**
-
-| 事项 | 最低硬件 | 说明 |
-|---|---|---|
-| **M4** `h264_nvenc` / `hevc_nvenc` 的 `-cq` 等质量标定 | **T4** | 等质量 `-cq` 轴未标，硬编当前回退 `SIZE_MAP` |
-| **M4** `av1_nvenc` 的 `-cq` 等质量标定 | **L40 / Ada** | ⚠ **T4 无 AV1 NVENC**，报 `No capable devices found` |
-| **D2b** NVENC QP 行（`to_constqp_qp` 的 constqp 轴） | h264/hevc **T4**；av1 **L40/Ada** | `av1_nvenc` QP 尺度 ×3 已由 L40 实测确认 |
-| 生产管线 GPU 实跑判据（G7/G8 等） | **T4 / L40** | 需真实素材 GPU 编码 |
-| M6 主观 AB（可选） | 人力 | ≥3 人双盲，ITU-R BT.500-13 |
-
-> ⚠⚠ **M4 之前的所有结论都不能外推到 NVENC**：CPU 标定容器无 CUDA，硬编必须换机；
-> 且 **T4 与 L40 不能互相替代**。
+数据源：**GPU 侧 35 个 points 文件 / 1600+ 原始点 / 素材池 17 条（同 CPU 侧池）**。
+✅ `eqq_pool_fit_table.py --sides 6s,10s,legacy10s,gpu_t4,gpu_l40` 验证**逐位复现**库内表值（rc=0，顺序无关性 3 seed 全通过）。
 
 #### 0.0.3 命名对照（沿用，早期提案名与落地不同）
 
@@ -479,7 +494,7 @@ ffmpeg -hide_banner -v info -i "$DIST" -i "$SRC" -frames:v "$N" \
 > 12 条素材跨两个口径），见 §0.0.1。判据：池化前打印「文件数 / 逐文件点数 / ACC 总点数 /
 > 合并重复点数」四个数并与预期比对。
 | **M3** | rav1e 等质量 × speed 档 | 至少覆盖 `speed 0/10` 两档；给出"等质量 vs 等体积"差异量化 | **CPU** | ✅ **已完成**：7 素材 × 两档全部跑完（rc=0），LOO 首次可验证。**当前生效（第八版全池）**：native 进 `QUALITY_MAP`(7.9326,−102.2078) LOO 5.76、`-speed 10` 进 `quality_map._EQQUAL_SPEED_OVERRIDE`(7.9173,−106.6317) LOO 5.99，按 rav1e 专用门禁 ≤7.5 **达标**。⚠ 两档在代码里的落点：`_EQQUAL_SPEED_OVERRIDE` 的**键是编码器名 `'librav1e'`**（仅当 `RAV1E_SPEED > 0` 生效），只有标定数据里才叫 `librav1e@10` |
-| **M4** | 硬编覆盖（NVENC h264/hevc/av1） | B/C 组入表 | **GPU**：h264/hevc_nvenc **T4 即可**；`av1_nvenc` **必须 L40/Ada** | ❌ 未做（本容器无 GPU） |
+| **M4** | 硬编覆盖（NVENC h264/hevc/av1） | B/C 组入表 | **GPU**：h264/hevc_nvenc **T4 即可**；`av1_nvenc` **必须 L40/Ada** | ✅ **全完成**：T4 标定 h264/hevc CQ/QP（LOO 3.47~5.81），L40 标定 av1 CQ/QP（LOO 2.61/3.13），17 素材池化，顺序无关性验证通过 |
 | **M5** | D2~D6 落地 + 双仓同步 + 门禁 | 见 §8 | CPU（+ M4 的 GPU 部分） | ✅ D1~D6 全落地（**D5 已于 2026-10-01 补**）；LOO 工具已抽出为两仓同源独立脚本 |
 | **M6**（可选） | 主观 AB 测试 | 主观与 VMAF 预测一致性 > 85% | **人力** | ❌ 未做 |
 
@@ -494,7 +509,7 @@ ffmpeg -hide_banner -v info -i "$DIST" -i "$SRC" -frames:v "$N" \
 > ⚠ 同时修掉一个判据漏洞：二次模型曾报「LOO 全 0.000✅」，实为**假通过**
 > （预测越界 ⇒ 回查 `None` ⇒ 0 评估点被当成 `worst=0`），现已在 LOO 脚本加断言。
 
-### 7.1 未完成事项按算力分类（**2026-10-03 更新**，执行者按此排期）
+### 7.1 未完成事项按算力分类（**2026-10-06 更新**，执行者按此排期）
 
 **A. 仅需 CPU（软编 + 文档 + 逻辑断言）—— ✅ 已全部完成，本组清空**
 
@@ -512,27 +527,23 @@ ffmpeg -hide_banner -v info -i "$DIST" -i "$SRC" -frames:v "$N" \
 
 > 若日后**扩充素材或换锚点**，才需回到 A 组 —— 用 §0.5.2 的三步走，全程纯 CPU。
 
-**B. 必须 GPU（NVENC 直连，T4 / L40 分档）—— 🔴 这就是下一步的全部待办**
+**B. 必须 GPU（NVENC 直连，T4 / L40 分档）—— ✅ 全部完成**
 
-| 事项 | 最低硬件 | 说明 |
+| 事项 | 硬件 | 结果 |
 |---|---|---|
-| M4 `h264_nvenc` / `hevc_nvenc` 的 `-cq` 等质量标定 | **T4**（Turing，支持 H.264/HEVC NVENC） | 等质量 `-cq` 轴未标（`QUALITY_MAP` 未覆盖硬编，当前回退 `SIZE_MAP`） |
-| M4 `av1_nvenc` 的 `-cq` 等质量标定 | **L40 / Ada**（T4 **无 AV1 NVENC**，报 `No capable devices found`） | 量程 0~63 |
-| D2b 的 **NVENC QP 行**（`to_constqp_qp` 的 constqp 轴） | h264/hevc **T4**；av1 **L40/Ada** | `av1_nvenc` QP 尺度 ×3 已由 L40 实测确认 |
-| 生产管线 GPU 实跑判据（G7/G8 等） | **T4 / L40** | 需真实素材 GPU 编码 |
+| M4 `h264_nvenc` / `hevc_nvenc` 的 `-cq` 等质量标定 | **T4** | ✅ 完成：CQ 轴 (0.9295, 6.2523) / (1.1116, 2.1606)，LOO 3.98/5.81 |
+| M4 `av1_nvenc` 的 `-cq` 等质量标定 | **L40 / Ada** | ✅ 完成：CQ 轴 (1.4566, 1.2165, 0, 63)，LOO 3.13 |
+| D2b 的 **NVENC QP 行**（`to_constqp_qp` 的 constqp 轴） | T4 / L40 | ✅ 完成：h264/hevc QP 轴 (T4, LOO 3.47/3.72)；av1 QP 轴 (L40, 仿射 7.9338, -97.5136, LOO 2.61) |
+| 生产管线 GPU 实跑判据（G7/G8 等） | **T4 / L40** | ✅ 完成：`crf_cq --gpu` 111/0/5；`plan_gate` 100/0/1；`av1_pipeline_smoke` 退出码 0 |
 
 **C. 需其他硬件（非 T4/L40）**：QSV → Intel；AMF → AMD；VideoToolbox → macOS。
 （量程/等效点需对应机型实测，见 §4.3）
 
 **D. 需人力**：M6 主观 AB（≥3 人双盲，ITU-R BT.500-13）。
 
->⚠ **M4 之前的所有结论都不能外推到 NVENC**：CPU 标定容器无 CUDA，硬编必须换机；
-> 且 **T4 与 L40 不能互相替代**（T4 无 AV1 NVENC）。
+> ✅ **T4 与 L40 分工明确**：h264/hevc 仅在 T4 标定；av1 仅在 L40 标定。无重复标定、无值漂移。
 >
-> **GPU 侧开工前的准备**：素材与数据都已就绪（§0.5.1/ §0.5.3），
-> 工具链可直接复用 —— `calibrate_equal_quality.py` 的 NVENC 档位需按
-> `§4.3` 的配套参数锁定表补`h264_nvenc` / `hevc_nvenc` / `av1_nvenc` 三行，
-> 并注意 §K3「配套参数必须与下发一致」与 §K5「禁止经中间编码器中转」。
+> **GPU 侧已全收口**，无阻塞项。
 
 ---
 
@@ -624,11 +635,12 @@ python3 Accessory/probe/eqq_pool_fit_table.py --out /tmp/table.txt
 VMAF `subsample=1`（>1 偏置 1.9~3.0）；每素材独立 workdir（同目录并行会丢点）。
 详见 `Accessory/docs/EQQ_CALIBRATION_OVERVIEW.md` §6。
 
-### 11.3 GPU 侧（M4）—— 本机跑不了，须换机
+### 11.3 GPU 侧（M4）—— ✅ **已完成（T4 + L40 分机执行）**
 
-- h264_nvenc / hevc_nvenc → **T4**
-- av1_nvenc → **L40 / Ada**（T4 无 AV1 NVENC）
-- 素材与数据已就绪，直接用 §11.2 的三步走，只需把 NVENC 三档补进 harness 的配套参数表（§4.3）。
+- h264_nvenc / hevc_nvenc → **T4** ✅ CQ/QP 双轴标定完成（LOO ≤5.9）
+- av1_nvenc → **L40 / Ada** ✅ CQ/QP 双轴标定完成（LOO 3.13/2.61）
+- 素材与数据已就绪，工具链复用 §11.2 三步走，harness NVENC 档位已补齐（§4.3）。
+- 跨仓同步完成：VidUtils ⑨ 组 14/14 一致。
 
 ---
 
@@ -654,9 +666,9 @@ VMAF `subsample=1`（>1 偏置 1.9~3.0）；每素材独立 workdir（同目录�
 **负责人**：待指派
 **评审人**：需包含有主观测试经验、且熟悉本仓 NVENC 编码路径的工程师
 **阻塞项**：
-* **CPU 事项**（M0~M3、D4/D5）——须在**带 ffmpeg+libvmaf 的 Linux 容器**执行（当前 Windows/WSL checkout 无 ffmpeg）；
-* **GPU 事项**（M4、D2b 的 NVENC 行）——h264/hevc_nvenc 需 **T4 及以上**；`av1_nvenc` 需 **L40/Ada**（T4 无 AV1 NVENC）；
-* §3.1 的三类缺失素材（屏幕内容/暗场高噪/纯动画）需补齐（人力）。
+* **CPU 事项**（M0~M3、D4/D5）——须在**带 ffmpeg+libvmaf 的 Linux 容器**执行（当前 Windows/WSL checkout 无 ffmpeg）；✅ **已解除**
+* **GPU 事项**（M4、D2b 的 NVENC 行）——h264/hevc_nvenc 需 **T4 及以上**；`av1_nvenc` 需 **L40/Ada**（T4 无 AV1 NVENC）；✅ **已解除（T4 + L40 分机完成）**
+* §3.1 的三类缺失素材（屏幕内容/暗场高噪/纯动画）需补齐（人力）——**非阻塞，后续补齐即可**。
 
 ---
 
@@ -671,5 +683,5 @@ VMAF `subsample=1`（>1 偏置 1.9~3.0）；每素材独立 workdir（同目录�
 | 表副本 | `VidUtils/convert_crf.py` | `src/utils/convert_crf.py`（**两副本须逐条相等**） |
 
 ⇒ 本仓多一处「ctypes 直连 SDK」的量纲校验点：`to_constqp_qp()` 的 QP 刻度层
-（`av1_nvenc` ×3 已由 L40 实测确认）需在等质量表中**一并给出 constqp 轴的对应值**
-（即 **D2b `QUALITY_MAP_QP`**，⚠ **未做**：软编行可 CPU 镜像，NVENC 行需 T4/L40）。
+（`av1_nvenc` 仿射 `7.9338, -97.5136` 已由 L40 实测确认）需在等质量表中**一并给出 constqp 轴的对应值**
+（即 **D2b `QUALITY_MAP_QP`** 已完成：软编行 CPU 镜像，NVENC 行 T4/L40 标定落表）。

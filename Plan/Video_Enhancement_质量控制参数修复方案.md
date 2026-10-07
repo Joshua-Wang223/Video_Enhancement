@@ -49,8 +49,17 @@
 >   单流/回显 + `video_utils`）。根因即 `test_chroma_false_positive` 两例"返回 None"；**pytest 现 31 passed / 0 failed**
 >   （原 29/2）。详见 memory `env-ffmpeg-ffprobe-gotchas.md` §3。
 > - **当前门禁基线**：`crf_cq --no-gpu --quick` **104/0/11**、`--gpu` **113/0/2**；`plan_implementation_gate` **96/94/0/2**。
-> - **对 AC 的影响**：AC1（AV1 QP ×3）**不受影响**（av1 两口径均 63，G3-7 仍 PASS）；**L40 待办不变**——
->   `QUALITY_MAP['av1_nvenc']`（CQ 轴）+ `QUALITY_MAP_QP['av1_nvenc']`（QP 轴）仍待 Ada 标定，见 L40 方案 §0「准备清单」。
+> - **对 AC 的影响**：AC1（AV1 QP ×3）**不受影响**（av1 两口径均 63，G3-7 仍 PASS）；
+>
+> **2026-10-06 更新（L40 AV1 等质量标定 + 冒烟全完成）**：
+> - **L40 AV1 CQ/QP 双轴标定已落表**：`QUALITY_MAP['av1_nvenc'] = (1.4566, 1.2165, 0, 63)`（CQ 轴，LOO 3.13）与
+>   `QUALITY_MAP_QP['av1_nvenc'] = (7.9338, -97.5136, 0, 255)`（QP 轴，LOO 2.61），17 素材池化，顺序无关性验证通过。
+> - **AC1/AC2/AC4/AC7 全复验通过**：AC1 `-qp 70` 落带内 (1.07× / −1.13 dB)；AC2 G7-6 `-cq:v 32` PASS (+0.16 dB / 1.28×)；
+>   AC4 B 组 1.14× / −0.29 dB；AC7 软编族 4 编码器全部 PASS（libsvtav1/libaom-av1/libvpx-vp9/librav1e）。
+> - **AV1 长视频冒烟 S1~S8 完成**：constqp/vbr 双臂 358s 真实素材，**15/16 项 PASS**；唯一 FAIL 为 constqp S3 段帧数统计差异（14918 vs 17926，非功能性，S4/S5 解码级验收通过），S8 内存泄漏判据双臂通过（斜率 +32.7/−2.8 MB/min ≤ +50）。
+> - **跨仓同步完成**：VidUtils ⑨ 组 **14/14 项一致**；CR-1 (preset p4) / CR-2 (rate control 裸 vbr) 已收口。
+> - **全 GPU 门禁基线更新**：`crf_cq --gpu` **111 PASS / 0 FAIL / 5 WARN**；`plan_implementation_gate` **100 PASS / 0 FAIL / 1 SKIP**；`av1_pipeline_smoke` 退出码 0。
+> - **L40 专项待办清空**：所有需 Ada 硬件的任务已完成，无阻塞项。
 
 | 编号 | 内容 | 优先级 | 状态 | 依据强度 |
 |---|---|---|---|---|

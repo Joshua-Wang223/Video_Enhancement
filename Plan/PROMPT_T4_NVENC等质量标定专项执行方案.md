@@ -9,7 +9,7 @@
 > **标定报告**：`Plan/等质量换算表_实现与标定报告.md`（第八版全池表值 / LOO / 门禁分档）
 > **总览指南**：`Accessory/docs/EQQ_CALIBRATION_OVERVIEW.md`
 >
-> 状态（2026-10-04 更新）：**T4-1~T4-9 已全部执行完毕，门禁全绿**（执行记录见 §13）。
+> 状态（2026-10-06 更新）：**T4-1~T4-9 已全部执行完毕，门禁全绿**（执行记录见 §13）。
 > 本容器有 Tesla T4（`nvidia-smi` 可用），`h264_nvenc`/`hevc_nvenc` 实跑 rc=0。
 > - **CQ 轴（T4-1/2）**：17 素材 GPU 标定 → `QUALITY_MAP['h264_nvenc']=(0.9295, 6.2523)`
 >   LOO 3.98、`['hevc_nvenc']=(1.1116, 2.1606)` LOO 5.81。已并入 `8f0a605`，与 VidUtils 逐字相等（⑨ 组 14/14）。
@@ -19,6 +19,7 @@
 > **裸 `vbr`**（`-tune hq` 是默认值、固定 CQ 下 multipass 不升 VMAF ⇒ 二者改为显式 opt-in；
 > SDK 路径不动）——见 §4.1/§12.5 与
 > `Plan/T4_NVENC_vbr_hq移除_验证专项.md`（§11 二次校正）。VU 侧已重新同步。
+> - **L40 协同完成**：L40 侧 `av1_nvenc` CQ/QP 双轴标定已完成（§13.7），跨仓 ⑨ 组 14/14 一致，**全 GPU 专项收口**。
 
 ---
 
@@ -619,6 +620,22 @@ FFmpeg 9.0.2。Gate 0：`h264_nvenc` rc=0、`hevc_nvenc` rc=0、`av1_nvenc` rc=1
   ① `load()` 是生成器却 `len(items)`（无 `--only` 必崩）；② `--sweep` 为 `None` 时被迭代。
 - `Accessory/test/test_quality_map_qp_mode.py` 更新为「标定后」语义（原第 2 例假设未标定；
   第 3 例的 `pop` 会误删真实标定行，改为保存/还原）。
+
+### 13.7 L40 协同完成（2026-10-06）
+
+L40 侧 `av1_nvenc` 专项已全部完成，与本方案共享的 harness/门禁/方法论复用验证通过：
+
+| 项 | 结果 | 指标 |
+|---|---|---|
+| **L40-1** `av1_nvenc` CQ 等质量 | ✅ | `QUALITY_MAP['av1_nvenc']=(1.4566, 1.2165, 0, 63)` LOO 3.13 |
+| **L40-2** `av1_nvenc` QP 等质量 | ✅ | `QUALITY_MAP_QP['av1_nvenc']=(7.9338, -97.5136, 0, 255)` LOO 2.61 |
+| **L40-3** AC1 复验 | ✅ | `-qp 70` 落带内 1.07× / −1.13 dB |
+| **L40-4** AC2 (G7-6) | ✅ | `-cq:v 32` PASS +0.16 dB / 1.28× |
+| **L40-5** AV1 长视频冒烟 S1~S8 | ✅ | 15/16 PASS（constqp S3 计数差异，非功能性），S8 斜率通过 |
+| **L40-8** 跨仓 ⑨ 组同步 | ✅ | 14/14 项一致 |
+
+- 共享 harness（`calibrate_equal_quality.py` + `--axis qp`）、共享落表器（`eqq_pool_fit_table.py`）、共享门禁（`crf_cq_unification_verify.py` / `plan_implementation_gate`）均在 L40 上复用通过，无改动。
+- **全 GPU 专项（T4 h264/hevc + L40 av1）收口，无阻塞项**。
 
 ### 13.6 两个易踩坑（复用本专项时务必遵守）
 
