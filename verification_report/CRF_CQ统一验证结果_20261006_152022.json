@@ -1,0 +1,1286 @@
+{
+  "generated_at": "2026-10-06T15:20:22.756484",
+  "project_root": "/workspace/Video_Enhancement",
+  "argv": [
+    "--gpu",
+    "--source",
+    "/workspace/input_videos/word_world_2.mp4",
+    "--bitrate-source",
+    "/workspace/input_videos/new4_raw.mp4",
+    "--report",
+    "/workspace/Video_Enhancement/verification_report/crfcq_gpu_L40_2026-10-06.md"
+  ],
+  "nvenc": true,
+  "vmaf": true,
+  "counts": {
+    "PASS": 111,
+    "FAIL": 0,
+    "WARN": 5,
+    "SKIP": 0
+  },
+  "checks": [
+    {
+      "id": "G0-1",
+      "group": "PREREQ",
+      "title": "Python 版本 ≥ 3.9",
+      "status": "PASS",
+      "detail": "3.11.1",
+      "evidence": []
+    },
+    {
+      "id": "G0-2",
+      "group": "PREREQ",
+      "title": "ffmpeg 可用",
+      "status": "PASS",
+      "detail": "/usr/local/bin/ffmpeg",
+      "evidence": []
+    },
+    {
+      "id": "G0-3",
+      "group": "PREREQ",
+      "title": "ffprobe 可用",
+      "status": "PASS",
+      "detail": "/usr/local/bin/ffprobe",
+      "evidence": []
+    },
+    {
+      "id": "G0-4",
+      "group": "PREREQ",
+      "title": "ffmpeg 编码器清单",
+      "status": "PASS",
+      "detail": "h264_nvenc, hevc_nvenc, libx264",
+      "evidence": [
+        "共 224 个编码器"
+      ]
+    },
+    {
+      "id": "G0-5",
+      "group": "PREREQ",
+      "title": "NVENC 真机可用",
+      "status": "PASS",
+      "detail": "试编 4 帧成功",
+      "evidence": []
+    },
+    {
+      "id": "G0-6",
+      "group": "PREREQ",
+      "title": "quality_map 模块可导入",
+      "status": "PASS",
+      "detail": "src/utils/quality_map.py",
+      "evidence": []
+    },
+    {
+      "id": "G0-7",
+      "group": "PREREQ",
+      "title": "libvmaf 滤镜可用（可选）",
+      "status": "PASS",
+      "detail": "可用，将额外采集 VMAF",
+      "evidence": []
+    },
+    {
+      "id": "G0-8",
+      "group": "PREREQ",
+      "title": "torch 可用（决定 EMIT/GPU 组）",
+      "status": "PASS",
+      "detail": "可用",
+      "evidence": []
+    },
+    {
+      "id": "G1-1",
+      "group": "TABLE",
+      "title": "单一真源：convert_crf.py 提供 SIZE_MAP/QUALITY_MAP",
+      "status": "PASS",
+      "detail": "8 个编码器条目",
+      "evidence": [
+        "quality_map 自 convert_crf.py 导入并 re-export"
+      ]
+    },
+    {
+      "id": "G1-2",
+      "group": "TABLE",
+      "title": "REF=21 等效映射与报告 §4.3 一致",
+      "status": "PASS",
+      "detail": "全部命中",
+      "evidence": [
+        "libx264      -crf    21  ",
+        "libx265      -crf    21  ",
+        "h264_nvenc   -cq:v   26  -b:v 0",
+        "hevc_nvenc   -cq:v   26  -b:v 0",
+        "av1_nvenc    -cq:v   32  -b:v 0",
+        "libsvtav1    -crf    29  ",
+        "libvpx-vp9   -crf    26  -b:v 0",
+        "librav1e     -qp     64  "
+      ]
+    },
+    {
+      "id": "G1-3",
+      "group": "TABLE",
+      "title": "质量-数值单调性（正轴递增 / VideoToolbox 反向）",
+      "status": "PASS",
+      "detail": "单调",
+      "evidence": []
+    },
+    {
+      "id": "G1-4",
+      "group": "TABLE",
+      "title": "基准轴往返一致（to∘from ≈ identity）",
+      "status": "PASS",
+      "detail": "往返误差 ≤0.6",
+      "evidence": []
+    },
+    {
+      "id": "G1-5",
+      "group": "TABLE",
+      "title": "边界值 clamp 到各编码器合法量程",
+      "status": "PASS",
+      "detail": "全部在量程内",
+      "evidence": []
+    },
+    {
+      "id": "G1-6",
+      "group": "TABLE",
+      "title": "未知编码器不猜测（返回 None）",
+      "status": "PASS",
+      "detail": "",
+      "evidence": []
+    },
+    {
+      "id": "G1-7",
+      "group": "TABLE",
+      "title": "literal_range 与 SIZE_MAP 量程一致",
+      "status": "PASS",
+      "detail": "全部一致",
+      "evidence": []
+    },
+    {
+      "id": "G1-8",
+      "group": "TABLE",
+      "title": "VAAPI 族只有 -qp（参数名/能力/量程同步）",
+      "status": "PASS",
+      "detail": "全部一致",
+      "evidence": []
+    },
+    {
+      "id": "G2-1",
+      "group": "RESOLVE",
+      "title": "无输入 → 默认基准 21 换算",
+      "status": "PASS",
+      "detail": "hevc_nvenc {} → -cq:v 26 -b:v 0",
+      "evidence": []
+    },
+    {
+      "id": "G2-2",
+      "group": "RESOLVE",
+      "title": "crf_ref → 按基准轴换算",
+      "status": "PASS",
+      "detail": "hevc_nvenc {'crf_ref': 21} → -cq:v 26 -b:v 0",
+      "evidence": []
+    },
+    {
+      "id": "G2-3",
+      "group": "RESOLVE",
+      "title": "cq_ref → 经 h264_nvenc 归一再换算",
+      "status": "PASS",
+      "detail": "hevc_nvenc {'cq_ref': 21} → -cq:v 20 -b:v 0",
+      "evidence": []
+    },
+    {
+      "id": "G2-4",
+      "group": "RESOLVE",
+      "title": "crf 字面量·同族原样下发",
+      "status": "PASS",
+      "detail": "libx264 {'crf': 18} → -crf 18 ",
+      "evidence": []
+    },
+    {
+      "id": "G2-5",
+      "group": "RESOLVE",
+      "title": "cq 字面量·同族原样下发",
+      "status": "PASS",
+      "detail": "h264_nvenc {'cq': 26} → -cq:v 26 -b:v 0",
+      "evidence": []
+    },
+    {
+      "id": "G2-6",
+      "group": "RESOLVE",
+      "title": "cq 字面量·跨族换算到软编",
+      "status": "PASS",
+      "detail": "libx264 {'cq': 26} → -crf 21 ",
+      "evidence": []
+    },
+    {
+      "id": "G2-7",
+      "group": "RESOLVE",
+      "title": "crf 字面量·跨族换算到硬编",
+      "status": "PASS",
+      "detail": "h264_nvenc {'crf': 21} → -cq:v 26 -b:v 0",
+      "evidence": []
+    },
+    {
+      "id": "G2-8",
+      "group": "RESOLVE",
+      "title": "crf_ref=0 无损意图不套线性映射",
+      "status": "PASS",
+      "detail": "hevc_nvenc {'crf_ref': 0} → -cq:v 0 -b:v 0",
+      "evidence": []
+    },
+    {
+      "id": "G2-9",
+      "group": "RESOLVE",
+      "title": "cq_ref=0 无损意图",
+      "status": "PASS",
+      "detail": "libx265 {'cq_ref': 0} → -crf 0 ",
+      "evidence": []
+    },
+    {
+      "id": "G2-10",
+      "group": "RESOLVE",
+      "title": "librav1e 用 -qp 而非 -crf",
+      "status": "PASS",
+      "detail": "librav1e {} → -qp 64 ",
+      "evidence": []
+    },
+    {
+      "id": "G2-11",
+      "group": "RESOLVE",
+      "title": "libvpx-vp9 必须配 -b:v 0",
+      "status": "PASS",
+      "detail": "libvpx-vp9 {} → -crf 26 -b:v 0",
+      "evidence": []
+    },
+    {
+      "id": "G2-12",
+      "group": "RESOLVE",
+      "title": "未知编码器不抛异常（原样兜底）",
+      "status": "PASS",
+      "detail": "→ -crf 21",
+      "evidence": [
+        "编码器 no_such_codec 无等效表，原样下发"
+      ]
+    },
+    {
+      "id": "G2-13",
+      "group": "RESOLVE",
+      "title": "VAAPI 任意质量输入归一到基准轴后走 -qp",
+      "status": "PASS",
+      "detail": "全部一致",
+      "evidence": []
+    },
+    {
+      "id": "G3-1",
+      "group": "CONSTQP",
+      "title": "h264_nvenc：CQ 26 → QP 22（quality 口径，回基准轴）",
+      "status": "PASS",
+      "detail": "QP=22",
+      "evidence": []
+    },
+    {
+      "id": "G3-2",
+      "group": "CONSTQP",
+      "title": "hevc_nvenc：CQ 28 → QP 23（quality 口径）",
+      "status": "PASS",
+      "detail": "QP=23（quality 口径）",
+      "evidence": []
+    },
+    {
+      "id": "G3-3",
+      "group": "CONSTQP",
+      "title": "未知编码器原样返回（不猜测）",
+      "status": "PASS",
+      "detail": "",
+      "evidence": []
+    },
+    {
+      "id": "G3-4",
+      "group": "CONSTQP",
+      "title": "无损 QP=0 恒等保持 0（size 与 quality 两口径一致）",
+      "status": "PASS",
+      "detail": "quality=0 size=0（均应为 0）",
+      "evidence": [
+        "[FIX-QP-LOSSLESS] to_constqp_qp 对 value==0 短路返回 0"
+      ]
+    },
+    {
+      "id": "G3-9",
+      "group": "CONSTQP",
+      "title": "size 口径对照（非默认，--quality-mode size）：h264 CQ26→QP21 / hevc CQ28→QP20 / av1→63",
+      "status": "PASS",
+      "detail": "h264=21 hevc=20 av1=63（期望 21/20/63）",
+      "evidence": [
+        "[QUALITY-MODE] _QP_MAP_OVERRIDE h264/hevc=(1.0,0.0) ⇒ size=基准轴直取"
+      ]
+    },
+    {
+      "id": "G3-5",
+      "group": "CONSTQP",
+      "title": "CONSTQP_QP_OFFSET 为可调口且当前为 0",
+      "status": "PASS",
+      "detail": "CONSTQP_QP_OFFSET=0",
+      "evidence": []
+    },
+    {
+      "id": "G3-6",
+      "group": "CONSTQP",
+      "title": "CONSTQP 轴与 CQ 轴不混用（值不同）",
+      "status": "PASS",
+      "detail": "cq=26 vs qp=23",
+      "evidence": []
+    },
+    {
+      "id": "G3-7",
+      "group": "CONSTQP",
+      "title": "av1_nvenc：CQ 32 → QP 70（L40 仿射标定，非 ×3）",
+      "status": "PASS",
+      "detail": "QP=70（L40 17 素材仿射标定 QUALITY_MAP_QP['av1_nvenc']）",
+      "evidence": [
+        "[L40-QP-CALIB] QUALITY_MAP_QP['av1_nvenc'] = (7.9338, -97.5136, 0, 255)"
+      ]
+    },
+    {
+      "id": "G3-8",
+      "group": "CONSTQP",
+      "title": "librav1e：QP 80 → 80（QP 原生刻度，恒等透传）",
+      "status": "PASS",
+      "detail": "QP=80",
+      "evidence": []
+    },
+    {
+      "id": "G4-1",
+      "group": "CLI",
+      "title": "新增 IFRNet/ESRGAN 质量参数齐全",
+      "status": "PASS",
+      "detail": "全部存在",
+      "evidence": [
+        "--cq-ifrnet / --crf-ifrnet-ref / --cq-ifrnet-ref",
+        "--cq-esrgan / --crf-esrgan-ref / --cq-esrgan-ref"
+      ]
+    },
+    {
+      "id": "G4-2",
+      "group": "CLI",
+      "title": "IFRNet 字面量与基准互斥 → 拒绝启动",
+      "status": "PASS",
+      "detail": "已拒绝并提示互斥",
+      "evidence": []
+    },
+    {
+      "id": "G4-3",
+      "group": "CLI",
+      "title": "IFRNet 基准轴量程 0~51 → 60 拒绝",
+      "status": "PASS",
+      "detail": "已拒绝",
+      "evidence": []
+    },
+    {
+      "id": "G4-4",
+      "group": "CLI",
+      "title": "--cq-ifrnet-ref 不被默认 crf_ref 吞掉",
+      "status": "PASS",
+      "detail": "cq_ref=26 crf_ref=None",
+      "evidence": []
+    },
+    {
+      "id": "G4-5",
+      "group": "CLI",
+      "title": "--cq-ifrnet 清掉配置默认基准",
+      "status": "PASS",
+      "detail": "cq=26 crf_ref=None cq_ref=None",
+      "evidence": []
+    },
+    {
+      "id": "G4-6",
+      "group": "CLI",
+      "title": "默认配置放行且基准 crf_ref=21",
+      "status": "PASS",
+      "detail": "ifrnet=21 esrgan=21",
+      "evidence": []
+    },
+    {
+      "id": "G4-7",
+      "group": "CLI",
+      "title": "ESRGAN 字面量与基准互斥（dest 名正确）",
+      "status": "PASS",
+      "detail": "已拒绝",
+      "evidence": []
+    },
+    {
+      "id": "G4-8",
+      "group": "CLI",
+      "title": "ESRGAN 基准轴量程 0~51 → 60 拒绝",
+      "status": "PASS",
+      "detail": "",
+      "evidence": []
+    },
+    {
+      "id": "G4-9",
+      "group": "CLI",
+      "title": "--cq-esrgan-ref 不被默认 crf_ref 吞掉",
+      "status": "PASS",
+      "detail": "cq_ref=26 crf_ref=None",
+      "evidence": []
+    },
+    {
+      "id": "G4-10",
+      "group": "CLI",
+      "title": "字面量 --crf-ifrnet 51 放行",
+      "status": "PASS",
+      "detail": "",
+      "evidence": []
+    },
+    {
+      "id": "G4-12",
+      "group": "CLI",
+      "title": "--crf-ifrnet 63（libx264 量程 0~51）拒绝且提示明确",
+      "status": "PASS",
+      "detail": "· --crf-ifrnet 超出编码器 libx264 的可用质量范围 0~51（当前 63）",
+      "evidence": [
+        "· --crf-ifrnet 超出编码器 libx264 的可用质量范围 0~51（当前 63）"
+      ]
+    },
+    {
+      "id": "G4-13",
+      "group": "CLI",
+      "title": "字面量边界严格：51 放行 / 52 拒绝（无静默截断）",
+      "status": "PASS",
+      "detail": "51→ACCEPT / 52→REJECT",
+      "evidence": [
+        "· --crf-ifrnet 超出编码器 libx264 的可用质量范围 0~51（当前 52）"
+      ]
+    },
+    {
+      "id": "G4-14",
+      "group": "CLI",
+      "title": "量程随编码器而定：libvpx-vp9 接受 63 / 拒绝 64",
+      "status": "PASS",
+      "detail": "63→ACCEPT / 64→REJECT",
+      "evidence": [
+        "· --crf-ifrnet 超出编码器 libvpx-vp9 的可用质量范围 0~63（当前 64）"
+      ]
+    },
+    {
+      "id": "G4-15",
+      "group": "CLI",
+      "title": "CQ 轴量程：52 拒绝（0~51）/ QSV 0 拒绝（1~51）",
+      "status": "PASS",
+      "detail": "· --cq-ifrnet 超出编码器 h264_qsv 的可用质量范围 1~51（当前 0）",
+      "evidence": [
+        "· --cq-ifrnet 超出 h264_nvenc CQ 量纲的可用质量范围 0~51（当前 52）：生效编码器 libx264 不使用该参数，值会按等效表换算，故须落在源轴量程内",
+        "· --cq-ifrnet 超出编码器 h264_qsv 的可用质量范围 1~51（当前 0）"
+      ]
+    },
+    {
+      "id": "G4-16",
+      "group": "CLI",
+      "title": "ESRGan 侧同规则：--crf-esrgan 63 拒绝",
+      "status": "PASS",
+      "detail": "· --crf-esrgan 超出编码器 libx264 的可用质量范围 0~51（当前 63）",
+      "evidence": []
+    },
+    {
+      "id": "G4-17",
+      "group": "CLI",
+      "title": "配置来源超限量（models.ifrnet.crf=99）同样拒绝",
+      "status": "PASS",
+      "detail": "已拒绝",
+      "evidence": []
+    },
+    {
+      "id": "G4-11",
+      "group": "CLI",
+      "title": "摘要 _quality_label 四态渲染正确",
+      "status": "PASS",
+      "detail": "四种输入均正确",
+      "evidence": []
+    },
+    {
+      "id": "G5-1",
+      "group": "STATIC",
+      "title": "quality_map.py 对外契约完整",
+      "status": "PASS",
+      "detail": "全部存在",
+      "evidence": []
+    },
+    {
+      "id": "G5-11",
+      "group": "STATIC",
+      "title": "主入口接线 literal_range（[P0-FIX-QUALITY-RANGE]）",
+      "status": "PASS",
+      "detail": "已导入并在校验循环中调用",
+      "evidence": []
+    },
+    {
+      "id": "G5-12",
+      "group": "STATIC",
+      "title": "preset 能力为白名单且成员正确（[FIX-PRESET-WHITELIST]）",
+      "status": "PASS",
+      "detail": "白名单正确",
+      "evidence": [
+        "_PRESET_CODECS=['av1_nvenc', 'h264_nvenc', 'hevc_nvenc', 'libx264', 'libx265']"
+      ]
+    },
+    {
+      "id": "G5-2",
+      "group": "STATIC",
+      "title": "IFRNet 后端接入统一换算",
+      "status": "PASS",
+      "detail": "全部命中",
+      "evidence": []
+    },
+    {
+      "id": "G5-3",
+      "group": "STATIC",
+      "title": "IFRNet FFmpeg 下发路径正确",
+      "status": "PASS",
+      "detail": "全部命中",
+      "evidence": []
+    },
+    {
+      "id": "G5-4",
+      "group": "STATIC",
+      "title": "Real-ESRGAN 后端接入统一换算",
+      "status": "PASS",
+      "detail": "全部命中",
+      "evidence": []
+    },
+    {
+      "id": "G5-5",
+      "group": "STATIC",
+      "title": "Real-ESRGAN FFmpeg 下发路径正确",
+      "status": "PASS",
+      "detail": "全部命中",
+      "evidence": []
+    },
+    {
+      "id": "G5-6",
+      "group": "STATIC",
+      "title": "avgBitRate 天花板分辨率自适应（两侧同公式同常量）",
+      "status": "PASS",
+      "detail": "两侧一致且无旧式残留",
+      "evidence": []
+    },
+    {
+      "id": "G5-7",
+      "group": "STATIC",
+      "title": "JSON 默认 crf_ref/rate_mode/LA 两侧一致",
+      "status": "PASS",
+      "detail": "ifrnet=(21, 'vbr_hq', 8) esrgan=(21, 'vbr_hq', 8)",
+      "evidence": []
+    },
+    {
+      "id": "G5-8",
+      "group": "STATIC",
+      "title": "config_manager 内置默认与 JSON 一致",
+      "status": "PASS",
+      "detail": "",
+      "evidence": []
+    },
+    {
+      "id": "G5-9",
+      "group": "STATIC",
+      "title": "全部改动 Python 文件编译通过",
+      "status": "PASS",
+      "detail": "OK",
+      "evidence": []
+    },
+    {
+      "id": "G5-10",
+      "group": "STATIC",
+      "title": "两侧后端 NVENC RC 映射表语义一致",
+      "status": "PASS",
+      "detail": "ifrnet=[('cbr', 'cbr'), ('constqp', 'constqp'), ('qvbr', 'vbr'), ('vbr', 'vbr'), ('vbr_hq', 'vbr')] | esrgan=[('cbr', 'cbr'), ('constqp', 'constqp'), ('qvbr', 'vbr'), ('vbr', 'vbr'), ('vbr_hq', 'vbr')]",
+      "evidence": []
+    },
+    {
+      "id": "G6-1",
+      "group": "EMIT",
+      "title": "IFRNet h264_nvenc rc=vbr_hq → 命令形状",
+      "status": "PASS",
+      "detail": "命令形状正确",
+      "evidence": [
+        "ffmpeg -y -f rawvideo -vcodec rawvideo -pix_fmt rgb24 -s 320x240 -r 30.000000 -i pipe:0 -vcodec h264_nvenc -preset p4 -rc:v vbr -cq:v 26 -b:v 0 -bf 0 -rc-lookahead 8 -surfaces 32 -pix_fmt yuv420p -loglevel error /tmp/ve_"
+      ]
+    },
+    {
+      "id": "G6-2",
+      "group": "EMIT",
+      "title": "IFRNet h264_nvenc rc=constqp → 命令形状",
+      "status": "PASS",
+      "detail": "命令形状正确",
+      "evidence": [
+        "ffmpeg -y -f rawvideo -vcodec rawvideo -pix_fmt rgb24 -s 320x240 -r 30.000000 -i pipe:0 -vcodec h264_nvenc -preset p4 -rc:v constqp -qp 22 -bf 0 -surfaces 32 -pix_fmt yuv420p -loglevel error /tmp/ve_crfcq__gebdv2f/emit.m"
+      ]
+    },
+    {
+      "id": "G6-3",
+      "group": "EMIT",
+      "title": "IFRNet libx264 rc=vbr_hq → 命令形状",
+      "status": "PASS",
+      "detail": "命令形状正确",
+      "evidence": [
+        "ffmpeg -y -threads 8 -f rawvideo -vcodec rawvideo -pix_fmt rgb24 -s 320x240 -r 30.000000 -i pipe:0 -vcodec libx264 -preset medium -crf 21 -x264-params threads=16:slices=16 -pix_fmt yuv420p -loglevel error /tmp/ve_crfcq__"
+      ]
+    },
+    {
+      "id": "G6-4",
+      "group": "EMIT",
+      "title": "ESRGAN h264_nvenc rc=vbr_hq → 命令形状",
+      "status": "PASS",
+      "detail": "命令形状正确",
+      "evidence": [
+        "ffmpeg -y -f rawvideo -pix_fmt rgb24 -s 320x240 -r 30.0 -i pipe: -vcodec h264_nvenc -pix_fmt yuv420p -preset p4 -rc:v vbr -cq:v 26 -b:v 0 -bf 0 -rc-lookahead 8 -surfaces 32 -an -loglevel error /tmp/ve_crfcq__gebdv2f/emit"
+      ]
+    },
+    {
+      "id": "G6-5",
+      "group": "EMIT",
+      "title": "ESRGAN h264_nvenc rc=constqp → 命令形状",
+      "status": "PASS",
+      "detail": "命令形状正确",
+      "evidence": [
+        "ffmpeg -y -f rawvideo -pix_fmt rgb24 -s 320x240 -r 30.0 -i pipe: -vcodec h264_nvenc -pix_fmt yuv420p -preset p4 -rc:v constqp -qp 22 -bf 0 -surfaces 32 -an -loglevel error /tmp/ve_crfcq__gebdv2f/emit.tmp_novid.mp4"
+      ]
+    },
+    {
+      "id": "G6-6",
+      "group": "EMIT",
+      "title": "ESRGAN libx265 rc=vbr_hq → 命令形状",
+      "status": "PASS",
+      "detail": "命令形状正确",
+      "evidence": [
+        "ffmpeg -y -threads 8 -f rawvideo -pix_fmt rgb24 -s 320x240 -r 30.0 -i pipe: -vcodec libx265 -pix_fmt yuv420p -preset medium -crf 24 -x265-params pools=16:frame-threads=4 -an -loglevel error /tmp/ve_crfcq__gebdv2f/emit.tm"
+      ]
+    },
+    {
+      "id": "G6-7",
+      "group": "EMIT",
+      "title": "IFRNet av1_nvenc rc=constqp → 命令形状",
+      "status": "PASS",
+      "detail": "命令形状正确",
+      "evidence": [
+        "ffmpeg -y -f rawvideo -vcodec rawvideo -pix_fmt rgb24 -s 320x240 -r 30.000000 -i pipe:0 -vcodec av1_nvenc -preset p4 -rc:v constqp -qp 70 -bf 0 -surfaces 32 -pix_fmt yuv420p -loglevel error /tmp/ve_crfcq__gebdv2f/emit.mp"
+      ]
+    },
+    {
+      "id": "G6-8",
+      "group": "EMIT",
+      "title": "ESRGAN av1_nvenc rc=constqp → 命令形状",
+      "status": "PASS",
+      "detail": "命令形状正确",
+      "evidence": [
+        "ffmpeg -y -f rawvideo -pix_fmt rgb24 -s 320x240 -r 30.0 -i pipe: -vcodec av1_nvenc -pix_fmt yuv420p -preset p4 -rc:v constqp -qp 70 -bf 0 -surfaces 32 -an -loglevel error /tmp/ve_crfcq__gebdv2f/emit.tmp_novid.mp4"
+      ]
+    },
+    {
+      "id": "G6-9",
+      "group": "EMIT",
+      "title": "IFRNet av1_nvenc rc=vbr_hq → 命令形状",
+      "status": "PASS",
+      "detail": "命令形状正确",
+      "evidence": [
+        "ffmpeg -y -f rawvideo -vcodec rawvideo -pix_fmt rgb24 -s 320x240 -r 30.000000 -i pipe:0 -vcodec av1_nvenc -preset p4 -rc:v vbr -cq:v 32 -b:v 0 -bf 0 -rc-lookahead 8 -surfaces 32 -pix_fmt yuv420p -loglevel error /tmp/ve_c"
+      ]
+    },
+    {
+      "id": "G6-10",
+      "group": "EMIT",
+      "title": "ESRGAN av1_nvenc rc=vbr_hq → 命令形状",
+      "status": "PASS",
+      "detail": "命令形状正确",
+      "evidence": [
+        "ffmpeg -y -f rawvideo -pix_fmt rgb24 -s 320x240 -r 30.0 -i pipe: -vcodec av1_nvenc -pix_fmt yuv420p -preset p4 -rc:v vbr -cq:v 32 -b:v 0 -bf 0 -rc-lookahead 8 -surfaces 32 -an -loglevel error /tmp/ve_crfcq__gebdv2f/emit."
+      ]
+    },
+    {
+      "id": "G6-11",
+      "group": "EMIT",
+      "title": "IFRNet h264_nvenc rc=vbr_hq → 命令形状",
+      "status": "PASS",
+      "detail": "命令形状正确",
+      "evidence": [
+        "ffmpeg -y -f rawvideo -vcodec rawvideo -pix_fmt rgb24 -s 320x240 -r 30.000000 -i pipe:0 -vcodec h264_nvenc -preset p4 -rc:v vbr -tune ll -multipass qres -cq:v 26 -b:v 0 -bf 0 -rc-lookahead 8 -surfaces 32 -pix_fmt yuv420p"
+      ]
+    },
+    {
+      "id": "G6-12",
+      "group": "EMIT",
+      "title": "IFRNet h264_nvenc rc=vbr_hq → 命令形状",
+      "status": "PASS",
+      "detail": "命令形状正确",
+      "evidence": [
+        "ffmpeg -y -f rawvideo -vcodec rawvideo -pix_fmt rgb24 -s 320x240 -r 30.000000 -i pipe:0 -vcodec h264_nvenc -preset p4 -rc:v vbr -multipass disabled -cq:v 26 -b:v 0 -bf 0 -rc-lookahead 8 -surfaces 32 -pix_fmt yuv420p -log"
+      ]
+    },
+    {
+      "id": "G6-13",
+      "group": "EMIT",
+      "title": "IFRNet h264_nvenc rc=cbr → 命令形状",
+      "status": "PASS",
+      "detail": "命令形状正确",
+      "evidence": [
+        "ffmpeg -y -f rawvideo -vcodec rawvideo -pix_fmt rgb24 -s 320x240 -r 30.000000 -i pipe:0 -vcodec h264_nvenc -preset p4 -rc:v cbr -multipass fullres -cq:v 26 -b:v 0 -bf 0 -rc-lookahead 8 -surfaces 32 -pix_fmt yuv420p -logl"
+      ]
+    },
+    {
+      "id": "G6-14",
+      "group": "EMIT",
+      "title": "IFRNet h264_nvenc rc=vbr_hq → 命令形状",
+      "status": "PASS",
+      "detail": "命令形状正确",
+      "evidence": [
+        "ffmpeg -y -f rawvideo -vcodec rawvideo -pix_fmt rgb24 -s 320x240 -r 30.000000 -i pipe:0 -vcodec h264_nvenc -preset p4 -rc:v vbr -multipass fullres -b:v 8M -bf 0 -rc-lookahead 8 -surfaces 32 -pix_fmt yuv420p -loglevel err"
+      ]
+    },
+    {
+      "id": "G6-15",
+      "group": "EMIT",
+      "title": "IFRNet hevc_nvenc rc=vbr_hq → 命令形状",
+      "status": "PASS",
+      "detail": "命令形状正确",
+      "evidence": [
+        "ffmpeg -y -f rawvideo -vcodec rawvideo -pix_fmt rgb24 -s 320x240 -r 30.000000 -i pipe:0 -vcodec hevc_nvenc -preset p4 -rc:v vbr -tune uhq -cq:v 26 -b:v 0 -bf 0 -rc-lookahead 8 -surfaces 32 -pix_fmt yuv420p -loglevel erro"
+      ]
+    },
+    {
+      "id": "G6-16",
+      "group": "EMIT",
+      "title": "IFRNet h264_nvenc rc=vbr_hq → 命令形状",
+      "status": "PASS",
+      "detail": "命令形状正确",
+      "evidence": [
+        "ffmpeg -y -f rawvideo -vcodec rawvideo -pix_fmt rgb24 -s 320x240 -r 30.000000 -i pipe:0 -vcodec h264_nvenc -preset p4 -rc:v vbr -cq:v 26 -b:v 0 -bf 0 -rc-lookahead 8 -surfaces 32 -pix_fmt yuv420p -loglevel error /tmp/ve_"
+      ]
+    },
+    {
+      "id": "G6-17",
+      "group": "EMIT",
+      "title": "IFRNet h264_nvenc rc=constqp → 命令形状",
+      "status": "PASS",
+      "detail": "命令形状正确",
+      "evidence": [
+        "ffmpeg -y -f rawvideo -vcodec rawvideo -pix_fmt rgb24 -s 320x240 -r 30.000000 -i pipe:0 -vcodec h264_nvenc -preset p4 -rc:v constqp -qp 22 -tune ll -bf 0 -surfaces 32 -pix_fmt yuv420p -loglevel error /tmp/ve_crfcq__gebdv"
+      ]
+    },
+    {
+      "id": "G6-18",
+      "group": "EMIT",
+      "title": "IFRNet h264_nvenc rc=vbr_hq → 命令形状",
+      "status": "PASS",
+      "detail": "命令形状正确",
+      "evidence": [
+        "ffmpeg -y -f rawvideo -vcodec rawvideo -pix_fmt rgb24 -s 320x240 -r 30.000000 -i pipe:0 -vcodec h264_nvenc -preset p4 -rc constqp -qp 0 -b:v 0 -bf 0 -surfaces 32 -delay 0 -pix_fmt yuv420p -loglevel error /tmp/ve_crfcq__g"
+      ]
+    },
+    {
+      "id": "G6-19",
+      "group": "EMIT",
+      "title": "ESRGAN h264_nvenc rc=vbr_hq → 命令形状",
+      "status": "PASS",
+      "detail": "命令形状正确",
+      "evidence": [
+        "ffmpeg -y -f rawvideo -pix_fmt rgb24 -s 320x240 -r 30.0 -i pipe: -vcodec h264_nvenc -pix_fmt yuv420p -preset p4 -rc constqp -qp 0 -b:v 0 -bf 0 -surfaces 32 -delay 0 -an -loglevel error /tmp/ve_crfcq__gebdv2f/emit.tmp_nov"
+      ]
+    },
+    {
+      "id": "G7-1",
+      "group": "QUALITY",
+      "title": "h264_nvenc 基准21→-cq:v 26 对齐 libx264 crf21",
+      "status": "WARN",
+      "detail": "ΔPSNR(有符号)=-1.96 dB，码率比=1.06×（朴素 1.74×）；质量略松，码率达标（软编 46.58 dB / 1425 kbps）",
+      "evidence": [
+        "换算值 -cq:v 26：PSNR 44.62 SSIM 0.9854 码率 1512 kbps",
+        "朴素值 -cq:v 21：PSNR 48.05 SSIM 0.9920 码率 2483 kbps（1.74×，仅用于对照）",
+        "换算说明：默认基准 CRF 21"
+      ]
+    },
+    {
+      "id": "G7-2",
+      "group": "QUALITY",
+      "title": "hevc_nvenc 基准21→-cq:v 26 对齐 libx264 crf21",
+      "status": "PASS",
+      "detail": "ΔPSNR(有符号)=-1.40 dB，码率比=1.03×（朴素 1.71×）；质量达标，码率达标（软编 46.58 dB / 1425 kbps）",
+      "evidence": [
+        "换算值 -cq:v 26：PSNR 45.19 SSIM 0.9868 码率 1467 kbps",
+        "朴素值 -cq:v 21：PSNR 48.30 SSIM 0.9924 码率 2438 kbps（1.71×，仅用于对照）",
+        "换算说明：默认基准 CRF 21"
+      ]
+    },
+    {
+      "id": "G7-6",
+      "group": "QUALITY",
+      "title": "av1_nvenc 基准21→-cq:v 32 对齐 libx264 crf21",
+      "status": "WARN",
+      "detail": "ΔPSNR(有符号)=-2.14 dB，码率比=0.87×（朴素 2.05×）；质量略松，码率达标（软编 46.58 dB / 1425 kbps）",
+      "evidence": [
+        "换算值 -cq:v 32：PSNR 44.44 SSIM 0.9845 码率 1241 kbps",
+        "朴素值 -cq:v 21：PSNR 49.33 SSIM 0.9934 码率 2924 kbps（2.05×，仅用于对照）",
+        "换算说明：默认基准 CRF 21"
+      ]
+    },
+    {
+      "id": "G7-7",
+      "group": "QUALITY",
+      "title": "libsvtav1 基准21→-crf 29 对齐 libx264 crf21",
+      "status": "WARN",
+      "detail": "ΔPSNR(有符号)=-1.64 dB，码率比=0.84×（朴素 1.23×）；质量略松，码率达标（软编 46.58 dB / 1425 kbps）",
+      "evidence": [
+        "换算值 -crf 29：PSNR 44.94 SSIM 0.9872 码率 1203 kbps",
+        "朴素值 -crf 21：PSNR 46.81 SSIM 0.9905 码率 1759 kbps（1.23×，仅用于对照）",
+        "换算说明：默认基准 CRF 21"
+      ]
+    },
+    {
+      "id": "G7-3",
+      "group": "QUALITY",
+      "title": "CONSTQP 轴：-qp 22 对齐 libx264 crf21",
+      "status": "PASS",
+      "detail": "ΔPSNR(有符号)=-0.50 dB，码率比=1.32×（朴素 1.74×）；质量达标，码率达标",
+      "evidence": [
+        "-rc:v constqp -qp 22：PSNR 46.09 SSIM 0.9886 码率 1883 kbps（1.32×）"
+      ]
+    },
+    {
+      "id": "G7-4",
+      "group": "QUALITY",
+      "title": "换算后码率与软编同量级（≤2.5×）",
+      "status": "PASS",
+      "detail": "量级一致",
+      "evidence": [
+        "libx264 crf21 码率 1425 kbps"
+      ]
+    },
+    {
+      "id": "G7-5",
+      "group": "QUALITY",
+      "title": "VMAF 对齐检查（如可用）",
+      "status": "PASS",
+      "detail": "最大偏差 0.90（软编基准 VMAF 96.04）",
+      "evidence": [
+        "h264_nvenc q26: VMAF 95.31（Δ 0.73）",
+        "hevc_nvenc q26: VMAF 95.14（Δ 0.90）",
+        "av1_nvenc q32: VMAF 95.20（Δ 0.84）",
+        "libsvtav1 q29: VMAF 95.70（Δ 0.34）",
+        "h264_nvenc constqp qp22: VMAF 95.78（Δ 0.26，仅参考）"
+      ]
+    },
+    {
+      "id": "G7-8",
+      "group": "QUALITY",
+      "title": "合成 vs 真实素材双跑（constqp 轴）",
+      "status": "PASS",
+      "detail": "合成素材确呈现更过配（与 G7-3 注释一致）",
+      "evidence": [
+        "真实素材：ΔPSNR -0.50 dB / 码率比 1.32×",
+        "合成素材：ΔPSNR 4.52 dB / 码率比 1.44×",
+        "合成素材 640x360 90 帧；判据：合成 ΔPSNR 更高且码率比不低 ⇒ 过配边界成立",
+        "本项为诊断项，仅用于把 G7-3 的内容相关注释升级为实测数据"
+      ]
+    },
+    {
+      "id": "G8-1",
+      "group": "BITRATE",
+      "title": "钳制公式分档（镜像公式）",
+      "status": "PASS",
+      "detail": "≤1080p: [5M, 50M]，>1080p: 上限 100M",
+      "evidence": [
+        "360p30    raw=   20.7M → clamp= 20.7M",
+        "480p30    raw=   36.9M → clamp= 36.9M",
+        "720p30    raw=   82.9M → clamp= 50.0M  【触发上限】",
+        "720p60    raw=  165.9M → clamp= 50.0M  【触发上限】",
+        "1080p30   raw=  186.6M → clamp= 50.0M  【触发上限】",
+        "1080p60   raw=  373.2M → clamp= 50.0M  【触发上限】",
+        "1440p30   raw=  331.8M → clamp=100.0M  【触发上限】",
+        "1440p60   raw=  663.6M → clamp=100.0M  【触发上限】",
+        "2160p30   raw=  746.5M → clamp=100.0M  【触发上限】",
+        "2160p60   raw= 1493.0M → clamp=100.0M  【触发上限】"
+      ]
+    },
+    {
+      "id": "G8-2",
+      "group": "BITRATE",
+      "title": "nvenc_sdk 真实钳制实现与公式一致",
+      "status": "PASS",
+      "detail": "一致",
+      "evidence": []
+    },
+    {
+      "id": "G8-3",
+      "group": "BITRATE",
+      "title": "低需求档位（≈480p30 及以下）天花板不生效",
+      "status": "PASS",
+      "detail": "raw ≤ 上限，钳制不改变取值",
+      "evidence": []
+    },
+    {
+      "id": "G8-3b",
+      "group": "BITRATE",
+      "title": "天花板分档触发边界（≤1080p 50M / >1080p 100M）",
+      "status": "PASS",
+      "detail": "分辨率自适应后，高分辨率获得更大头部空间，故 G8-4 的实测仍必要",
+      "evidence": [
+        "720p: 上限 50M，触发阈值 fps > 18.1",
+        "1080p: 上限 50M，触发阈值 fps > 8.0",
+        "1440p: 上限 100M，触发阈值 fps > 9.0",
+        "2160p: 上限 100M，触发阈值 fps > 4.0"
+      ]
+    },
+    {
+      "id": "G8-6",
+      "group": "BITRATE",
+      "title": "证据：原样下发 raw 的 maxrate 为驱动非法值",
+      "status": "PASS",
+      "detail": "raw=1493.0M → maxrate=2986.0M 时 NVENC 拒绝（[vost#0:0/h264_nvenc @ 0x55dcdd4ff640] Error applying encoder options: Numerical result out of range），证实旧 G8-4 控制臂为脚本缺陷",
+      "evidence": [
+        "素材 3840x2160@60",
+        "stderr: [vost#0:0/h264_nvenc @ 0x55dcdd4ff640] Error applying encoder options: Numerical result out of range"
+      ]
+    },
+    {
+      "id": "G8-4",
+      "group": "BITRATE",
+      "title": "高熵内容：钳制前后画质对比",
+      "status": "PASS",
+      "detail": "自然码率 8409 kbps < 上限 50000 kbps，天花板未生效，无质量影响",
+      "evidence": [
+        "素材 1920x1080@30  raw 估算 186.6M → 钳制 50.0M（分档上限 50M）",
+        "未钳制（纯 CQ 自然码率）：8409 kbps，PSNR 24.54，SSIM 0.8086，体积 19.7MB",
+        "已钳制：实际码率 8414 kbps，PSNR 24.54，SSIM 0.8085，体积 19.7MB",
+        "ΔPSNR=0.00 dB，ΔSSIM=-0.0001；binds=False，clamp_effective=False",
+        "编码耗时：未钳制 1.6s / 已钳制 2.4s"
+      ]
+    },
+    {
+      "id": "G8-5",
+      "group": "BITRATE",
+      "title": "钳制保留速度天花板语义（不拖慢编码）",
+      "status": "WARN",
+      "detail": "耗时比 钳制/纯CQ = 1.56×（≤1.5× 视为无拖慢）",
+      "evidence": [
+        "纯CQ 1.6s，已钳制 2.4s"
+      ]
+    },
+    {
+      "id": "G8-4H",
+      "group": "BITRATE",
+      "title": ">1080p 高档天花板绑定验证",
+      "status": "WARN",
+      "detail": "自然码率 140396 > 上限 100000 kbps；钳制实际压低码率，ΔPSNR=-0.11 dB",
+      "evidence": [
+        "素材 3840x2160@60（60 帧），cap=100M",
+        "纯 CQ 自然码率 140396 kbps（raw 估算 1493.0M）",
+        "钳制 avg=100M 后实际 125633 kbps，ΔPSNR=-0.11 dB，ΔSSIM=-0.0036"
+      ]
+    },
+    {
+      "id": "G9-1",
+      "group": "SCOPE",
+      "title": "P0-③a 合并环节已 codec-aware（原无条件 -crf 已消除）",
+      "status": "PASS",
+      "detail": "硬编走 -cq:v/-qp，不再被静默丢弃",
+      "evidence": []
+    },
+    {
+      "id": "G9-2",
+      "group": "SCOPE",
+      "title": "P1-③b 质量倒挂已消除（默认 copy 且基准统一 21）",
+      "status": "PASS",
+      "detail": "output.use_copy=True / output.crf_ref=21 / models.crf_ref=21,21",
+      "evidence": []
+    },
+    {
+      "id": "G9-3",
+      "group": "SCOPE",
+      "title": "P1-① 归一化去 crf=18 硬编码且建立 --split-* 入口",
+      "status": "PASS",
+      "detail": "默认基准 21 + --split-codec/--split-crf-ref",
+      "evidence": []
+    },
+    {
+      "id": "G9-4",
+      "group": "SCOPE",
+      "title": "环节③ --output-crf-ref/--output-cq-ref/--output-cq 已实现",
+      "status": "PASS",
+      "detail": "已实现",
+      "evidence": []
+    },
+    {
+      "id": "G9-5",
+      "group": "SCOPE",
+      "title": "环节① --split-codec/--split-crf-ref/--split-cq-ref 已实现",
+      "status": "PASS",
+      "detail": "已实现",
+      "evidence": []
+    },
+    {
+      "id": "G10-1",
+      "group": "PIPE",
+      "title": "环节①/③ 新增 CLI 参数齐全",
+      "status": "PASS",
+      "detail": "全部存在",
+      "evidence": [
+        "--output-cq / --output-crf-ref / --output-cq-ref",
+        "--split-codec / --split-crf-ref / --split-cq-ref / --split-preset"
+      ]
+    },
+    {
+      "id": "G10-2",
+      "group": "PIPE",
+      "title": "output 字面量与基准轴互斥 → 拒绝",
+      "status": "PASS",
+      "detail": "已拒绝并提示互斥",
+      "evidence": []
+    },
+    {
+      "id": "G10-3",
+      "group": "PIPE",
+      "title": "output 量程随编码器：libvpx-vp9 63 放行 / 64 拒绝",
+      "status": "PASS",
+      "detail": "63→ACCEPT / 64→REJECT",
+      "evidence": [
+        "· --output-crf 超出编码器 libvpx-vp9 的可用质量范围 0~63（当前 64）"
+      ]
+    },
+    {
+      "id": "G10-4",
+      "group": "PIPE",
+      "title": "--output-codec copy 与质量参数互斥 → 拒绝",
+      "status": "PASS",
+      "detail": "已拒绝",
+      "evidence": []
+    },
+    {
+      "id": "G10-5",
+      "group": "PIPE",
+      "title": "默认 copy 且消除质量倒挂（output.crf_ref=models.crf_ref=21）",
+      "status": "PASS",
+      "detail": "output.use_copy=True / output.crf_ref=21 / output.crf=None / models.crf_ref=21,21",
+      "evidence": []
+    },
+    {
+      "id": "G10-6",
+      "group": "PIPE",
+      "title": "merge_videos_by_codec 已 codec-aware（无裸 -crf）",
+      "status": "PASS",
+      "detail": "全部命中",
+      "evidence": []
+    },
+    {
+      "id": "G10-7",
+      "group": "PIPE",
+      "title": "normalize_video_timeline 去 crf=18 硬编码（默认基准 21）",
+      "status": "PASS",
+      "detail": "默认 None → 基准 21",
+      "evidence": []
+    },
+    {
+      "id": "G10-8",
+      "group": "PIPE",
+      "title": "quality_map.CQ_OFFSET 可调口存在且默认全 0（= §4.3）",
+      "status": "PASS",
+      "detail": "11 个编码器，全部为 0",
+      "evidence": []
+    },
+    {
+      "id": "G10-9",
+      "group": "PIPE",
+      "title": "旧版 add_audio_to_video/merge_videos/encode_video 已统一换算",
+      "status": "PASS",
+      "detail": "三处均走 _resolve_quality_args，无裸 -crf",
+      "evidence": []
+    }
+  ],
+  "metrics": {
+    "libx264_crf21": {
+      "psnr": 46.581226,
+      "ssim": 0.991358,
+      "vmaf": 96.040874,
+      "size": 4898309,
+      "width": 720,
+      "height": 576,
+      "nbf": 687,
+      "fps": 25.0,
+      "duration": 27.498,
+      "bitrate": 1425066,
+      "kbps": 1425
+    },
+    "h264_nvenc_rescued_26": {
+      "psnr": 44.622353,
+      "ssim": 0.985438,
+      "vmaf": 95.31037,
+      "size": 5197490,
+      "width": 720,
+      "height": 576,
+      "nbf": 687,
+      "fps": 25.0,
+      "duration": 27.498,
+      "bitrate": 1512107,
+      "kbps": 1512
+    },
+    "h264_nvenc_naive_21": {
+      "psnr": 48.050632,
+      "ssim": 0.992021,
+      "vmaf": 97.332229,
+      "size": 8535187,
+      "width": 720,
+      "height": 576,
+      "nbf": 687,
+      "fps": 25.0,
+      "duration": 27.498,
+      "bitrate": 2483144,
+      "kbps": 2483
+    },
+    "hevc_nvenc_rescued_26": {
+      "psnr": 45.185616,
+      "ssim": 0.986789,
+      "vmaf": 95.144684,
+      "size": 5043451,
+      "width": 720,
+      "height": 576,
+      "nbf": 687,
+      "fps": 25.0,
+      "duration": 27.498,
+      "bitrate": 1467292,
+      "kbps": 1467
+    },
+    "hevc_nvenc_naive_21": {
+      "psnr": 48.297556,
+      "ssim": 0.992424,
+      "vmaf": 97.052238,
+      "size": 8383401,
+      "width": 720,
+      "height": 576,
+      "nbf": 687,
+      "fps": 25.0,
+      "duration": 27.498,
+      "bitrate": 2438984,
+      "kbps": 2438
+    },
+    "av1_nvenc_rescued_32": {
+      "psnr": 44.444925,
+      "ssim": 0.984548,
+      "vmaf": 95.201322,
+      "size": 4266993,
+      "width": 720,
+      "height": 576,
+      "nbf": 687,
+      "fps": 25.0,
+      "duration": 27.498,
+      "bitrate": 1241397,
+      "kbps": 1241
+    },
+    "av1_nvenc_naive_21": {
+      "psnr": 49.326143,
+      "ssim": 0.993448,
+      "vmaf": 97.771242,
+      "size": 10051355,
+      "width": 720,
+      "height": 576,
+      "nbf": 687,
+      "fps": 25.0,
+      "duration": 27.498,
+      "bitrate": 2924243,
+      "kbps": 2924
+    },
+    "libsvtav1_rescued_29": {
+      "psnr": 44.939183,
+      "ssim": 0.987193,
+      "vmaf": 95.703772,
+      "size": 4135990,
+      "width": 720,
+      "height": 576,
+      "nbf": 687,
+      "fps": 25.0,
+      "duration": 27.498,
+      "bitrate": 1203284,
+      "kbps": 1203
+    },
+    "libsvtav1_naive_21": {
+      "psnr": 46.809007,
+      "ssim": 0.990549,
+      "vmaf": 96.907823,
+      "size": 6049424,
+      "width": 720,
+      "height": 576,
+      "nbf": 687,
+      "fps": 25.0,
+      "duration": 27.498,
+      "bitrate": 1759960,
+      "kbps": 1759
+    },
+    "h264_nvenc_constqp": {
+      "psnr": 46.085659,
+      "ssim": 0.988568,
+      "vmaf": 95.78032,
+      "size": 6474343,
+      "width": 720,
+      "height": 576,
+      "nbf": 687,
+      "fps": 25.0,
+      "duration": 27.498,
+      "bitrate": 1883582,
+      "kbps": 1883
+    },
+    "bitrate_ratio": {
+      "h264_nvenc": 1.061,
+      "hevc_nvenc": 1.029,
+      "av1_nvenc": 0.871,
+      "libsvtav1": 0.844
+    },
+    "g7_8_synthetic": {
+      "d_psnr": 4.5199189999999945,
+      "ratio": 1.4357894736842105
+    },
+    "g7_8_real": {
+      "d_psnr": -0.4955670000000012,
+      "ratio": 1.3214035087719298
+    },
+    "bitrate_clamped": {
+      "psnr": 24.535545,
+      "ssim": 0.808451,
+      "vmaf": 51.651665,
+      "size": 19683014,
+      "width": 1920,
+      "height": 1080,
+      "nbf": 561,
+      "fps": 30.0,
+      "duration": 18.713991,
+      "bitrate": 8414245,
+      "kbps": 8414
+    },
+    "bitrate_unclamped": {
+      "psnr": 24.535209,
+      "ssim": 0.808553,
+      "vmaf": 51.684266,
+      "size": 19672562,
+      "width": 1920,
+      "height": 1080,
+      "nbf": 561,
+      "fps": 30.0,
+      "duration": 18.713991,
+      "bitrate": 8409777,
+      "kbps": 8409
+    },
+    "bitrate_delta": {
+      "d_psnr": 0.0003360000000007801,
+      "d_ssim": -0.00010199999999993548,
+      "binds": false,
+      "clamp_effective": false,
+      "raw_mbps": 186.590739,
+      "clamped_mbps": 50.0,
+      "natural_kbps": 8409,
+      "t_clamped_s": 2.42,
+      "t_unclamped_s": 1.55
+    },
+    "bitrate_high": {
+      "w": 3840,
+      "h": 2160,
+      "fps": 60.0,
+      "cap_bps": 100000000,
+      "natural_kbps": 140396,
+      "binds": true,
+      "clamped_kbps": 125633,
+      "clamp_effective": true,
+      "d_psnr": -0.10728699999999947,
+      "d_ssim": -0.0035770000000000524
+    }
+  }
+}

@@ -1,0 +1,85 @@
+{
+  "generated": "2026-10-06T15:19:33",
+  "src": "/workspace/input_videos/word_world_2.mp4",
+  "src_frames": 687,
+  "ref_crf": 21,
+  "soft": {
+    "kbps": 1425,
+    "psnr": 46.581226
+  },
+  "tolerances": {
+    "RATE_PASS": [
+      0.65,
+      1.5
+    ],
+    "RATE_WARN": [
+      0.55,
+      1.65
+    ],
+    "TOL_PSNR_DB": 1.5,
+    "TOL_PSNR_WARN": 3.0
+  },
+  "matrix": [
+    {
+      "codec": "av1_nvenc",
+      "param": "-cq:v",
+      "value": 32,
+      "naive": 21,
+      "note": "默认基准 CRF 21",
+      "extra_args": [
+        "-rc:v",
+        "vbr",
+        "-b:v",
+        "0"
+      ],
+      "psnr": 43.983563,
+      "kbps": 1103,
+      "ratio": 0.774,
+      "d_psnr": -2.598,
+      "verdict": "WARN",
+      "naive_ratio": 1.84
+    }
+  ],
+  "av1_qp_scan": [
+    {
+      "qp": 21,
+      "ok": true,
+      "psnr": 50.444667,
+      "ratio": 2.644979951805741,
+      "d_psnr": 3.8634410000000017,
+      "verdict": "FAIL"
+    },
+    {
+      "qp": 70,
+      "ok": true,
+      "psnr": 45.452927,
+      "ratio": 1.0669919849326277,
+      "d_psnr": -1.1282989999999984,
+      "verdict": "PASS"
+    },
+    {
+      "qp": 84,
+      "ok": true,
+      "psnr": 44.581383,
+      "ratio": 0.9327757451233838,
+      "d_psnr": -1.9998429999999985,
+      "verdict": "WARN"
+    },
+    {
+      "qp": 105,
+      "ok": true,
+      "psnr": 43.045707,
+      "ratio": 0.7392534801896895,
+      "d_psnr": -3.5355190000000007,
+      "verdict": "FAIL"
+    }
+  ],
+  "av1_qp_expected": 70,
+  "ac1_verdict": "表值 -qp 70 落带内 ⇒ AC1 PASS。该值由 quality 口径的 `QUALITY_MAP_QP['av1_nvenc']`（L40 17 素材仿射标定）换算得到（旧 ×3 近似已由标定表取代）",
+  "summary": {
+    "pass": 0,
+    "warn": 1,
+    "fail": 2,
+    "skip": 0
+  }
+}
