@@ -1307,6 +1307,82 @@ python3 Accessory/probe/av1_vp9_quality_matrix.py \
 
 ---
 
+## 验证与测试
+
+本项目提供**分级验证体系**，覆盖 CPU 静态逻辑 → GPU 画质/性能 → 端到端冒烟。
+
+### 综合验证脚本（推荐入口）
+```bash
+# 安装 CPU 依赖（仅首次）
+pip install opencv-python-headless --break-system-packages
+
+# 生成测试视频（仅首次）
+ffmpeg -y -i input_videos/word_world_2.mp4 -t 10 -c:v libx264 -preset ultrafast -crf 23 output.mp4
+
+# CPU 环境（纯静态/逻辑/单元验证，无需 GPU）
+python Accessory/verify/comprehensive_verify.py --env cpu
+
+# T4 环境（含 h264/hevc NVENC 画质/冒烟/段级验收）
+python Accessory/verify/comprehensive_verify.py --env t4 \
+    -i input.mp4 -o output.mp4 \
+    --source input_videos/word_world_2.mp4 \
+    --bitrate-source input_videos/new4_raw.mp4 \
+    --smoke
+
+# L40 环境（含 AV1 NVENC 全链路 + 长视频冒烟 S1~S8）
+python Accessory/verify/comprehensive_verify.py --env l40 \
+    -i input.mp4 -o output.mp4 \
+    --source input_videos/word_world_2.mp4 \
+    --bitrate-source input_videos/new4_raw.mp4 \
+    --long-source "input_videos/01 the race to mystery island fixed.avi" \
+    --smoke --smoke-mode interpolate_then_upscale
+```
+
+### 分级验收矩阵
+| 环境 | 核心验收项 | 关键脚本 |
+|------|-----------|----------|
+| **CPU** | 等质量换算表 ΔVMAF≤1.0 / CRF/CQ 静态断言 G1~G6/G10 / AV1/VP9 软编质量矩阵 / 落表器 LOO 自检 / 标定哈内斯 39项 | `verify_equal_quality.py` / `crf_cq_unification_verify.py --no-gpu` / `av1_vp9_quality_matrix.py` / `eqq_pool_fit_table.py` / `calibrate_equal_quality.py --selftest` |
+| **T4** | plan_gate 完整 89项 / NVENC vbr_hq 迁移验证 / G7/G8 GPU 画质 / hevc+LA=8 帧守恒 / 落表器含 gpu_t4 | `plan_implementation_gate.py` / `nvenc_vbr_hq_verify.py` / `crf_cq_unification_verify.py --gpu` / `segment_bitstream_verify_v5.py` / `eqq_pool_fit_table.py --sides ...,gpu_t4` |
+| **L40** | plan_gate 完整 100项 / AV1 质量矩阵 AC1~AC4 / AV1 长视频冒烟 S1~S8 / 落表器含 gpu_l40 / 跨仓 ⑨组 14/14 | `plan_implementation_gate.py` / `av1_vp9_quality_matrix.py --only av1_nvenc` / `av1_pipeline_smoke.py` / `eqq_pool_fit_table.py --sides ...,gpu_l40` / `VidUtils/verify/verify_quality_mapping.py` |
+
+### 单项验收脚本
+```bash
+# 优化方案落地验证（Phase 0-3 静态/行为/运行时/冒烟）
+python Accessory/verify/plan_implementation_gate.py -i in.mp4 -o out.mp4 --smoke-test
+
+# 等质量换算表主门禁（ΔVMAF ≤1.0）
+python Accessory/verify/verify_equal_quality.py --src input_videos/word_world_2.mp4
+
+# 质量参数换算正确性（CPU 静态 / GPU 实测）
+python Accessory/verify/crf_cq_unification_verify.py --quick --no-gpu
+python Accessory/verify/crf_cq_unification_verify.py --gpu --source in.mp4 --bitrate-source high_entropy.mp4
+
+# AV1/VP9 质量矩阵（含 AC1~AC7）
+python Accessory/probe/av1_vp9_quality_matrix.py --quality-mode quality --src in.mp4
+
+# NVENC vbr_hq 迁移验证（T4 专项）
+python Accessory/probe/nvenc_vbr_hq_verify.py
+
+# 段级码流验收（帧守恒/单IDR/frame_num单调/pts/色度簇+解码级）
+python Accessory/verify/segment_bitstream_verify_v5.py output.mp4 --skip-chroma
+
+# AV1 长视频冒烟 S1~S8（L40 专属）
+python Accessory/verify/av1_pipeline_smoke.py --src long_src.mp4 --rate-modes constqp,vbr --segment-duration 30 --mem-interval 5 --mem-dump-dir /tmp/s8_mem
+```
+
+### 门禁基线（2026-10 更新）
+| 验收门禁 | CPU 基线 | T4 基线 | L40 基线 |
+|---------|---------|---------|----------|
+| `plan_implementation_gate` | 84/75/0/4/5 | 96/94/0/2 | 100/0/1 |
+| `crf_cq --no-gpu --quick` | 94 PASS / 0 FAIL / 11 SKIP | — | — |
+| `crf_cq --gpu` | — | 101/0/4/1 | 113/0/3 |
+| `verify_equal_quality` | 1/1 PASS (ΔVMAF -0.45) | — | — |
+| `segment_bitstream_verify_v5` | PASS (需 -o) | PASS (hevc LA=8) | — |
+
+> ⚠️ 所有脚本**必须加 `< /dev/null`** 运行（避免后台进程组 SIGTTOU 整组挂起）。
+
+---
+
 ## 常见问题
 
 **Q: CUDA out of memory？**  
