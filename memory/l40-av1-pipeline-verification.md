@@ -169,3 +169,62 @@ IFRNet 与 ESRGan **两侧都** `--codec-* av1_nvenc`。
 验收层不要用 OpenCV 的解码能力当"文件是否完好"的判据。
 相关：[[quality-params-t4-verification]]、[[nvenc-preset-and-encoder-availability]]、
 [[ffmpeg-metric-measurement-traps]]。
+
+---
+
+## 2026-10-06 核对：L40 专项实质已完成，方案 §0.4/§0.5 过期自相矛盾
+
+用户要求核对 `Plan/PROMPT_L40_AV1等质量标定专项执行方案.md` 是否只剩 L40 侧未完成。
+逐条与代码 + 头部 + 本记忆对账后结论：**实质 L40 工作早已落表完成**（提交 `b64c1d2`/`20b9e81`/`95a3f75`）：
+
+- **L40-1 CQ**：`src/utils/convert_crf.py:212` = `(1.4566, 1.2165, 0, 63)`（crf21→`-cq:v 32`）。
+- **L40-2 QP**：`src/utils/quality_map.py:202` = `(7.9338, -97.5136, 0, 255)`（仿射，取代 ×3；`_QP_MAP_OVERRIDE:365` 仅余 size 口径/回退）。
+- **L40-3 AC1**：`verification_report/av1_vp9_matrix_L40_cqlanded_2026-10-04.md` 表值 `-qp 70` 落带内 PASS。
+- **L40-4 AC2/G7-6**：`verification_report/crfcq_gpu_L40_cqlanded_2026-10-04.md` PASS=113 / FAIL=0。
+- **L40-8 跨仓**：`/workspace/VidUtils/convert_crf.py:207` 已是 `(1.4566, 1.2165)`；`verify_nvenc_quality_gpu.py:116` 有仿射 `(7.9338, -97.5136)`。
+
+⚠ **方案自身自相矛盾**：§0.4（:346-358）与 §0.5 步 6/7（:362-372）在**最新提交 `1bfea98`** 里把
+L40-1/2 标定与 `QUALITY_MAP` / `QUALITY_MAP_QP` 落表重新标成「⏸ 阻塞：需 L40」，
+而同文件**头部**（提交 `ea65e19`）写「2026-10-04 执行完毕并落表」⇒ 与代码 / 本记忆直接冲突。
+定性：把 **T4 母版的状态块**搬入时未与 L40 落表结果对账留下的**过期块**（不是新回归）。
+
+**真正未完成项（不全是 L40）**：
+- L40-5 / S8：见文末「### S8 裁定」——**判「工程闭环」**（T4 代理路径不复现），
+  但**不等于根因已解释**；且原「窗口伪影」论证经复核**不成立**（跨窗口错误对比）。
+- L40-6（可选）：AV1 Level 1 `GetEncodePresetConfig code=12` 根因，未做。
+- **非 L40**：B2 **方案 B（真 vbr 分支）未做**（方案 §0.1.5 步 4 自认）；§9.5 遗留 E①
+  （`av1_vp9_quality_matrix` 退出码 1 vs 0）未闭环；文档卫生——§5.4:547 / §10:654:689 仍是过期
+  `--rate-modes constqp,vbr`（§0.2.2 已改 `constqp,vbr_hq`）、§5.3:515:522 / §10:681 用相对路径
+  `input_videos/eqq_calib/`（素材池在**仓库外** `/workspace/input_videos/eqq_calib/`，会失败）。
+
+**环境**：本会话无 GPU（`nvidia-smi` 找不到 `libnvidia-ml.so`、torch `is_available()=False`）；
+`git status` 干净，`HEAD == origin/main == 1bfea98`。
+
+**How to apply:** 引用该方案的 §0.4/§0.5 前先与代码落表值 + 头部 + 本记忆对账；
+不要把已落表的 L40-1/2 当待办；文档更新时优先修 §0.4/§0.5 与 §5.4/§10 命令口径。
+
+---
+
+### S8 裁定（2026-10-06，无 GPU，离线复算）
+
+用户要求裁定 S8 是否算闭环。逐条用**归档原始数据**（`verification_report/s8_20261004_raw/*.mem.tsv`）
+独立复算后结论：**可判「工程闭环」，但属「不可复现 / 风险接受」型，不等于「根因已解释」。**
+
+- **判据口径**：S8 = `av1_pipeline_smoke.py` 的**后半程（后 50%）RSS OLS 斜率**；
+  L40 当次所用脚本（`b64c1d2`）同为 `half = rows[len//2:]` ⇒ L40 的 **+149.5 是后 50%** 口径。
+- **支持闭环**：匹配条件（同素材 / bs=24 / 后 50%）T4 constqp 臂无泄漏 ——
+  `h264_constqp −55.6±11.0`、`hevc_constqp +3.1±14.9` MB/min（95%CI 均不含 +50）；
+  bs=8 复跑 hevc +47.4。判据窗口极不稳定（同数据 −786~+1434）。
+- **必须更正的论证**：文档/记忆「L40 +149.5 ≈ T4 **全程** +149.4 ⇒ 窗口伪影」是
+  **跨窗口错误对比**（L40 是后 50%、T4 是全程）；且 L40 **原始采样从未落盘**
+  （未用 `--mem-dump-dir`）⇒ 闭环属**类比推断**，非直接复测。
+- **噪声口径纠正**：后 50% 斜率 **SE 实算仅 ±8~15 MB/min（95%CI ±20~30）**；
+  记忆里的「±66 MB/min」是**残差 sd(≈1356 MB)** 量级、不是斜率不确定度
+  ⇒ 在该口径下 **+149.5 不是噪声**（"噪声"解释不成立）。
+- **同臂两跑不稳**：L40 `av1_nvenc` constqp 两次 = **+112.1 / +149.5**（耗时 1052s vs 661s）。
+- **裁定**：记为「**闭环（不可复现；判据不稳定）**」并从方案 §0.4/§0.5 移出；
+  若要「硬闭（根因级）」须一次 L40 复跑（`--batch-size 8` + `--mem-dump-dir`）。
+
+**How to apply（补充）：** 判"某 FAIL 是伪影/噪声"必须能在**同一口径**复现该数字；只能跨口径得到
+"相似数字"时，结论降级为「不可复现/风险接受」，不得写成「根因已解释」。原则见
+[[feedback_closure_evidence_same_scope]]。
