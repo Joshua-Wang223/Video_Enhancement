@@ -50,12 +50,10 @@ Found_Cropped.txt
 *.err
 
 # 验证报告输出目录（本地生成，不入库）
-verification_report/
 output.mp4
 conversation-*.txt
 # [FIX-GITIGNORE-ANCHOR] 同上：仅忽略仓库根的临时目录（全仓实测无嵌套 tmp/ 目录）
 /tmp/
-Accessory/validation_report_final.txt
 
 # 工具/会话本地配置，不入库
 .codebuddy/
