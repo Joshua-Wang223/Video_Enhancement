@@ -750,9 +750,14 @@ class NVENCEncoder:
 
         # [SEGMENT-REUSE] 缓存首段 SPS+PPS NAL 单元，后续段预挂到首帧前
         self._cached_sps_pps: Optional[bytes] = None
+        self._cached_sps_pps_gen: int = -1   # [FIX-B1-SPS-PPS-SESSION-REUSE] 缓存所属会话代数
         self._sps_pps_injected: bool = False  # [FIX-SPS-PPS-V2] Writer-thread-side 注入已完成标志
         # [FIX-SPS-PPS] muxer 引用 — _cached_sps_pps 首次设置时通知 muxer 预注入
         self._muxer_ref: Optional[object] = None
+
+        # [FIX-B1-SPS-PPS-SESSION-REUSE] 驱动会话代数（每次 _open_encode_session 递增）
+        # 跨段复用同一会话时 _session_gen 不变，_stream_begin 通过代数比对决定是否保留缓存
+        self._session_gen: int = 0
 
     def _load_dlls_and_detect_api(self) -> int:
         """[P3.1-SPLIT] 加载 NVENC DLL / libcuda 并探测驱动 API 版本（原步骤 1-3）。
@@ -890,6 +895,7 @@ class NVENCEncoder:
             if status == NV_ENC_SUCCESS:
                 print("[NVENCEncoder] OpenEncodeSessionEx OK: apiVersion=0x%x (%d.%d)" % (
                     _api_ver, _api_ver >> 4, _api_ver & 0xF), flush=True)
+                self._session_gen += 1  # [FIX-B1-SPS-PPS-SESSION-REUSE] 会话代数递增
                 break
             if status != 15:  # non-INVALID_VERSION, don't retry
                 break
@@ -2338,10 +2344,22 @@ class NVENCEncoder:
             # `if not _sps_pps_injected` 门控跳过（仅靠 IDR 自带 + _prepend_param_sets
             # 兜底）。此处每段重置，段首首个 chunk 即重新预注入新段 muxer。
             self._sps_pps_injected = False
-            # [BUGFIX] Clear cached SPS/PPS on segment boundary when reusing encoder.
-            # Old segment's SPS/PPS would be prepended to new segment's frames, causing
-            # "PPS id out of range" and "Could not find ref with POC" decode errors.
-            self._cached_sps_pps = None
+            # [FIX-B1-SPS-PPS-SESSION-REUSE] 跨段**复用会话**时不能清空 _cached_sps_pps。
+            #
+            # 原实现无条件清空，会导致：驱动在会话层面只下发一次 SPS/PPS，复用会话时不会为新段
+            # 重新下发；而缓存又在这里被清空 → 新段码流完全没有参数集，实测：
+            #   [FFmpegMuxer ERR] [hevc] PPS id out of range: 0
+            #   → [mp4] dimensions not set / Could not write header
+            #   → 写入帧错误: FFmpeg muxer stdin pipe broken
+            #
+            # 同一会话的 SPS/PPS 在新段依然有效（复用前已由配置一致性保证
+            # 分辨率/preset/qp/rate_mode/la/codec 全部未变），故按**会话代数**判定：
+            #   · 会话代数变化（新建会话）→ 清空，由新会话重新提取；
+            #   · 会话代数未变（跨段复用）→ 保留，交给后续 _prepend_param_sets/_cache_param_sets
+            #     处理首帧注入新段 muxer。
+            if getattr(self, '_cached_sps_pps_gen', -1) != self._session_gen:
+                self._cached_sps_pps = None
+            self._cached_sps_pps_gen = self._session_gen
             # [FIX-DRAIN-ORDER-DEFENSE] / [FIX-EMPTY-PREV-FILL] 每段重置：
             # gfi 单调基准、prev 填充缓存与错配诊断计数。
             self._last_drained_gfi = None
