@@ -8,7 +8,11 @@ CPU 侧与 T4 侧验证已收口，**唯一未覆盖的能力缺口是 AV1 NVENC
 - L40 / Ada (sm89) / 驱动 ≥535 / CUDA 12.x
 - FFmpeg 9.0+ with av1_nvenc, h264_nvenc, hevc_nvenc
 - PyTorch CUDA 可用
-- 长视频素材：`../input_videos/01 the race to mystery island fixed.avi`（≥330s）
+- 长视频素材（L40-1，**2026-10-09 修正**）：`/workspace/input_videos/大红狗 Clifford the Big Red Dog DVDR.58.mp4`
+  （MP4/h264 720×576 25fps，18011 帧 / 720.5s，aac 48kHz；源结构门禁 rc=0 通过）
+  - 原候选 `../input_videos/01 the race to mystery island fixed.avi` 仍可用（mpeg4 容器，885s），但需另建 `H576_W736` engine
+  - ⛔ `112 Max Bed Time.avi` / `402 The Blue Tarantula .avi` **不可用**：音轨 mp3 头损坏，被 `[P5-FIX-SOURCE-STRUCT-GATE]` 硬拒
+  - ⚠ 本项需 GPU 在场；掉卡时脚本前置门禁会以 `Cannot load libcuda.so.1` → exit 2 正确拒绝
 - 模型权重就位
 
 ### 素材路径约定（2026-10-09 修正）
@@ -60,18 +64,24 @@ done
 # 期望: h264=0, hevc=0, av1=0   ← av1 rc≠0 即整批 L40 项无法执行，先停
 
 # 1. [L40-1] AV1 长视频端到端冒烟（S1~S8）
-#    素材路径由脚本默认目录探测（PROJECT_ROOT.parent/input_videos），
-#    也可用 --long-source 显式覆盖
+#    ⚠ 2026-10-09 实测后修正：素材改用「大红狗 Clifford」，且需 GPU 在场。
+#    前置已核验（无需 GPU）：源结构门禁 rc=0 通过；.trt_cache 已有
+#    IFRNet_S_Vimeo90K_B8_H576_W736_sm89 与 realesr-general-x4v3_B8_C3_H576_W720_sm89
+#    ⇒ 零 engine 构建，constqp 臂可直接拿到干净 S8。
+#    两个旧候选 112 Max Bed Time.avi / 402 The Blue Tarantula.avi 音轨 mp3 头损坏，
+#    会被 [P5-FIX-SOURCE-STRUCT-GATE] 硬拒（rc=1），勿再选用。
 python3 Accessory/verify/av1_pipeline_smoke.py \
-    --src "../input_videos/01 the race to mystery island fixed.avi" \
+    --src "/workspace/input_videos/大红狗 Clifford the Big Red Dog DVDR.58.mp4" \
     --rate-modes constqp,vbr \
-    --segment-duration 30 --mem-interval 5 --mem-dump-dir /tmp/s8_mem \
-    --report verification_report/av1_smoke_L40_$(date +%F).md < /dev/null
+    --segment-duration 30 --batch-size 8 --mem-interval 5 --mem-peak-mb 0 \
+    --mem-dump-dir Accessory/data/s8_mem_L40_2026-10-09/clifford \
+    --report verification_report/av1_smoke_L40_clifford_$(date +%F).md < /dev/null
 # 或走编排器（仅此一项；--only 过滤掉其余 11 个非 L40 子测试）
 python3 Accessory/verify/comprehensive_verify.py --env l40 \
     --only av1_pipeline_smoke \
-    --long-source "../input_videos/01 the race to mystery island fixed.avi" \
-    --segment-duration 30 --mem-interval 5 --mem-dump-dir /tmp/s8_mem < /dev/null
+    --long-source "/workspace/input_videos/大红狗 Clifford the Big Red Dog DVDR.58.mp4" \
+    --segment-duration 30 --mem-interval 5 --mem-peak-mb 0 \
+    --mem-dump-dir Accessory/data/s8_mem_L40_2026-10-09/clifford < /dev/null
 
 # 2. [L40-3] AV1 质量矩阵（仅 av1_nvenc）
 python3 Accessory/probe/av1_vp9_quality_matrix.py --quality-mode quality \
@@ -105,6 +115,30 @@ cd /workspace/VidUtils && python3 Accessory/verify/verify_quality_mapping.py < /
 ---
 
 ## 门禁基线（2026-10-06 L40 历史实测，⚠ 见下方证据强度说明）
+
+### 2026-10-09 L40 实跑复核（本次唯一有可审计执行证据的一轮）
+
+| # | 项 | 判据 | 实测 | 裁定 |
+|---|---|------|------|------|
+| L40-4 | 落表门禁 cq | av1_nvenc LOO ≤5.9 | **3.13** ✅ | 落表候选 `(1.4566,1.2165,0,63)` 与 `convert_crf.py:212` 逐位一致 |
+| L40-4 | 落表门禁 qp | av1_nvenc LOO ≤5.9 | **2.61** ✅ | 与 `quality_map.py:202` `(7.9338,-97.5136,0,255)` 逐位一致 |
+| L40-3 | AC1 | 表值 QP 落带内 | `-qp 70` **1.07× / −1.13 dB** ✅ | 与历史基线一致 |
+| L40-2 | G7/G8 | FAIL=0 | **113 PASS / 0 FAIL / 3 WARN / 0 SKIP** ✅ | G7/G8 FAIL=0 达成 |
+| L40-2 | G7-6 | av1_nvenc `-cq` **PASS** | **WARN −2.14 dB / 0.87×** ❌ | **判据未达成**：`-cq 27→32` 未修正，数值与历史基线完全相同 |
+| L40-1 | S1~S8 | 全通 + S8 斜率 ≤50 MB/min | 两臂 S1~S7 全通；**S8 constqp +712 MB/min 已被证伪为测量假象** | 无内存泄漏（缓存引擎的 vbr 对照臂 **−928.5 MB/min**） |
+
+**本轮证据文件**：`verification_report/{crfcq_gpu,av1_vp9_matrix,av1_smoke_L40_new5raw}_*_2026-10-09.md`；
+内存采样明细 `Accessory/data/s8_mem_L40_2026-10-09/`（含 README 与逐点证据表）。
+
+⚠ **两处历史读数已过期，勿再引用**：
+- 本方案 §门禁基线 的「G7-6 历史记为 WARN（−2.14 dB / 0.87×）」——本轮复现同值，说明 `-cq 27→32` 未修正它；
+- `memory/l40-av1-pipeline-verification.md:17` 记的 G7-6「`-cq:v 27` ΔPSNR **+0.16 dB** / 1.28× **PASS**」
+  —— 那是 cq27 的读数，改 cq32 后变为 −2.14 dB WARN，**不可作为「已验收」依据**。
+
+⚠ **L40-1 长视频（Clifford 720.5s）尚未执行**：选型与前置已核验（门禁 rc=0、engine 已缓存），
+但开跑时掉卡，前置门禁 exit 2，**无产出**。恢复命令见本文件 §执行命令 1。
+
+### 以下为 2026-10-06 历史基线（⚠ 见证据强度说明）
 
 - `av1_vp9_quality_matrix`: AC1 `-qp 70` 落带内（1.07× / −1.13 dB）/ AC2 +0.16 dB / AC4 1.14× / −0.29 dB
 - `av1_pipeline_smoke`: S1~S8 退出码 0；constqp 臂 S3 计数差异为脚本 double-count，非管线缺陷；vbr 臂 8/8 全 PASS，RSS 斜率 −2.8 MB/min

@@ -1,0 +1,2 @@
+# t_s	n_proc	rss_mb	pss_mb	rss_main_mb	rss_child_mb	gpu_tree_mib	procs_json
+0.1	1	7.9	3.2	7.9	0.0	0.0	[{"pid": 253074, "rss_mb": 7.875, "pss_mb": 3.1806640625, "tag": "main"}]
