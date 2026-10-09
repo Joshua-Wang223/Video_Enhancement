@@ -488,8 +488,11 @@ python3 Accessory/verify/av1_pipeline_smoke.py --src <330s真实素材> \
 
 ```bash
 python3 Accessory/probe/eqq_pool_fit_table.py \
-    --sides 6s,10s,legacy10s,gpu_l40 --out /tmp/table_l40.txt < /dev/null
+    --sides 6s,10s,legacy10s,gpu_l40_cq --axis cq --out /tmp/table_l40.txt < /dev/null
 # 判据：av1_nvenc 行 LOO ≤5.9；顺序无关断言通过
+# ⚠ 2026-10-09 修正：GPU 点数据目录带轴后缀（gpu_l40_cq / gpu_l40_qp），
+#   CQ/QP 不可混池；旧写法 `--sides …,gpu_l40` 匹配不到目录 → 打印
+#   「拟合失败（样本 0 < 4）」但退出码仍为 0（静默假通过）
 ```
 
 ### 5.6 （可选）L40-6 · AV1 Level 1 `code=12`
@@ -523,7 +526,7 @@ python3 Accessory/probe/eqq_pool_fit_table.py \
 
 | 门 | 命令 | 判据 |
 |---|---|---|
-| 落表器 | `eqq_pool_fit_table.py --sides …,gpu_l40` | av1 行 LOO ≤5.9 + 顺序无关 ✅ |
+| 落表器 | `eqq_pool_fit_table.py --sides …,gpu_l40_cq --axis cq` | av1 行 LOO ≤5.9 + 顺序无关 ✅ |
 | AC1/AC2/AC4 探针 | `av1_vp9_quality_matrix.py --only av1_nvenc` | 退出码 0；AC1 表值落带内 |
 | GPU 判据 | `crf_cq_unification_verify.py --gpu …` | G7-6 PASS、FAIL=0 |
 | AV1 冒烟 | `av1_pipeline_smoke.py` | 退出码 0；S1~S8 无 FAIL |
@@ -536,7 +539,7 @@ python3 Accessory/probe/eqq_pool_fit_table.py \
 
 | 触发 | 动作 |
 |---|---|
-| av1 表 LOO 超门禁 | 不落表；保留 `gpu_l40` points 与报告，标注根因 |
+| av1 表 LOO 超门禁 | 不落表；保留 `gpu_l40_{cq,qp}` points 与报告，标注根因 |
 | `QUALITY_MAP_QP['av1_nvenc']` 与 ×3 冲突 | 以实测为准；若证据不足则维持 `_QP_MAP_OVERRIDE` 的 ×3 并回滚新行 |
 | 冒烟 S 项 FAIL | 先查 §8.6 三处 AV1 修复是否在位（②③ 命令形状 / ① cv2 回退）；再查编码线程 |
 | Level 1 回退无收益 | 保持现状（Level 2/3 功能正确），仅注释说明 |
@@ -606,11 +609,12 @@ cd /workspace/Video_Enhancement
 ffmpeg -hide_banner -f lavfi -i testsrc2=size=320x240:rate=30:duration=1 -c:v av1_nvenc -f null - < /dev/null; echo rc=$?
 # 1 标定（CQ 轴，单素材示例）
 python3 Accessory/probe/eqq_calibrate_clip.py \
-    --src input_videos/eqq_calib/6s/live_kids_play_src1280x720.mp4 \
+    --src ../input_videos/eqq_calib/6s/live_kids_play_src1280x720.mp4 \
     --out temp/eqq_gpu_l40/cq_live_kids_play --tiers av1_nvenc \
     --duration 6 --src-is-prep < /dev/null
 # 2 入池落表
-python3 Accessory/probe/eqq_pool_fit_table.py --sides 6s,10s,legacy10s,gpu_l40 < /dev/null
+python3 Accessory/probe/eqq_pool_fit_table.py --sides 6s,10s,legacy10s,gpu_l40_cq --axis cq < /dev/null
+python3 Accessory/probe/eqq_pool_fit_table.py --sides gpu_l40_qp --axis qp < /dev/null
 # 3 AV1 端到端复验
 python3 Accessory/probe/av1_vp9_quality_matrix.py --src /workspace/input_videos/word_world_2.mp4 --only av1_nvenc < /dev/null
 python3 Accessory/verify/crf_cq_unification_verify.py --gpu --source /workspace/input_videos/word_world_2.mp4 --bitrate-source /workspace/input_videos/new4_raw.mp4 < /dev/null

@@ -35,9 +35,9 @@ done
 
 # 1. 完整验证（含冒烟）
 python3 Accessory/verify/comprehensive_verify.py --env t4 \
-    -i input_videos/word_world_2.mp4 -o output.mp4 \
-    --source input_videos/word_world_2.mp4 \
-    --bitrate-source input_videos/new4_raw.mp4 \
+    -i ../input_videos/word_world_2.mp4 -o output.mp4 \
+    --source ../input_videos/word_world_2.mp4 \
+    --bitrate-source ../input_videos/new4_raw.mp4 \
     --smoke --smoke-mode interpolate_then_upscale
 
 # 2. 单独跑 NVENC 专项（如需）
@@ -52,7 +52,8 @@ python3 run.py -i /tmp/seg_src_5s.mp4 -o /tmp/seg_hevc_la8.mp4 \
 python3 Accessory/verify/segment_bitstream_verify_v5.py /tmp/seg_hevc_la8.mp4 < /dev/null
 
 # 4. 落表器含 GPU 侧
-python3 Accessory/probe/eqq_pool_fit_table.py --sides 6s,10s,legacy10s,gpu_t4 < /dev/null
+python3 Accessory/probe/eqq_pool_fit_table.py --sides 6s,10s,legacy10s,gpu_t4_cq --axis cq < /dev/null
+python3 Accessory/probe/eqq_pool_fit_table.py --sides gpu_t4_qp --axis qp < /dev/null
 ```
 
 ## 门禁基线（2026-10-04 T4 实测）

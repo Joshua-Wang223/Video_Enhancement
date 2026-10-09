@@ -32,10 +32,13 @@ python src/main_video_optimized.py -c config/default_config.json -i input.mp4 -o
 - 以真实 GPU 运行验证：帧数完整性、bitstream 解析、空帧/码率统计。
 - 段级验收用 `Accessory/verify/segment_bitstream_verify_v5.py`（帧守恒/单 IDR/frame_num 单调/pts/色度簇，含解码级检查与检查间并行）；NVENC 编码器层级行为回归用 `Accessory/probe/hevc_lookahead_diagnose.py`（11 变体矩阵，`--skip-reproducers` 跑 6 变体回归集）。
 - 命名沿用现有风格：`test_nvenc_*.py`、`verify_segment_bitstream*.py`。
+- 验证脚本一律加 `< /dev/null` 运行（否则后台进程组可能整组 SIGTTOU 挂起）。
 
 ## Commit & Pull Request Guidelines
 
-- 仓库当前未初始化 git（无 .git），尚无既定提交历史；建议使用 Conventional Commits（`feat:` / `fix:` / `perf:` / `docs:`）。
+- 仓库**已初始化 git**（origin `git@github.com:Joshua-Wang223/Video_Enhancement.git`，分支 `main`）。日常同步走普通 `git commit` + `git push origin main`；`force_push_github.sh` 是「用本机完整工作区覆盖远程」的全量路径，日常不用。
+- ⚠️ **存在并行会话共用同一远程**：动手前先 `git fetch` + `git log --oneline HEAD..origin/main` 确认远程未被他人覆盖；**推送后必须 `git ls-remote origin refs/heads/main` 独立复核**（本地 push 输出成功 ≠ 远程已更新）。
+- 用 Conventional Commits（`feat:` / `fix:` / `perf:` / `docs:`）；只 `git add` 目标路径，别 `git add -A`。
 - PR 需说明动机与影响面、关联 issue 或记忆文件；GPU/NVENC 改动附运行配置（RC 模式、pipe、LA、分辨率）与前后基准数据；视觉缺陷附截图或样张。
 
 ## Security & Configuration Tips
@@ -56,6 +59,11 @@ python src/main_video_optimized.py -c config/default_config.json -i input.mp4 -o
 - `segment_bitstream_verify_v5.py` 的色度检查（检查 4）可靠性有限，验证硬指标（帧守恒/IDR/frame_num/pts）时建议加 `--skip-chroma`。
 - `--mode upscale_then_interpolate` 会被引擎自动保护改写：超分后像素数超过 `processing.max_upscale_then_interpolate_pixels`（默认 3670016 ≈ 2560×1440，`0` 禁用自动切换）时自动切 `interpolate_then_upscale` 并打印警告（`main_video_optimized.py::_select_optimal_mode`，配置摘要 + `_process_single` 双重调用）。原因：高分辨率插帧在 T4 级 GPU 上会早期 EOF/丢帧（详见 `memory/mode-auto-protect-upscale-then-interpolate.md`）。
 - `--ifrnet-model` 生效依赖 `config_manager` 按 `model_name` 派生 `model_path`（CLI 覆盖后由 `config._derive_model_paths()` 重算）；`--ifrnet-model-path` 优先级更高。历史 bug 曾硬编码 S 模型导致所有模型输出相同（详见 `memory/ifrnet-model-selection-bug-fix.md`）。
+- **素材路径**：素材池在**仓库外**的 `<项目父目录>/input_videos`（生产 Linux 与 WSL 同为 `/workspace/input_videos`）。仓库内没有 `input_videos/` 目录，命令行写 `input_videos/xxx.mp4` 会因 cwd 是仓库根而找不到文件——**一律写 `../input_videos/xxx`**。脚本内默认素材目录由 `Accessory/verify/comprehensive_verify.py` 的 `INPUT_VIDEOS_CANDIDATES` 探测（`PROJECT_ROOT.parent / "input_videos"` 优先，Windows 固定路径 `/mnt/d/Workspace_Python/input_videos` 仅兜底），新写脚本时勿再硬编码 Windows 路径。
+- **落表器 `eqq_pool_fit_table.py --sides` 的 GPU 目录带轴后缀**：`gpu_t4_cq` / `gpu_t4_qp` / `gpu_l40_cq` / `gpu_l40_qp`。CQ 与 QP 两轴的点数据**不可混池**，须分两次调用并显式传 `--axis`。写成不带后缀的 `gpu_t4` / `gpu_l40` 会匹配不到任何目录，三个 NVENC 档打印「拟合失败（样本 0 < 4）」但**退出码仍为 0**（静默假通过）——必须核对输出中确有 LOO 数值行。门限：软编 0~63 刻度 5.9，`librav1e` 族 7.5，NVENC 硬编（CQ 与 QP 轴同为 0~63/255 CQ 刻度口径）5.9。
+- **AV1 NVENC 可用性必须实跑一帧判定**：不能用 `ffmpeg -h encoder=av1_nvenc`（Turing 上也会打印完整选项表而误报可用）。正确写法见 `Plan/PROMPT_L40_全流程验证.md` 的环境体检循环。
+- **L40 验收只覆盖 4 项**（AV1 冒烟 S1~S8 / crf_cq G7-6 / AV1 矩阵 AC1 / AV1 落表 LOO）；其余验证项已在 CPU/T4 侧完成，方案与证据强度见 `Plan/PROMPT_L40_全流程验证.md`。`memory/av1-nvenc-l40-calibration.md` 末节已把 L40 侧标定判为**仓内不可审计**，历史报告数字不可反向引用为「已验收」。
+- 跨仓一致性脚本在 VidUtils 的路径是 `Accessory/verify/verify_quality_mapping.py`（2026-10-06 从 `verify/` 迁入，旧路径已空）。
 
 ---
 

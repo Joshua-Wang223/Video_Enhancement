@@ -75,7 +75,7 @@ av1_nvenc        (7.9338, -97.5136,   0, 255)   LOO 2.61   ← L40 标定（QP �
 ```
 
 数据源：**GPU 侧 35 个 points 文件 / 1600+ 原始点 / 素材池 17 条（同 CPU 侧池）**。
-✅ `eqq_pool_fit_table.py --sides 6s,10s,legacy10s,gpu_t4,gpu_l40` 验证**逐位复现**库内表值（rc=0，顺序无关性 3 seed 全通过）。
+✅ `eqq_pool_fit_table.py --sides 6s,10s,legacy10s,gpu_t4_cq` / `--sides gpu_l40_qp --axis qp`（2026-10-09 更正：GPU 目录带轴后缀，QP 档为 `gpu_t4_qp` / `gpu_l40_qp`）验证**逐位复现**库内表值（rc=0，顺序无关性 3 seed 全通过）。
 
 #### 0.0.3 命名对照（沿用，早期提案名与落地不同）
 

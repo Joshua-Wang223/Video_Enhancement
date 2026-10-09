@@ -320,7 +320,7 @@ done
 
 ```bash
 python3 Accessory/probe/eqq_pool_fit_table.py \
-    --sides 6s,10s,legacy10s,gpu_t4 --out /tmp/table_t4.txt < /dev/null
+    --sides 6s,10s,legacy10s,gpu_t4_cq --axis cq --out /tmp/table_t4.txt < /dev/null
 # 判据：新增 h264_nvenc / hevc_nvenc 两行 LOO ≤5.9；顺序无关断言通过；0 评估点记 inf
 ```
 
@@ -362,7 +362,7 @@ python3 /workspace/VidUtils/verify/verify_quality_mapping.py < /dev/null   # ⑨
 | 门 | 命令 | 判据 |
 |---|---|---|
 | harness 自测 | `python3 Accessory/probe/calibrate_equal_quality.py --selftest` | 39 项全过 |
-| 落表器 | `python3 Accessory/probe/eqq_pool_fit_table.py --sides …,gpu_t4` | 2 行 LOO ≤5.9 + 顺序无关 ✅ |
+| 落表器 | `python3 Accessory/probe/eqq_pool_fit_table.py --sides …,gpu_t4_cq --axis cq` | 2 行 LOO ≤5.9 + 顺序无关 ✅ |
 | 等质量专用判据 | `python3 Accessory/verify/verify_equal_quality.py < /dev/null` | 主门禁 ΔVMAF 达标；退出 0 |
 | 本仓静态判据 | `python3 Accessory/verify/crf_cq_unification_verify.py --quick < /dev/null` | **FAIL=0**（G3 期望值同步后） |
 | 本仓门禁 | `python3 Accessory/verify/plan_implementation_gate.py < /dev/null` | **FAIL=0** |
@@ -377,7 +377,7 @@ python3 /workspace/VidUtils/verify/verify_quality_mapping.py < /dev/null   # ⑨
 
 | 触发 | 动作 |
 |---|---|
-| LOO 超门禁（>5.9） | 不落表；保留 `gpu_t4` 原始 points 与报告，标注失败项与根因（**不自行放水**） |
+| LOO 超门禁（>5.9） | 不落表；保留 `gpu_t4_{cq,qp}` 原始 points 与报告，标注失败项与根因（**不自行放水**） |
 | `QUALITY_MAP_QP` 标定后 G3 期望值变动导致判据红 | 复核是「表值正确、判据过期」还是「表值错」；前者改判据期望值（P12），后者回滚表值 |
 | `_qp_model` 模式感知改造引发意外 | 单点回退：恢复「override 优先」并移除 `QUALITY_MAP_QP` 的 NVENC 行 |
 | 生产冒烟帧守恒失败 | 与 `QUALITY_MAP` 无关（等质量只改质量参数数值）⇒ 查编码线程/LA，不在此专项范围 |
@@ -411,11 +411,11 @@ python3 Accessory/probe/calibrate_equal_quality.py --selftest
 python3 Accessory/probe/eqq_pool_fit_table.py < /dev/null
 # 2 标定（CQ 轴，单素材示例）
 python3 Accessory/probe/eqq_calibrate_clip.py \
-    --src input_videos/eqq_calib/6s/live_kids_play_src1280x720.mp4 \
+    --src ../input_videos/eqq_calib/6s/live_kids_play_src1280x720.mp4 \
     --out temp/eqq_gpu_t4/cq_live_kids_play --tiers h264_nvenc,hevc_nvenc \
     --duration 6 --src-is-prep < /dev/null
 # 3 入池落表
-python3 Accessory/probe/eqq_pool_fit_table.py --sides 6s,10s,legacy10s,gpu_t4 < /dev/null
+python3 Accessory/probe/eqq_pool_fit_table.py --sides 6s,10s,legacy10s,gpu_t4_cq --axis cq < /dev/null
 # 4 门禁
 python3 Accessory/verify/verify_equal_quality.py < /dev/null
 python3 Accessory/verify/crf_cq_unification_verify.py --quick < /dev/null

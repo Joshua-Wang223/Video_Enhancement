@@ -113,14 +113,36 @@ def get_gpu_name() -> str:
     return "Unknown"
 
 
-INPUT_VIDEOS_BASE = Path("/mnt/d/Workspace_Python/input_videos")
+#: 外部素材目录候选（按优先级探测，首个存在者生效）。
+#: 生产 Linux/WSL 与开发机 Windows 均为「项目父目录下的同级 input_videos」，
+#: 故以 PROJECT_ROOT.parent 为主，Windows 固定路径仅作兜底。
+INPUT_VIDEOS_CANDIDATES = (
+    PROJECT_ROOT.parent / "input_videos",
+    Path("/mnt/d/Workspace_Python/input_videos"),
+)
+
+def _input_videos_base() -> Path:
+    for c in INPUT_VIDEOS_CANDIDATES:
+        if c.is_dir():
+            return c
+    return INPUT_VIDEOS_CANDIDATES[0]
+
+INPUT_VIDEOS_BASE = _input_videos_base()
+
+def _env_val(args: argparse.Namespace) -> str:
+    """归一化 env 取值：args.env 可能是 str（argparse）或 Env 枚举。"""
+    e = getattr(args, "env", Env.CPU)
+    return e.value if isinstance(e, Env) else str(e)
 
 def _default_source(args: argparse.Namespace, filename: str) -> str:
     """获取默认源视频路径：优先用 args.source，否则用外部 input_videos 目录。"""
     if args.source:
         return args.source
-    p = INPUT_VIDEOS_BASE / filename
-    return str(p) if p.exists() else filename
+    for base in INPUT_VIDEOS_CANDIDATES:
+        p = base / filename
+        if p.exists():
+            return str(p)
+    return filename
 
 
 def build_test_matrix() -> List[TestCase]:
@@ -264,17 +286,35 @@ def build_test_matrix() -> List[TestCase]:
     ))
 
     # 8. 落表器自检 (CPU)
+    #    ⚠ GPU 点数据目录带轴后缀（gpu_t4_cq/gpu_t4_qp/gpu_l40_cq/gpu_l40_qp），
+    #    且 CQ/QP 两轴的点不可混池（见 eqq_pool_fit_table.py --axis 说明）⇒ 拆成两次调用。
     tests.append(TestCase(
         name="eqq_pool_fit_selftest",
         envs=[Env.CPU, Env.T4, Env.L40],
         cmd_builder=lambda args: [
             sys.executable, str(SCRIPTS["eqq_pool_fit"]),
-            "--sides", "6s,10s,legacy10s",
-            *([",gpu_t4"] if args.env == Env.T4 else []),
-            *([",gpu_l40"] if args.env == Env.L40 else []),
+            "--sides", ",".join(
+                ["6s", "10s", "legacy10s"]
+                + {"t4": ["gpu_t4_cq"], "l40": ["gpu_l40_cq"]}.get(_env_val(args), [])
+            ),
+            "--axis", "cq",
             "<", "/dev/null"
         ],
-        description="落表器 LOO 门禁 + 顺序无关性自检（软编 6 档 + GPU 档）",
+        description="落表器 LOO 门禁 + 顺序无关性自检（CQ 轴：软编 6 档 + GPU 档）",
+        required_files=[SCRIPTS["eqq_pool_fit"]],
+        timeout=300,
+    ))
+
+    tests.append(TestCase(
+        name="eqq_pool_fit_selftest_qp",
+        envs=[Env.T4, Env.L40],
+        cmd_builder=lambda args: [
+            sys.executable, str(SCRIPTS["eqq_pool_fit"]),
+            "--sides", {"t4": "gpu_t4_qp", "l40": "gpu_l40_qp"}.get(_env_val(args), "gpu_l40_qp"),
+            "--axis", "qp",
+            "<", "/dev/null"
+        ],
+        description="落表器 QP 轴 LOO 门禁（NVENC 硬编档，QUALITY_MAP_QP 候选）",
         required_files=[SCRIPTS["eqq_pool_fit"]],
         timeout=300,
     ))
@@ -297,7 +337,7 @@ def build_test_matrix() -> List[TestCase]:
         envs=[Env.CPU, Env.T4, Env.L40],
         cmd_builder=lambda args: [
             sys.executable, "-c",
-            "import sys; sys.path.insert(0, '/mnt/d/Workspace_Python/Video_Enhancement/src/utils'); "
+            f"import sys; sys.path.insert(0, {str(PROJECT_ROOT / 'src' / 'utils')!r}); "
             "from nvenc_tuning import NVENC_TUNE_VALUES, NVENC_MULTIPASS_VALUES, is_bitrate; "
             "print('TUNE:', NVENC_TUNE_VALUES); "
             "print('MULTIPASS:', NVENC_MULTIPASS_VALUES); "

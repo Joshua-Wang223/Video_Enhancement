@@ -1,27 +1,53 @@
 # L40 侧全流程验证立项
 
 ## 背景
-CPU 侧 7/7 测试已通过，T4 侧 h264/hevc 已验收，需在 L40 (Ada, sm89) 上完成 AV1 NVENC 全链路验收。
+
+CPU 侧与 T4 侧验证已收口，**唯一未覆盖的能力缺口是 AV1 NVENC 硬编全链路**（Turing 无 AV1 编码器，实跑报 `No capable devices found`）。因此本方案**只列必须在 L40/Ada(sm89) 上跑的项**；其余项在 CPU/T4 侧已完成，状态见 §「已在 CPU/T4 侧完成（不在本方案范围）」。
 
 ## 环境要求
 - L40 / Ada (sm89) / 驱动 ≥535 / CUDA 12.x
 - FFmpeg 9.0+ with av1_nvenc, h264_nvenc, hevc_nvenc
 - PyTorch CUDA 可用
-- 长视频素材：≥330s 真实素材（如 `01 the race to mystery island fixed.avi`）
+- 长视频素材：`../input_videos/01 the race to mystery island fixed.avi`（≥330s）
 - 模型权重就位
 
-## 验收范围（L40 独有 / 含 T4 复核）
+### 素材路径约定（2026-10-09 修正）
 
-| 测试项 | 脚本 | 关键判据 |
-|--------|------|----------|
-| plan_gate (完整) | `plan_implementation_gate.py` | 100/0/1 PASS（含 BEH-G9） |
-| crf_cq --gpu | `crf_cq_unification_verify.py` | G7-6 av1_nvenc -cq PASS / G7/G8 FAIL=0 |
-| av1_vp9_matrix (av1_nvenc) | `av1_vp9_quality_matrix.py` | AC1 QP=70 落带内 / AC2 -cq:v 32 PASS / AC4 B组 PASS |
-| av1_pipeline_smoke (S1~S8) | `av1_pipeline_smoke.py` | 15/16 PASS：帧守恒/解码级/编码器确认/内存泄漏斜率≤50MB/min |
-| nvenc_rc_diagnose | `nvenc_rc_mode_diagnose.py` | AV1 仅接受 constqp/vbr/cbr 确认 |
-| eqq_pool_fit (含 gpu_l40) | `eqq_pool_fit_table.py` | av1 CQ LOO≤5.9 / av1 QP LOO≤7.5 / 顺序无关性 |
+素材池在**仓库外**：`<项目父目录>/input_videos`（生产 Linux 与 WSL 同为 `/workspace/input_videos`）。
+- 仓库内**没有** `input_videos/` 目录，写 `input_videos/xxx.mp4` 会因 cwd 是仓库根而找不到文件。
+- 命令行一律写 **`../input_videos/xxx`**；脚本内默认素材目录由 `comprehensive_verify.py` 的 `INPUT_VIDEOS_CANDIDATES` 按 `PROJECT_ROOT.parent / "input_videos"` 优先探测，Windows 固定路径 `/mnt/d/Workspace_Python/input_videos` 仅作兜底。
+
+---
+
+## 验收范围（仅 L40 独占）
+
+**判据共同前提**：AV1 NVENC 可用性必须用**实跑一帧**判定，不能用 `ffmpeg -h encoder=av1_nvenc`（Turing 上也会打印选项表而误报可用）。
+
+| # | 测试项 | 脚本 | 为什么必须 L40 | 关键判据 |
+|---|--------|------|----------------|----------|
+| L40-1 | **AV1 长视频端到端冒烟 S1~S8** | `av1_pipeline_smoke.py --codec av1_nvenc` | 全链路唯一实跑 AV1 硬编的项；编排器 `envs=[L40]`，无其它环境可替代 | 帧守恒 / 解码级门禁 / 编码器确认 / S8 内存斜率 ≤50 MB/min |
+| L40-2 | **crf_cq --gpu · G7-6** | `crf_cq_unification_verify.py --gpu` | G7-6 是 av1_nvenc `-cq` 表值判定，T4 侧恒 SKIP | G7-6 av1_nvenc `-cq` PASS；G7/G8 FAIL=0 |
+| L40-3 | **AV1 质量矩阵 B 组 AC1** | `av1_vp9_quality_matrix.py --only av1_nvenc` | AC1 是 av1_nvenc `-qp` 落带扫描，T4 侧 B 组整体不执行 | 表值 QP 落带内；AC2 判据即 L40-2 的 G7-6；AC4 跨仓 B 组 |
+| L40-4 | **NVENC 标定落表门禁** | `eqq_pool_fit_table.py` | 复核 L40 上采的 av1_nvenc 点数据落表 LOO（非 GPU 需求，但**只能有 L40 数据才能判**） | `--axis cq --sides gpu_l40_cq`：av1_nvenc LOO ≤5.9；`--axis qp --sides gpu_l40_qp`：LOO ≤5.9 |
+
+### 不需要 L40 的项（从本方案移除）
+
+| 项 | 移除理由 |
+|----|----------|
+| `plan_gate` | 整体 CPU 可跑；无 GPU 时 R5/R7 降 WARN、R8/RT-0/SMOKE-0 降 SKIP，**无 FAIL** |
+| `nvenc_rc_diagnose` | **纯主机侧工具**：只读 ffmpeg 选项表 + 磁盘搜 `nvEncodeAPI.h` 文本解析，不建 NVENC session、不编码任何一帧；且全文零 AV1 内容（只看 h264_nvenc，退化到 hevc_nvenc）。`comprehensive_verify.py` 对它设 `required_gpu=True` 属过度门控 |
+| `verify_equal_quality` | `envs=[cpu]`，L40 队列本就不含 |
+| `crf_cq_cpu` | 纯静态/纯函数 |
+| `av1_vp9_matrix_cpu` | libvpx-vp9 / libsvtav1 / libaom-av1 软编族 |
+| `nvenc_vbr_hq_verify` | `envs=[t4]`，L40 队列本就不含 |
+| `segment_bitstream_verify` | ffmpeg 侧通用，不绑定 codec |
+| `eqq_pool_fit_selftest`（软编 6 档） | 纯 JSON 拟合 |
+| `calibrate_eq_selftest` / `nvenc_tuning_verify` | 纯函数自检 |
+
+---
 
 ## 执行命令
+
 ```bash
 cd /workspace/Video_Enhancement
 
@@ -31,46 +57,109 @@ python3 -c "import torch;print(torch.cuda.get_device_name(0),torch.cuda.is_avail
 for C in h264_nvenc hevc_nvenc av1_nvenc; do
   ffmpeg -hide_banner -f lavfi -i testsrc2=size=320x240:rate=30:duration=1 -c:v $C -f null - < /dev/null; echo "$C rc=$?"
 done
-# 期望: h264=0, hevc=0, av1=0
+# 期望: h264=0, hevc=0, av1=0   ← av1 rc≠0 即整批 L40 项无法执行，先停
 
-# 1. 完整验证（含 AV1 长视频冒烟）
+# 1. [L40-1] AV1 长视频端到端冒烟（S1~S8）
+#    素材路径由脚本默认目录探测（PROJECT_ROOT.parent/input_videos），
+#    也可用 --long-source 显式覆盖
+python3 Accessory/verify/av1_pipeline_smoke.py \
+    --src "../input_videos/01 the race to mystery island fixed.avi" \
+    --rate-modes constqp,vbr \
+    --segment-duration 30 --mem-interval 5 --mem-dump-dir /tmp/s8_mem \
+    --report verification_report/av1_smoke_L40_$(date +%F).md < /dev/null
+# 或走编排器（仅此一项；--only 过滤掉其余 11 个非 L40 子测试）
 python3 Accessory/verify/comprehensive_verify.py --env l40 \
-    -i input_videos/word_world_2.mp4 -o output.mp4 \
-    --source input_videos/word_world_2.mp4 \
-    --bitrate-source input_videos/new4_raw.mp4 \
-    --long-source "/mnt/d/Workspace_Python/input_videos/01 the race to mystery island fixed.avi" \
-    --smoke --smoke-mode interpolate_then_upscale \
-    --segment-duration 30 --mem-interval 5 --mem-dump-dir /tmp/s8_mem
+    --only av1_pipeline_smoke \
+    --long-source "../input_videos/01 the race to mystery island fixed.avi" \
+    --segment-duration 30 --mem-interval 5 --mem-dump-dir /tmp/s8_mem < /dev/null
 
-# 2. AV1 质量矩阵（仅 av1_nvenc）
+# 2. [L40-3] AV1 质量矩阵（仅 av1_nvenc）
 python3 Accessory/probe/av1_vp9_quality_matrix.py --quality-mode quality \
-    --src input_videos/word_world_2.mp4 --only av1_nvenc \
+    --src ../input_videos/word_world_2.mp4 --only av1_nvenc \
     --report verification_report/av1_vp9_matrix_L40_$(date +%F).md < /dev/null
 
-# 3. GPU 画质判据
+# 3. [L40-2] GPU 画质判据
 python3 Accessory/verify/crf_cq_unification_verify.py --gpu \
-    --source input_videos/word_world_2.mp4 \
-    --bitrate-source input_videos/new4_raw.mp4 \
+    --source ../input_videos/word_world_2.mp4 \
+    --bitrate-source ../input_videos/new4_raw.mp4 \
     --report verification_report/crfcq_gpu_L40_$(date +%F).md < /dev/null
 
-# 4. 落表器含 GPU 侧
-python3 Accessory/probe/eqq_pool_fit_table.py --sides 6s,10s,legacy10s,gpu_l40 < /dev/null
+# 4. [L40-4] 落表门禁（CQ / QP 两轴点数据不可混池，必须分两次调用）
+#    ⚠ 目录名带轴后缀：gpu_l40_cq / gpu_l40_qp。旧写法 `--sides gpu_l40` 会
+#    匹配不到任何目录 → 三个 NVENC 档「拟合失败（样本 0 < 4）」但仍 exit 0（静默假通过）
+python3 Accessory/probe/eqq_pool_fit_table.py --sides gpu_l40_cq --axis cq < /dev/null
+python3 Accessory/probe/eqq_pool_fit_table.py --sides gpu_l40_qp --axis qp < /dev/null
+# 期望: av1_nvenc CQ LOO ≤5.9 / QP LOO ≤5.9（注意 QP 档门限同为 5.9，
+#       7.5 只放宽给 librav1e 族），顺序无关性 3 seed 逐位一致
 
-# 5. 跨仓真源一致
-cd /workspace/VidUtils && python3 verify/verify_quality_mapping.py < /dev/null
-# ⑨ 组 14/14 必须一致
+# 5. 跨仓真源一致（非 L40 独占，但每次改动质量表后需复跑）
+cd /workspace/VidUtils && python3 Accessory/verify/verify_quality_mapping.py < /dev/null
+# ⚠ 脚本已于 2026-10-06 从 verify/ 迁至 Accessory/verify/（VU 提交 ebdad41），
+#   旧路径 /workspace/VidUtils/verify/ 已空
+# 期望: ⑨ 组 14/14 一致
+# ⚠ 已知非 AV1 差异（2026-10-09 实测，不在本方案范围）:
+#   ⑦ [7] --threads 显式值两边不一致（VE 得 '3' / VU 得 '2'）⇒ 该组退出码非 0，
+#     需单独立项修 VU 侧 vidcrop_hwaccel.py 的 --threads 钳位
 ```
 
-## 门禁基线（2026-10-06 L40 实测）
-- `plan_implementation_gate`: 100 PASS / 0 FAIL / 1 SKIP
-- `crf_cq --gpu`: 113 PASS / 0 FAIL / 3 WARN
-- `av1_vp9_quality_matrix`: AC1 -qp 70 落带内 (1.07× / −1.13 dB) / AC2 +0.16 dB / AC4 1.14× / −0.29 dB
-- `av1_pipeline_smoke`: S1~S8 退出码 0，constqp S3 计数差异非功能性，S8 斜率通过
-- 跨仓 ⑨ 组: 14/14 一致
+---
+
+## 门禁基线（2026-10-06 L40 历史实测，⚠ 见下方证据强度说明）
+
+- `av1_vp9_quality_matrix`: AC1 `-qp 70` 落带内（1.07× / −1.13 dB）/ AC2 +0.16 dB / AC4 1.14× / −0.29 dB
+- `av1_pipeline_smoke`: S1~S8 退出码 0；constqp 臂 S3 计数差异为脚本 double-count，非管线缺陷；vbr 臂 8/8 全 PASS，RSS 斜率 −2.8 MB/min
+- `crf_cq --gpu`: 历史记为 111 PASS / 0 FAIL / 5 SKIP，其中 **G7-6 为 WARN（−2.14 dB / 0.87×）**——与 §「执行命令」要求的 PASS 不符，需在本轮实跑中确认是否已随 `-cq 27 → -cq 32` 修正
+- 落表：`QUALITY_MAP['av1_nvenc']=(1.4566,1.2165,0,63)`（LOO[0,27] 3.13）、`QUALITY_MAP_QP['av1_nvenc']=(7.9338,-97.5136,0,255)`（LOO 2.61）
+
+**证据强度警告**：`memory/av1-nvenc-l40-calibration.md` 末节已把「L40 标定测试已执行」降级为**仓内不可审计**（审计链 6 处断点：无 GPU 标定日志、MANIFEST 未收录 `gpu_l40_*`、workdir 不存在等）。上述基线数字只能作**历史参考**，本轮须以实跑报告为准，不得反向引用为「已验收」。
+
+**S8 峰值基线注意事项**：`--mem-peak-mb` 默认 16000 MB 是按 **T4 / 720×576 / bs=24** 标定的（`memory/t4-s8-findings-and-blockers.md`）。L40 + `interpolate_then_upscale` 上分辨率下须按实际 batch-size 重标定，否则会假 FAIL。
+
+---
+
+## 已在 CPU/T4 侧完成（不在本方案范围）
+
+> 核查日期 2026-10-09。证据强度已逐项标注，**⚠ 标记表示只有自述/commit message、无报告文件留痕**。
+
+### T4 侧（Tesla T4, SM75, 14.6 GiB）
+
+| 项 | 结论 | 证据 |
+|----|------|------|
+| `plan_gate` 完整 | ✅ 86 PASS / 0 FAIL / 1 WARN / 2 SKIP（共 89 项） | `verification_report/verification_report_20261009_042708.json`。WARN=`BEH-ERR`(`_session_gen`)，该缺陷已于提交 `d215fc2`（04:39）修复，**该报告早于修复 12 分钟**；SKIP=R8(RVML 提示)、RT-0(未给 `-o`) |
+| `crf_cq_unification_verify --gpu` | ✅ 114 PASS / 0 FAIL / 2 SKIP | `verification_report/CRF_CQ统一验证报告_20261009_035735.md`。SKIP: `G7-6` av1_nvenc「No capable devices found」+ `G8-4*`。**注：AV1 相关项仍需 L40-2 复跑** |
+| `segment_bitstream_verify_v5` | ✅ hevc+LA=8 / 720p：frames=packets=603，帧守恒 OK | 提交 `6ed9ceb` message |
+| `nvenc_vbr_hq_verify`（V8~V15） | ✅ 裁定方案 A 并落地：驱动接受 `rc_ptr[1]=32`，三档字节互异（1076383 / 2159969 / 1018148）；ΔVMAF −0.048 / −0.130 | `memory/t4-vbrhq-verification-plan.md` |
+| `nvenc_rc_diagnose` | ✅ V11：VBR_HQ 未在 SDK 头文件、FFmpeg9 已移除、`-rc` 仅 constqp/vbr/cbr | `Plan/T4_NVENC_vbr_hq移除_验证专项.md:180`；`memory/nvenc-rc-enum-illegal-vbr-hq.md` |
+| h264/hevc 端到端冒烟（S1~S8 代理） | ✅ hevc 两臂 14 PASS / 2 FAIL；h264 constqp 7/2、vbr_hq **0/1**（B1 缺陷首现，已由 `d215fc2` 修） | `verification_report/s8_t4_*.md` + 原始采样 `s8_20261004_raw/*.mem.tsv` |
+| NVENC 标定落表 | ✅ T4-1~T4-9 全绿：CQ h264 LOO 3.98 / hevc 5.81；QP h264 3.47 / hevc 3.72 | `memory/equal-quality-t4-nvenc-calibration.md`；点数据 `points/gpu_t4_{cq,qp}/` |
+| **T4 跑不了 AV1（已实测确认）** | ⛔ 4 处独立证据：`av1_vp9_matrix_T4_20260929.md:16`（`av1_nvenc ⏭️ SKIP`「Cannot load libcuda.so.1」，B 组整体未执行）、`CRF_CQ统一验证报告_20261009_035735.md:158`、`Plan/PROMPT_T4_NVENC等质量标定专项执行方案.md:34`、`Plan/PROMPT_T4_全流程验证.md:34` | — |
+
+### CPU 侧（7 项）
+
+| 项 | 结论 | 证据强度 |
+|----|------|----------|
+| `verify_equal_quality` | 537s，ΔVMAF ≤1.0，5/5 rc=0 | ⚠ 仅 commit `9d15dc6` message + `memory/MEMORY.md:182` 一行摘要，**无报告文件/日志留痕**。索引指向的 `memory/cpu-verification-pass.md` **两侧镜像均不存在且 git 全历史从未有过**（悬空链接） |
+| `crf_cq_cpu` | 5s，G1~G6/G10 PASS | ⚠ 同上 |
+| `av1_vp9_matrix_cpu` | 582s，libvpx-vp9 / libsvtav1 / libaom-av1 三软编 PASS | ⚠ 同上 |
+| `segment_bitstream_verify` | 2s，帧守恒/解码级 PASS | ⚠ 同上 |
+| `eqq_pool_fit_selftest` | 1.7s，LOO/顺序无关性 PASS | ⚠ 同上 + 提交 `6ed9ceb` |
+| `calibrate_eq_selftest` | 0.3s，39 项 PASS | ⚠ 同上 |
+| `nvenc_tuning_verify` | 0.1s，参数表 PASS | ⚠ 同上 |
+| `plan_gate` / `segment_bitstream`（CPU 轮） | **预期跳过**（`BEH-G9` 需 GPU；后一项需 `-o` 已存在的输出视频） | — |
+
+**口径纠正**：原始表述为「CPU 侧 7/7 通过」，准确说法是 **7 项 PASS + plan_gate 预期跳过**（`MEMORY.md:182` 明写）。且该轮环境记为 WSL Ubuntu，与当前 Linux 容器不同。
+
+### 跨仓一致性
+
+| 项 | 结论 | 证据 |
+|----|------|------|
+| ⑨ 组 14/14 一致 | ⚠ 最近一次**实跑**记录在案为 2026-10-03（`memory/eqq-batch-measure-parallel-constraints.md:467`）；2026-10-09 的「14/14 一致」（`memory/implementation-verification-report-2026-10-09.md`）是**静态代码核对**而非实跑 | 两仓 `verification_report/` 与 `*.log` 内**均无 ⑨ 组运行原始输出** |
+| ⑨ 组当前实跑状态 | ⚠ 2026-10-09 实测：**13 PASS + 1 FAIL**（⑦ `[7] --threads 显式值两边不一致`，VE 得 `'3'` / VU 得 `'2'`），该组退出码非 0 | 本轮实跑（脚本已迁至 `Accessory/verify/`） |
+
+---
 
 ## 产出物
-- `verification_report/verification_report_YYYYMMDD_HHMMSS.json/.md`
-- `verification_report/crfcq_gpu_L40_YYYYMMDD.md`
-- `verification_report/av1_vp9_matrix_L40_YYYYMMDD.md/.json`
 - `verification_report/av1_smoke_L40_YYYYMMDD.md` + `/tmp/s8_mem/*.mem.tsv`
-- 落表：`QUALITY_MAP['av1_nvenc']=(1.4566,1.2165,0,63)` `QUALITY_MAP_QP['av1_nvenc']=(7.9338,-97.5136,0,255)`
+- `verification_report/av1_vp9_matrix_L40_YYYYMMDD.md/.json`
+- `verification_report/crfcq_gpu_L40_YYYYMMDD.md`
+- 落表复核输出：`QUALITY_MAP['av1_nvenc']` / `QUALITY_MAP_QP['av1_nvenc']` 应与 `src/utils/quality_map.py` 现值一致
