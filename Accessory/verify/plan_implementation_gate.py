@@ -1103,12 +1103,37 @@ def c_p3_5():
 # C. 行为验证（吸收自 test_regression_min.py + 新增 E/F 组）
 # ===========================================================================
 
+# ── 行为组检查项数登记 + 执行台账 ─────────────────────────────────
+# [GATE-GROUP-LEDGER] run_behavior_phase() 的组级 except 此前把整组结果
+# 吞成一条 BEH-ERR，连带该组全部检查静默消失（实测 89 项 → 实为 101 项），
+# 且总数变化无任何告警。此处给每个行为组登记**声明项数**，并让 _beh/_beh_skip
+# 把已产出的检查记入台账：组级异常时即可显式报出「本组 N 项未执行」；
+# 成功路径末尾再用声明项数做**漂移自检**——新增/删除检查而忘改本表即 FAIL，
+# 防止同类无声缩项再次发生。
+# ⚠ 项数为「检查槽位数」（_beh + _beh_skip 调用点），与运行环境无关：
+#   组内条件分支只改 detail 文本，不增减检查槽位。
+_GROUP_EXPECTED = {
+    "beh_group_a": 5,
+    "beh_group_b": 7,
+    "beh_group_c": 5,
+    "beh_group_d": 13,
+    "beh_group_e": 2,
+    "beh_group_f": 3,
+    "beh_group_g": 13,
+    "beh_group_h": 3,
+}
+_LEDGER: Dict[str, List["CheckResult"]] = {}  # 组名 -> 已产出的检查（异常时保留用）
+_CURRENT_GROUP = ""                  # 当前执行的组名（_beh/_beh_skip 记账用）
+
+
 def _beh(phase: str, bid: str, name: str, ok: bool,
          detail: str = "", suggestion: str = "") -> CheckResult:
-    return CheckResult(id=bid, phase=phase, name=name,
-                       status=(Status.PASS if ok else Status.FAIL),
-                       method="行为执行", criteria=name,
-                       detail=detail, suggestion=suggestion)
+    r = CheckResult(id=bid, phase=phase, name=name,
+                    status=(Status.PASS if ok else Status.FAIL),
+                    method="行为执行", criteria=name,
+                    detail=detail, suggestion=suggestion)
+    _LEDGER.setdefault(_CURRENT_GROUP, []).append(r)
+    return r
 
 
 class _capture_stdout:
@@ -1141,9 +1166,11 @@ class _capture_stdout:
 
 
 def _beh_skip(phase: str, bid: str, name: str, reason: str) -> CheckResult:
-    return CheckResult(id=bid, phase=phase, name=name, status=Status.SKIP,
-                       method="行为执行", criteria=name,
-                       detail=f"SKIP: {reason}")
+    r = CheckResult(id=bid, phase=phase, name=name, status=Status.SKIP,
+                    method="行为执行", criteria=name,
+                    detail=f"SKIP: {reason}")
+    _LEDGER.setdefault(_CURRENT_GROUP, []).append(r)
+    return r
 
 
 def _setup_behavior_paths():
@@ -2012,17 +2039,40 @@ def beh_group_h() -> List[CheckResult]:
 def run_behavior_phase() -> List[CheckResult]:
     _setup_behavior_paths()
     results: List[CheckResult] = []
+    global _CURRENT_GROUP
     for fn in (beh_group_a, beh_group_b, beh_group_c, beh_group_d,
                beh_group_e, beh_group_f, beh_group_g, beh_group_h):
+        _CURRENT_GROUP = fn.__name__
+        _LEDGER[fn.__name__] = []
         try:
-            results.extend(fn())
+            group = fn()
         except Exception as e:
+            # [GATE-GROUP-LEDGER] 组级异常：此前整组结果（含异常前已产出的
+            # 检查）被吞成一条 WARN 且总数无告警。此处**保留**已产出的检查，
+            # 仅丢失未执行部分，并显式报出未执行项数。
+            expected = _GROUP_EXPECTED.get(fn.__name__, 0)
+            produced = _LEDGER.get(fn.__name__, [])
+            results.extend(produced)
             results.append(CheckResult(
                 id="BEH-ERR", phase="C-行为", name=fn.__name__,
                 status=Status.WARN, method="行为执行",
                 criteria="组执行不崩溃",
-                detail=f"组级异常: {type(e).__name__}: {e}",
-                suggestion="人工复核该组"))
+                detail=(f"组级异常: {type(e).__name__}: {e}"
+                        f"（本组声明 {expected} 项，已保留异常前产出的 "
+                        f"{len(produced)} 项，**{expected - len(produced)} 项未执行**）"),
+                suggestion=(f"人工复核该组（{expected - len(produced)} 项被吞）")))
+        else:
+            results.extend(group)
+            # 漂移自检：实际项数与声明不一致 ⇒ 检查有增删而 _GROUP_EXPECTED
+            # 未同步（正是 89→101 无声缩项的根因），FAIL 暴露之。
+            expected = _GROUP_EXPECTED.get(fn.__name__, 0)
+            if len(group) != expected:
+                results.append(_beh("C-行为", "BEH-META",
+                        f"{fn.__name__} 项数漂移自检", False,
+                        f"实际 {len(group)} 项 ≠ 声明 {expected} 项"
+                        f"（新增/删除检查后须同步 _GROUP_EXPECTED）",
+                        "更新 _GROUP_EXPECTED 后重跑"))
+    _CURRENT_GROUP = ""
     return results
 
 
