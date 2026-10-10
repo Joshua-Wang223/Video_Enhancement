@@ -155,11 +155,28 @@ cd /workspace/VidUtils && python3 Accessory/verify/verify_quality_mapping.py < /
 
 > 核查日期 2026-10-09。证据强度已逐项标注，**⚠ 标记表示只有自述/commit message、无报告文件留痕**。
 
+### plan_gate 记录更正（2026-10-10）
+
+⚠ 本文件原写「`plan_gate` 86 PASS / 0 FAIL / 1 WARN / 2 SKIP（共 89 项），WARN=`BEH-ERR`(`_session_gen`)
+已于 `d215fc2`（04:39）修复，该报告早于修复 12 分钟」——**该结论不成立，已更正**。
+
+审核他人在制品时发现：**晚于 `d215fc2` 整整 1 小时的 05:42/05:45 报告仍复现同一 `BEH-ERR`**。
+根因不是生产代码：`d215fc2` 的生产侧修复（`external/ifrnet_video/nvenc_sdk.py:760/2360-2362`）是对的，
+但门禁桩 `plan_implementation_gate.py::make_enc()` 走 `NVENCEncoder.__new__()` **绕过 `__init__`**，
+没补 `_session_gen` ⇒ `_stream_begin()` 抛 `AttributeError` ⇒ 被**组级** `BEH-ERR` 吞掉整组结果。
+
+**后果**：`BEH-G9/G10/G11` 等 **12 项从未真正执行**，门禁长期只报 89 项（实为 101 项），
+且总数变化无任何告警。`d215fc2` 自述的「plan_gate 86 PASS / 0 FAIL」因同一门禁自身失效而**不可采信**。
+
+已修桩并复核（同命令）：**101 项 / 97 PASS / 0 FAIL / 2 WARN / 2 SKIP**，
+`BEH-G9/G10/G11` 恢复执行且全部 PASS ⇒ 确认生产修复有效，缺陷仅在门禁桩。
+剩余 2 WARN 为环境差异（R5 CUDA、R7 NVENC）。
+
 ### T4 侧（Tesla T4, SM75, 14.6 GiB）
 
 | 项 | 结论 | 证据 |
 |----|------|------|
-| `plan_gate` 完整 | ✅ 86 PASS / 0 FAIL / 1 WARN / 2 SKIP（共 89 项） | `verification_report/verification_report_20261009_042708.json`。WARN=`BEH-ERR`(`_session_gen`)，该缺陷已于提交 `d215fc2`（04:39）修复，**该报告早于修复 12 分钟**；SKIP=R8(RVML 提示)、RT-0(未给 `-o`) |
+| `plan_gate` 完整 | ⚠ **原记录有误，已更正（2026-10-10）** | 见下方「plan_gate 记录更正」 | 详见 `memory/gate-stub-session-gen-audit-2026-10-10.md` |
 | `crf_cq_unification_verify --gpu` | ✅ 114 PASS / 0 FAIL / 2 SKIP | `verification_report/CRF_CQ统一验证报告_20261009_035735.md`。SKIP: `G7-6` av1_nvenc「No capable devices found」+ `G8-4*`。**注：AV1 相关项仍需 L40-2 复跑** |
 | `segment_bitstream_verify_v5` | ✅ hevc+LA=8 / 720p：frames=packets=603，帧守恒 OK | 提交 `6ed9ceb` message |
 | `nvenc_vbr_hq_verify`（V8~V15） | ✅ 裁定方案 A 并落地：驱动接受 `rc_ptr[1]=32`，三档字节互异（1076383 / 2159969 / 1018148）；ΔVMAF −0.048 / −0.130 | `memory/t4-vbrhq-verification-plan.md` |

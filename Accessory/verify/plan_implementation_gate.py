@@ -1499,6 +1499,15 @@ def beh_group_g() -> List[CheckResult]:
         class _Mux:
             def write_sps_pps(self, s): enc._muxer_writes.append(s)
         enc._muxer_ref = _Mux()
+        # [FIX-B1-SPS-PPS-SESSION-REUSE] d215fc2 起 _stream_begin() 会比对会话代数，
+        # 而本桩走 __new__ 绕过 __init__，未补这两个属性会抛 AttributeError，
+        # 被 BEH-ERR 整组吞掉 ⇒ 连带 G9~G11 等 12 项静默消失（89 项 → 实为 101 项）。
+        # 取值须与真实序列一致：__init__ 给 _session_gen=0 / _cached_sps_pps_gen=-1，
+        # 而 _stream_begin 每段开头会把 _cached_sps_pps_gen 同步成 _session_gen。
+        # 故「同一会话、缓存已填充」的桩应取二者相等（0/0）；若取 -1/0 会误判为
+        # 「缓存属于旧会话」而清空，得到假 FAIL。
+        enc._session_gen = 0
+        enc._cached_sps_pps_gen = 0
         return enc
 
     # G1: prepend — IDR+有缓存+缺参数集 → 补挂
