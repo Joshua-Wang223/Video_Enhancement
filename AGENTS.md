@@ -117,4 +117,6 @@ diff -r "$A" "$B" && echo "✅ 两处一致"   # 同步后必须复核
 
 - `Accessory/` — 临时诊断脚本（test_nvenc_*.py、verify_segment_bitstream*.py 等），**非 pytest 套件**，不要假设 pytest 可用
 - `Video_Enhancement_github_token.txt` — 敏感凭据文件，除非用户明确要求，不读取、不回显其内容
-- 仓库当前**未初始化 git**（无 .git）
+- 仓库**已初始化 git**（origin `git@github.com:Joshua-Wang223/Video_Enhancement.git`，分支 `main`）；日常同步走普通 `git commit` + `git push origin main`，`force_push_github.sh` 是「用本机工作区全量覆盖远程」的应急路径，日常不用
+- ⚠️ 本容器**无 GitHub HTTPS 凭据**，SSH 走 `~/.ssh/id_ed25519`（已验证可读 `origin/main`）；若 fetch/push 挂起，用 `GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=15'` 前缀强制非交互 SSH
+- ⚠️ 首次连接 GitHub 时 SSH 主机密钥确认会**无响应挂起**（仓库首次 fetch 即因此卡死）；`known_hosts` 已写入 `github.com` 条目，后续正常
