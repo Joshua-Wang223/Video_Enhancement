@@ -46,6 +46,15 @@ metadata:
 - 口径对齐：T4 侧记为 114 PASS/0 FAIL/2 SKIP，L40 侧 113+3 WARN=116，与 T4 的 114+2 SKIP=116 守恒 —— 差别只是 G7-6 在 T4 上 SKIP、在 L40 上真跑出 WARN。
 - ⚠ 注意 `memory/l40-av1-pipeline-verification.md:17` 记的是更早的 `-cq:v 27` 读数「ΔPSNR **+0.16 dB** / 1.28× PASS」。**同一 G7-6 在 cq27 时 PASS、改 cq32 后变 −2.14 dB WARN** ⇒ 那条历史行已过期，勿再引用为「已验收」。
 
+> **🔄 2026-10-14 修订：本节「判据未达成」的定性已被推翻**（上述读数本身仍然有效）。
+> 同轮 **G7-5「VMAF 对齐检查」= PASS，最大偏差 0.89**（锚点 VMAF 96.04，阈值 2.5），
+> 且落表 LOO 的单位是 **ΔVMAF**（`eqq_pool_fit_table.py::loo()` 明写 "worst ΔVMAF"）⇒
+> **G7-6 的 −2.14 dB 是 plain-PSNR 口径的跨编解码器偏置（AV1 族结构性，见 G7-7 libsvtav1 同素材 −1.64 dB），
+> 不是表值错**；`-cq 27→32` 只是沿帕累托前沿滑动（PSNR 对齐要 1.28× 码率），**没有任何常数能同时满足两轴**。
+> 已采纳**口径修订（方案 A）**：L40-2 判据改为「G7-5 VMAF 对齐 PASS + G7/G8 FAIL=0」，
+> G7-6 保留为观测项（继续 WARN）不作 FAIL 门禁。完整证据链见
+> [[g7-6-metric-mismatch-2026-10-14]]。**代码与质量表零改动。**
+
 ## 3. L40-3 AV1 质量矩阵 AC1 —— ✅ PASS
 
 `verification_report/av1_vp9_matrix_L40_2026-10-09.md`（`--only av1_nvenc`，A/B 组共 5 行）
@@ -161,7 +170,7 @@ python3 Accessory/verify/av1_pipeline_smoke.py \
 | 项 | 方案基线 | 本轮实测 | 结论 |
 |----|---------|---------|------|
 | AV1 落表 CQ/QP | LOO 3.13 / 2.61 | 3.13 / 2.61 | 一致 ✅ |
-| G7-6 | WARN −2.14 dB / 0.87×（待确认是否已修） | WARN −2.14 dB / 0.87× | **未修正，判据未达成** ❌ |
+| G7-6 | WARN −2.14 dB / 0.87×（待确认是否已修） | WARN −2.14 dB / 0.87× | 读数复现 ✅；~~判据未达成~~ ❌ **2026-10-14 修订：定性错误，实为 plain-PSNR 口径错配，已改判据（见 [[g7-6-metric-mismatch-2026-10-14]]）** |
 | AC1 `-qp 70` | 1.07× / −1.13 dB | 1.07× / −1.13 dB | 一致 ✅ |
 | AV1 冒烟 S1~S8 | constqp S3 double-count；vbr 8/8 | 两臂 S1~S7 全通，帧数精确守恒（产物 1605 = 分段 1605，源 803） | 无 S3 差异 ✅ |
 
@@ -172,3 +181,21 @@ python3 Accessory/verify/av1_pipeline_smoke.py \
 - [[av1-nvenc-l40-calibration]] — 标定落表史与「须 constqp,vbr 对照」铁律
 - [[l40-av1-pipeline-verification]] — ⚠ 其中 `:17` 的 `-cq 27` PASS 读数已过期（见 §2）
 - [[feedback_closure_evidence_same_scope]] — 判 FAIL 闭环须同口径证据（本轮 S8 即照此执行）
+
+## 8. L40-1 折中执行方案定案（2026-10-14）
+
+完整 L40-1（Clifford 720.5s）经实测锚点外推需 **2.5~4.5 h**（两臂）：管线本身只占 10~20 min/臂，
+**大头是 4 次全量 CPU 解码**（管线内每段解码门禁 + S3 `ffprobe -count_frames` + S4 `validate_decodable_video` + S5 `segment_bitstream_verify_v5`），各 7~15 min/臂；而短素材版（new5_raw 1080p→4K）已覆盖功能正确性且分辨率高于 Clifford。
+
+**定案（L40-1b 降级版）**：120s 裁剪片（`ffmpeg -ss 60 -t 120` 重编码，避免 `-c copy` 切点落在非关键帧）+ **constqp 单臂** + S3 复用 ⇒ L40 全套 4 项 **30~50 min**。
+- **保留**：AV1 全链路实跑、帧守恒、解码门禁、单 IDR、frame_num、编码器确认、2880×2304 输出分辨率。
+- **已知未覆盖（须留档）**：多段拼接段数 24→4、S8 内存缓漂判别力（~15 min→~4 min 平台期）、长跑尾帧历史缺陷。
+- ⚠ 单臂化后若 constqp 臂 S8 超 50 MB/min，**无同轮 vbr 对照**，需补跑。
+
+**[S3-REUSE] 代码改动（已落地并 CPU 验证）**：`Accessory/verify/av1_pipeline_smoke.py` 把 S4
+（`validate_decodable_video`）**前移**到 S3 之前，S3 的「产物帧数」复用 S4 的 `decoded_frames`，
+省掉一次全量 `ffprobe -count_frames`（长视频每臂 ~10~15 min）；**口径不变**（同为解码级计数），
+S4 不可用/返回 `None` 时自动回退独立计数。验证：`--checks-only` 跑 250 帧合成片，S3 detail 显示
+「帧数复用 S4 解码计数」、S4/S5/S7 PASS；改动后 `plan_implementation_gate.py` 仍 **101 项 / 96 PASS / 0 FAIL**。
+
+口径修订见 [[g7-6-metric-mismatch-2026-10-14]]；CPU 侧 10 项补跑见 [[cpu-side-rerun-2026-10-14]]。

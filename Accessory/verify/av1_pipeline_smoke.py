@@ -503,23 +503,17 @@ def run_one(ffmpeg: str, ffprobe: str, src: Path, out: Path, rate_mode: str,
     rec["segments"] = len(seg_ok)
     rec["segment_frames_sum"] = seg_sum
 
-    # ③ 产物帧数守恒（解码级计数，不是容器元数据）
-    frames = probe_int(ffprobe, out, "nb_read_frames")
-    src_frames = source_frame_count(ffprobe, src)
-    if seg_sum:
-        check("S3", "产物可解码帧数 = 各段之和", frames == seg_sum,
-              f"产物 {frames} 帧 vs 分段合计 {seg_sum} 帧；源 {src_frames} 帧")
-    else:
-        check("S3", "产物可解码帧数 = 各段之和", None if frames > 0 else False,
-              f"产物 {frames} 帧（无跑批日志，跳过与分段合计的等式核对）；源 {src_frames} 帧")
-    rec["frames"] = frames
-
-    # ④ 解码级门禁（复用生产同一函数）
+    # ③ 解码级门禁（复用生产同一函数）
+    # ⚠ [S3-REUSE 2026-10-14] 本块**必须先于 S3 执行**：S3 的「产物帧数」改为复用这里的
+    #    解码计数，省掉一次全量 `ffprobe -count_frames`（长视频每臂 ~10~15 min）。
+    #    口径不变（两者都是 decode 计数），S4 不可用/返回 None 时回退独立计数。
     verdict = "(未执行)"
+    decoded_frames: Optional[int] = None
     try:
         sys.path.insert(0, str(ROOT / "src"))
         from utils.video_utils import validate_decodable_video  # noqa: PLC0415
         ok, rep = validate_decodable_video(str(out), count_mode="decode")
+        decoded_frames = rep.get("decoded_frames")
         verdict = (f"ok={ok} reason={rep.get('reason')} frames={rep.get('decoded_frames')} "
                    f"errors={rep.get('decode_errors')} path={rep.get('hwaccel_path')}")
         check("S4", "validate_decodable_video(count_mode=decode)", bool(ok), verdict)
@@ -527,6 +521,22 @@ def run_one(ffmpeg: str, ffprobe: str, src: Path, out: Path, rate_mode: str,
         check("S4", "validate_decodable_video(count_mode=decode)", None,
               f"不可用：{type(exc).__name__}: {exc}")
     rec["validate"] = verdict
+
+    # ④ 产物帧数守恒（解码级计数，不是容器元数据）
+    # [S3-REUSE] 优先用 S4 的 decoded_frames（同一 decode 路径已数过），拿不到才回退
+    #    ffprobe -count_frames；两者同为解码级口径，判据强度不变。
+    reused = isinstance(decoded_frames, int) and decoded_frames > 0
+    frames = int(decoded_frames) if reused else probe_int(ffprobe, out, "nb_read_frames")
+    src_frames = source_frame_count(ffprobe, src)
+    cnt_note = ("帧数复用 S4 解码计数" if reused else "帧数来自 ffprobe -count_frames")
+    if seg_sum:
+        check("S3", "产物可解码帧数 = 各段之和", frames == seg_sum,
+              f"产物 {frames} 帧 vs 分段合计 {seg_sum} 帧；源 {src_frames} 帧；{cnt_note}")
+    else:
+        check("S3", "产物可解码帧数 = 各段之和", None if frames > 0 else False,
+              f"产物 {frames} 帧（无跑批日志，跳过与分段合计的等式核对）；"
+              f"源 {src_frames} 帧；{cnt_note}")
+    rec["frames"] = frames
 
     # ⑤ 段级码流硬指标（--skip-chroma：色度检查对本素材是内容相关假阳性）
     vrc, vout, _ = run([sys.executable, str(VERIFY5), str(out), "--skip-chroma"], 3600)

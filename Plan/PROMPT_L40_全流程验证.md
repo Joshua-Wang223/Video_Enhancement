@@ -9,6 +9,13 @@ CPU 侧与 T4 侧验证已收口，**唯一未覆盖的能力缺口是 AV1 NVENC
 > 已整理为 §「CPU 侧待补跑清单」（含一键命令与逐项手工命令），切换主机后按清单落盘即可。
 > **2026-10-14 执行完毕**：清单 10 项已在 WSL 无 GPU 容器（`/mnt/d/...` 布局）**全部实跑 rc=0**
 > （见各节「执行结果（2026-10-14，10/10 完成）」），L40 独占 4 项仍待 GPU 在场时执行。
+>
+> **2026-10-14 口径修订（方案 A，用户拍板）——L40-2 判据变更**：原判据「G7-6 av1_nvenc `-cq` PASS」
+> **已撤销**。G7-6 的 −2.14 dB 是 **plain-PSNR 口径的 AV1 族结构性偏置，不是表值错**
+> （同轮 G7-5 VMAF 对齐 PASS、偏差 0.89；落表 LOO 单位是 ΔVMAF；libsvtav1 同素材 −1.64 dB 同为 WARN）。
+> **新判据：G7-5 VMAF 对齐 PASS（ΔVMAF ≤2.5）+ G7/G8 FAIL=0**；G7-6 保留为备案观测项。
+> **代码与质量表零改动**，跨仓 ⑨ 组（V1/V2 只断言量程）无需同步。完整证据链见
+> `memory/g7-6-metric-mismatch-2026-10-14.md`。⇒ **重跑 L40-2 时不期望 G7-6 变 PASS，判据已改。**
 > 该章同时记录了 `comprehensive_verify.py` 两处过度门控（`nvenc_rc_diagnose` 被 `envs=[T4,L40]`
 > + `required_gpu=True` 挡住，实际是纯主机侧工具）。
 
@@ -38,9 +45,10 @@ CPU 侧与 T4 侧验证已收口，**唯一未覆盖的能力缺口是 AV1 NVENC
 | # | 测试项 | 脚本 | 为什么必须 L40 | 关键判据 |
 |---|--------|------|----------------|----------|
 | L40-1 | **AV1 长视频端到端冒烟 S1~S8** | `av1_pipeline_smoke.py --codec av1_nvenc` | 全链路唯一实跑 AV1 硬编的项；编排器 `envs=[L40]`，无其它环境可替代 | 帧守恒 / 解码级门禁 / 编码器确认 / S8 内存斜率 ≤50 MB/min |
-| L40-2 | **crf_cq --gpu · G7-6** | `crf_cq_unification_verify.py --gpu` | G7-6 是 av1_nvenc `-cq` 表值判定，T4 侧恒 SKIP | G7-6 av1_nvenc `-cq` PASS；G7/G8 FAIL=0 |
-| L40-3 | **AV1 质量矩阵 B 组 AC1** | `av1_vp9_quality_matrix.py --only av1_nvenc` | AC1 是 av1_nvenc `-qp` 落带扫描，T4 侧 B 组整体不执行 | 表值 QP 落带内；AC2 判据即 L40-2 的 G7-6；AC4 跨仓 B 组 |
-| L40-4 | **NVENC 标定落表门禁** | `eqq_pool_fit_table.py` | 复核 L40 上采的 av1_nvenc 点数据落表 LOO（非 GPU 需求，但**只能有 L40 数据才能判**） | `--axis cq --sides gpu_l40_cq`：av1_nvenc LOO ≤5.9；`--axis qp --sides gpu_l40_qp`：LOO ≤5.9 |
+| **L40-1b** | **AV1 冒烟【降级版·2026-10-14 定案】** 120s 裁剪片 + constqp 单臂 | 同上 + 前置 `ffmpeg -t 120` 裁剪 | 同 L40-1（仍实跑 AV1 全链路），只是把时长从 720.5s 压到 120s | 同 L40-1 各项；**时长类缺口（内存缓漂 / 长跑尾帧 / 24 段拼接）显式标注为已知未覆盖**，完整版建议排夜间无人值守 |
+| L40-2 | **crf_cq --gpu · G7-5/G7-6** | `crf_cq_unification_verify.py --gpu` | G7-5/6 是 av1_nvenc 质量对齐判定，T4 侧恒 SKIP | **G7-5 VMAF 对齐 PASS（ΔVMAF ≤2.5）**；G7/G8 FAIL=0；G7-6 的 plain-PSNR 读数为**备案观测项**（2026-10-14 口径修订，见下） |
+| L40-3 | **AV1 质量矩阵 B 组 AC1** | `av1_vp9_quality_matrix.py --only av1_nvenc` | AC1 是 av1_nvenc `-qp` 落带扫描，T4 侧 B 组整体不执行 | 表值 QP 落带内；AC2 判据即 L40-2 的 G7-5；AC4 跨仓 B 组 |
+| L40-4 | **NVENC 标定落表门禁** | `eqq_pool_fit_table.py` | 复核 L40 上采的 av1_nvenc 点数据落表 LOO（非 GPU 需求，但**只能有 L40 数据才能判**） | `--axis cq --sides gpu_l40_cq`：av1_nvenc LOO ≤5.9；`--axis qp --sides gpu_l40_qp`：LOO ≤5.9（⚠ LOO 单位是 **ΔVMAF 分**，非参数刻度） |
 
 ### CPU / 主机侧可执行项（不占 L40，可切任意主机跑）
 
@@ -139,6 +147,65 @@ CPU 侧表格（把 ❌ 改为 ✅ + 报告路径 + 实测数字），并按 AGE
 
 ---
 
+## 折中执行方案（2026-10-14 定案，推荐 · 约 30~50 min）
+
+> **背景**：完整 L40-1（720.5s Clifford）单轮实测需 **2.5~4.5 h**（两臂），其中大头不是 GPU 推理而是
+> **4 次全量 CPU 解码**（管线内每段解码门禁 + S3/S4/S5 各一次）。短素材版冒烟（new5_raw 1080p→**4K**，
+> 1605 帧）已覆盖功能正确性且分辨率高于 Clifford 的 2880×2304，**剩余独有缺口只与时长/段数相关**。
+> 经权衡定案：**用 120s 裁剪片 + constqp 单臂跑 L40-1b，把总时长压到 30~50 min**，
+> 时长类缺口显式留档，完整版排夜间无人值守。
+
+| 步骤 | 项 | 预计耗时 | 判据 |
+|---|---|---------|------|
+| 0 | 环境体检（三编码器实跑一帧） | ~1 min | h264/hevc/av1 rc=0，**任一非 0 即停** |
+| 1 | **L40-4** 落表双轴（纯 JSON，无需 GPU） | ~5 s | av1_nvenc CQ/QP 两轴 LOO ≤5.9（单位 ΔVMAF） |
+| 2 | **L40-3** AV1 矩阵 AC1 | 3~8 min | 表值 QP 落带内 |
+| 3 | **L40-2** crf_cq `--gpu` | 5~15 min | **G7-5 VMAF 对齐 PASS** + G7/G8 FAIL=0（G7-6 为备案观测项，**不期望变 PASS**） |
+| 4 | **L40-1b** AV1 冒烟降级版（120s / constqp 单臂 / S3 复用） | 15~20 min | S1~S8 全通（S8 斜率 ≤50 MB/min，**该时长下判别力有限**） |
+
+### 步骤 4 的素材裁剪与命令
+
+```bash
+# 4a. 裁 120s 子片（含 aac；用重编码而非 -c copy，避免切点落在非关键帧导致门禁噪声）
+ffmpeg -y -ss 60 -t 120 \
+  -i "../input_videos/大红狗 Clifford the Big Red Dog DVDR.58.mp4" \
+  -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -c:a aac -b:a 128k \
+  /tmp/clifford_120s.mp4 < /dev/null
+# 期望：~3000 源帧 / 120s / 720×576 / 25fps，源结构门禁 rc=0
+
+# 4b. 冒烟（constqp 单臂 + 显式 --mem-peak-mb 0 + S3 已复用 S4 计数）
+python3 Accessory/verify/av1_pipeline_smoke.py \
+    --src /tmp/clifford_120s.mp4 --codec av1_nvenc \
+    --rate-modes constqp --segment-duration 30 --batch-size 8 \
+    --mem-interval 5 --mem-peak-mb 0 \
+    --mem-dump-dir Accessory/data/s8_mem_L40_2026-10-14/clifford_120s \
+    --report verification_report/av1_smoke_L40_clifford120s_$(date +%F).md < /dev/null
+# ≈4500 输出帧（120s×2 插帧）→ 4 段；S3~S8 的四次全量解码已省掉一次（S3 复用 S4）
+```
+
+### 降级版保留的取舍（必须知情）
+
+| 维度 | 完整 L40-1 | **降级版 L40-1b** | 影响 |
+|---|---|---|---|
+| AV1 NVENC 全链路实跑 | ✅ | ✅ | 无损 |
+| 帧守恒 / 解码门禁 / 单 IDR / frame_num / 编码器确认 | ✅ | ✅ | 无损 |
+| 输出分辨率 | 2880×2304（720.5s） | 2880×2304（120s） | 无损（同链路同分辨率） |
+| 多段拼接段数 | 24 段 | **4 段** | ⚠ 段边界压力下降 |
+| S8 内存缓漂判别力 | ~15 min 斜率 | ~4 min 斜率 | ⚠ **弱**：短跑平台期平坦，缓泄漏可能被掩盖 |
+| 长跑尾帧（水彩/尾损历史缺陷） | 覆盖 | 部分 | ⚠ 未完整覆盖 |
+
+⇒ **功能正确性证据完整；时长鲁棒性证据仍为空**，须在本节与报告里显式留档，不得据降级版宣称「长视频已验收」。
+
+### 已落地的时间优化（代码改动）
+
+- **[S3-REUSE]** `Accessory/verify/av1_pipeline_smoke.py`：S4（`validate_decodable_video`）**前移**至 S3 之前，
+  S3 的「产物帧数」直接**复用** S4 的 `decoded_frames`，省掉一次全量 `ffprobe -count_frames`
+  （长视频每臂 ~10~15 min）。**口径不变**（两者同为解码级计数），S4 不可用/返回 `None` 时**自动回退**独立计数。
+  已在 CPU 上用 `--checks-only` 验证：S3 detail 显示「帧数复用 S4 解码计数」，S4/S5/S7 均 PASS。
+- **单臂化**：去掉 vbr 对照臂（S8 斜率以 constqp 臂为准）。⚠ 若 constqp 臂 S8 超线，将无同轮对照，需补跑 vbr。
+
+---
+
 ## 执行命令
 
 ```bash
@@ -178,6 +245,8 @@ python3 Accessory/probe/av1_vp9_quality_matrix.py --quality-mode quality \
     --report verification_report/av1_vp9_matrix_L40_$(date +%F).md < /dev/null
 
 # 3. [L40-2] GPU 画质判据
+#    ⚠ 2026-10-14 口径修订后：判据 = **G7-5 VMAF 对齐 PASS（ΔVMAF ≤2.5）+ G7/G8 FAIL=0**。
+#    G7-6 的 plain-PSNR −2.14 dB 是 AV1 族已知特性（备案观测项），**不期望它变 PASS**。
 python3 Accessory/verify/crf_cq_unification_verify.py --gpu \
     --source ../input_videos/word_world_2.mp4 \
     --bitrate-source ../input_videos/new4_raw.mp4 \
@@ -188,7 +257,8 @@ python3 Accessory/verify/crf_cq_unification_verify.py --gpu \
 #    匹配不到任何目录 → 三个 NVENC 档「拟合失败（样本 0 < 4）」但仍 exit 0（静默假通过）
 python3 Accessory/probe/eqq_pool_fit_table.py --sides gpu_l40_cq --axis cq < /dev/null
 python3 Accessory/probe/eqq_pool_fit_table.py --sides gpu_l40_qp --axis qp < /dev/null
-# 期望: av1_nvenc CQ LOO ≤5.9 / QP LOO ≤5.9（注意 QP 档门限同为 5.9，
+# 期望: av1_nvenc CQ LOO ≤5.9 / QP LOO ≤5.9（⚠ LOO 的单位是 **ΔVMAF 分**，不是 cq/qp 刻度——
+#       `eqq_pool_fit_table.py::loo()` 算的是「留一后最坏 ΔVMAF」；注意 QP 档门限同为 5.9，
 #       7.5 只放宽给 librav1e 族），顺序无关性 3 seed 逐位一致
 
 # 5. 跨仓真源一致（非 L40 独占，但每次改动质量表后需复跑）
@@ -213,14 +283,17 @@ cd /workspace/VidUtils && python3 Accessory/verify/verify_quality_mapping.py < /
 | L40-4 | 落表门禁 qp | av1_nvenc LOO ≤5.9 | **2.61** ✅ | 与 `quality_map.py:202` `(7.9338,-97.5136,0,255)` 逐位一致 |
 | L40-3 | AC1 | 表值 QP 落带内 | `-qp 70` **1.07× / −1.13 dB** ✅ | 与历史基线一致 |
 | L40-2 | G7/G8 | FAIL=0 | **113 PASS / 0 FAIL / 3 WARN / 0 SKIP** ✅ | G7/G8 FAIL=0 达成 |
-| L40-2 | G7-6 | av1_nvenc `-cq` **PASS** | **WARN −2.14 dB / 0.87×** ❌ | **判据未达成**：`-cq 27→32` 未修正，数值与历史基线完全相同 |
+| L40-2 | **G7-5（VMAF 对齐）** | ΔVMAF ≤2.5 | **PASS，最大偏差 0.89**（锚点 VMAF 96.04） ✅ | **2026-10-14 口径修订后的正式判据**：av1_nvenc 在 VMAF 口径下已对齐 |
+| L40-2 | G7-6（plain-PSNR，**备案观测项**） | 原判据「PASS」已撤销 | **WARN −2.14 dB / 0.87×** | **定性修订（2026-10-14）**：不是表错而是 plain-PSNR 跨编解码器偏置——AV1 族结构性（同素材 G7-7 libsvtav1 −1.64 dB 同为 WARN；h264/hevc NVENC −1.05/−1.40 在带内）。`-cq 27→32` 只是沿帕累托前沿滑动（PSNR 对齐需 1.28× 码率，**无任何常数可同时满足两轴**）；落表 LOO 单位是 ΔVMAF 而非参数刻度，与 plain-PSNR 判据本就是两套度量，两者同时成立自洽。证据链见 `memory/g7-6-metric-mismatch-2026-10-14.md` |
 | L40-1 | S1~S8 | 全通 + S8 斜率 ≤50 MB/min | 两臂 S1~S7 全通；**S8 constqp +712 MB/min 已被证伪为测量假象** | 无内存泄漏（缓存引擎的 vbr 对照臂 **−928.5 MB/min**） |
 
 **本轮证据文件**：`verification_report/{crfcq_gpu,av1_vp9_matrix,av1_smoke_L40_new5raw}_*_2026-10-09.md`；
 内存采样明细 `Accessory/data/s8_mem_L40_2026-10-09/`（含 README 与逐点证据表）。
 
 ⚠ **两处历史读数已过期，勿再引用**：
-- 本方案 §门禁基线 的「G7-6 历史记为 WARN（−2.14 dB / 0.87×）」——本轮复现同值，说明 `-cq 27→32` 未修正它；
+- ~~本方案 §门禁基线 的「G7-6 历史记为 WARN（−2.14 dB / 0.87×）」——本轮复现同值，说明 `-cq 27→32` 未修正它~~
+  → **2026-10-14 已修订定性**：`-cq 27→32` 本就不是正确修复方向（帕累托滑动，见 §门禁基线 G7-6 行）；
+  G7-6 已降为**备案观测项**，正式判据改为 G7-5 VMAF 对齐；
 - `memory/l40-av1-pipeline-verification.md:17` 记的 G7-6「`-cq:v 27` ΔPSNR **+0.16 dB** / 1.28× **PASS**」
   —— 那是 cq27 的读数，改 cq32 后变为 −2.14 dB WARN，**不可作为「已验收」依据**。
 
@@ -231,7 +304,7 @@ cd /workspace/VidUtils && python3 Accessory/verify/verify_quality_mapping.py < /
 
 - `av1_vp9_quality_matrix`: AC1 `-qp 70` 落带内（1.07× / −1.13 dB）/ AC2 +0.16 dB / AC4 1.14× / −0.29 dB
 - `av1_pipeline_smoke`: S1~S8 退出码 0；constqp 臂 S3 计数差异为脚本 double-count，非管线缺陷；vbr 臂 8/8 全 PASS，RSS 斜率 −2.8 MB/min
-- `crf_cq --gpu`: 历史记为 111 PASS / 0 FAIL / 5 SKIP，其中 **G7-6 为 WARN（−2.14 dB / 0.87×）**——与 §「执行命令」要求的 PASS 不符，需在本轮实跑中确认是否已随 `-cq 27 → -cq 32` 修正
+- `crf_cq --gpu`: 历史记为 111 PASS / 0 FAIL / 5 SKIP，其中 G7-6 为 WARN（−2.14 dB / 0.87×）——~~与 §「执行命令」要求的 PASS 不符，需在本轮实跑中确认是否已随 `-cq 27 → -cq 32` 修正~~ → **2026-10-14 已定性修订**：G7-6 是 plain-PSNR 口径的 AV1 族结构性偏置（非表错），判据改为 G7-5 VMAF 对齐（2026-10-09 实测偏差 0.89 已 PASS）
 - 落表：`QUALITY_MAP['av1_nvenc']=(1.4566,1.2165,0,63)`（LOO[0,27] 3.13）、`QUALITY_MAP_QP['av1_nvenc']=(7.9338,-97.5136,0,255)`（LOO 2.61）
 
 **证据强度警告**：`memory/av1-nvenc-l40-calibration.md` 末节已把「L40 标定测试已执行」降级为**仓内不可审计**（审计链 6 处断点：无 GPU 标定日志、MANIFEST 未收录 `gpu_l40_*`、workdir 不存在等）。上述基线数字只能作**历史参考**，本轮须以实跑报告为准，不得反向引用为「已验收」。
@@ -335,9 +408,9 @@ cd /workspace/VidUtils && python3 Accessory/verify/verify_quality_mapping.py < /
 
 | 类别 | 状态 |
 |---|---|
-| L40-1 长视频冒烟（Clifford 720.5s） | ⛔ **未执行** —— 掉卡，前置门禁 exit 2；素材/engine/命令已就绪，恢复命令见 §执行命令 第 1 项 |
+| L40-1 长视频冒烟（Clifford 720.5s） | ⛔ **未执行** —— 掉卡，前置门禁 exit 2；素材/engine/命令已就绪，恢复命令见 §执行命令 第 1 项。**完整版需 2.5~4.5 h，已降级为 L40-1b（见 §折中执行方案，约 30~50 min 总量）** |
 | L40-1 短素材冒烟（new5_raw 1080p→4K） | ✅ S1~S7 全通；S8 假 FAIL 已证伪（无泄漏） |
-| L40-2 crf_cq --gpu | ⚠ G7/G8 FAIL=0 达成；**G7-6 仍 WARN，`-cq 27→32` 未修正 ⇒ 判据未达成** |
+| L40-2 crf_cq --gpu | ✅ **判据达成（2026-10-14 口径修订后）**：G7/G8 FAIL=0（113 PASS / 0 FAIL / 3 WARN / 0 SKIP）；**G7-5 VMAF 对齐 PASS（偏差 0.89）**为正式质量判据；G7-6 plain-PSNR −2.14 dB 已定性为 AV1 族已知特性（备案观测项，不作门禁） |
 | L40-3 AC1 | ✅ PASS |
 | L40-4 落表双轴 | ✅ PASS（LOO 3.13 / 2.61） |
 | CPU 侧 8 项 | ✅ **2026-10-14 已补跑完毕**（10/10 rc=0）：plan_gate 96/0/2/3、verify_equal_quality 5/5、crf_cq_cpu 97/0/18、av1_vp9_matrix_cpu 3/0/0、segment_bitstream 250=250、落表自测 6 档 LOO 3.04~4.52、calibrate_eq 39 项、nvenc_tuning、nvenc_rc_diagnose V11；唯一遗留缺口=6 项 G6 + BEH-H3 因缺 `basicsr` SKIP（环境依赖，非逻辑失败） |
