@@ -213,11 +213,14 @@ def query_caps(verbose: bool = False) -> Tuple[Optional[int], str]:
             ctypes.POINTER(_NvEncCapsParam), ctypes.POINTER(ctypes.c_uint32),
         )(addr)
         param = _NvEncCapsParam()
-        ctypes.memset(byref(param), 0, sizeof(param))
+        # [FIX-B4-CAPS-BYREF] 本模块只 `import ctypes`，没有把 byref/memset/sizeof 拉进
+        # 裸名字 ⇒ 旧代码用裸 `byref(...)` / `sizeof(...)` 必然 NameError，被 except 吞成
+        # 「caps 查询不可用」并静默退回 --try 路径（假降级，且掩盖唯一的权威判据）。
+        ctypes.memset(ctypes.byref(param), 0, ctypes.sizeof(param))
         param.version = _sdk13_ver(1)
         param.capsToQuery = CAPS_SUPPORTED_RATECONTROL_MODES
         val = ctypes.c_uint32(0)
-        st = fn(enc._encoder, byref(param), byref(val))
+        st = fn(enc._encoder, ctypes.byref(param), ctypes.byref(val))
         if st != 0:
             return None, f"NvEncGetEncodeCaps 返回 {st}（该 caps 不可用）"
         if verbose:
@@ -256,14 +259,21 @@ def try_rc_values(values: List[int], frames: int) -> Tuple[bool, List[str]]:
     for v in values:
         tag = RC_LEGAL.get(v, "非0/1/2")
         written: List[int] = []          # 记录本轮实际写入 rc_ptr[1] 的值
+        pre: List[int] = []              # 记录覆写前生产代码自己写的值（constqp ⇒ 0）
 
         # 用 constqp 分支进入（la=0 不会被清零逻辑干扰），再把 rc 覆写成请求值。
         def _patched(self, codec_guid, preset_guid, width, height, fps, qp):
             cfg = orig_build(self, codec_guid, preset_guid, width, height, fps, qp)
             # rc_ptr 基址 = preset_config + 8 + 40（见 nvenc_sdk 的 _build_encoder_config）
             rc_ptr = ctypes.cast(ctypes.byref(cfg, 8 + 40), ctypes.POINTER(ctypes.c_uint32))
-            written.append(int(rc_ptr[1]))
+            pre.append(int(rc_ptr[1]))
             rc_ptr[1] = v                 # ← 真正写入请求的值
+            # [FIX-B4-READBACK-ORDER] 旧代码 append 的是**覆写前**的值（constqp ⇒ 0），
+            # 却拿它跟请求值 v 比对 ⇒ v=32/64 恒判「写入回读不符」= **假 FAIL**，
+            # 并以 exit 3 输出「驱动拒绝、生产代码会崩」的误导结论。真实判据是
+            # **覆写后** cfg 里 rc_ptr[1] 的值，且该 cfg 随后被送进 InitializeEncoder
+            # （构造成功即驱动接受）。故此处必须在写入之后再回读。
+            written.append(int(rc_ptr[1]))
             return cfg
 
         enc = None
@@ -282,7 +292,8 @@ def try_rc_values(values: List[int], frames: int) -> Tuple[bool, List[str]]:
                              f"实际写入 {got} ≠ 请求 {v}")
             else:
                 lines.append(f"  rc={v:3d} ({tag:6s}) → ✅ 确认写入 rc_ptr[1]={v}"
-                             f"，驱动接受（InitializeEncoder rc=0）")
+                             f"（覆写前生产写 {pre[-1] if pre else '?'}），"
+                             f"驱动接受（InitializeEncoder rc=0）")
         except Exception as exc:  # noqa: BLE001
             all_ok = False
             lines.append(f"  rc={v:3d} ({tag:6s}) → ❌ **失败** "

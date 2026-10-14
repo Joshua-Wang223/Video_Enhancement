@@ -1123,6 +1123,19 @@ class NVENCEncoder:
             _la_ptr = cast(byref(preset_config, 8 + 40 + 90), ctypes.POINTER(c_uint16))
             _la_ptr[0] = self._la_depth
 
+        # [FIX-QPVAL-SPLIT] 与 ifrnet_video/nvenc_sdk.py:1121 逐字同构：
+        # `_qp_val` 目前只是本函数内的**局部变量**，但下方 `_log_ready` 在 CQ 档位
+        # （vbr_hq/qvbr）读的是 `self._qp_val` ⇒ AttributeError。
+        # 该异常被 ESRGan 管线的 `except` 捕获 ⇒ 打印
+        #   「NVENC SDK 初始化失败 ('NVENCEncoder' object has no attribute '_qp_val')，
+        #     降级到 FFmpeg 管道编码」
+        # 即 **ESRGan 侧所有 NVENC + vbr_hq/qvbr（= config 默认档位）静默从
+        # Level 1 SDK 直通降级到 Level 2 FFmpeg 子进程**，且只留一行 WARN 级日志。
+        # CONSTQP 档位因 `_log_ready` 不读该字段而幸免 ⇒ 缺陷只在 CQ 档位暴露，
+        # 恰好覆盖生产默认路径。T4 真机 2026-10-14 实测命中（见
+        # memory/t4-pending-gpu-verification-2026-10-14.md 的补测记录）。
+        self._qp_val = _qp_val
+
         # 9. InitializeEncoder
         init_params = _NvEncInitializeParams()
         ctypes.memset(byref(init_params), 0, sizeof(init_params))

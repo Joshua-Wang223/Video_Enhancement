@@ -62,6 +62,53 @@ python3 Accessory/probe/eqq_pool_fit_table.py --sides gpu_t4_qp --axis qp < /dev
 - `nvenc_vbr_hq_verify`: V12 接受 rc_ptr[1]=32 → 方案 A
 - hevc+LA=8: frames=packets=199, 无色度簇
 
+## 补测结果（2026-10-14 T4 真机，P0+P1 全部完成）
+
+> 环境：Tesla T4 (sm75) / driver 580.65.06 / NVENC apiVersion 13.0 / FFmpeg 9.0.2 / torch 2.10.0+cu128。
+> 素材：仓库外 `../input_videos`（4K 长片裁 80s/720p 含音轨），产物与日志在 `/tmp/opencode/t4batch`。
+
+| ID | 判据 | 结果 |
+|---|---|---|
+| **B4** | `rc_ptr[1]=32/64` 是否被驱动接受 | ✅ **接受**（0/1/2/32/64 实编 InitializeEncoder 全 rc=0）⇒ **不需重跑全套等质量标定** |
+| **B1** | h264+LA=8 ≥4 段跨段复用不崩 | ✅ **PASS**：S1~S7 全绿，S2 段级门禁 **4/4**，S5 帧数守恒/段首无连 IDR/帧号单调/无 pts 异常/色度正常；产物 4800 帧 = 各段之和 4800 |
+| **B1 逐条核销** | 段 2 起崩溃 / `non-existing PPS` / pipe broken / rc=1 | ✅ **四项全部未出现**（4 段全部 `处理完成`，每段重新注入 `Cached SPS+PPS`，rc=0） |
+| **B2 ①** | 三档分级拒绝 | ✅ **5/5**：h264_nvenc+vbr→rc=2、hevc_nvenc+cbr→rc=2、libx264+vbr→rc=0+告警、av1_nvenc+vbr→rc=0、vbr_hq→rc=0 |
+| **B2 ②** | 方案 B 基线（`vbr` 在 Level 1 的落点） | ✅ 已记录：`CONSTQP QP=26 la=8->0(未使能:CONSTQP)`（`cbr` 同）——QP 未过 `to_constqp_qp` 换算 |
+| **plan_gate** | 101 项口径真机复跑 | ✅ **101 项 / 99 PASS / 0 FAIL / 0 WARN / 2 SKIP**（SKIP=R8 NVML 提示、RT-0 输出视频存在）；`BEH-G9/G10/G11` 确认真执行且 PASS。改完 `nvenc_sdk.py` 后**再跑一次仍 99 PASS/0 FAIL** |
+| **drain baseline** | `conserved=True` + decode OK + `pending_before` 恒 8 | ✅ `vcl_total=700 leftover=0 mismatch=0`、`pending_before=[692..699]` 恒 8 条、`ffmpeg decode OK` |
+| **esrgan reopen** | 段 2+ 无告警 + 各段帧数守恒 | ✅ 3× `[FIX-SKIP-REOPEN] …gen=1`，无告警；S2 4/4 + S5 帧数守恒 |
+| **LA=16** | 首段窗口无整体循环移位 | ✅ **帧号单调**（8 段 ×10s，S1~S5 全绿） |
+| **S8 内存斜率** | ≤ +50 MB/min | ❌ **FAIL** +91.4 MB/min（峰值 11175 MB）——根因见下 |
+
+### 补测中发现并修复的 P0 缺陷
+
+**ESRGan 侧 NVENC Level 1 静默降级**：`external/realesrgan_video/nvenc_sdk.py::_build_encoder_config`
+只把 `_qp_val` 当局部变量、**从未写回 `self._qp_val`**，而 `_log_ready` 在 CQ 档位（`vbr_hq`/`qvbr`，=config 默认）
+读 `self._qp_val` ⇒ `AttributeError` ⇒ 被 except 吞成「降级到 FFmpeg 管道编码」
+⇒ **ESRGan 侧所有 NVENC + vbr_hq/qvbr 静默走 Level 2**，且 FFmpeg 侧照样带 `rc-lookahead=8`，参数表面看不出。
+根因：`ecd60f8` 重构 `_log_ready` 时只给 IFRNet 孪生体补了赋值（`ifrnet_video/nvenc_sdk.py:1121`）。
+修复：ESRGan 侧补同一行（:1137）。修复后 Ready 行恢复 `VBR_HQ … la=8 tq(CRF)=26`。
+详见 `memory/esrgan-nvenc-qpval-l1-fallback-2026-10-14.md`。
+
+### 三条口径修正（原清单需订正）
+
+1. **W 口径**：`la-window-rotation-fix.md` 的 `W = max(pipeline_depth, LA+1)` **不普适**——
+   `_slot_count` 随分辨率变化：720p 下 `LA=8→11`、`LA=16→19`（均 LA+3），2560x1440 下 `LA=8→9`。
+   LA=16 的真正判据是「无整体循环移位」（frame_num 单调），该项**已 PASS**。
+2. **B4 探针自身有 2 个 bug**：① `query_caps()` 用裸 `byref()`（本模块只 `import ctypes`）⇒ 必然 NameError
+   被吞成「caps 不可用」；② `try_rc_values()` 「先记录后覆写」⇒ 把驱动**已接受**的 32/64 判成拒绝并 `exit 3`
+   （**照单全收会误触发全套标定重跑**）。两处已修；修后 caps 查询真实执行，驱动返回 code=8（该 caps 不可用）
+   ⇒ T4/driver 580 上只能靠实编 A/B 判定。
+3. **S8 仍 FAIL，但非无界泄漏**：池复用条件 `cached_pool_size >= pool_size` 而 `pool_size` 自适应
+   ⇒ 每次变大重新分配（4 段：14→20→24→25，累计 1877 MB；8 段×10s：14→…→50，累计 3324 MB），
+   收尾期 RSS 回落（8860→6164 MB）⇒ 属**爬坡**而非单调泄漏，但分段越短/段数越多压力越大，T4 16 GB 上是真实风险。
+   遗留建议：池原地扩容；或 S8 判据排除爬坡段后拟合。
+
+### 可复现命令
+
+见 `memory/t4-pending-gpu-verification-2026-10-14.md` §4（含两个踩坑点：
+`av1_pipeline_smoke.py` 透传参数须用 `--` 分隔；`--skip-upscale` 下 S6 sidecar 必然 FAIL 属用例局限）。
+
 ### plan_gate 记录更正（2026-10-10，2026-10-14 同步到本方案）
 
 2026-10-04 的「96/94/0/2（共 89 项）」与「89 项 PASS/0 FAIL」**两个数字都不可采信**：
@@ -97,6 +144,18 @@ python3 Accessory/probe/eqq_pool_fit_table.py --sides gpu_t4_qp --axis qp < /dev
 **建议一轮 T4 批次 40~70 min 覆盖 P0+P1**（B4 先跑，分钟级且决定后续是否重跑标定）。
 ⚠ B1 属生产默认路径缺陷，判据须**逐条对 `d215fc2` 的缺陷描述核销**
 （段 2 起崩溃 / `non-existing PPS` / pipe broken / rc=1），不得只看总 PASS 数。
+
+> ### ✅ 本清单已于 2026-10-14 全量执行
+>
+> **P0 + P1 全部完成，结果见上方「补测结果（2026-10-14 T4 真机）」表**：
+> B1 ✅ PASS（并逐条核销 `d215fc2` 四条缺陷描述）、B2 ✅ 5/5 + 方案 B 基线已记录、
+> B4 ✅ 驱动接受 32/64（**不需重跑全套标定**）、plan_gate ✅ 101 项/99 PASS/0 WARN/0 FAIL、
+> drain baseline ✅、esrgan reopen ✅、LA=16 ✅。
+>
+> **遗留**：① S8 内存斜率 FAIL（根因已定位为自适应 pinned pool 爬坡，非无界泄漏；建议池原地扩容或改判据）；
+> ② P2 开发型（B2 方案 B 真 vbr 分支 1~3 h、pytest SIGSEGV 隔离 1~2 h）与 P3 疑似陈旧项核销未做；
+> ③ 补测中发现并修复的 P0 缺陷「ESRGan 侧 Level 1 静默降级」建议纳入常规验收判据
+> （把「产物日志中无 `降级到 FFmpeg` 行」列为显式检查项）。
 
 ## 产出物
 - `verification_report/verification_report_YYYYMMDD_HHMMSS.json/.md`

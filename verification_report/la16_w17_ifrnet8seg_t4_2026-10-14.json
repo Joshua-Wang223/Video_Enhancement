@@ -1,0 +1,95 @@
+{
+  "generated": "2026-10-14T08:48:23",
+  "src": "/tmp/opencode/t4batch/src80s_720p.mp4",
+  "rate_modes": [
+    "vbr_hq"
+  ],
+  "codec": "h264_nvenc",
+  "batch_size": 8,
+  "host": "7cdc18aa5756",
+  "precondition": "实跑一帧成功",
+  "runs": [
+    {
+      "rate_mode": "vbr_hq",
+      "codec": "h264_nvenc",
+      "batch_size": 8,
+      "out": "/tmp/opencode/t4batch/LA16/h264_nvenc_vbr_hq.mp4",
+      "checks": [
+        {
+          "id": "S1",
+          "name": "管线退出码",
+          "status": "PASS",
+          "detail": "rc=0，耗时 144.0s"
+        },
+        {
+          "id": "S2",
+          "name": "段级解码级门禁（decoded==expected）",
+          "status": "PASS",
+          "detail": "8 次通过 / 失败 0 次；分段帧数合计 4796"
+        },
+        {
+          "id": "S4",
+          "name": "validate_decodable_video(count_mode=decode)",
+          "status": "PASS",
+          "detail": "ok=True reason=ok frames=4796 errors=0 path=direct"
+        },
+        {
+          "id": "S3",
+          "name": "产物可解码帧数 = 各段之和",
+          "status": "PASS",
+          "detail": "产物 4796 帧 vs 分段合计 4796 帧；源 2402 帧；帧数复用 S4 解码计数"
+        },
+        {
+          "id": "S5",
+          "name": "segment_bitstream_verify_v5（帧守恒/IDR/frame_num/pts）",
+          "status": "PASS",
+          "detail": "✅ 验收通过 (总用时 3.01 s): 帧数守恒 / 段首无连IDR / 帧号单调 / 无 pts_anomaly / 色度正常"
+        },
+        {
+          "id": "S6",
+          "name": "QA sidecar 字段完整",
+          "status": "FAIL",
+          "detail": "未生成：/tmp/opencode/t4batch/LA16/h264_nvenc_vbr_hq.mp4.qa.json"
+        },
+        {
+          "id": "S7",
+          "name": "产物编码器确为 h264",
+          "status": "PASS",
+          "detail": "codec=h264（期望 h264）；音轨=有"
+        },
+        {
+          "id": "S8",
+          "name": "无内存泄漏（后半程 RSS 斜率 ≤ +50 MB/min）",
+          "status": "FAIL",
+          "detail": "RSS 峰值 9008 MB，斜率 +1802.4 MB/min（主 +1808.5 / 子 -6.1 MB/min；PSS +1785.4），显存峰值 0 MiB，进程数 1~5，样本 28，峰值 9008/16000 MB ✓；明细 /tmp/opencode/t4batch/memdump/vbr_hq.mem.tsv"
+        }
+      ],
+      "cmd": "/root/.pyenv/versions/3.11.1/bin/python3 -u /workspace/Video_Enhancement/src/main_video_optimized.py -c /workspace/Video_Enhancement/config/default_config.json -i /tmp/opencode/t4batch/src80s_720p.mp4 -o /tmp/opencode/t4batch/LA16/h264_nvenc_vbr_hq.mp4 --codec-ifrnet h264_nvenc --codec-esrgan h264_nvenc --rate-mode-ifrnet vbr_hq --rate-mode-esrgan vbr_hq --segment-duration 10 --batch-size-ifrnet 8 --batch-size-esrgan 8 --lookahead-depth-ifrnet 16 --lookahead-depth-esrgan 16 --skip-upscale",
+      "rc": 0,
+      "elapsed_s": 144.0,
+      "log": "/tmp/opencode/t4batch/LA16/h264_nvenc_vbr_hq.mp4.vbr_hq.log",
+      "segments": 8,
+      "segment_frames_sum": 4796,
+      "validate": "ok=True reason=ok frames=4796 errors=0 path=direct",
+      "frames": 4796,
+      "rss_peak_mb": 9007.6,
+      "gpu_peak_mib": 0.0,
+      "gpu_status": "驱动侧 pid 与容器 PID namespace 不通（如 2437385 在 /proc 下不存在）⇒ 不可归属",
+      "rss_slope_mb_per_min": 1802.4,
+      "rss_slope_main_mb_per_min": 1808.5,
+      "rss_slope_child_mb_per_min": -6.1,
+      "pss_slope_mb_per_min": 1785.4,
+      "proc_count_range": [
+        1,
+        5
+      ],
+      "mem_samples": 28,
+      "mem_dump": "/tmp/opencode/t4batch/memdump/vbr_hq.mem.tsv"
+    }
+  ],
+  "summary": {
+    "pass": 6,
+    "fail": 2,
+    "skip": 0
+  }
+}
