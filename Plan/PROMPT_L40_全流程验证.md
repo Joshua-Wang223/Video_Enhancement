@@ -4,6 +4,12 @@
 
 CPU 侧与 T4 侧验证已收口，**唯一未覆盖的能力缺口是 AV1 NVENC 硬编全链路**（Turing 无 AV1 编码器，实跑报 `No capable devices found`）。因此本方案**只列必须在 L40/Ada(sm89) 上跑的项**；其余项在 CPU/T4 侧已完成，状态见 §「已在 CPU/T4 侧完成（不在本方案范围）」。
 
+> **2026-10-14 修订**：逐项核对脚本代码后确认，除 §验收范围表中的 3 项外，**其余全部不依赖 L40/Ada**，
+> 可在任意带 ffmpeg≥9.0 + 素材池的主机上执行。原「已在 CPU/T4 侧完成」表中 ❌/⚠ 标记的缺口项，
+> 已整理为 §「CPU 侧待补跑清单」（含一键命令与逐项手工命令），切换主机后按清单落盘即可。
+> 该章同时记录了 `comprehensive_verify.py` 两处过度门控（`nvenc_rc_diagnose` 被 `envs=[T4,L40]`
+> + `required_gpu=True` 挡住，实际是纯主机侧工具）。
+
 ## 环境要求
 - L40 / Ada (sm89) / 驱动 ≥535 / CUDA 12.x
 - FFmpeg 9.0+ with av1_nvenc, h264_nvenc, hevc_nvenc
@@ -34,19 +40,68 @@ CPU 侧与 T4 侧验证已收口，**唯一未覆盖的能力缺口是 AV1 NVENC
 | L40-3 | **AV1 质量矩阵 B 组 AC1** | `av1_vp9_quality_matrix.py --only av1_nvenc` | AC1 是 av1_nvenc `-qp` 落带扫描，T4 侧 B 组整体不执行 | 表值 QP 落带内；AC2 判据即 L40-2 的 G7-6；AC4 跨仓 B 组 |
 | L40-4 | **NVENC 标定落表门禁** | `eqq_pool_fit_table.py` | 复核 L40 上采的 av1_nvenc 点数据落表 LOO（非 GPU 需求，但**只能有 L40 数据才能判**） | `--axis cq --sides gpu_l40_cq`：av1_nvenc LOO ≤5.9；`--axis qp --sides gpu_l40_qp`：LOO ≤5.9 |
 
-### 不需要 L40 的项（从本方案移除）
+### CPU / 主机侧可执行项（不占 L40，可切任意主机跑）
 
-| 项 | 移除理由 |
-|----|----------|
-| `plan_gate` | 整体 CPU 可跑；无 GPU 时 R5/R7 降 WARN、R8/RT-0/SMOKE-0 降 SKIP，**无 FAIL** |
-| `nvenc_rc_diagnose` | **纯主机侧工具**：只读 ffmpeg 选项表 + 磁盘搜 `nvEncodeAPI.h` 文本解析，不建 NVENC session、不编码任何一帧；且全文零 AV1 内容（只看 h264_nvenc，退化到 hevc_nvenc）。`comprehensive_verify.py` 对它设 `required_gpu=True` 属过度门控 |
-| `verify_equal_quality` | `envs=[cpu]`，L40 队列本就不含 |
-| `crf_cq_cpu` | 纯静态/纯函数 |
-| `av1_vp9_matrix_cpu` | libvpx-vp9 / libsvtav1 / libaom-av1 软编族 |
-| `nvenc_vbr_hq_verify` | `envs=[t4]`，L40 队列本就不含 |
-| `segment_bitstream_verify` | ffmpeg 侧通用，不绑定 codec |
-| `eqq_pool_fit_selftest`（软编 6 档） | 纯 JSON 拟合 |
-| `calibrate_eq_selftest` / `nvenc_tuning_verify` | 纯函数自检 |
+> 2026-10-14 逐项核对脚本代码确认：除上表 3 项（L40-1/2/3）外，**其余全部不依赖 L40/Ada**。
+> 下表「证据」列为当前留痕状态；❌ = 仍缺报告文件，切换主机后按下 §「CPU 侧待补跑清单」落盘。
+
+| 项 | 脚本 | GPU 依赖的代码判据 | 证据 |
+|----|------|--------------------|------|
+| `plan_gate` | `Accessory/verify/plan_implementation_gate.py` | 整体 CPU 可跑；无 GPU 时 R5/R7 降 WARN、R8/RT-0 降 SKIP，**无 FAIL** | ✅ 已有（89/101 项两份） |
+| `nvenc_rc_diagnose` | `Accessory/probe/nvenc_rc_mode_diagnose.py` | **纯主机侧**：只 `ffmpeg -h encoder=h264_nvenc` + 磁盘搜 `nvEncodeAPI.h`，不建 NVENC session、不编码一帧；零 AV1 内容 | ✅ 有 V11 结论 |
+| `verify_equal_quality` | `Accessory/verify/verify_equal_quality.py` | `envs=[cpu]`，纯 CPU 逻辑（ΔVMAF ≤1.0） | ❌ 仅 commit message |
+| `crf_cq_cpu` | `Accessory/verify/crf_cq_unification_verify.py --quick --no-gpu` | 纯静态/纯函数断言 | ✅ 103 PASS / 12 SKIP |
+| `av1_vp9_matrix_cpu` | `Accessory/probe/av1_vp9_quality_matrix.py --only <软编>` | A 组软编族；B 组 AC1 无 GPU 时 **SKIP**（非失败） | ❌ 缺 |
+| `segment_bitstream_verify` | `Accessory/verify/segment_bitstream_verify_v5.py` | ffmpeg 侧通用，不绑定 codec；`--hwaccel` 可选默认关 | ❌ 缺 |
+| `eqq_pool_fit_selftest` | `Accessory/probe/eqq_pool_fit_table.py --sides 6s,10s,legacy10s --axis cq` | 纯 JSON 拟合（软编 6 档） | ❌ 缺 |
+| `calibrate_eq_selftest` | `Accessory/probe/calibrate_equal_quality.py --selftest` | 纯函数自检（39 项，秒级） | ❌ 缺 |
+| `nvenc_tuning_verify` | `src/utils/nvenc_tuning.py` 参数表打印 | 纯函数自检（参数表唯一真源） | ❌ 缺 |
+
+⚠ **编排器门控过宽（已知，非本方案引入）**：`comprehensive_verify.py` 对 `nvenc_rc_diagnose` 设了
+`envs=[T4,L40]` + `required_gpu=True`，导致**无法在 CPU 队列里跑到它**；但它实测是纯主机侧工具，
+切换任意主机后可直接手工执行（见下 §清单第 9 项）。L40-4 的 QP 轴子测试同理被钉在 `envs=[T4,L40]`。
+
+---
+
+## CPU 侧待补跑清单（切换主机后执行）
+
+> 上表 ❌ 行 + 已知缺口的报告落盘。**全部不依赖 L40**；在任意有 ffmpeg≥9.0 + 素材池的主机上执行。
+> 统一约定：所有脚本 `< /dev/null` 运行（否则后台进程组可能整组 SIGTTOU 挂起）。
+> 素材池在仓库外 `<项目父目录>/input_videos`；命令行写 `../input_videos/xxx`。
+
+### 一键跑 CPU 队列（推荐）
+
+```bash
+cd /workspace/Video_Enhancement
+python3 Accessory/verify/comprehensive_verify.py --env cpu < /dev/null
+# --only 可过滤；例：--only plan_gate,crf_cq_cpu,calibrate_eq_selftest
+# ⚠ CPU 队列**不含** nvenc_rc_diagnose（被 envs=[T4,L40] 挡住），需手工补跑见下
+```
+
+### 逐项手工命令（含编排器未覆盖者）
+
+| # | 项 | 命令 | 预计耗时 |
+|---|----|------|---------|
+| 1 | `plan_gate` | `python3 Accessory/verify/plan_implementation_gate.py` | ~1 min |
+| 2 | `verify_equal_quality` | `python3 Accessory/verify/verify_equal_quality.py --src ../input_videos/word_world_2.mp4 --codecs libx265,libvpx-vp9,libsvtav1,libaom-av1,librav1e --duration 6` | ~9 min |
+| 3 | `crf_cq_cpu` | `python3 Accessory/verify/crf_cq_unification_verify.py --quick --no-gpu` | ~5 s |
+| 4 | `av1_vp9_matrix_cpu` | `python3 Accessory/probe/av1_vp9_quality_matrix.py --quality-mode quality --src ../input_videos/word_world_2.mp4 --only libvpx-vp9,libsvtav1,libaom-av1` | ~10 min |
+| 5 | `segment_bitstream_verify` | `python3 Accessory/verify/segment_bitstream_verify_v5.py <产出视频> --skip-chroma` | ~秒级（**需先有一段已产出视频**） |
+| 6 | `eqq_pool_fit_selftest` | `python3 Accessory/probe/eqq_pool_fit_table.py --sides 6s,10s,legacy10s --axis cq` | ~2 s |
+| 7 | `calibrate_eq_selftest` | `python3 Accessory/probe/calibrate_equal_quality.py --selftest` | ~0.3 s |
+| 8 | `nvenc_tuning_verify` | `python3 -c "import sys;sys.path.insert(0,'src/utils');from nvenc_tuning import NVENC_TUNE_VALUES,NVENC_MULTIPASS_VALUES,is_bitrate;print(NVENC_TUNE_VALUES);print(NVENC_MULTIPASS_VALUES);print(is_bitrate('vbr'),is_bitrate('vbr_hq'))"` | ~0.1 s |
+| 9 | `nvenc_rc_diagnose`（编排器未覆盖） | `python3 Accessory/probe/nvenc_rc_mode_diagnose.py` | ~秒级 |
+| 10 | **跨仓 ⑨ 组真源一致** | `cd /workspace/VidUtils && python3 Accessory/verify/verify_quality_mapping.py` | ~秒级 |
+
+**第 5 项的素材来源**：本仓无预置产出视频。可用 `/workspace/test_materials_4k/` 下既有片段（如
+`seg_hevc_la8_720p.mp4`，2560×1440 / 603 帧 / 10.05s，其 `.qa.json` 记录 `interpolate_then_upscale` +
+IFRNet 2x + ESRGAN 4x 生成链），或先用短素材跑一次管线取得产出。
+
+**第 10 项已知差异**（2026-10-09 实测，非本轮引入）：⑦ `[7] --threads` 显式值两边不一致
+（VE 得 `'3'` / VU 得 `'2'`）⇒ 该组退出码非 0，需单独立项修 VU 侧 `vidcrop_hwaccel.py` 的 `--threads` 钳位。
+
+**跑完后**：报告默认落在 `verification_report/`；把结果回填到本文件 §「已在 CPU/T4 侧完成」的
+CPU 侧表格（把 ❌ 改为 ✅ + 报告路径 + 实测数字），并按 AGENTS.md 规则同步 `memory/` 双侧镜像。
 
 ---
 
@@ -187,18 +242,23 @@ cd /workspace/VidUtils && python3 Accessory/verify/verify_quality_mapping.py < /
 
 ### CPU 侧（7 项）
 
+> **2026-10-14 状态**：下表 ❌/⚠ 项已全部整理进 §「CPU 侧待补跑清单」，**切换任意主机即可执行**
+> （均不依赖 L40/Ada）。本轮 L40 容器无 GPU 可用（`libnvidia-ml.so` 缺失），仅先完成「能否不靠 L40 跑」
+> 的代码级判定与命令整备，**未实跑**。`plan_gate` 一项例外——已在本容器修桩并实跑（101 项 / 97 PASS）。
+
 | 项 | 结论 | 证据强度 |
 |----|------|----------|
-| `verify_equal_quality` | 537s，ΔVMAF ≤1.0，5/5 rc=0 | ⚠ 仅 commit `9d15dc6` message + `memory/MEMORY.md:182` 一行摘要，**无报告文件/日志留痕**。索引指向的 `memory/cpu-verification-pass.md` **两侧镜像均不存在且 git 全历史从未有过**（悬空链接） |
-| `crf_cq_cpu` | 5s，G1~G6/G10 PASS | ⚠ 同上 |
-| `av1_vp9_matrix_cpu` | 582s，libvpx-vp9 / libsvtav1 / libaom-av1 三软编 PASS | ⚠ 同上 |
-| `segment_bitstream_verify` | 2s，帧守恒/解码级 PASS | ⚠ 同上 |
-| `eqq_pool_fit_selftest` | 1.7s，LOO/顺序无关性 PASS | ⚠ 同上 + 提交 `6ed9ceb` |
-| `calibrate_eq_selftest` | 0.3s，39 项 PASS | ⚠ 同上 |
-| `nvenc_tuning_verify` | 0.1s，参数表 PASS | ⚠ 同上 |
-| `plan_gate` / `segment_bitstream`（CPU 轮） | **预期跳过**（`BEH-G9` 需 GPU；后一项需 `-o` 已存在的输出视频） | — |
+| `verify_equal_quality` | 537s，ΔVMAF ≤1.0，5/5 rc=0 | ❌ 仅 commit `9d15dc6` message + `memory/MEMORY.md:182` 一行摘要，**无报告文件/日志留痕**。索引指向的 `memory/cpu-verification-pass.md` **两侧镜像均不存在且 git 全历史从未有过**（悬空链接）。**待补跑**（清单第 2 项） |
+| `crf_cq_cpu` | 5s，G1~G6/G10 PASS | ✅ 已有 3 份重复报告：`verification_report/CRF_CQ统一验证报告_20261009_0{54553,55613,62348}.md`，均为 103 PASS / 0 FAIL / 0 WARN / 12 SKIP（`--quick --no-gpu`） |
+| `av1_vp9_matrix_cpu` | 582s，libvpx-vp9 / libsvtav1 / libaom-av1 三软编 PASS | ❌ 同上（无留痕）。**待补跑**（清单第 4 项） |
+| `segment_bitstream_verify` | 2s，帧守恒/解码级 PASS | ❌ 同上（无留痕）。**待补跑**（清单第 5 项）；⚠ T4 侧另有一份 frames=packets=603 的 hevc 证据（提交 `6ed9ceb` message） |
+| `eqq_pool_fit_selftest` | 1.7s，LOO/顺序无关性 PASS | ❌ 同上 + 提交 `6ed9ceb`。**待补跑**（清单第 6 项） |
+| `calibrate_eq_selftest` | 0.3s，39 项 PASS | ❌ 同上。**待补跑**（清单第 7 项） |
+| `nvenc_tuning_verify` | 0.1s，参数表 PASS | ❌ 同上。**待补跑**（清单第 8 项） |
+| `plan_gate`（CPU 轮） | ✅ **101 项 / 97 PASS / 0 FAIL / 2 WARN / 2 SKIP** | `verification_report/verification_report_20261010_012342.md`（修桩后）；2 WARN 为环境差异 R5/R7 |
+| `segment_bitstream`（CPU 轮） | 需 `-o` 已存在的输出视频 | 素材来源见清单第 5 项说明 |
 
-**口径纠正**：原始表述为「CPU 侧 7/7 通过」，准确说法是 **7 项 PASS + plan_gate 预期跳过**（`MEMORY.md:182` 明写）。且该轮环境记为 WSL Ubuntu，与当前 Linux 容器不同。
+**口径纠正**：原始表述为「CPU 侧 7/7 通过」，准确说法是 **7 项 PASS + plan_gate 预期跳过**（`MEMORY.md:182` 明写）。且该轮环境记为 WSL Ubuntu，与当前 Linux 容器不同。**「7/7」至今无报告留痕**，只有 commit message，不能作为已验收依据（同 [[feedback_artifacts_not_execution_evidence]]）。
 
 ### 跨仓一致性
 
@@ -210,7 +270,32 @@ cd /workspace/VidUtils && python3 Accessory/verify/verify_quality_mapping.py < /
 ---
 
 ## 产出物
-- `verification_report/av1_smoke_L40_YYYYMMDD.md` + `/tmp/s8_mem/*.mem.tsv`
+
+**L40 独占项（切回 L40 容器后）**
+- `verification_report/av1_smoke_L40_clifford_YYYYMMDD.md` + `Accessory/data/s8_mem_L40_2026-10-09/clifford/*.mem.tsv`
 - `verification_report/av1_vp9_matrix_L40_YYYYMMDD.md/.json`
 - `verification_report/crfcq_gpu_L40_YYYYMMDD.md`
-- 落表复核输出：`QUALITY_MAP['av1_nvenc']` / `QUALITY_MAP_QP['av1_nvenc']` 应与 `src/utils/quality_map.py` 现值一致
+- 落表复核输出：`QUALITY_MAP['av1_nvenc']` / `QUALITY_MAP_QP['av1_nvenc']` 应与 `src/utils/convert_crf.py:212` / `src/utils/quality_map.py:202` 现值一致
+
+**CPU 侧补跑项（切任意主机后）** —— 见 §「CPU 侧待补跑清单」第 1~10 项，报告落 `verification_report/`，
+回填 §「已在 CPU/T4 侧完成」CPU 侧表格。
+
+**本方案已收口的既有产出**
+- ✅ L40-4 落表双轴：`Accessory/data/eqq_calibration/points/gpu_l40_{cq,qp}/` 17 素材，LOO 3.13 / 2.61
+- ✅ L40-2 `crf_cq --gpu`：`verification_report/crfcq_gpu_L40_2026-10-09.md`（113 PASS / 0 FAIL / 3 WARN）
+- ✅ L40-3 AC1：`verification_report/av1_vp9_matrix_L40_2026-10-09.md`（`-qp 70` 落带 1.07× / −1.13 dB）
+- ✅ L40-1 部分（new5_raw 1080p→4K）：`verification_report/av1_smoke_L40_new5raw_2026-10-09.md`（15 PASS / 1 FAIL，S8 已证伪为 TRT 构建假 FAIL）
+- ✅ S8 内存采样原始数据：`Accessory/data/s8_mem_L40_2026-10-09/`（含 README 与逐点证据表）
+- ✅ 门禁桩 BEH-ERR 审计与修复：`memory/gate-stub-session-gen-audit-2026-10-10.md`
+
+## 当前总体状态（2026-10-14）
+
+| 类别 | 状态 |
+|---|---|
+| L40-1 长视频冒烟（Clifford 720.5s） | ⛔ **未执行** —— 掉卡，前置门禁 exit 2；素材/engine/命令已就绪，恢复命令见 §执行命令 第 1 项 |
+| L40-1 短素材冒烟（new5_raw 1080p→4K） | ✅ S1~S7 全通；S8 假 FAIL 已证伪（无泄漏） |
+| L40-2 crf_cq --gpu | ⚠ G7/G8 FAIL=0 达成；**G7-6 仍 WARN，`-cq 27→32` 未修正 ⇒ 判据未达成** |
+| L40-3 AC1 | ✅ PASS |
+| L40-4 落表双轴 | ✅ PASS（LOO 3.13 / 2.61） |
+| CPU 侧 8 项 | 📋 **待补跑**（命令已整备，均不依赖 L40） |
+| 跨仓 ⑨ 组 | ⚠ 13 PASS + 1 FAIL（`--threads` 差异，需单独立项修 VU 侧） |
