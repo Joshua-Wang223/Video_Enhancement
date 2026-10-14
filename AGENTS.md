@@ -9,7 +9,7 @@ Video Enhancement 是 GPU 加速视频处理管线：IFRNet 帧插帧（2x–16x
 - `src/utils/` — `config_manager.py`（配置加载与 CLI 覆盖）、`video_utils.py`（切片/合并/音轨）、`logger.py`（统一日志，[P2.5]）。
 - `external/nvenc_common/nal_utils.py` — 两子系统共享的 NAL 扫描参考实现（[P3.2]，等价性由回归测试锁定）。
 - `config/default_config.json` — 全部默认配置，JSON 是单一事实来源。
-- `Accessory/verify/plan_implementation_gate.py` — 最终后验证脚本（三合一：前置/静态核验/行为验证/运行时/冒烟 + F-修复效果 phase（2026-08-27 水彩综合修复 + 2026-08-28 FIX-HEVC-LA-OPEN）；`python Accessory/verify/plan_implementation_gate.py` 全量 90 项，CPU 可跑；2026-08-29 Linux 生产基准：88 PASS / 0 FAIL / 0 WARN / 2 SKIP；Windows 开发机无 NVIDIA GPU 时为 86 PASS / 0 FAIL / 2 WARN（R5 CUDA / R7 NVENC 环境探测）/ 2 SKIP（R8 NVML 提示、RT-0 输出视频存在），均属环境差异而非功能失败）。`Accessory/verify/test_regression_min.py` 为其兼容别名（--behavior-only 转发）。其余 Accessory/ 为临时诊断脚本（verify_post_run.py 已归档至 archive/tests_legacy/）。
+- `Accessory/verify/plan_implementation_gate.py` — 最终后验证脚本（三合一：前置/静态核验/行为验证/运行时/冒烟 + F-修复效果 phase（2026-08-27 水彩综合修复 + 2026-08-28 FIX-HEVC-LA-OPEN）；`python Accessory/verify/plan_implementation_gate.py` 全量 101 项（BEH 组恢复后），CPU 可跑；2026-10-14 WSL 无 GPU 实测：96 PASS / 0 FAIL / 2 WARN / 3 SKIP（WARN=R5 CUDA / R7 NVENC 环境探测；SKIP=R8 NVML 提示、RT-0 输出视频、BEH-H3 缺 `basicsr` 依赖，均属环境差异而非功能失败）；2026-08-29 的 90 项/88 PASS 为旧版本口径已过期）。`Accessory/verify/test_regression_min.py` 为其兼容别名（--behavior-only 转发）。其余 Accessory/ 为临时诊断脚本（verify_post_run.py 已归档至 archive/tests_legacy/）。
 
 ## Build, Test, and Development Commands
 

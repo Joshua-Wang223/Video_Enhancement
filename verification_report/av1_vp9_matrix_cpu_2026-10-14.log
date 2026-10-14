@@ -1,0 +1,25 @@
+==============================================================================
+  AV1 / VP9 画质族矩阵
+==============================================================================
+素材: ../input_videos/word_world_2.mp4
+      nb_frames=687/fps=25/duration=27.50s → 采用 687 帧（用于 -frames:v 687）
+构建编码器总数: 205
+  ✅ 可用     libsvtav1    实跑一帧成功
+  ✅ 可用     libaom-av1   实跑一帧成功
+  ✅ 可用     libvpx-vp9   实跑一帧成功
+
+软编基准 libx264 crf21: 1426 kbps / PSNR 46.581 dB
+
+【A 组】AV1/VP9 质量族矩阵（表值 vs 朴素，基准 = libx264 crf21）
+  PASS  libsvtav1    -crf 29  码率比 0.84×（朴素 1.22×）  ΔPSNR -1.33 dB
+  PASS  libaom-av1   -crf 26  码率比 0.75×（朴素 0.94×）  ΔPSNR -0.76 dB
+  PASS  libvpx-vp9   -crf 26  码率比 1.04×（朴素 1.30×）  ΔPSNR -1.04 dB
+
+【B 组】AV1 CONSTQP QP 扫描：⏭️ SKIP（av1_nvenc 不可用，AC1 需 Ada/L40）
+
+==============================================================================
+  汇总：PASS=3  WARN=0  FAIL=0  SKIP=0（B 组：未跑 点）
+==============================================================================
+📄 报告: verification_report/av1_vp9_matrix_cpu_2026-10-14.md
+🧾 JSON: verification_report/av1_vp9_matrix_cpu_2026-10-14.json
+EXIT=0

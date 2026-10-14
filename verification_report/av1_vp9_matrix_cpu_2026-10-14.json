@@ -1,0 +1,90 @@
+{
+  "generated": "2026-10-14T13:23:38",
+  "src": "../input_videos/word_world_2.mp4",
+  "src_frames": 687,
+  "ref_crf": 21,
+  "soft": {
+    "kbps": 1426,
+    "psnr": 46.581025
+  },
+  "tolerances": {
+    "RATE_PASS": [
+      0.65,
+      1.5
+    ],
+    "RATE_WARN": [
+      0.55,
+      1.65
+    ],
+    "TOL_PSNR_DB": 1.5,
+    "TOL_PSNR_WARN": 3.0
+  },
+  "matrix": [
+    {
+      "codec": "libsvtav1",
+      "param": "-crf",
+      "value": 29,
+      "naive": 21,
+      "note": "默认基准 CRF 21",
+      "extra_args": [
+        "-preset",
+        "8"
+      ],
+      "psnr": 45.248704,
+      "kbps": 1197,
+      "ratio": 0.839,
+      "d_psnr": -1.332,
+      "verdict": "PASS",
+      "naive_ratio": 1.222
+    },
+    {
+      "codec": "libaom-av1",
+      "param": "-crf",
+      "value": 26,
+      "naive": 21,
+      "note": "默认基准 CRF 21",
+      "extra_args": [
+        "-cpu-used",
+        "5"
+      ],
+      "psnr": 45.819453,
+      "kbps": 1064,
+      "ratio": 0.746,
+      "d_psnr": -0.762,
+      "verdict": "PASS",
+      "naive_ratio": 0.936
+    },
+    {
+      "codec": "libvpx-vp9",
+      "param": "-crf",
+      "value": 26,
+      "naive": 21,
+      "note": "默认基准 CRF 21",
+      "extra_args": [
+        "-b:v",
+        "0",
+        "-cpu-used",
+        "4",
+        "-row-mt",
+        "1"
+      ],
+      "psnr": 45.538163,
+      "kbps": 1490,
+      "ratio": 1.045,
+      "d_psnr": -1.043,
+      "verdict": "PASS",
+      "naive_ratio": 1.299
+    }
+  ],
+  "av1_qp_scan": [],
+  "av1_qp_expected": 70,
+  "ac1_verdict": "SKIP：av1_nvenc 不可用（AC1 需 Ada/L40）",
+  "summary": {
+    "pass": 3,
+    "warn": 0,
+    "fail": 0,
+    "skip": 0,
+    "scan_fail_diagnostic": 0,
+    "scan_points": 0
+  }
+}

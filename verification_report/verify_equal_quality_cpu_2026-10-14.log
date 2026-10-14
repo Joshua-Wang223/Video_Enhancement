@@ -1,0 +1,20 @@
+── 等质量回归判据 ──
+源: word_world_2.mp4  6s  锚点 libx264 CRF 21
+等质量表覆盖: ['av1_nvenc', 'h264_nvenc', 'hevc_nvenc', 'libaom-av1', 'librav1e', 'libsvtav1', 'libvpx-vp9', 'libx265']
+prep: md5=b36248afdd70d1afab6bc8047a6be9a4  frames=150  hdr=False
+  锚点 libx264 crf 21: vmaf=95.057 psnr=46.453 hvs=45.328
+  ✓ ⚠ libx265     q=  21  vmaf=94.608  ΔVMAF=-0.448  ΔPSNR=+0.158  ΔPSNR-HVS=-0.534  (参考门限 0.3/0.5，不判红)
+  ✓ ⚠ libvpx-vp9  q=  26  vmaf=95.291  ΔVMAF=+0.234  ΔPSNR=+0.211  ΔPSNR-HVS=-0.910  (参考门限 0.3/0.5，不判红)
+  ✓ ⚠ libsvtav1   q=  29  vmaf=95.069  ΔVMAF=+0.012  ΔPSNR=-0.362  ΔPSNR-HVS=-0.991  (参考门限 0.3/0.5，不判红)
+  ✓ ⚠ libaom-av1  q=  26  vmaf=95.027  ΔVMAF=-0.029  ΔPSNR=+0.126  ΔPSNR-HVS=-0.956  (参考门限 0.3/0.5，不判红)
+  ✓ ⚠ librav1e    q=  64  vmaf=94.867  ΔVMAF=-0.189  ΔPSNR=+0.156  ΔPSNR-HVS=-0.741  (参考门限 0.3/0.5，不判红)
+
+结果: 5/5 达标（主门禁 ΔVMAF）
+  ⚠ 参考指标超界 6 项（不影响退出码）:
+    · libx265: |ΔPSNR-HVS|=0.53 > 0.5（参考，不判红）
+    · libvpx-vp9: |ΔPSNR-HVS|=0.91 > 0.5（参考，不判红）
+    · libsvtav1: |ΔPSNR|=0.36 > 0.3（参考，不判红）
+    · libsvtav1: |ΔPSNR-HVS|=0.99 > 0.5（参考，不判红）
+    · libaom-av1: |ΔPSNR-HVS|=0.96 > 0.5（参考，不判红）
+    · librav1e: |ΔPSNR-HVS|=0.74 > 0.5（参考，不判红）
+EXIT=0
