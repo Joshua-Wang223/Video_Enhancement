@@ -62,6 +62,28 @@ python3 Accessory/probe/eqq_pool_fit_table.py --sides gpu_t4_qp --axis qp < /dev
 - `nvenc_vbr_hq_verify`: V12 接受 rc_ptr[1]=32 → 方案 A
 - hevc+LA=8: frames=packets=199, 无色度簇
 
+## 待测清单（2026-10-14 盘点新增）
+
+> 原「验收范围」7 项（T4-1~T4-9 等质量标定 / crf_cq --gpu / vbr_hq_verify / rc_diagnose /
+> segment_bitstream / 落表）**均已收口 ✅**。但盘点发现：**全部 T4 GPU 证据停在 2026-10-04**，
+> 早于 `ecd60f8`(10-05 B2 分级拒绝) 与 `d215fc2`(10-09 B1 修复) ⇒ **当前代码在 T4 上零回归证据**。
+> 完整清单与批次命令见 `memory/t4-pending-gpu-verification-2026-10-14.md`。摘要：
+
+| 优先级 | ID | 待测内容 | 估时 |
+|---|---|---|---|
+| **P0** | B1 | h264+LA>0+跨段复用段 2 起必崩（**生产默认路径**）——修复在 `nvenc_sdk.py:2342`，**零真机证据**；跑 ≥4 段 h264+LA=8 冒烟 + 段级验收 + S8 采样 | 15~25 min |
+| **P0** | B2 | Level 1 `--rate-mode vbr/cbr` 静默落 CONSTQP：验证三档分级拒绝行为 + 记录当前落点作为方案 B 基线 | 10~15 min |
+| **P1** | B4 | `rc_ptr[1]=32/64` 是否被驱动接受——探针 `Accessory/probe/nvenc_rc_enum_truth.py` 已就绪；**裁定为「不支持」则须重跑全套等质量标定** | 1~5 min |
+| **P1** | — | hevc-la-drain baseline 复跑（`conserved=True` + `pending_before` 恒 8） | 5~15 min |
+| **P1** | — | esrgan reopen 槽位相位：段 2+ 无告警、各段帧数守恒 | 10~20 min |
+| **P1** | — | LA=16 → W=17 复验（LA=8/W=9 已验） | 10~15 min |
+| **P2** | — | 开发型：B2 方案 B 真 vbr 分支（1~3 h）、pytest SIGSEGV 隔离方案 B/C（1~2 h） | 开发另计 |
+| **P3** | — | 疑似陈旧待核销：v6.4.x backport / v642 帧数异常未定位 / 2026-08 重构基准 / `_stderr_lines` 打点 | — |
+
+**建议一轮 T4 批次 40~70 min 覆盖 P0+P1**（B4 先跑，分钟级且决定后续是否重跑标定）。
+⚠ B1 属生产默认路径缺陷，判据须**逐条对 `d215fc2` 的缺陷描述核销**
+（段 2 起崩溃 / `non-existing PPS` / pipe broken / rc=1），不得只看总 PASS 数。
+
 ## 产出物
 - `verification_report/verification_report_YYYYMMDD_HHMMSS.json/.md`
 - `verification_report/CRF_CQ统一验证报告_YYYYMMDD_HHMMSS.md`

@@ -51,6 +51,11 @@ T4 三条**已确认无泄漏**的臂峰值 12393/13877/13578 MB **全部超出 
 | **B3** | 显存 `gpu_tree_mib` **恒为 0（静默假零）** | `nvidia-smi --query-compute-apps` 返回**宿主 pid**（实测 725115/1071006），在容器 `/proc` 下不存在；`/proc/<pid>/status` 的 `NSpid` 只有一层 ⇒ **容器 PID namespace 与驱动侧不通**，`nvenc_sdk.py` 的 pid 查表永远 miss。**⚠ 推翻** memory 里「本容器无 GPU 挂载 ⇒ 显存记 0」的旧归因（GPU 实际满载 7698 MiB/100%）。`0.0` 会被读成「确实没用显存」，**`None` 才能表达「测不到」** | 仅污染 S8 的显存维度；RSS/PSS 口径正确 |
 | **B4** 🔴 | **优先级高于 B1/B2/B3**：`rc_ptr[1]` 写入**非法** rateControlMode | `vbr_hq`→32、`qvbr`→64，而权威枚举只有 `CONSTQP=0 / VBR=1 / CBR=2`（curl 实取 `nvEncodeAPI.h` line 270-275）⇒ 32/64 枚举中不存在；官方 CQ 承载方式是 `RC_VBR(1)`+`targetQuality`（line 1605「for VBR mode」）。**「T4 实测 32 被接受」不能证伪** —— 接受 ≠ 语义正确 | **CQ 轴全部标定**（`QUALITY_MAP`/`QUALITY_MAP_QP`）+ 「constqp>qvbr>vbr_hq」性能排名 + 仓库默认档位（config:99/179）均建立在此未定义值上。详见 `nvenc-rc-enum-illegal-vbr-hq.md` 与 Plan §0.2 |
 
+> **🔗 2026-10-14 盘点**：B1/B2/B3/B4 的**当前复验状态与上机批次清单**见
+> [[t4-pending-gpu-verification-2026-10-14]]。要点：全部 T4 GPU 证据停在 **2026-10-04**，
+> 早于 `ecd60f8`(10-05 B2 分级) 与 `d215fc2`(10-09 **B1 修复**) ⇒ **当前代码在 T4 上零回归证据**，
+> B1/B2 属「已改代码未验证」，须按该文件 §3 的批次上机核销。
+
 ## 4. 记录勘误（E1–E5，必须随引用一起传播）
 
 - **E1** `nvenc-sps-pps-debugging.md:42`「多段视频段 2+ 不再报 `non-existing PPS`」——
