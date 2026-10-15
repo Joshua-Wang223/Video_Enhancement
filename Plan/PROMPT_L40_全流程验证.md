@@ -381,7 +381,9 @@ cd /workspace/VidUtils && python3 Accessory/verify/verify_quality_mapping.py < /
 ## 产出物
 
 **L40 独占项（切回 L40 容器后）**
-- `verification_report/av1_smoke_L40_clifford_YYYYMMDD.md` + `Accessory/data/s8_mem_L40_2026-10-09/clifford/*.mem.tsv`
+- ✅ **L40-1b（2026-10-15 实跑）**：`verification_report/av1_smoke_L40_clifford120s_2026-10-15.md`（PASS=8/FAIL=0）
+  + `Accessory/data/s8_mem_L40_2026-10-15/clifford_120s/constqp.mem.tsv`（36 样本，斜率 −109.3 MB/min）
+- `verification_report/av1_smoke_L40_clifford_YYYYMMDD.md` + `Accessory/data/s8_mem_L40_2026-10-09/clifford/*.mem.tsv`（完整版占位，未执行）
 - `verification_report/av1_vp9_matrix_L40_YYYYMMDD.md/.json`
 - `verification_report/crfcq_gpu_L40_YYYYMMDD.md`
 - 落表复核输出：`QUALITY_MAP['av1_nvenc']` / `QUALITY_MAP_QP['av1_nvenc']` 应与 `src/utils/convert_crf.py:212` / `src/utils/quality_map.py:202` 现值一致
@@ -404,14 +406,31 @@ cd /workspace/VidUtils && python3 Accessory/verify/verify_quality_mapping.py < /
 - ✅ S8 内存采样原始数据：`Accessory/data/s8_mem_L40_2026-10-09/`（含 README 与逐点证据表）
 - ✅ 门禁桩 BEH-ERR 审计与修复：`memory/gate-stub-session-gen-audit-2026-10-10.md`
 
-## 当前总体状态（2026-10-14）
+## 当前总体状态（2026-10-15）
 
 | 类别 | 状态 |
 |---|---|
-| L40-1 长视频冒烟（Clifford 720.5s） | ⛔ **未执行** —— 掉卡，前置门禁 exit 2；素材/engine/命令已就绪，恢复命令见 §执行命令 第 1 项。**完整版需 2.5~4.5 h，已降级为 L40-1b（见 §折中执行方案，约 30~50 min 总量）** |
+| L40-1b 降级版冒烟（Clifford 120s 裁剪片） | ✅ **2026-10-15 L40 实跑 PASS=8 / FAIL=0 / SKIP=0** —— 见下方「执行结果（2026-10-15）」；S1~S8 全通（帧守恒 5996=5996、单 IDR、frame_num 单调、S7 确认 av1、S8 斜率 **−109.3 MB/min**）；**时长类缺口（24 段拼接 / S8 长窗斜率 / 长跑尾帧）仍为显式未覆盖**，完整版（720.5s 单臂 ~1.3~2.3 h）未排期 |
+| L40-1 原始完整版（Clifford 720.5s） | ⛔ 未执行（2026-10-09 掉卡 exit 2）；已由 L40-1b 定案替代，恢复命令见 §执行命令 第 1 项 |
 | L40-1 短素材冒烟（new5_raw 1080p→4K） | ✅ S1~S7 全通；S8 假 FAIL 已证伪（无泄漏） |
 | L40-2 crf_cq --gpu | ✅ **判据达成（2026-10-14 口径修订后）**：G7/G8 FAIL=0（113 PASS / 0 FAIL / 3 WARN / 0 SKIP）；**G7-5 VMAF 对齐 PASS（偏差 0.89）**为正式质量判据；G7-6 plain-PSNR −2.14 dB 已定性为 AV1 族已知特性（备案观测项，不作门禁） |
 | L40-3 AC1 | ✅ PASS |
 | L40-4 落表双轴 | ✅ PASS（LOO 3.13 / 2.61） |
 | CPU 侧 8 项 | ✅ **2026-10-14 已补跑完毕**（10/10 rc=0）：plan_gate 96/0/2/3、verify_equal_quality 5/5、crf_cq_cpu 97/0/18、av1_vp9_matrix_cpu 3/0/0、segment_bitstream 250=250、落表自测 6 档 LOO 3.04~4.52、calibrate_eq 39 项、nvenc_tuning、nvenc_rc_diagnose V11；唯一遗留缺口=6 项 G6 + BEH-H3 因缺 `basicsr` SKIP（环境依赖，非逻辑失败） |
 | 跨仓 ⑨ 组 | ✅ **14/14 一致，rc=0**（2026-10-14 实跑；2026-10-09 的 ⑦ `--threads` FAIL 当前不复现，立项目录可关闭） |
+
+### 执行结果（2026-10-15，L40 在场）
+
+**环境体检（全绿后开跑）**：`nvidia-smi` = NVIDIA L40；`torch.cuda.is_available()=True`；
+h264/hevc/**av1** NVENC 实跑一帧均 rc=0；素材 Clifford 720×576/25fps/18011 帧在位；
+sm89 双 engine（`IFRNet_S_Vimeo90K_B8_H576_W736` / `realesr-general-x4v3_B8_C3_H576_W720_fp16_sm89`）已缓存 ⇒ 零 engine 构建。
+
+| 步骤 | 项 | 结果 | 实测 |
+|---|---|---|---|
+| 4a | 裁剪 120s 子片（`-ss 60 -t 120`，libx264 veryfast crf18 + aac） | ✅ rc=0 | 120.000s / 720×576 / 25fps，源结构无门禁噪声 |
+| 4b | **L40-1b 冒烟（constqp 单臂，S3 复用 S4 已启用）** | ✅ **PASS=8 / FAIL=0 / SKIP=0** | 管线 rc=0 仅 **182.9s**；S2 段门禁 4/4；S3+S4 帧数 5996=5996（源 3000）；S5 帧守恒/单 IDR/frame_num/pts 全过（3.18s）；S7 codec=av1 确认；**S8 斜率 −109.3 MB/min（RSS 峰值仅 4874 MB）**，远优于 ≤+50 门限 |
+| 1 | L40-4 落表双轴复跑 | ✅ 双轴 PASS | CQ：`av1_nvenc (1.4566,+1.2165,0,63)` LOO **3.13** ≤5.9，17 样本，3 seed 逐位一致，最差留出素材 live_kids_play；QP：`av1_nvenc (7.9338,−97.5136,0,255)` LOO **2.61** ≤5.9，顺序无关性逐位一致；两值与 `convert_crf.py:212` / `quality_map.py:202` 现值逐位一致 |
+
+**补测判定结论**：L40-2 / L40-3 / L40-4 **均判定无需补测**——三者 2026-10-09 实跑证据在库，且相关表值/脚本/points 自 2026-10-04/05 起冻结（均早于实跑）；L40-2 的 2026-10-14 判据修订为文档级（方案 A），10-09 数据已满足新判据（G7-5 ΔVMAF 0.89）。L40-4 本轮仅作顺手复跑确认。
+
+**耗时口径修正**：本轮 L40 在场总耗时 ≈ **6 min**（裁剪 ~0.5 min + 冒烟 ~3 min + 校验 ~2 min + 落表 ~15 s），远低于 §折中执行方案的 15~25 min（L40 实际吞吐高于 new5_raw 外推基准：3000 源帧 → 5996 输出帧仅 182.9s）。§「折中执行方案 30~50 min」上限仅在触发 S8 补臂或重跑 L40-2/3 时才会逼近。
