@@ -17,6 +17,19 @@
 **证据文件**：`verification_report/av1_smoke_L40_clifford120s_2026-10-15.md`；
 内存采样 `Accessory/data/s8_mem_L40_2026-10-15/clifford_120s/constqp.mem.tsv`。
 
+## 收尾验证（2026-10-15 02:20，同容器已切回 CPU 模式）
+
+会话在 **02:15 切回 CPU 模式**（`/dev/nvidia*` 设备节点被撤走、`libcuda.so.1` 改指 0 字节占位
+`libcuda.so.580.65.06`）后，补跑两项 CPU 侧收尾，**关闭 basicsr 缺口**：
+
+| 项 | 结果 | 实测 |
+|---|---|---|
+| `plan_implementation_gate.py` | ✅ | **101 项 / 97 PASS / 0 FAIL / 2 WARN / 2 SKIP**——BEH-H3 恢复 PASS（本容器 `basicsr` 1.4.2 已装，CPU/WSL 轮缺它）；2 WARN = R5 CUDA + R7 NVENC `Cannot load libcuda.so.1`、2 SKIP = R8 NVML 提示 + RT-0 未传 `--output`，**均为 CPU 模式环境差异**（⚠ 与 10-09 的「掉卡」现象同签名但成因不同：那次是 GPU 直通异常掉线，这次是主动切回 CPU） |
+| `crf_cq_unification_verify.py --quick --no-gpu` | ✅ | **PASS=103 / FAIL=0 / WARN=0 / SKIP=12**——12 SKIP 全为 G7/G8 无 GPU 预期项；**G6 组 6 项恢复 PASS**（同一 basicsr 原因）。与 10-14 WSL 轮的 97/18 差异即 G6 6 项 |
+
+⇒ 全项目最后的环境依赖缺口（6 项 G6 + BEH-H3）已在本环境闭合并留痕；
+L40-2/3/4 仍无需 GPU 复跑（证据见上）。
+
 ## 补测判定（L40-2 / L40-3 / L40-4 均不补跑）
 
 - 三者 2026-10-09 实跑证据在库（`crfcq_gpu_L40_2026-10-09.md` 113 PASS/0 FAIL/3 WARN、

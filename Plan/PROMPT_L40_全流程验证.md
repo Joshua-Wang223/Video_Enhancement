@@ -416,7 +416,7 @@ cd /workspace/VidUtils && python3 Accessory/verify/verify_quality_mapping.py < /
 | L40-2 crf_cq --gpu | ✅ **判据达成（2026-10-14 口径修订后）**：G7/G8 FAIL=0（113 PASS / 0 FAIL / 3 WARN / 0 SKIP）；**G7-5 VMAF 对齐 PASS（偏差 0.89）**为正式质量判据；G7-6 plain-PSNR −2.14 dB 已定性为 AV1 族已知特性（备案观测项，不作门禁） |
 | L40-3 AC1 | ✅ PASS |
 | L40-4 落表双轴 | ✅ PASS（LOO 3.13 / 2.61） |
-| CPU 侧 8 项 | ✅ **2026-10-14 已补跑完毕**（10/10 rc=0）：plan_gate 96/0/2/3、verify_equal_quality 5/5、crf_cq_cpu 97/0/18、av1_vp9_matrix_cpu 3/0/0、segment_bitstream 250=250、落表自测 6 档 LOO 3.04~4.52、calibrate_eq 39 项、nvenc_tuning、nvenc_rc_diagnose V11；唯一遗留缺口=6 项 G6 + BEH-H3 因缺 `basicsr` SKIP（环境依赖，非逻辑失败） |
+| CPU 侧 8 项 | ✅ **全部补跑完毕**：2026-10-14 WSL 无 GPU 轮 10/10 rc=0（plan_gate 96/0/2/3、verify_equal_quality 5/5、crf_cq_cpu 97/0/18、av1_vp9_matrix_cpu 3/0/0、segment_bitstream 250=250、落表自测 6 档 LOO 3.04~4.52、calibrate_eq 39 项、nvenc_tuning、nvenc_rc_diagnose V11）；**2026-10-15 L40 容器切回 CPU 模式后补跑（`basicsr` 1.4.2 已装）——plan_gate 101 项/97 PASS/0 FAIL/2 WARN/2 SKIP（BEH-H3 恢复）、crf_cq_cpu 103 PASS/0 FAIL/12 SKIP（G6 组 6 项恢复）⇒ 最后的环境依赖缺口已闭合** |
 | 跨仓 ⑨ 组 | ✅ **14/14 一致，rc=0**（2026-10-14 实跑；2026-10-09 的 ⑦ `--threads` FAIL 当前不复现，立项目录可关闭） |
 
 ### 执行结果（2026-10-15，L40 在场）
